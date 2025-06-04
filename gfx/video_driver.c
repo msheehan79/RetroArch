@@ -1292,9 +1292,26 @@ void video_switch_refresh_rate_maybe(
    bool all_fullscreen                = settings->bools.video_fullscreen || settings->bools.video_windowed_fullscreen;
 
    /* Roundings to PAL & NTSC standards */
-   if      (refresh_rate > 49.00 && refresh_rate <= pal_threshold)
+   /*if      (refresh_rate > 49.00 && refresh_rate <= pal_threshold)
       refresh_rate       = 50.00f;
    else if (refresh_rate > 54.00 && refresh_rate < 60.00)
+      refresh_rate       = 59.94f;
+   else if (refresh_rate > 60.00 && refresh_rate < 61.00)
+      refresh_rate       = 60.00f;*/
+
+   if      (refresh_rate > 49.00 && refresh_rate <= pal_threshold)
+      refresh_rate       = 50.00f;
+   else if (refresh_rate > 54.50 && refresh_rate < 55.50)
+      refresh_rate       = 55.00f;
+   else if (refresh_rate > 55.50 && refresh_rate < 56.50)
+      refresh_rate       = 56.00f;
+   else if (refresh_rate > 56.50 && refresh_rate < 57.50)
+      refresh_rate       = 57.00f;
+   else if (refresh_rate > 57.50 && refresh_rate < 58.50)
+      refresh_rate       = 58.00f;
+   else if (refresh_rate > 58.50 && refresh_rate < 59.50)
+      refresh_rate       = 59.00f;
+   else if (refresh_rate > 59.50 && refresh_rate < 60.00)
       refresh_rate       = 59.94f;
    else if (refresh_rate > 60.00 && refresh_rate < 61.00)
       refresh_rate       = 60.00f;
