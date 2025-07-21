@@ -100,11 +100,11 @@ static bool grab_region(dsound_t *ds, uint32_t write_ptr,
    if (res == DSERR_BUFFERLOST)
    {
 #ifdef DEBUG
-      RARCH_WARN("[DirectSound error]: %s\n", "DSERR_BUFFERLOST");
+      RARCH_WARN("[DirectSound] %s.\n", "DSERR_BUFFERLOST");
 #endif
-      if ((res = IDirectSoundBuffer_Restore(ds->dsb)) != DS_OK)
+      if ((IDirectSoundBuffer_Restore(ds->dsb)) != DS_OK)
          return false;
-      if ((res = IDirectSoundBuffer_Lock(ds->dsb, write_ptr, CHUNK_SIZE,
+      if ((IDirectSoundBuffer_Lock(ds->dsb, write_ptr, CHUNK_SIZE,
                   &region->chunk1, &region->size1, &region->chunk2, &region->size2, 0)) != DS_OK)
          return false;
       return true;
@@ -114,13 +114,13 @@ static bool grab_region(dsound_t *ds, uint32_t write_ptr,
    switch (res)
    {
       case DSERR_INVALIDCALL:
-         RARCH_WARN("[DirectSound error]: %s\n", "DSERR_INVALIDCALL");
+         RARCH_WARN("[DirectSound] %s.\n", "DSERR_INVALIDCALL");
          break;
       case DSERR_INVALIDPARAM:
-         RARCH_WARN("[DirectSound error]: %s\n", "DSERR_INVALIDPARAM");
+         RARCH_WARN("[DirectSound] %s.\n", "DSERR_INVALIDPARAM");
          break;
       case DSERR_PRIOLEVELNEEDED:
-         RARCH_WARN("[DirectSound error]: %s\n", "DSERR_PRIOLEVELNEEDED");
+         RARCH_WARN("[DirectSound] %s.\n", "DSERR_PRIOLEVELNEEDED");
          break;
       default:
          break;
@@ -386,13 +386,13 @@ static void *dsound_init(const char *dev, unsigned rate, unsigned latency,
             if (idx_found == -1 && isdigit(dev[0]))
             {
                idx_found = strtoul(dev, NULL, 0);
-               RARCH_LOG("[DirectSound]: Fallback, device index is a single number index instead: %d.\n", idx_found);
+               RARCH_LOG("[DirectSound] Fallback, device index is a single number index instead: %d.\n", idx_found);
 
                if (idx_found != -1)
                {
                   if (idx_found < (int32_t)list->size)
                   {
-                     RARCH_LOG("[DirectSound]: Corresponding name: %s\n", list->elems[idx_found].data);
+                     RARCH_LOG("[DirectSound] Corresponding name: %s.\n", list->elems[idx_found].data);
                      selected_device = (LPGUID)list->elems[idx_found].userdata;
                   }
                }
@@ -417,8 +417,8 @@ static void *dsound_init(const char *dev, unsigned rate, unsigned latency,
    if (ds->buffer_size < 4 * CHUNK_SIZE)
       ds->buffer_size    = 4 * CHUNK_SIZE;
 
-   RARCH_LOG("[DirectSound]: Setting buffer size of %u bytes\n", ds->buffer_size);
-   RARCH_LOG("[DirectSound]: Latency = %u ms\n", (unsigned)((1000 * ds->buffer_size) / wfx.nAvgBytesPerSec));
+   RARCH_LOG("[DirectSound] Setting buffer size of %u bytes.\n", ds->buffer_size);
+   RARCH_LOG("[DirectSound] Latency = %u ms.\n", (unsigned)((1000 * ds->buffer_size) / wfx.nAvgBytesPerSec));
 
    bufdesc.dwSize        = sizeof(DSBUFFERDESC);
    bufdesc.dwFlags       = 0;
@@ -525,7 +525,6 @@ static ssize_t dsound_write(void *data, const void *buf_, size_t len)
          LeaveCriticalSection(&ds->crit);
 
          buf     += avail;
-         len     -= avail;
          written += avail;
       }
    }

@@ -754,7 +754,7 @@ static core_info_cache_list_t *core_info_cache_read(const char *info_dir)
    /* Parse info cache file */
    if (!(parser = rjson_open_stream(file)))
    {
-      RARCH_ERR("[Core Info]: Failed to create JSON parser.\n");
+      RARCH_ERR("[Core info] Failed to create JSON parser.\n");
       goto end;
    }
 
@@ -776,10 +776,10 @@ static core_info_cache_list_t *core_info_cache_read(const char *info_dir)
          NULL) /* Unused null handler */
          != RJSON_DONE)
    {
-      RARCH_WARN("[Core Info]: Error parsing chunk:\n---snip---\n%.*s\n---snip---\n",
+      RARCH_WARN("[Core info] Error parsing chunk:\n---snip---\n%.*s\n---snip---\n",
             rjson_get_source_context_len(parser),
             rjson_get_source_context_buf(parser));
-      RARCH_WARN("[Core Info]: Error: Invalid JSON at line %d, column %d - %s.\n",
+      RARCH_WARN("[Core info] Error: Invalid JSON at line %d, column %d - %s.\n",
             (int)rjson_get_source_line(parser),
             (int)rjson_get_source_column(parser),
             (*rjson_get_error(parser)
@@ -812,7 +812,7 @@ static core_info_cache_list_t *core_info_cache_read(const char *info_dir)
        || !string_is_equal(core_info_cache_list->version,
             CORE_INFO_CACHE_VERSION))
    {
-      RARCH_WARN("[Core Info]: Core info cache has invalid version"
+      RARCH_WARN("[Core info] Core info cache has invalid version"
             " - forcing refresh (required v%s, found v%s).\n",
             CORE_INFO_CACHE_VERSION,
             core_info_cache_list->version);
@@ -858,14 +858,14 @@ static bool core_info_cache_write(core_info_cache_list_t *list, const char *info
 
    if (!file)
    {
-      RARCH_ERR("[Core Info]: Failed to write core info cache file: \"%s\".\n", file_path);
+      RARCH_ERR("[Core info] Failed to write core info cache file: \"%s\".\n", file_path);
       return false;
    }
 
    /* Write info cache */
    if (!(writer = rjsonwriter_open_stream(file)))
    {
-      RARCH_ERR("[Core Info]: Failed to create JSON writer.\n");
+      RARCH_ERR("[Core info] Failed to create JSON writer.\n");
       goto end;
    }
 
@@ -1188,7 +1188,7 @@ static bool core_info_cache_write(core_info_cache_list_t *list, const char *info
    rjsonwriter_raw(writer, "\n", 1);
    rjsonwriter_free(writer);
 
-   RARCH_LOG("[Core Info]: Wrote to cache file: \"%s\".\n", file_path);
+   RARCH_LOG("[Core info] Wrote to cache file: \"%s\".\n", file_path);
    success = true;
 
    /* Remove 'force refresh' file, if required */
@@ -1571,7 +1571,7 @@ static size_t core_info_get_file_id(const char *core_filename,
        && !string_is_equal(last_underscore, "_libretro"))
    {
       *last_underscore = '\0';
-      _len = strlen(s); /* TODO/FIXME - make this unnecessary later on */
+      _len = last_underscore - s;
    }
    return _len;
 }
@@ -1878,9 +1878,10 @@ static void core_info_parse_config_file(
    list->info_count++;
 }
 
-static void core_info_list_resolve_all_extensions(
+static size_t core_info_list_resolve_all_extensions(
       core_info_list_t *core_info_list)
 {
+   size_t _len;
    size_t i              = 0;
    size_t all_ext_len    = 0;
    char *all_ext         = NULL;
@@ -1894,26 +1895,29 @@ static void core_info_list_resolve_all_extensions(
 
    all_ext_len       += STRLEN_CONST("7z|") + STRLEN_CONST("zip|");
    if (!(all_ext      = (char*)calloc(1, all_ext_len)))
-      return;
+      return 0;
 
    core_info_list->all_ext = all_ext;
+   _len                    = strlen(all_ext);
 
    for (i = 0; i < core_info_list->count; i++)
    {
-      size_t _len;
       if (!core_info_list->list[i].supported_extensions)
          continue;
 
-      _len = strlcat(core_info_list->all_ext,
-            core_info_list->list[i].supported_extensions, all_ext_len);
-      strlcpy(core_info_list->all_ext + _len, "|", all_ext_len - _len);
+      _len += strlcpy(core_info_list->all_ext + _len,
+            core_info_list->list[i].supported_extensions,
+                      all_ext_len - _len);
+      _len += strlcpy(core_info_list->all_ext + _len, "|",
+                      all_ext_len - _len);
    }
 #ifdef HAVE_7ZIP
-   strlcat(core_info_list->all_ext, "7z|", all_ext_len);
+   _len += strlcpy(core_info_list->all_ext + _len, "7z|", all_ext_len - _len);
 #endif
 #ifdef HAVE_ZLIB
-   strlcat(core_info_list->all_ext, "zip|", all_ext_len);
+   _len += strlcpy(core_info_list->all_ext + _len, "zip|", all_ext_len - _len);
 #endif
+   return _len;
 }
 
 static void core_info_free(core_info_t* info)
@@ -2145,6 +2149,8 @@ static core_info_list_t *core_info_list_new(const char *path,
 
 error:
    core_info_path_list_free(path_list);
+   if (core_info_list)
+      free(core_info_list);
    return NULL;
 }
 

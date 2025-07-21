@@ -188,7 +188,7 @@ static int task_database_iterate_start(retro_task_t *task,
          task_set_progress(task,
                roundf((float)db->list_ptr /
                   ((float)db->list->size / 100.0f)));
-      RARCH_LOG("[Scanner]: %s", msg);
+      RARCH_LOG("[Scanner] %s", msg);
       if (retroarch_override_setting_is_set(RARCH_OVERRIDE_SETTING_DATABASE_SCAN, NULL))
          printf("%s", msg);
 #else
@@ -339,7 +339,7 @@ static int task_database_cue_get_serial(const char *name, char *s, size_t len)
          track_path, sizeof(track_path)) < 0)
    {
 #ifdef DEBUG
-      RARCH_LOG("%s\n",
+      RARCH_LOG("[Scanner] %s\n",
             msg_hash_to_str(MSG_COULD_NOT_FIND_VALID_DATA_TRACK));
 #endif
       return 0;
@@ -358,7 +358,7 @@ static int task_database_gdi_get_serial(const char *name, char *s, size_t len)
                track_path, sizeof(track_path)) < 0)
    {
 #ifdef DEBUG
-      RARCH_LOG("%s\n",
+      RARCH_LOG("[Scanner] %s\n",
             msg_hash_to_str(MSG_COULD_NOT_FIND_VALID_DATA_TRACK));
 #endif
       return 0;
@@ -455,7 +455,7 @@ static int task_database_cue_get_crc(const char *name, uint32_t *crc)
          track_path, sizeof(track_path)) < 0)
    {
 #ifdef DEBUG
-      RARCH_LOG("%s\n",
+      RARCH_LOG("[Scanner] %s\n",
             msg_hash_to_str(MSG_COULD_NOT_FIND_VALID_DATA_TRACK));
 #endif
       return 0;
@@ -474,7 +474,7 @@ static int task_database_gdi_get_crc(const char *name, uint32_t *crc)
                track_path, sizeof(track_path)) < 0)
    {
 #ifdef DEBUG
-      RARCH_LOG("%s\n",
+      RARCH_LOG("[Scanner] %s\n",
             msg_hash_to_str(MSG_COULD_NOT_FIND_VALID_DATA_TRACK));
 #endif
       return 0;
@@ -524,7 +524,7 @@ static void task_database_cue_prune(database_info_handle_t *db,
                && string_is_equal(path, db->list->elems[i].data))
          {
 #ifdef DEBUG
-            RARCH_LOG("Pruning file referenced by cue: %s\n", path);
+            RARCH_LOG("[Scanner] Pruning file referenced by cue: %s\n", path);
 #endif
             free(db->list->elems[i].data);
             db->list->elems[i].data = NULL;
@@ -555,7 +555,7 @@ static void gdi_prune(database_info_handle_t *db, const char *name)
          if (db->list->elems[i].data
                && string_is_equal(path, db->list->elems[i].data))
          {
-            RARCH_LOG("Pruning file referenced by gdi: %s\n", path);
+            RARCH_LOG("[Scanner] Pruning file referenced by gdi: %s\n", path);
             free(db->list->elems[i].data);
             db->list->elems[i].data = NULL;
          }
@@ -815,7 +815,17 @@ static int database_info_list_iterate_found_match(
    /* Use database name for label if found,
     * otherwise use filename without extension */
    if (!string_is_empty(db_info_entry->name))
+   {
+      /* Use the archive as path instead of the file inside the archive
+       * if the file is a multidisk game, because database entry
+       * matches with the last disk, which is never bootable */
+      char *delim = (char*)strchr(entry_path_str, '#');
+
+      if (delim && strcasestr(entry_path_str, " (Disk "))
+         *delim = '\0';
+
       strlcpy(entry_lbl, db_info_entry->name, sizeof(entry_lbl));
+   }
    else if (!string_is_empty(entry_path))
    {
       char *delim = (char*)strchr(entry_path, '#');
@@ -825,7 +835,7 @@ static int database_info_list_iterate_found_match(
       fill_pathname(entry_lbl,
             path_basename_nocompression(entry_path), "", str_len);
 
-      RARCH_LOG("[Scanner]: No match for: \"%s\", CRC: 0x%08X\n", entry_path_str, db_state->crc);
+      RARCH_LOG("[Scanner] No match for: \"%s\", CRC: 0x%08X\n", entry_path_str, db_state->crc);
    }
 
    if (!string_is_empty(archive_name))
@@ -833,20 +843,20 @@ static int database_info_list_iterate_found_match(
             entry_path_str, archive_name, '#', str_len);
 
    if (core_info_database_match_archive_member(
-         db_state->list->elems[db_state->list_index].data) &&
-       (hash = strchr(entry_path_str, '#')))
+         db_state->list->elems[db_state->list_index].data)
+       && (hash = strchr(entry_path_str, '#')))
        *hash = '\0';
 
 #if !defined(RARCH_INTERNAL)
-   fprintf(stderr, "Found match in database !\n");
+   fprintf(stderr, "*** Found match in database! ***\n");
 
-   fprintf(stderr, "Path: %s\n", db_path);
-   fprintf(stderr, "CRC : %s\n", db_crc);
-   fprintf(stderr, "Playlist Path: %s\n", db_playlist_path);
-   fprintf(stderr, "Entry Path: %s\n", entry_path);
-   fprintf(stderr, "Playlist not NULL: %d\n", playlist != NULL);
-   fprintf(stderr, "ZIP entry: %s\n", archive_name);
-   fprintf(stderr, "entry path str: %s\n", entry_path_str);
+   fprintf(stderr, "\tPath: %s\n", db_path);
+   fprintf(stderr, "\tCRC : %s\n", db_crc);
+   fprintf(stderr, "\tPlaylist Path: %s\n", db_playlist_path);
+   fprintf(stderr, "\tEntry Path: %s\n", entry_path);
+   fprintf(stderr, "\tPlaylist not NULL: %d\n", playlist != NULL);
+   fprintf(stderr, "\tZIP entry: %s\n", archive_name);
+   fprintf(stderr, "\tentry path str: %s\n", entry_path_str);
 #endif
 
    if (!playlist_entry_exists(playlist, entry_path_str))
@@ -876,7 +886,7 @@ static int database_info_list_iterate_found_match(
       entry.last_played_second= 0;
 
       playlist_push(playlist, &entry);
-      RARCH_LOG("[Scanner]: Add \"%s\" to \"%s\"\n", entry_lbl, entry.db_name);
+      RARCH_LOG("[Scanner] Add \"%s\" to \"%s\"\n", entry_lbl, entry.db_name);
       if (retroarch_override_setting_is_set(RARCH_OVERRIDE_SETTING_DATABASE_SCAN, NULL))
          task_database_scan_console_output(entry_lbl, path_remove_extension(db_playlist_base_str), true);
    }
@@ -1267,9 +1277,9 @@ static void task_database_handler(retro_task_t *task)
                      db->flags & DB_HANDLE_FLAG_SHOW_HIDDEN_FILES,
                      false, false);
 
-            RARCH_LOG("[Scanner]: %s\"%s\"..\n", msg_hash_to_str(MSG_MANUAL_CONTENT_SCAN_START), db->fullpath);
+            RARCH_LOG("[Scanner] %s\"%s\"...\n", msg_hash_to_str(MSG_MANUAL_CONTENT_SCAN_START), db->fullpath);
             if (retroarch_override_setting_is_set(RARCH_OVERRIDE_SETTING_DATABASE_SCAN, NULL))
-               printf("%s\"%s\"..\n", msg_hash_to_str(MSG_MANUAL_CONTENT_SCAN_START), db->fullpath);
+               printf("%s\"%s\"...\n", msg_hash_to_str(MSG_MANUAL_CONTENT_SCAN_START), db->fullpath);
 
             /* If the scan path matches a database path exactly then
              * save time by only processing that database. */
@@ -1363,7 +1373,7 @@ static void task_database_handler(retro_task_t *task)
             task_set_title(task, strdup(msg));
             task_set_progress(task, 100);
             ui_companion_driver_notify_refresh();
-            RARCH_LOG("[Scanner]: %s\n", msg);
+            RARCH_LOG("[Scanner] %s\n", msg);
             if (retroarch_override_setting_is_set(RARCH_OVERRIDE_SETTING_DATABASE_SCAN, NULL))
                printf("%s\n", msg);
 #else

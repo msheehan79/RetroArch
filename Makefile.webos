@@ -17,7 +17,7 @@ WEBOS_INC_DIR         ?= $(STAGING_DIR)/usr/include
 WEBOS_LIB_DIR         ?= $(STAGING_DIR)/usr/lib
 
 ADD_SDL2_LIB          ?= 0
-SDL2_PREBUILT_ARCHIVE ?= https://github.com/webosbrew/SDL-webOS/releases/download/release-2.30.8-webos.3/SDL2-2.30.8-webos-abi.tar.gz
+SDL2_PREBUILT_ARCHIVE ?= https://github.com/webosbrew/SDL-webOS/releases/download/release-2.30.12-webos.1/SDL2-2.30.12-webos-abi.tar.gz
 
 #########################
 #########################
@@ -119,6 +119,7 @@ HAVE_MATERIALUI = 0
 HAVE_XMB = 1
 HAVE_OZONE = 1
 HAVE_ZLIB = 1
+HAVE_ZSTD = 1
 HAVE_CONFIGFILE = 1
 HAVE_PATCH = 1
 HAVE_CHEATS = 1
@@ -288,7 +289,9 @@ ipk: $(TARGET) sdl2
 ifeq ($(ADD_SDL2_LIB), 1)
 	cp -t webos/dist/lib -vf SDL/lib/libSDL2-2.0.so.0
 endif
+ifneq ($(DEBUG), 1)
 	$(STRIP) webos/dist/$(TARGET)
+endif
 	cd webos && ares-package dist
 
 install: ipk

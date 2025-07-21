@@ -60,6 +60,7 @@ static struct magic_entry MAGIC_NUMBERS[] = {
    { "Sony - PlayStation",          "Sony Computer ",   0x0024f8}, /* PS1 CD license string, PS2 CD doesnt have this string */
    { "Sony - PlayStation 2",        "PLAYSTATION",      0x009320}, /* PS1 CD and PS2 CD */
    { "Sony - PlayStation 2",        "PLAYSTATION",      0x008008}, /* PS2 DVD */
+   { "Sony - PlayStation 2",        "           ",      0x008008}, /* PS2 DVD */
    { "Sony - PlayStation Portable", "PSP GAME",         0x008008},
    { NULL,                          NULL,               0}
 };
@@ -284,7 +285,7 @@ int detect_ps1_game(intfstream_t *fd, char *s, size_t len, const char *filename)
 
 int detect_ps2_game(intfstream_t *fd, char *s, size_t len, const char *filename)
 {
-   #define DISC_DATA_SIZE_PS2 0x84000
+   #define DISC_DATA_SIZE_PS2 600000
    int pos;
    char raw_game_id[50];
    char *disc_data;
@@ -382,6 +383,11 @@ int detect_ps2_game(intfstream_t *fd, char *s, size_t len, const char *filename)
                raw_game_id[8] = raw_game_id[9];
                raw_game_id[9] = raw_game_id[10];
             }
+            /* Wild character conversions */
+            if (raw_game_id[8] == 18)
+               raw_game_id[8] = 51;
+            if (raw_game_id[9] == 18)
+               raw_game_id[9] = 51;
             raw_game_id[10] = '\0';
 
             string_remove_all_whitespace(s, raw_game_id);
@@ -410,7 +416,7 @@ int detect_ps2_game(intfstream_t *fd, char *s, size_t len, const char *filename)
 
 int detect_psp_game(intfstream_t *fd, char *s, size_t len, const char *filename)
 {
-   #define DISC_DATA_SIZE_PSP 40000
+   #define DISC_DATA_SIZE_PSP 300000
    int pos;
    char *disc_data = malloc(DISC_DATA_SIZE_PSP);
 
@@ -506,7 +512,7 @@ size_t detect_gc_game(intfstream_t *fd, char *s, size_t len, const char *filenam
    if (raw_game_id[0] == '\0' || raw_game_id[0] == ' ')
    {
 #ifdef DEBUG
-      RARCH_LOG("[Scanner]: Scrubbing: %s\n", filename);
+      RARCH_LOG("[Scanner] Scrubbing: \"%s\".\n", filename);
 #endif
       return 0;
    }
@@ -599,7 +605,7 @@ int detect_scd_game(intfstream_t *fd, char *s, size_t len, const char *filename)
 #ifdef DEBUG
    /** Scrub files with bad data and log **/
    if (raw_game_id[0] == '\0' || raw_game_id[0] == ' ' || raw_game_id[0] == '0')
-      RARCH_LOG("[Scanner]: Scrubbing: %s\n", filename);
+      RARCH_LOG("[Scanner] Scrubbing: \"%s\".\n", filename);
 #endif
 
    /** convert raw Sega - Mega-CD - Sega CD serial to redump serial. **/
@@ -713,7 +719,7 @@ int detect_sat_game(intfstream_t *fd, char *s, size_t len, const char *filename)
    if (raw_game_id[0] == '\0' || raw_game_id[0] == ' ')
    {
 #ifdef DEBUG
-      RARCH_LOG("[Scanner]: Scrubbing: %s\n", filename);
+      RARCH_LOG("[Scanner] Scrubbing: \"%s\".\n", filename);
 #endif
       return false;
    }
@@ -800,7 +806,7 @@ int detect_dc_game(intfstream_t *fd, char *s, size_t len, const char *filename)
          || raw_game_id[0] == ' ')
    {
 #ifdef DEBUG
-      RARCH_LOG("[Scanner]: Scrubbing: %s\n", filename);
+      RARCH_LOG("[Scanner] Scrubbing: \"%s\".\n", filename);
 #endif
       return false;
    }
@@ -992,7 +998,7 @@ size_t detect_wii_game(intfstream_t *fd, char *s, size_t len, const char *filena
          || raw_game_id[0] == ' ')
    {
 #ifdef DEBUG
-      RARCH_LOG("[Scanner]: Scrubbing: %s\n", filename);
+      RARCH_LOG("[Scanner] Scrubbing: \"%s\".\n", filename);
 #endif
       return 0;
    }
@@ -1001,64 +1007,12 @@ size_t detect_wii_game(intfstream_t *fd, char *s, size_t len, const char *filena
    return strlcpy(s, raw_game_id, len);
 }
 
-#if 0
-/**
- * Check for an ASCII serial in the first few bits of the ISO (Wii).
- * TODO/FIXME - unused for now
- */
-static int detect_serial_ascii_game(intfstream_t *fd, char *s, size_t len)
-{
-   unsigned pos;
-   int number_of_ascii = 0;
-   bool rv             = false;
-
-   for (pos = 0; pos < 10000; pos++)
-   {
-      intfstream_seek(fd, pos, SEEK_SET);
-      if (intfstream_read(fd, s, 15) > 0)
-      {
-         unsigned i;
-         s[15]           = '\0';
-         number_of_ascii = 0;
-
-         /* When scanning WBFS files, "WBFS" is discovered as the first serial. Ignore it. */
-         if (string_is_equal(s, "WBFS"))
-            continue;
-
-         /* Loop through until we run out of ASCII characters. */
-         for (i = 0; i < 15; i++)
-         {
-            /* Is the given character ASCII? A-Z, 0-9, - */
-            if (     (s[i] == 45)
-                  || (s[i] >= 48 && s[i] <= 57)
-                  || (s[i] >= 65 && s[i] <= 90))
-               number_of_ascii++;
-            else
-               break;
-         }
-
-         /* If the length of the text is between 3 and 9 characters,
-          * it could be a serial. */
-         if (number_of_ascii > 3 && number_of_ascii < 9)
-         {
-            /* Cut the string off, and return it as a valid serial. */
-            s[number_of_ascii]       = '\0';
-            rv                       = true;
-            break;
-         }
-      }
-   }
-
-   return rv;
-}
-#endif
-
 int detect_system(intfstream_t *fd, const char **system_name, const char * filename)
 {
    int i;
    char magic[50];
 #ifdef DEBUG
-   RARCH_LOG("[Scanner]: %s\n", msg_hash_to_str(MSG_COMPARING_WITH_KNOWN_MAGIC_NUMBERS));
+   RARCH_LOG("[Scanner] %s\n", msg_hash_to_str(MSG_COMPARING_WITH_KNOWN_MAGIC_NUMBERS));
 #endif
    for (i = 0; MAGIC_NUMBERS[i].system_name != NULL; i++)
    {
@@ -1072,8 +1026,8 @@ int detect_system(intfstream_t *fd, const char **system_name, const char * filen
             {
                *system_name = MAGIC_NUMBERS[i].system_name;
 #ifdef DEBUG
-               RARCH_LOG("[Scanner]: Name: %s\n", filename);
-               RARCH_LOG("[Scanner]: System: %s\n", MAGIC_NUMBERS[i].system_name);
+               RARCH_LOG("[Scanner] Name: %s\n", filename);
+               RARCH_LOG("[Scanner] System: %s\n", MAGIC_NUMBERS[i].system_name);
 #endif
                return true;
             }
@@ -1082,8 +1036,8 @@ int detect_system(intfstream_t *fd, const char **system_name, const char * filen
    }
 
 #ifdef DEBUG
-   RARCH_LOG("[Scanner]: Name: %s\n", filename);
-   RARCH_LOG("[Scanner]: System: Unknown\n");
+   RARCH_LOG("[Scanner] Name: %s\n", filename);
+   RARCH_LOG("[Scanner] System: Unknown\n");
 #endif
    return false;
 }
@@ -1151,13 +1105,13 @@ int cue_find_track(const char *cue_path, bool first,
             RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE))
    {
 #ifdef DEBUG
-      RARCH_LOG("Could not open CUE file '%s'\n", cue_path);
+      RARCH_LOG("[Scanner] Could not open CUE file \"%s\".\n", cue_path);
 #endif
       goto error;
    }
 
 #ifdef DEBUG
-   RARCH_LOG("Parsing CUE file '%s'...\n", cue_path);
+   RARCH_LOG("[Scanner] Parsing CUE file \"%s\"...\n", cue_path);
 #endif
 
    tmp_token[0] = '\0';
@@ -1207,7 +1161,7 @@ int cue_find_track(const char *cue_path, bool first,
          if (sscanf(tmp_token, "%02d:%02d:%02d", &_m, &_s, &_f) < 3)
          {
 #ifdef DEBUG
-            RARCH_LOG("Error parsing time stamp '%s'\n", tmp_token);
+            RARCH_LOG("[Scanner] Error parsing time stamp \"%s\".\n", tmp_token);
 #endif
             goto error;
          }
@@ -1301,13 +1255,13 @@ int gdi_find_track(const char *gdi_path, bool first, char *s, size_t len)
             RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE))
    {
 #ifdef DEBUG
-      RARCH_LOG("Could not open GDI file '%s'\n", gdi_path);
+      RARCH_LOG("[Scanner] Could not open GDI file \"%s\".\n", gdi_path);
 #endif
       goto error;
    }
 
 #ifdef DEBUG
-   RARCH_LOG("Parsing GDI file '%s'...\n", gdi_path);
+   RARCH_LOG("[Scanner] Parsing GDI file \"%s\"...\n", gdi_path);
 #endif
 
    tmp_token[0] = '\0';

@@ -1167,53 +1167,48 @@ static void xmb_render_messagebox_internal(
    string_list_deinitialize(&list);
 }
 
-static char *xmb_path_dynamic_wallpaper(xmb_handle_t *xmb)
+static void xmb_path_dynamic_wallpaper(xmb_handle_t *xmb, char *s, size_t len)
 {
    settings_t *settings               = config_get_ptr();
    bool menu_dynamic_wallpaper_enable = settings->bools.menu_dynamic_wallpaper_enable;
    unsigned xmb_color_theme           = settings->uints.menu_xmb_color_theme;
    const char *path_menu_wallpaper    = settings->paths.path_menu_wallpaper;
    const char *dir_dynamic_wallpapers = settings->paths.directory_dynamic_wallpapers;
-   char path[PATH_MAX_LENGTH];
    unsigned depth                     = (unsigned)xmb_list_get_size(xmb, MENU_LIST_PLAIN);
-
-   path[0]                            = '\0';
 
    /* Do not update wallpaper in "Main Menu" playlists and inside playlist items */
    if (    (xmb->categories_selection_ptr == XMB_SYSTEM_TAB_MAIN && depth > 3)
         || (xmb->categories_selection_ptr > xmb->system_tab_end && depth > 1))
    {
       if (string_is_empty(xmb->bg_file_path))
-         return NULL;
-      return strdup(xmb->bg_file_path);
+         return;
+      strlcpy(s, xmb->bg_file_path, len);
    }
 
    /* Dynamic wallpaper takes precedence as reset background,
     * then comes 'menu_wallpaper', and then iconset 'bg.png' */
    if (menu_dynamic_wallpaper_enable)
    {
-      size_t _len = fill_pathname_join_special(
-               path,
+      size_t _len = fill_pathname_join_special(s,
                dir_dynamic_wallpapers,
                xmb->title_name,
-               sizeof(path));
-      strlcpy(path + _len, ".png", sizeof(path) - _len);
+               len);
+      strlcpy(s + _len, ".png", len - _len);
    }
 
-   if (!string_is_empty(path) && path_is_valid(path))
+   if (!string_is_empty(s) && path_is_valid(s))
       ;/* no-op */
    else if (!string_is_empty(path_menu_wallpaper))
-      strlcpy(path, path_menu_wallpaper, sizeof(path));
+      strlcpy(s, path_menu_wallpaper, len);
    else if (xmb_color_theme == XMB_THEME_WALLPAPER)
-      fill_pathname_application_special(path, sizeof(path),
+      fill_pathname_application_special(s, len,
             APPLICATION_SPECIAL_DIRECTORY_ASSETS_XMB_BG);
-
-   return strdup(path);
 }
 
 static void xmb_update_dynamic_wallpaper(xmb_handle_t *xmb, bool reset)
 {
-   const char *path = xmb_path_dynamic_wallpaper(xmb);
+   char path[PATH_MAX_LENGTH];
+   xmb_path_dynamic_wallpaper(xmb, path, sizeof(path));
 
    if (!string_is_equal(path, xmb->bg_file_path) || reset)
    {
@@ -2795,14 +2790,14 @@ static void xmb_context_reset_horizontal_list(xmb_handle_t *xmb)
                sizeof(sysname));
          __len   = fill_pathname_join_special(texturepath, iconpath, sysname,
                sizeof(texturepath));
-         __len  += strlcpy(texturepath + __len, ".png", sizeof(texturepath) - __len);
+         strlcpy(texturepath + __len, ".png", sizeof(texturepath) - __len);
 
          /* If the playlist icon doesn't exist return default */
          if (!path_is_valid(texturepath))
          {
             __len  = fill_pathname_join_special(texturepath, iconpath, "default",
                   sizeof(texturepath));
-            __len += strlcpy(texturepath + __len, ".png", sizeof(texturepath) - __len);
+            strlcpy(texturepath + __len, ".png", sizeof(texturepath) - __len);
          }
 
          ti.width         = 0;
@@ -2924,13 +2919,6 @@ static void xmb_refresh_system_tabs_list(xmb_handle_t *xmb)
    if (settings->bools.menu_content_show_video)
       xmb->tabs[++xmb->system_tab_end] = XMB_SYSTEM_TAB_VIDEO;
 #endif
-
-#if 0 /* Move Netplay to Main Menu */
-#ifdef HAVE_NETWORKING
-   if (settings->bools.menu_content_show_netplay)
-      xmb->tabs[++xmb->system_tab_end] = XMB_SYSTEM_TAB_NETPLAY;
-#endif
-#endif /* 0 */
 
    if (      settings->uints.menu_content_show_add_entry == MENU_ADD_CONTENT_ENTRY_DISPLAY_PLAYLISTS_TAB
          && !settings->bools.kiosk_mode_enable)
@@ -3506,10 +3494,6 @@ static uintptr_t xmb_icon_get_id(xmb_handle_t *xmb,
       case MENU_ENUM_LABEL_UPDATE_CHEATS:
       case MENU_ENUM_LABEL_QUICK_MENU_SHOW_CHEATS:
          return xmb->textures.list[XMB_TEXTURE_CHEAT_OPTIONS];
-#if 0
-/* Thumbnailpack removal */
-      case MENU_ENUM_LABEL_THUMBNAILS_UPDATER_LIST:
-#endif
       case MENU_ENUM_LABEL_PL_THUMBNAILS_UPDATER_LIST:
       case MENU_ENUM_LABEL_DOWNLOAD_PL_ENTRY_THUMBNAILS:
       case MENU_ENUM_LABEL_QUICK_MENU_SHOW_DOWNLOAD_THUMBNAILS:
@@ -3660,6 +3644,8 @@ static uintptr_t xmb_icon_get_id(xmb_handle_t *xmb,
       case MENU_ENUM_LABEL_SETTINGS_SHOW_SAVING:
       case MENU_ENUM_LABEL_SAVE_CURRENT_CONFIG:
       case MENU_ENUM_LABEL_SAVE_NEW_CONFIG:
+      case MENU_ENUM_LABEL_SAVE_AS_CONFIG:
+      case MENU_ENUM_LABEL_SAVE_MAIN_CONFIG:
       case MENU_ENUM_LABEL_CONFIG_SAVE_ON_EXIT:
       case MENU_ENUM_LABEL_REMAP_SAVE_ON_EXIT:
       case MENU_ENUM_LABEL_VIDEO_SHADER_PRESET_SAVE:
@@ -4008,11 +3994,11 @@ static uintptr_t xmb_icon_get_id(xmb_handle_t *xmb,
       if (badge_texture)
          return badge_texture;
 
-      /* No state means its a header - show the info icon */
+      /* No state means it's a header, show info icon */
       if (!rcheevos_menu_get_state(index, buffer, sizeof(buffer)))
          return xmb->textures.list[XMB_TEXTURE_INFO];
-      /* Placeholder badge image was not found,
-         show generic menu icon */
+
+      /* Placeholder badge image was not found, show generic menu icon */
       return xmb->textures.list[XMB_TEXTURE_ACHIEVEMENTS];
    }
 #endif
@@ -4020,16 +4006,15 @@ static uintptr_t xmb_icon_get_id(xmb_handle_t *xmb,
    if (     type >= MENU_SETTINGS_INPUT_BEGIN
          && type <= MENU_SETTINGS_INPUT_DESC_KBD_END)
    {
+      /* This part is only utilized by Input User # Binds */
       unsigned input_id;
       if (type < MENU_SETTINGS_INPUT_DESC_BEGIN)
-         /* Input User # Binds only */
       {
          input_id = MENU_SETTINGS_INPUT_BEGIN;
          if (type == input_id)
             return xmb->textures.list[XMB_TEXTURE_INPUT_ADC];
 #ifdef HAVE_LIBNX
-         /* Account for the additional split JoyCon
-            option in Input # Binds */
+         /* Account for the additional split JoyCon option in Input Port # Binds */
          input_id++;
 #endif
          if (type >= input_id + 1 && type <= input_id + 3)
@@ -4042,7 +4027,7 @@ static uintptr_t xmb_icon_get_id(xmb_handle_t *xmb,
             return xmb->textures.list[XMB_TEXTURE_RELOAD];
          if (type == input_id + 7)
             return xmb->textures.list[XMB_TEXTURE_SAVING];
-         if ((type > (input_id + 31)) && (type < (input_id + 43)))
+         if (type >= input_id + 32 && type <= input_id + 42)
             return xmb->textures.list[XMB_TEXTURE_INPUT_LGUN];
          if (type == input_id + 43)
             return xmb->textures.list[XMB_TEXTURE_INPUT_TURBO];
@@ -4051,8 +4036,7 @@ static uintptr_t xmb_icon_get_id(xmb_handle_t *xmb,
       }
       else
       {
-         /* Quickmenu controls repeats the same icons
-            for all users */
+         /* Quickmenu controls repeats the same icons for all users */
          if (type < MENU_SETTINGS_INPUT_DESC_KBD_BEGIN)
             input_id = MENU_SETTINGS_INPUT_DESC_BEGIN;
          else
@@ -4065,9 +4049,7 @@ static uintptr_t xmb_icon_get_id(xmb_handle_t *xmb,
          {
             unsigned index = 0;
             int input_num  = type - input_id;
-            for ( index = 0;
-                  index < ARRAY_SIZE(input_config_bind_order);
-                  index++)
+            for (index = 0; index < ARRAY_SIZE(input_config_bind_order); index++)
             {
                if (input_num == (int)input_config_bind_order[index])
                {
@@ -4078,55 +4060,54 @@ static uintptr_t xmb_icon_get_id(xmb_handle_t *xmb,
          }
       }
 
-      /* This is utilized for both Input # Binds
-         and Quickmenu controls */
+      /* This is used for both Input Port Binds and Quickmenu controls */
       if (type == input_id)
          return xmb->textures.list[XMB_TEXTURE_INPUT_DPAD_U];
-      else if (type == (input_id + 1))
+      if (type == (input_id + 1))
          return xmb->textures.list[XMB_TEXTURE_INPUT_DPAD_D];
-      else if (type == (input_id + 2))
+      if (type == (input_id + 2))
          return xmb->textures.list[XMB_TEXTURE_INPUT_DPAD_L];
-      else if (type == (input_id + 3))
+      if (type == (input_id + 3))
          return xmb->textures.list[XMB_TEXTURE_INPUT_DPAD_R];
-      else if (type == (input_id + 4))
+      if (type == (input_id + 4))
          return xmb->textures.list[XMB_TEXTURE_INPUT_BTN_D];
-      else if (type == (input_id + 5))
+      if (type == (input_id + 5))
          return xmb->textures.list[XMB_TEXTURE_INPUT_BTN_R];
-      else if (type == (input_id + 6))
+      if (type == (input_id + 6))
          return xmb->textures.list[XMB_TEXTURE_INPUT_BTN_L];
-      else if (type == (input_id + 7))
+      if (type == (input_id + 7))
          return xmb->textures.list[XMB_TEXTURE_INPUT_BTN_U];
-      else if (type == (input_id + 8))
+      if (type == (input_id + 8))
          return xmb->textures.list[XMB_TEXTURE_INPUT_SELECT];
-      else if (type == (input_id + 9))
+      if (type == (input_id + 9))
          return xmb->textures.list[XMB_TEXTURE_INPUT_START];
-      else if (type == (input_id + 10))
+      if (type == (input_id + 10))
          return xmb->textures.list[XMB_TEXTURE_INPUT_LB];
-      else if (type == (input_id + 11))
+      if (type == (input_id + 11))
          return xmb->textures.list[XMB_TEXTURE_INPUT_RB];
-      else if (type == (input_id + 12))
+      if (type == (input_id + 12))
          return xmb->textures.list[XMB_TEXTURE_INPUT_LT];
-      else if (type == (input_id + 13))
+      if (type == (input_id + 13))
          return xmb->textures.list[XMB_TEXTURE_INPUT_RT];
-      else if (type == (input_id + 14))
+      if (type == (input_id + 14))
          return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_P];
-      else if (type == (input_id + 15))
+      if (type == (input_id + 15))
          return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_P];
-      else if (type == (input_id + 16))
+      if (type == (input_id + 16))
          return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_U];
-      else if (type == (input_id + 17))
+      if (type == (input_id + 17))
          return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_D];
-      else if (type == (input_id + 18))
+      if (type == (input_id + 18))
          return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_L];
-      else if (type == (input_id + 19))
+      if (type == (input_id + 19))
          return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_R];
-      else if (type == (input_id + 20))
+      if (type == (input_id + 20))
          return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_U];
-      else if (type == (input_id + 21))
+      if (type == (input_id + 21))
          return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_D];
-      else if (type == (input_id + 22))
+      if (type == (input_id + 22))
          return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_L];
-      else if (type == (input_id + 23))
+      if (type == (input_id + 23))
          return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_R];
    }
    if (     type >= MENU_SETTINGS_REMAPPING_PORT_BEGIN
@@ -5344,7 +5325,7 @@ static int xmb_draw_item(
 
          /* More active zoom */
          if (i == current)
-            gfx_icon_width = gfx_icon_height = (xmb->icon_size * 2.0f);
+            gfx_icon_height = (xmb->icon_size * 2.0f);
 
          /* More width room for non-squares */
          gfx_icon_width = (gfx_icon_height * 1.5f);
@@ -7763,6 +7744,25 @@ static void xmb_frame(void *data, video_frame_info_t *video_info)
 
    xmb->raster_block.carr.coords.vertices  = 0;
    xmb->raster_block2.carr.coords.vertices = 0;
+
+   /* Blank dummy core output */
+   if (!libretro_running)
+   {
+      gfx_display_set_alpha(xmb_coord_black, 1.0f);
+      gfx_display_draw_quad(
+            p_disp,
+            userdata,
+            video_width,
+            video_height,
+            0,
+            0,
+            video_width,
+            video_height,
+            video_width,
+            video_height,
+            xmb_coord_black,
+            NULL);
+   }
 
    gfx_display_set_alpha(xmb_coord_black, MIN((float)alpha_factor / 100, xmb->alpha));
    gfx_display_set_alpha(xmb_coord_white, xmb->alpha);

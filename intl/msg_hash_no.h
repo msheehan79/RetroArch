@@ -1582,20 +1582,8 @@ MSG_HASH(
    "Bytt mellom innebygde og ultrabrede superoppløsninger."
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_CRT_SWITCH_X_AXIS_CENTERING,
-   "X-Akse sentrering"
-   )
-MSG_HASH(
    MENU_ENUM_SUBLABEL_CRT_SWITCH_X_AXIS_CENTERING,
    "Bla gjennom disse alternativene hvis bildet ikke er sentrert riktig på skjermen."
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_CRT_SWITCH_PORCH_ADJUST,
-   "Juster \"porch\""
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_CRT_SWITCH_PORCH_ADJUST,
-   "Bla gjennom disse valgene for å justere \"porch\" innstillingene for å endre bildestørrelsen."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CRT_SWITCH_HIRES_MENU,
@@ -4343,8 +4331,20 @@ MSG_HASH(
 /* Ozone: Settings > User Interface > Appearance */
 
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_FONT,
+   "Skrifttype"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_FONT_SCALE,
+   "Skrift skalering"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LEFT_THUMBNAILS_OZONE,
    "Sekundært miniatyrbilde"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_HEADER_SEPARATOR_NONE,
+   "Ingen"
    )
 
 
@@ -4860,14 +4860,6 @@ MSG_HASH(
 MSG_HASH(
    MSG_ALL_CORES_SWITCHED_PFD,
    "Alle støttede kjerner byttet til Play Store versjoner"
-   )
-MSG_HASH(
-   MSG_NUM_CORES_UPDATED,
-   "kjerner oppdatert: "
-   )
-MSG_HASH(
-   MSG_NUM_CORES_LOCKED,
-   "hoppet over kjerner: "
    )
 MSG_HASH(
    MSG_CORE_UPDATE_DISABLED,
