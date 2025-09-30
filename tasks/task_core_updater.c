@@ -168,7 +168,7 @@ typedef struct play_feature_delivery_switch_cores_handle
 {
    char *path_dir_libretro;
    char *path_libretro_info;
-   char *error_msg;
+   char *err_msg;
    core_updater_list_t* core_list;
    retro_task_t *install_task;
    size_t list_size;
@@ -194,14 +194,14 @@ static uint32_t task_core_updater_get_core_crc(const char *core_path)
    {
       uint32_t crc = 0;
       /* Get CRC value */
-      bool success = intfstream_get_crc(core_file, &crc);
+      bool ret = intfstream_get_crc(core_file, &crc);
 
       /* Close core file */
       intfstream_close(core_file);
       free(core_file);
       core_file = NULL;
 
-      if (success)
+      if (ret)
          return crc;
    }
 
@@ -216,27 +216,25 @@ static void cb_http_task_core_updater_get_list(
       retro_task_t *task, void *task_data,
       void *user_data, const char *err)
 {
-   http_transfer_data_t *data              = (http_transfer_data_t*)task_data;
-   file_transfer_t *transf                 = (file_transfer_t*)user_data;
-   core_updater_list_handle_t *list_handle = NULL;
-   bool success                            = data && string_is_empty(err);
+   file_transfer_t *transf    = (file_transfer_t*)user_data;
+   http_transfer_data_t *data = (http_transfer_data_t*)task_data;
+   bool ret                   = data && string_is_empty(err);
 
-   if (!transf)
-      goto finish;
+   if (transf)
+   {
+      core_updater_list_handle_t *list_handle = NULL;
+      if ((list_handle = (core_updater_list_handle_t*)transf->user_data))
+      {
+         task_set_data(task, NULL); /* going to pass ownership to list_handle */
 
-   if (!(list_handle = (core_updater_list_handle_t*)transf->user_data))
-      goto finish;
+         list_handle->http_data          = data;
+         list_handle->http_task_complete = true;
+         list_handle->http_task_success  = ret;
+      }
+   }
 
-   task_set_data(task, NULL); /* going to pass ownership to list_handle */
-
-   list_handle->http_data          = data;
-   list_handle->http_task_complete = true;
-   list_handle->http_task_success  = success;
-
-
-finish:
    /* Log any error messages */
-   if (!success)
+   if (!ret)
       RARCH_ERR("[Core Updater] Download of core list \"%s\" failed: %s.\n",
             (transf ? transf->path: "unknown"),
             (err ? err : "unknown"));
@@ -981,7 +979,6 @@ static void task_core_updater_download_handler(retro_task_t *task)
    return;
 
 task_finished:
-
    if (task)
       task_set_flags(task, RETRO_TASK_FLG_FINISHED, true);
 
@@ -1037,9 +1034,9 @@ void *task_push_core_updater_download(
          core_list, filename, &list_entry))
       goto error;
 
-   if (string_is_empty(list_entry->remote_core_path) ||
-       string_is_empty(list_entry->local_core_path) ||
-       string_is_empty(list_entry->display_name))
+   if (   string_is_empty(list_entry->remote_core_path)
+       || string_is_empty(list_entry->local_core_path)
+       || string_is_empty(list_entry->display_name))
       goto error;
 
    /* Check whether core is locked
@@ -1789,7 +1786,6 @@ static void task_play_feature_delivery_core_install_handler(
    return;
 
 task_finished:
-
    if (task)
       task_set_flags(task, RETRO_TASK_FLG_FINISHED, true);
 
@@ -1912,8 +1908,8 @@ static void free_play_feature_delivery_switch_cores_handle(
    if (pfd_switch_cores_handle->path_libretro_info)
       free(pfd_switch_cores_handle->path_libretro_info);
 
-   if (pfd_switch_cores_handle->error_msg)
-      free(pfd_switch_cores_handle->error_msg);
+   if (pfd_switch_cores_handle->err_msg)
+      free(pfd_switch_cores_handle->err_msg);
 
    core_updater_list_free(pfd_switch_cores_handle->core_list);
 
@@ -1951,7 +1947,7 @@ static void task_play_feature_delivery_switch_cores_handler(
              * core list' error */
             struct string_list *available_cores =
                   play_feature_delivery_available_cores();
-            bool success                        = false;
+            bool ret                        = false;
 
             if (!available_cores)
             {
@@ -1961,7 +1957,7 @@ static void task_play_feature_delivery_switch_cores_handler(
             }
 
             /* Populate core updater list */
-            success = core_updater_list_parse_pfd_data(
+            ret = core_updater_list_parse_pfd_data(
                   pfd_switch_cores_handle->core_list,
                   pfd_switch_cores_handle->path_dir_libretro,
                   pfd_switch_cores_handle->path_libretro_info,
@@ -1970,7 +1966,7 @@ static void task_play_feature_delivery_switch_cores_handler(
             string_list_free(available_cores);
 
             /* Cache list size */
-            if (success)
+            if (ret)
                pfd_switch_cores_handle->list_size =
                      core_updater_list_size(pfd_switch_cores_handle->core_list);
 
@@ -2105,16 +2101,15 @@ static void task_play_feature_delivery_switch_cores_handler(
       case PLAY_FEATURE_DELIVERY_SWITCH_CORES_WAIT_INSTALL:
          {
             bool install_complete = false;
-            const char* error_msg = NULL;
+            const char* err_msg   = NULL;
 
             /* > If task is running, check 'is finished' status
              * > If task is NULL, then it is finished by
              *   definition */
             if (pfd_switch_cores_handle->install_task)
             {
-               uint8_t _flg     = task_get_flags(pfd_switch_cores_handle->install_task);
-
-               error_msg        = task_get_error(
+               uint8_t _flg   = task_get_flags(pfd_switch_cores_handle->install_task);
+               err_msg        = task_get_error(
                      pfd_switch_cores_handle->install_task);
                if ((_flg & RETRO_TASK_FLG_FINISHED) > 0)
                   install_complete = true;
@@ -2125,9 +2120,9 @@ static void task_play_feature_delivery_switch_cores_handler(
             /* Check for installation errors
              * > These should be considered 'serious', and
              *   will trigger the task to end early */
-            if (!string_is_empty(error_msg))
+            if (!string_is_empty(err_msg))
             {
-               pfd_switch_cores_handle->error_msg    = strdup(error_msg);
+               pfd_switch_cores_handle->err_msg      = strdup(err_msg);
                pfd_switch_cores_handle->install_task = NULL;
                pfd_switch_cores_handle->status       =
                      PLAY_FEATURE_DELIVERY_SWITCH_CORES_END;
@@ -2157,8 +2152,8 @@ static void task_play_feature_delivery_switch_cores_handler(
             if (pfd_switch_cores_handle->list_size > 0)
             {
                /* Check whether any installation errors occurred */
-               if (!string_is_empty(pfd_switch_cores_handle->error_msg))
-                  task_title = pfd_switch_cores_handle->error_msg;
+               if (!string_is_empty(pfd_switch_cores_handle->err_msg))
+                  task_title = pfd_switch_cores_handle->err_msg;
                else
                   task_title = msg_hash_to_str(MSG_ALL_CORES_SWITCHED_PFD);
             }
@@ -2215,7 +2210,7 @@ void task_push_play_feature_delivery_switch_installed_cores(
    /* Configure handle */
    pfd_switch_cores_handle->path_dir_libretro  = strdup(path_dir_libretro);
    pfd_switch_cores_handle->path_libretro_info = strdup(path_libretro_info);
-   pfd_switch_cores_handle->error_msg          = NULL;
+   pfd_switch_cores_handle->err_msg            = NULL;
    pfd_switch_cores_handle->core_list          = core_updater_list_init();
    pfd_switch_cores_handle->install_task       = NULL;
    pfd_switch_cores_handle->list_size          = 0;

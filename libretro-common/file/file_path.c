@@ -146,7 +146,7 @@ void path_linked_list_add_path(struct path_linked_list *in_path_llist,
       in_path_llist->path = strdup(path);
    else
    {
-      struct path_linked_list *node = (struct path_linked_list*) malloc(sizeof(*node));
+      struct path_linked_list *node = (struct path_linked_list*)malloc(sizeof(*node));
 
       if (node)
       {
@@ -805,7 +805,11 @@ char *path_resolve_realpath(char *s, size_t len, bool resolve_symlinks)
          tmp[t++] = '/';
 
       if (string_is_empty(s))
-         goto end;
+      {
+         tmp[t] = '\0';
+         strlcpy(s, tmp, len);
+         return s;
+      }
 
       p = s;
    }
@@ -851,10 +855,8 @@ char *path_resolve_realpath(char *s, size_t len, bool resolve_symlinks)
          while (p <= next)
             tmp[t++] = *p++;
       }
-   }while(next < buf_end);
+   } while(next < buf_end);
 
-
-end:
    tmp[t] = '\0';
    strlcpy(s, tmp, len);
    return s;
@@ -1140,7 +1142,7 @@ size_t fill_pathname_abbreviate_special(char *s,
 
          if (!PATH_CHAR_IS_SLASH(*in_path))
          {
-            strcpy_literal(s, PATH_DEFAULT_SLASH());
+            strcpy(s, PATH_DEFAULT_SLASH());
             s++;
             len--;
          }
@@ -1399,7 +1401,7 @@ size_t fill_pathname_application_path(char *s, size_t len)
             return strlcpy(s, info.name, len);
       }
 #elif defined(__QNX__)
-      char *buff = malloc(len);
+      char *buff  = (char*)malloc(len);
       size_t _len = 0;
       if (_cmdname(buff))
          _len = strlcpy(s, buff, len);

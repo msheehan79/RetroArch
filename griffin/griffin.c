@@ -226,6 +226,10 @@ ACHIEVEMENTS
 #include "../deps/rcheevos/src/rhash/aes.c"
 #include "../deps/rcheevos/src/rhash/cdreader.c"
 #include "../deps/rcheevos/src/rhash/hash.c"
+#include "../deps/rcheevos/src/rhash/hash_rom.c"
+#include "../deps/rcheevos/src/rhash/hash_disc.c"
+#include "../deps/rcheevos/src/rhash/hash_zip.c"
+#include "../deps/rcheevos/src/rhash/hash_encrypted.c"
 
 #endif
 
@@ -600,6 +604,10 @@ INPUT
 ============================================================ */
 
 #include "../input/input_driver.c"
+#ifdef HAVE_BSV_MOVIE
+#include "../input/bsv/bsvmovie.c"
+#include "../input/bsv/uint32s_index.c"
+#endif
 #include "../input/input_keymaps.c"
 #include "../tasks/task_autodetect.c"
 #include "../input/input_autodetect_builtin.c"
@@ -932,7 +940,7 @@ AUDIO
 #include "../audio/drivers/coreaudio.c"
 #endif
 
-#if defined(HAVE_WASAPI) || ((_WIN32_WINNT >= 0x0602) && !defined(__WINRT__))
+#if defined(HAVE_WASAPI) || ((_WIN32_WINNT >= 0x0600) && !defined(__WINRT__))
 #include "../audio/common/mmdevice_common.c"
 #endif
 
@@ -1633,9 +1641,9 @@ SSL
 #include "../deps/mbedtls/ssl_srv.c"
 #include "../deps/mbedtls/ssl_ticket.c"
 #include "../deps/mbedtls/ssl_tls.c"
+#endif
 
 #include "../libretro-common/net/net_socket_ssl_mbed.c"
-#endif
 #endif
 #endif
 

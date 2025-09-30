@@ -102,6 +102,10 @@ struct string_list *string_list_new(void)
    if (!list)
       return NULL;
 
+   list->cap                = 0;
+   list->size               = 0;
+   list->elems              = NULL;
+
    if (!(elems = (struct string_list_elem*)
       calloc(32, sizeof(*elems))))
    {
@@ -110,7 +114,6 @@ struct string_list *string_list_new(void)
    }
 
    list->elems              = elems;
-   list->size               = 0;
    list->cap                = 32;
 
    return list;
@@ -326,19 +329,19 @@ struct string_list *string_list_clone(const struct string_list *src)
 
    for (i = 0; i < src->size; i++)
    {
-      const char *_src       = src->elems[i].data;
-      size_t      len        = _src ? strlen(_src) : 0;
+      const char *_src    = src->elems[i].data;
+      size_t      len     = _src ? strlen(_src) : 0;
 
-      dest->elems[i].data    = NULL;
-      dest->elems[i].attr    = src->elems[i].attr;
+      dest->elems[i].data = NULL;
+      dest->elems[i].attr = src->elems[i].attr;
 
       if (len != 0)
       {
-         char *result        = (char*)malloc(len + 1);
-         if (result)
+         char *ret        = (char*)malloc(len + 1);
+         if (ret)
          {
-            strcpy(result, _src);
-            dest->elems[i].data = result;
+            strcpy(ret, _src);
+            dest->elems[i].data = ret;
          }
       }
    }

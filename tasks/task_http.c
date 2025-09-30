@@ -249,15 +249,13 @@ static void *task_push_http_transfer_generic(
       return NULL;
 
    method = net_http_connection_method(conn);
-   if (!string_is_equal(method, "GET"))
-   {
-      /* POST requests usually mutate the server, so assume multiple calls are
-       * intended, even if they're duplicated. Additionally, they may differ
-       * only by the POST data, and task_http_finder doesn't look at that, so
-       * unique requests could be misclassified as duplicates.
-       */
-   }
-   else
+
+   /* POST requests usually mutate the server, so assume multiple calls are
+    * intended, even if they're duplicated. Additionally, they may differ
+    * only by the POST data, and task_http_finder doesn't look at that, so
+    * unique requests could be misclassified as duplicates.
+    */
+   if (string_is_equal(method, "GET"))
    {
       task_finder_data_t find_data;
       find_data.func     = task_http_finder;
@@ -293,6 +291,7 @@ static void *task_push_http_transfer_generic(
    t->cleanup              = task_http_transfer_cleanup;
    t->user_data            = user_data;
    t->progress             = -1;
+   t->flags               |=  RETRO_TASK_FLG_ALTERNATIVE_LOOK;
    if (mute)
       t->flags            |=  RETRO_TASK_FLG_MUTE;
    else
@@ -452,7 +451,8 @@ void* task_push_http_transfer_file(const char* url, bool mute,
       s        = url;
 
    _len        = strlcpy(tmp, msg_hash_to_str(MSG_DOWNLOADING), sizeof(tmp));
-   tmp[  _len] = ' ';
+   tmp[  _len] = ':';
+   tmp[++_len] = ' ';
    tmp[++_len] = '\0';
 
    if (string_ends_with_size(s, ".index",

@@ -52,6 +52,10 @@
 
 #include "ui_cocoa.h"
 
+#ifdef HAVE_SWIFT
+#import "RetroArch-Swift.h"
+#endif
+
 #ifdef HAVE_MIST
 #include "steam/steam.h"
 #endif
@@ -445,13 +449,23 @@ static ui_application_t ui_application_cocoa = {
          {
             static NSUInteger old_flags           = 0;
             NSUInteger new_flags                  = event.modifierFlags;
-            bool down                             = (new_flags & old_flags) == old_flags;
+            NSUInteger changed_flags              = new_flags ^ old_flags;
             uint16_t keycode                      = event.keyCode;
+            bool down                             = false;
 
-            old_flags                             = new_flags;
+            /* Determine if the changed modifier is being pressed or released
+             * by checking if it's set in the new flags */
+            if (changed_flags != 0)
+            {
+               /* Find which specific modifier changed and its new state */
+               NSUInteger single_change = changed_flags & -changed_flags; /* Isolate rightmost bit */
+               down = (new_flags & single_change) != 0;
 
-            apple_input_keyboard_event(down, keycode,
-                  0, (uint32_t)new_flags, RETRO_DEVICE_KEYBOARD);
+               apple_input_keyboard_event(down, keycode,
+                     0, (uint32_t)new_flags, RETRO_DEVICE_KEYBOARD);
+            }
+
+            old_flags = new_flags;
          }
          break;
         case NSEventTypeMouseMoved:
@@ -644,6 +658,12 @@ static ui_application_t ui_application_cocoa = {
 
 #ifdef HAVE_COCOA_METAL
    [self setupMainWindow];
+#endif
+
+#if HAVE_SWIFT
+   if (@available(macOS 13.0, *)) {
+      [RetroArchAppShortcuts updateAppShortcuts];
+   }
 #endif
 
 #ifdef HAVE_QT
