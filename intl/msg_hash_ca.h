@@ -6,6 +6,20 @@
 #pragma warning(disable:4566)
 #endif
 
+/*
+##### NOTE FOR TRANSLATORS ####
+
+PLEASE do NOT modify any `msg_hash_*.h` files, besides `msg_hash_us.h`!
+
+Translations are handled using the localization platform Crowdin:
+https://crowdin.com/project/retroarch
+
+Translations from Crowdin are applied automatically and will overwrite
+any changes made to the other localization files.
+As a result, any submissions directly altering `msg_hash_*.h` files
+other than `msg_hash_us.h` will be rejected.
+*/
+
 /* Top-Level Menu */
 
 MSG_HASH(
@@ -216,6 +230,14 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_QUIT_RETROARCH,
    "Tanca el RetroArch. La configuració es desarà en sortir."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_NOW,
+   "Sincronitza ara"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CLOUD_SYNC_SYNC_NOW,
+   "Activa manual la sincronització al núvol."
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_QUIT_RETROARCH_NOSAVE,
@@ -537,11 +559,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_INFO_FIRMWARE_IN_CONTENT_DIRECTORY,
-   "- Nota: «Els fitxers del sistema són al directori del contingut» es troba activat."
+   "Nota: «Els fitxers del sistema són al directori del contingut» es troba activat."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_INFO_FIRMWARE_PATH,
-   "- S'està mirant en: %s"
+   "Cercant a: %s"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MISSING_REQUIRED,
@@ -1315,6 +1337,18 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CLOUD_SYNC_DESTRUCTIVE,
    "En desactivar-ho, els fitxers es mouen a una carpeta de còpia de seguretat abans de sobreescriure's o eliminar-se."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_MODE,
+   "Mode de sincronització"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CLOUD_SYNC_SYNC_MODE,
+   "Automàtic: Sincronitza RetroArch a l'inici, abans que es carreguin els nuclis. Manual: Només se sincronitza si es clica el botó 'Sincronitza ara'."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_MODE_AUTOMATIC,
+   "Automàtic"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_DRIVER,
@@ -2170,6 +2204,10 @@ MSG_HASH(
    "Centrat vertical"
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_CRT_SWITCH_VERTICAL_ADJUST,
+   "Rota entre aquestes opcions si la imatge no se centra correctament a la pantalla."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CRT_SWITCH_HIRES_MENU,
    "Utilitza el menú d'alta resolució"
    )
@@ -2475,7 +2513,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_SCALE_INTEGER_SCALING,
-   "Augmenta o disminueix l'escala del següent valor enter. 'Intel·ligent' disminueix l'escala si la imatge queda retallada."
+   "Arrodoneix al següent nombre enter. 'Smart' redeueix l'escala quan la imatge està massa retallada, i acaba en un escalat no enter si els marges de reescalat son massa grans."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_SCALE_INTEGER_SCALING_UNDERSCALE,
@@ -3343,7 +3381,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PAUSE_ON_DISCONNECT,
-   "Posa en pausa el contingut quan es desconnecti el comandament"
+   "Posa en pausa el contingut si es desconnecta el comandament"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_PAUSE_ON_DISCONNECT,
@@ -3734,6 +3772,14 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_HOTKEY_DEVICE_MERGE,
    "Bloqueja totes les dreceres de teclat dels teclats i controladors si qualsevol dels dispositius té un botó o tecla per activar les dreceres de teclat."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_HOTKEY_FOLLOWS_PLAYER1,
+   "Les dreceres de teclat segueixen al jugador 1"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_HOTKEY_FOLLOWS_PLAYER1,
+   "Les dreceres de teclat estan assignades al nucli del port 1, encara que les dreceres de teclat del nucli del port 1 siguin reassignades a un usuari diferent. Nota: Les dreceres de teclat no funcionaran si el nucli del port 1 es reassigna a qualsevol usuari > 1 (L'entrada del teclat és per l'usuari 1)."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_MENU_ENUM_TOGGLE_GAMEPAD_COMBO,
@@ -5043,7 +5089,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CORE_SUGGEST_ALWAYS,
-   "Suggereix tots els nuclis disponibles quan es carrega un nucli."
+   "Suggereix tots els nuclis disponibles quen es carrega un nucli manualment."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_USE_BUILTIN_PLAYER,
@@ -9097,7 +9143,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_RESTART_CONTENT,
-   "Reinicia el contingut des del principi."
+   "Reinicia el contingut des de l'inici."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOSE_CONTENT,
@@ -11097,7 +11143,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_THUMBNAILS_RGUI,
-   "Indica el tipus de miniatura que es mostrarà a la part superior dreta de les llistes de reproducció. El tipus escollit es pot canviar clicant al botó RetroPad Y."
+   "Tipus de miniatures que es mostraran a la part superior dreta de les llistes de reproducció. Pot ser canviat com el joystick dret."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LEFT_THUMBNAILS_RGUI,
@@ -11105,7 +11151,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_LEFT_THUMBNAILS_RGUI,
-   "Tipus de miniatura a mostrar a la part superior dreta de la llista de reproducció."
+   "Tipus de miniatures que es mostraran a la part inferior dreta de les llistes de reproducció. Pot ser canviat com el joystick dret."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MENU_RGUI_SWAP_THUMBNAILS,
@@ -11404,6 +11450,22 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_XMB_ALPHA_FACTOR,
    "Transparència del tema de colors"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_XMB_CURRENT_MENU_ICON,
+   "Icona de menú actual"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_XMB_CURRENT_MENU_ICON,
+   "La icona de menú actual es pot amagar, sota el menú horitzontal o sota el títol d'encapçalament."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_XMB_CURRENT_MENU_ICON_NONE,
+   "Cap"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_XMB_CURRENT_MENU_ICON_TITLE,
+   "Títol"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_XMB_FONT,
@@ -11784,12 +11846,32 @@ MSG_HASH(
    "Escala la mida horitzontal del farciment."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_HEADER_ICON,
+   "Icona de la capçalera"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_OZONE_HEADER_ICON,
+   "El logo de la capçalera pot ser amagat, dinàmicament en funció de la navegació o de manera fixa."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_OZONE_HEADER_SEPARATOR,
    "Separador de la capçalera"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_OZONE_HEADER_SEPARATOR,
    "Amplada alternativa per la capçalera i el peu de pàgina."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_HEADER_ICON_NONE,
+   "Cap"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_HEADER_ICON_DYNAMIC,
+   "Dinàmic"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_HEADER_ICON_FIXED,
+   "Corregit"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_OZONE_HEADER_SEPARATOR_NONE,
@@ -14196,11 +14278,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_LOADED_STATE_FROM_SLOT,
-   "Carrega el desat ràpid %d."
+   "Carrega l'estat de la ranura: %d."
    )
 MSG_HASH(
    MSG_LOADED_STATE_FROM_SLOT_AUTO,
-   "Carrega l'estat des de la ranura #-1 (Automàticament)."
+   "Carrega l'estat de la ranura: Automàtic."
    )
 MSG_HASH(
    MSG_LOADING,
@@ -14400,11 +14482,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_SAVED_STATE_TO_SLOT,
-   "Estat desat a la ranura #%d."
+   "Desa l'estat a la ranura: %d."
    )
 MSG_HASH(
    MSG_SAVED_STATE_TO_SLOT_AUTO,
-   "Desat l'estat a la ranura #-1 (Automàtic)."
+   "Estat desat a la ranura: Automàtic."
    )
 MSG_HASH(
    MSG_SAVED_SUCCESSFULLY_TO,
@@ -14425,6 +14507,10 @@ MSG_HASH(
 MSG_HASH(
    MSG_SCANNING_OF_DIRECTORY_FINISHED,
    "S'ha acabat l'escaneig del directori."
+   )
+MSG_HASH(
+   MSG_SCANNING_NO_DATABASE,
+   "Error en l'escaneig, no s'ha trobat una base de dades."
    )
 MSG_HASH(
    MSG_SENDING_COMMAND,
@@ -15005,6 +15091,10 @@ MSG_HASH(
 MSG_HASH(
    MSG_CHEEVOS_CHANGE_MEDIA_FAILED,
    "Error en canviar els medis a RetroAchievements: %s"
+   )
+MSG_HASH(
+   MSG_CHEEVOS_LOGIN_TOKEN_EXPIRED,
+   "L'inici de sessió a RetroAchievements ha expirat. Reintrodueix, si us plau, la teva contrasenya i recarrega el joc."
    )
 MSG_HASH(
    MSG_RESAMPLER_QUALITY_LOWEST,
@@ -15753,7 +15843,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TOUCH_VMOUSE_TOUCHPAD,
-   "Mode 'Touchpad' pel ratolí virtual"
+   "Mode «Touchpad» del ratolí virtual"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_TOUCH_VMOUSE_TOUCHPAD,
@@ -15761,7 +15851,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TOUCH_VMOUSE_TRACKBALL,
-   "Mode 'Trackball' del ratolí virtual"
+   "Mode «Trackball» del ratolí virtual"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_TOUCH_VMOUSE_TRACKBALL,
@@ -15769,7 +15859,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TOUCH_VMOUSE_GESTURE,
-   "Empra els gestos pel ratolí virtual"
+   "Gestos del ratolí virtual"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_TOUCH_VMOUSE_GESTURE,

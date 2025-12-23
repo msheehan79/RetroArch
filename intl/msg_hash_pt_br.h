@@ -6,6 +6,20 @@
 #pragma warning(disable:4566)
 #endif
 
+/*
+##### NOTE FOR TRANSLATORS ####
+
+PLEASE do NOT modify any `msg_hash_*.h` files, besides `msg_hash_us.h`!
+
+Translations are handled using the localization platform Crowdin:
+https://crowdin.com/project/retroarch
+
+Translations from Crowdin are applied automatically and will overwrite
+any changes made to the other localization files.
+As a result, any submissions directly altering `msg_hash_*.h` files
+other than `msg_hash_us.h` will be rejected.
+*/
+
 /* Top-Level Menu */
 
 MSG_HASH(
@@ -69,11 +83,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_LIST_UNLOAD,
-   "Descarregar Núcleo"
+   "Fechar núcleo"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CORE_LIST_UNLOAD,
-   "Liberar o núcleo carregado."
+   "Fecha o núcleo carregado."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_CORE_LIST,
@@ -110,7 +124,7 @@ MSG_HASH( /* FIXME Is a specific image format used? Is it determined automatical
 #ifdef HAVE_LAKKA
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_EJECT_DISC,
-   "Ejetar Disco"
+   "Ejetar disco"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_EJECT_DISC,
@@ -118,12 +132,8 @@ MSG_HASH(
    )
 #endif
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_PLAYLISTS_TAB,
-   "Listas de reprodução"
-   )
-MSG_HASH(
    MENU_ENUM_SUBLABEL_PLAYLISTS_TAB,
-   "O conteúdo escaneado que coincida com o banco de dados irá aparecer aqui."
+   "Playlists dos conteúdos analisados compatíveis com o banco de dados."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_ADD_CONTENT_LIST,
@@ -131,7 +141,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_ADD_CONTENT_LIST,
-   "Crie e atualize as listas de reprodução analisando o seu conteúdo."
+   "Cria e atualiza as playlists ao analisar conteúdos."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SHOW_WIMP,
@@ -143,11 +153,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MENU_DISABLE_KIOSK_MODE,
-   "Desativar Modo Quiosque"
+   "Desativar modo quiosque"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_MENU_DISABLE_KIOSK_MODE,
-   "Mostra todas as configurações relacionadas."
+   "Desativa o modo quiosque."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_ONLINE_UPDATER,
@@ -159,7 +169,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_NETPLAY,
-   "Entrar ou criar uma sessão da Netplay."
+   "Entra ou hospeda uma sessão da Netplay."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SETTINGS,
@@ -210,6 +220,14 @@ MSG_HASH(
    "Fecha o RetroArch.\n\"Salvar configuração ao sair\" está ativado."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_NOW,
+   "Sincronizar Agora"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CLOUD_SYNC_SYNC_NOW,
+   "Acionar manualmente a sincronização com a nuvem."
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_QUIT_RETROARCH_NOSAVE,
    "Fecha o RetroArch.\n\"Salvar configuração ao sair\" está desativado."
    )
@@ -242,7 +260,7 @@ MSG_HASH( /* FIXME Maybe add a description? */
    )
 MSG_HASH( /* FIXME Maybe add a description? */
    MENU_ENUM_LABEL_VALUE_START_NET_RETROPAD,
-   "Iniciar RetroPad remoto"
+   "Iniciar Remote RetroPad"
    )
 
 /* Main Menu > Load Content */
@@ -461,7 +479,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_INFO_CORE_LABEL,
-   "Rótulo do núcleo"
+   "Etiqueta do núcleo"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_INFO_CORE_VERSION,
@@ -469,7 +487,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_INFO_SYSTEM_NAME,
-   "Nome do Sistema"
+   "Nome do sistema"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_INFO_SYSTEM_MANUFACTURER,
@@ -497,11 +515,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_INFO_REQUIRED_HW_API,
-   "API Gráficas Necessárias"
+   "API gráficas"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_INFO_CORE_PATH,
-   "Caminho Completo"
+   "Endereço"
 )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_INFO_SAVESTATE_SUPPORT_LEVEL,
@@ -525,11 +543,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_INFO_FIRMWARE_IN_CONTENT_DIRECTORY,
-   "- Nota: 'Arquivos de sistema estão no Diretório de Conteúdo' está ativado no momento."
+   "Nota: 'Arquivos de sistema estão no Diretório de Conteúdo' está habilitado."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_INFO_FIRMWARE_PATH,
-   "- Pesquisando em: \"%s\""
+   "Pesquisando em: %s"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MISSING_REQUIRED,
@@ -549,7 +567,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_LOCK,
-   "Bloquear Núcleo Instalado"
+   "Trancar núcleo"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CORE_LOCK,
@@ -565,19 +583,19 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_DELETE,
-   "Excluir Núcleo"
+   "Excluir"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CORE_DELETE,
-   "Remove este núcleo do disco."
+   "Exclui o núcleo do disco."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_CREATE_BACKUP,
-   "Cópia de Segurança do Núcleo"
+   "Criar cópia de segurança"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CORE_CREATE_BACKUP,
-   "Cria uma cópia de segurança do núcleo instalado atualmente."
+   "Cria uma cópia de segurança do núcleo atual."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_RESTORE_BACKUP_LIST,
@@ -585,15 +603,15 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CORE_RESTORE_BACKUP_LIST,
-   "Instale uma versão anterior do núcleo a partir de uma lista de cópias de segurança arquivadas."
+   "Instala uma versão anterior do núcleo a partir de uma lista de cópias de segurança."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_DELETE_BACKUP_LIST,
-   "Excluir Cópia de Segurança"
+   "Excluir cópia de segurança"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CORE_DELETE_BACKUP_LIST,
-   "Remove um arquivo da lista de cópias de segurança arquivadas."
+   "Exclui uma versão da lista de cópias de segurança."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_BACKUP_MODE_AUTO,
@@ -636,7 +654,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_JIT_AVAILABLE,
-   "JIT Disponível"
+   "JIT disponível"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_BUNDLE_IDENTIFIER,
@@ -748,7 +766,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SYSTEM_INFO_VULKAN_SUPPORT,
-   "Suporte ao Vulkan"
+   "Suporte à Vulkan"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SYSTEM_INFO_METAL_SUPPORT,
@@ -970,7 +988,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_RDB_ENTRY_SCORE,
-   "Pontuação"
+   "Nota"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_RDB_ENTRY_MEDIA,
@@ -1202,7 +1220,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_SETTINGS,
-   "Altera as configurações de saída de vídeo."
+   "Altera as configurações da saída de vídeo."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_AUDIO_SETTINGS,
@@ -1210,7 +1228,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_AUDIO_SETTINGS,
-   "Altera as configurações de entrada/saída de áudio."
+   "Altera as configurações da entrada/saída de áudio."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_SETTINGS,
@@ -1234,7 +1252,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CORE_SETTINGS,
-   "Altera as configurações de núcleo."
+   "Altera as configurações dos núcleos."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONFIGURATION_SETTINGS,
@@ -1309,6 +1327,18 @@ MSG_HASH(
    "Quando desativado, os arquivos são movidos para uma pasta de backup antes de serem substituídos ou excluídos."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_MODE,
+   "Modo de Sincronização"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CLOUD_SYNC_SYNC_MODE,
+   "Automático: Sincroniza na inicialização do RetroArch e quando os núcleos são descarregados. Manual: Só sincroniza quando o botão 'Sincronizar Agora' for acionado manualmente."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_MODE_AUTOMATIC,
+   "Automático"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_DRIVER,
    "Sincronização da nuvem Backend"
    )
@@ -1326,7 +1356,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_USERNAME,
-   "Usuário"
+   "Nome de usuário"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CLOUD_SYNC_USERNAME,
@@ -1509,12 +1539,8 @@ MSG_HASH(
    "Define as configurações do servidor e da rede."
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_PLAYLIST_SETTINGS,
-   "Listas de reprodução"
-   )
-MSG_HASH(
    MENU_ENUM_SUBLABEL_PLAYLIST_SETTINGS,
-   "Altera as configurações de lista de reprodução."
+   "Altera as configurações das playlists."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_USER_SETTINGS,
@@ -1522,7 +1548,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_USER_SETTINGS,
-   "Shaders (Manter pressionado)"
+   "Altera as configurações de privacidade, conta e nome de usuário."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DIRECTORY_SETTINGS,
@@ -1908,7 +1934,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_OUTPUT_SETTINGS,
-   "Altera as configurações de saída de vídeo."
+   "Altera as configurações da saída de vídeo."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_FULLSCREEN_MODE_SETTINGS,
@@ -2152,6 +2178,10 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CRT_SWITCH_VERTICAL_ADJUST,
    "Centralização Vertical"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CRT_SWITCH_VERTICAL_ADJUST,
+   "Alterne entre estas opções se a imagem não estiver centralizada corretamente na tela."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CRT_SWITCH_HIRES_MENU,
@@ -2459,7 +2489,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_SCALE_INTEGER_SCALING,
-   "Arredonde para baixo ou para cima para o próximo inteiro. 'Inteligente' reduzirá a escala quando a imagem é cortada demais."
+   "Arredonda para o número inteiro mais próximo (para cima ou para baixo). A opção 'Smart' reduz a escala quando a imagem sofre um corte excessivo e, por fim, recorre à escala não inteira se as margens da escala reduzida forem muito grandes."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_SCALE_INTEGER_SCALING_UNDERSCALE,
@@ -2756,7 +2786,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_AUDIO_OUTPUT_SETTINGS,
-   "Altera as configurações de saída de áudio."
+   "Altera as configurações da saída de áudio."
    )
 #ifdef HAVE_MICROPHONE
 MSG_HASH(
@@ -2765,7 +2795,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_MICROPHONE_SETTINGS,
-   "Altera as configurações de entrada de áudio."
+   "Altera as configurações da entrada de áudio."
    )
 #endif
 MSG_HASH(
@@ -2850,23 +2880,23 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_AUDIO_VOLUME,
-   "Nível de volume de áudio (dB)"
+   "Volume (dB)"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_AUDIO_VOLUME,
-   "Volume do áudio (em dB). 0dB é o volume normal, e nenhum ganho é aplicado."
+   "Volume do áudio (em dB). O volume padrão é 0 dB."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_AUDIO_VOLUME,
-   "Volume do áudio, expresso em dB. 0 dB é o volume normal, sem ganho aplicado. O ganho pode ser controlado em tempo de execução com Aumentar Volume / Diminuir Volume."
+   "Volume do conteúdo. O volume pode ser alterado usando suas teclas de atalho \"Aumentar volume\" e \"Diminuir volume\"."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_AUDIO_MIXER_VOLUME,
-   "Nível de volume do mixer de áudio (dB)"
+   "Volume do mixer (dB)"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_AUDIO_MIXER_VOLUME,
-   "Volume global do mixer de áudio (em dB). 0dB é o volume normal, e nenhum ganho será aplicado."
+   "Volume do mixer de áudio (em dB). O volume padrão é 0 dB."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_AUDIO_DSP_PLUGIN,
@@ -3318,10 +3348,6 @@ MSG_HASH(
    "Detectar"
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_PAUSE_ON_DISCONNECT,
-   "Pausar ao desconectar controle"
-   )
-MSG_HASH(
    MENU_ENUM_SUBLABEL_PAUSE_ON_DISCONNECT,
    "Pausa o conteúdo quando algum controle é desconectado. Retorna ao apertar \"Start\"."
    )
@@ -3625,6 +3651,14 @@ MSG_HASH(
    "Pular o menu 'Executar' ao iniciar entradas da playlist. Pressione o Direcional enquanto segura OK para acessar o menu 'Executar'."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_MENU_ALLOW_TABS_BACK,
+   "Permitir voltar a partir das tabs"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_MENU_ALLOW_TABS_BACK,
+   "Retornar ao Menu Principal a partir das tabs/barra lateral ao pressionar Voltar"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MENU_SCROLL_FAST,
    "Aceleração de rolagem de menus"
    )
@@ -3702,6 +3736,14 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_HOTKEY_DEVICE_MERGE,
    "Bloqueia todas as hotkeys de ambos os tipos de dispositivos, teclado e controle, se qualquer um dos tipos tiver 'Ativar Hotkey' configurado."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_HOTKEY_FOLLOWS_PLAYER1,
+   "Atalhos Seguem o Jogador 1"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_HOTKEY_FOLLOWS_PLAYER1,
+   "Os atalhos ficam vinculados à porta 1 do núcleo, mesmo que ela seja remapeada para um usuário diferente. Observação: os atalhos de teclado não funcionarão se a porta 1 for remapeada para qualquer usuário acima de 1 (pois a entrada do teclado é do usuário 1)."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_MENU_ENUM_TOGGLE_GAMEPAD_COMBO,
@@ -5011,7 +5053,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CORE_SUGGEST_ALWAYS,
-   "Sugerir núcleos disponíveis mesmo quando um núcleo já estiver carregado."
+   "Sugerir núcleos disponíveis mesmo quando um núcleo estiver carregado manualmente."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_USE_BUILTIN_PLAYER,
@@ -6150,11 +6192,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MENU_KIOSK_MODE_PASSWORD,
-   "Definir senha para desabilitar modo quiosque"
+   "Senha para desativar modo quiosque"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_MENU_KIOSK_MODE_PASSWORD,
-   "Fornece uma senha ao habilitar o modo quiosque tornando possível desabilitar mais tarde a partir do menu, indo para o menu principal, selecionando \"Desabilitar o modo quiosque\" e inserindo a senha."
+   "Define a senha para desativar o modo quiosque. A opção \"Desativar modo quiosque\" aparece na aba \"Informações\" no \"Menu principal\"."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MOUSE_ENABLE,
@@ -6481,7 +6523,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_PLAYLISTS,
-   "Mostrar \"Listas de reprodução\""
+   "Mostrar \"Playlists\""
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CONTENT_SHOW_PLAYLISTS,
@@ -6963,7 +7005,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_PLAYLISTS,
-   "Mostrar \"Listas de reprodução\""
+   "Mostrar \"Playlists\""
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_SETTINGS_SHOW_PLAYLISTS,
@@ -7773,7 +7815,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_PLAYLIST_ENTRY_RENAME,
-   "Permite que os itens da lista de reprodução sejam renomeados."
+   "Permite que os itens da playlist sejam renomeados."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PLAYLIST_ENTRY_REMOVE,
@@ -7845,7 +7887,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PLAYLIST_SUBLABEL_PLAY_COUNT,
-   "Vezes Jogadas:"
+   "Contagem de reprodução:"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_TIME_UNIT_SECONDS_SINGLE,
@@ -7957,7 +7999,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PLAYLIST_MANAGER_LIST,
-   "Gerenciar listas de reprodução"
+   "Gerenciar playlists"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_PLAYLIST_MANAGER_LIST,
@@ -8012,11 +8054,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PLAYLIST_MANAGER_LABEL_DISPLAY_MODE,
-   "Modo de exibição do rótulo"
+   "Modo de exibição das etiquetas"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_PLAYLIST_MANAGER_LABEL_DISPLAY_MODE,
-   "Altere como os rótulos de conteúdo são exibidos nesta lista de reprodução."
+   "Altera a exibição das etiquetas de conteúdo nesta playlist."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PLAYLIST_MANAGER_SORT_MODE,
@@ -8036,7 +8078,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PLAYLIST_MANAGER_REFRESH_PLAYLIST,
-   "Atualizar lista de reprodução"
+   "Atualizar playlist"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_PLAYLIST_MANAGER_REFRESH_PLAYLIST,
@@ -8048,7 +8090,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_DELETE_PLAYLIST,
-   "Remover lista de reprodução do sistema de arquivos."
+   "Exclui a playlist do sistema."
    )
 
 /* Settings > User */
@@ -8071,11 +8113,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_NETPLAY_NICKNAME,
-   "Usuário"
+   "Nome de usuário"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_NETPLAY_NICKNAME,
-   "Insira seu nome de usuário aqui. Isto será utilizado para sessões da Netplay, entre outras coisas."
+   "Define seu nome de usuário nas salas de Netplay e em outros lugares."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_USER_LANGUAGE,
@@ -8140,7 +8182,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CHEEVOS_USERNAME,
-   "Insira seu nome de usuário da conta RetroAchievements."
+   "Nome de usuário da sua conta do RetroAchievements."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_ACCOUNTS_CHEEVOS_PASSWORD,
@@ -8148,7 +8190,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CHEEVOS_PASSWORD,
-   "Digite a senha da sua conta do RetroAchievements. Com o tamanho máximo de 255 caracteres."
+   "Senha da sua conta do RetroAchievements. Tamanho máximo: 255 caracteres."
    )
 
 /* Settings > User > Accounts > YouTube */
@@ -8345,10 +8387,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_REMAPPING_DIRECTORY,
    "Os remapeamentos de entrada são armazenados neste diretório."
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_PLAYLIST_DIRECTORY,
-   "Lista de reprodução"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_PLAYLIST_DIRECTORY,
@@ -8617,7 +8655,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_LIST,
-   "Análise manual"
+   "Analisar manualmente"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_MANUAL_CONTENT_SCAN_LIST,
@@ -8643,11 +8681,11 @@ MSG_HASH(
 
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_DIR,
-   "Diretório de conteúdo"
+   "Diretório"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_MANUAL_CONTENT_SCAN_DIR,
-   "Seleciona um diretório para analisar."
+   "Define o diretório para analisar."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_SYSTEM_NAME,
@@ -8683,11 +8721,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_SEARCH_RECURSIVELY,
-   "Análise recursiva"
+   "Analisar subdiretórios"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_MANUAL_CONTENT_SCAN_SEARCH_RECURSIVELY,
-   "Quando habilitado, todos os subdiretórios do \"Diretório de conteúdo\" especificado serão incluídos na análise."
+   "Analisa todos os subdiretórios do \"Diretório\"."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_SEARCH_ARCHIVES,
@@ -8749,7 +8787,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_EXPLORE_CATEGORY_PLAYER_COUNT,
-   "Número de Jogadores"
+   "Número de jogadores"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_EXPLORE_CATEGORY_REGION,
@@ -8948,7 +8986,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_DELETE_ENTRY,
-   "Remove da lista de reprodução."
+   "Remove da playlist."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_ADD_TO_FAVORITES_PLAYLIST,
@@ -8960,15 +8998,15 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_ADD_TO_PLAYLIST,
-   "Adicionar em uma lista"
+   "Adicionar a uma playlist"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_ADD_TO_PLAYLIST,
-   "Adiciona o conteúdo à lista de reprodução."
+   "Adiciona o conteúdo a uma playlist."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CREATE_NEW_PLAYLIST,
-   "Criar nova lista"
+   "Criar nova playlist"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CREATE_NEW_PLAYLIST,
@@ -9022,7 +9060,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_INFO_PATH,
-   "Caminho do arquivo"
+   "Endereço"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_INFO_ENTRY_IDX,
@@ -9061,7 +9099,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_RESTART_CONTENT,
-   "Reinicia o conteúdo."
+   "Reinicia o conteúdo do início. O botão Start do RetroPad aciona um hard reset."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOSE_CONTENT,
@@ -9069,7 +9107,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CLOSE_CONTENT,
-   "Fecha o conteúdo atual. Alterações não salvas serão perdidas."
+   "Fecha o conteúdo atual. As alterações não salvas serão perdidas."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_TAKE_SCREENSHOT,
@@ -9319,11 +9357,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_OPTIONS_RESET,
-   "Redefinir Opções do Núcleo"
+   "Redefinir"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CORE_OPTIONS_RESET,
-   "Define todas as opções do núcleo atual para os valores padrão."
+   "Restaura todas as configurações do núcleo aos valores padrão."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_OPTIONS_FLUSH,
@@ -10267,7 +10305,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_NO_CORE_BACKUPS_AVAILABLE,
-   "Nenhuma cópia de segurança do núcleo disponível"
+   "Não há cópias de segurança disponíveis"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_NO_FAVORITES_AVAILABLE,
@@ -10442,7 +10480,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PLAYLIST_ENTRY_REMOVE_ENABLE_ALL,
-   "Todas as listas de reprodução"
+   "Todas as playlists"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PLAYLIST_ENTRY_REMOVE_ENABLE_NONE,
@@ -10654,31 +10692,31 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PLAYLIST_MANAGER_LABEL_DISPLAY_MODE_DEFAULT,
-   "Mostrar rótulos completos"
+   "Mostrar tudo"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PLAYLIST_MANAGER_LABEL_DISPLAY_MODE_REMOVE_PARENS,
-   "Remover ()"
+   "Ocultar ()"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PLAYLIST_MANAGER_LABEL_DISPLAY_MODE_REMOVE_BRACKETS,
-   "Remover []"
+   "Ocultar []"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PLAYLIST_MANAGER_LABEL_DISPLAY_MODE_REMOVE_PARENS_AND_BRACKETS,
-   "Remover () e []"
+   "Ocultar () e []"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PLAYLIST_MANAGER_LABEL_DISPLAY_MODE_KEEP_REGION,
-   "Manter região"
+   "Mostrar região"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PLAYLIST_MANAGER_LABEL_DISPLAY_MODE_KEEP_DISC_INDEX,
-   "Manter o índice do disco"
+   "Mostrar índice do disco"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PLAYLIST_MANAGER_LABEL_DISPLAY_MODE_KEEP_REGION_AND_DISC_INDEX,
-   "Manter a região e o índice do disco"
+   "Mostrar região e índice do disco"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PLAYLIST_MANAGER_THUMBNAIL_MODE_DEFAULT,
@@ -10794,7 +10832,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_SYSTEM_NAME_USE_CONTENT_DIR,
-   "<Diretório de conteúdo>"
+   "<Diretório>"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_SYSTEM_NAME_USE_CUSTOM,
@@ -11053,7 +11091,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_THUMBNAILS_RGUI,
-   "Tipo de miniatura exibida no canto superior direito das listas de reprodução. Esse tipo de miniatura pode ser alterado pressionando RetroPad Y."
+   "Tipo de miniatura para exibir no canto superior direito das listas de reprodução. Pode ser alternado com o Analógico Direito para Cima/Esquerda."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LEFT_THUMBNAILS_RGUI,
@@ -11061,7 +11099,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_LEFT_THUMBNAILS_RGUI,
-   "Tipo de miniatura a ser exibido no canto inferior direito das listas de reprodução."
+   "Tipo de miniatura para exibir no canto inferior direito das listas de reprodução. Pode ser alternado com o Analógico Direito para Baixo/Direita."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MENU_RGUI_SWAP_THUMBNAILS,
@@ -11235,10 +11273,6 @@ MSG_HASH(
    "Algodão-doce"
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_RGUI_MENU_COLOR_THEME_FLATUI,
-   "Minimalista"
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_RGUI_MENU_COLOR_THEME_GRUVBOX_DARK,
    "Gruvbox escuro"
    )
@@ -11378,6 +11412,22 @@ MSG_HASH(
    "Fator Alfa do Tema de Cor"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_XMB_CURRENT_MENU_ICON,
+   "Ícone do Menu Atual"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_XMB_CURRENT_MENU_ICON,
+   "O ícone do menu atual pode ser ocultado, posicionado abaixo do menu horizontal ou no título do cabeçalho."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_XMB_CURRENT_MENU_ICON_NONE,
+   "Nenhum"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_XMB_CURRENT_MENU_ICON_TITLE,
+   "Título"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_XMB_FONT,
    "Fonte"
    )
@@ -11427,7 +11477,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_XMB_RIBBON_ENABLE,
-   "Pipeline de Shader"
+   "Sombreador do menu"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_XMB_RIBBON_ENABLE,
@@ -11748,12 +11798,32 @@ MSG_HASH(
    "Ajustar o tamanho do preenchimento horizontal."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_HEADER_ICON,
+   "Ícone do Cabeçalho"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_OZONE_HEADER_ICON,
+   "O logo do cabeçalho pode ser oculto, dinâmico dependendo da navegação ou fixo no invasor clássico."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_OZONE_HEADER_SEPARATOR,
    "Separador de Cabeçalho"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_OZONE_HEADER_SEPARATOR,
    "Largura alternativa para os separadores de cabeçalho e rodapé."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_HEADER_ICON_NONE,
+   "Nenhum"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_HEADER_ICON_DYNAMIC,
+   "Dinâmico"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_HEADER_ICON_FIXED,
+   "Fixo"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_OZONE_HEADER_SEPARATOR_NONE,
@@ -12199,10 +12269,6 @@ MSG_HASH(
    "Versão"
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_QT_TAB_PLAYLISTS,
-   "Listas de reprodução"
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QT_TAB_FILE_BROWSER,
    "Navegador de arquivos"
    )
@@ -12236,7 +12302,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QT_ALL_PLAYLISTS,
-   "Todas as listas de reprodução"
+   "Todas as playlists"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QT_CORE,
@@ -12296,7 +12362,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QT_HIDDEN_PLAYLISTS,
-   "Ocultar listas de reprodução"
+   "Ocultar playlists"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QT_HIDE,
@@ -13592,7 +13658,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_ADDED_TO_FAVORITES,
-   "Adicionado aos favoritos"
+   "Adicionado"
    )
 MSG_HASH(
    MSG_ADD_TO_FAVORITES_FAILED,
@@ -13907,6 +13973,10 @@ MSG_HASH(
    "Falha ao carregar o conteúdo."
    )
 MSG_HASH(
+   MSG_FAILED_TO_LOAD_FROM_PLAYLIST,
+   "Falhou em carregar a lista de reprodução."
+   )
+MSG_HASH(
    MSG_FAILED_TO_LOAD_MOVIE_FILE,
    "Falha ao carregar o arquivo da gravação."
    )
@@ -14188,11 +14258,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_LOADED_STATE_FROM_SLOT,
-   "Carregamento do compartimento %d."
+   "Carregado do compartimento: %d."
    )
 MSG_HASH(
    MSG_LOADED_STATE_FROM_SLOT_AUTO,
-   "Ponto de save carregado do slot #-1 (Automático)."
+   "Estado carregado do compartimento: Auto."
    )
 MSG_HASH(
    MSG_LOADING,
@@ -14392,11 +14462,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_SAVED_STATE_TO_SLOT,
-   "Salvo no compartimento %d."
+   "Salvo no compartimento: %d."
    )
 MSG_HASH(
    MSG_SAVED_STATE_TO_SLOT_AUTO,
-   "Ponto de save no slot #-1 (Automático)."
+   "Estado salvo no compartimento: Auto."
    )
 MSG_HASH(
    MSG_SAVED_SUCCESSFULLY_TO,
@@ -14419,12 +14489,20 @@ MSG_HASH(
    "Análise concluída"
    )
 MSG_HASH(
+   MSG_SCANNING_NO_DATABASE,
+   "Escaneamento sem sucesso: nenhum banco de dados encontrado."
+   )
+MSG_HASH(
    MSG_SENDING_COMMAND,
    "Enviando comando"
    )
 MSG_HASH(
    MSG_SEVERAL_PATCHES_ARE_EXPLICITLY_DEFINED,
    "Várias modificações de conteúdo estão explicitamente definidas, ignorando todas..."
+   )
+MSG_HASH(
+   MSG_SHADER,
+   "Sombreador"
    )
 MSG_HASH(
    MSG_SHADER_PRESET_SAVED_SUCCESSFULLY,
@@ -15001,6 +15079,10 @@ MSG_HASH(
 MSG_HASH(
    MSG_CHEEVOS_CHANGE_MEDIA_FAILED,
    "RetroAchievements: falha ao alterar a mídia %s"
+   )
+MSG_HASH(
+   MSG_CHEEVOS_LOGIN_TOKEN_EXPIRED,
+   "O login do RetroAchievements expirou. Por favor, digite sua senha novamente e reinicie o jogo."
    )
 MSG_HASH(
    MSG_RESAMPLER_QUALITY_LOWEST,

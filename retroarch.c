@@ -1771,6 +1771,10 @@ void drivers_init(
 #ifdef HAVE_LAKKA
    cpu_scaling_driver_init();
 #endif
+
+#ifdef HAVE_MENU
+   srand(time(NULL));
+#endif
 }
 
 void driver_uninit(int flags, enum driver_lifetime_flags lifetime_flags)
@@ -1926,6 +1930,7 @@ static void retroarch_deinit_drivers(struct retro_callbacks *cbs)
                          | INP_FLAG_NONBLOCKING);
 
       memset(&input_st->turbo_btns, 0, sizeof(turbo_buttons_t));
+      memset(&input_st->hold_btns, 0, sizeof(hold_buttons_t));
       memset(&input_st->analog_requested, 0,
          sizeof(input_st->analog_requested));
       input_st->current_driver           = NULL;
@@ -3663,9 +3668,7 @@ bool command_event(enum event_command cmd, void *data)
                }
             }
 #endif
-#ifdef HAVE_CLOUDSYNC
-            task_push_cloud_sync();
-#endif
+
 #if defined(HAVE_CG) || defined(HAVE_GLSL) || defined(HAVE_SLANG) || defined(HAVE_HLSL)
             runloop_st->runtime_shader_preset_path[0] = '\0';
 #endif
@@ -3715,6 +3718,11 @@ bool command_event(enum event_command cmd, void *data)
                runloop_st->subsystem_current_count = 0;
                content_clear_subsystem();
             }
+#ifdef HAVE_CLOUDSYNC
+            /* Sync on core unload if in automatic mode */
+            if (settings->uints.cloud_sync_sync_mode == CLOUD_SYNC_MODE_AUTOMATIC)
+               task_push_cloud_sync();
+#endif
          }
 
 #ifdef HAVE_MENU
@@ -3995,6 +4003,9 @@ bool command_event(enum event_command cmd, void *data)
             ol->next_index                 =
                   (unsigned)((ol->index + 1) % ol->size);
 
+            /* Trigger viewport recalculation - overlay may have viewport override */
+            command_event(CMD_EVENT_VIDEO_SET_ASPECT_RATIO, NULL);
+
             /* Check orientation, if required */
             if (inp_overlay_auto_rotate)
                if (check_rotation)
@@ -4251,6 +4262,16 @@ bool command_event(enum event_command cmd, void *data)
             rcheevos_unload();
 #endif
             runloop_event_deinit_core();
+
+            /* Clear turbo and hold button state on core unload */
+            {
+               input_driver_state_t *input_st = input_state_get_ptr();
+               if (input_st)
+               {
+                  memset(&input_st->turbo_btns, 0, sizeof(turbo_buttons_t));
+                  memset(&input_st->hold_btns, 0, sizeof(hold_buttons_t));
+               }
+            }
 
 #ifdef HAVE_RUNAHEAD
             /* If 'runahead_available' is false, then
@@ -4627,6 +4648,17 @@ bool command_event(enum event_command cmd, void *data)
          command_event(CMD_EVENT_QUIT, NULL);
 #endif
          break;
+#ifdef HAVE_CLOUDSYNC
+      case CMD_EVENT_CLOUD_SYNC:
+         task_push_cloud_sync();
+         break;
+      case CMD_EVENT_CLOUD_SYNC_RESOLVE_KEEP_LOCAL:
+         task_push_cloud_sync_resolve_keep_local();
+         break;
+      case CMD_EVENT_CLOUD_SYNC_RESOLVE_KEEP_SERVER:
+         task_push_cloud_sync_resolve_keep_server();
+         break;
+#endif
       case CMD_EVENT_MENU_RESET_TO_DEFAULT_CONFIG:
          config_set_defaults(global_get_ptr());
          break;
@@ -6036,8 +6068,9 @@ int rarch_main(int argc, char *argv[], void *data)
 #endif
          settings->bools.ui_companion_start_on_boot
          );
-#if HAVE_CLOUDSYNC
-   task_push_cloud_sync();
+#ifdef HAVE_CLOUDSYNC
+   if (settings->uints.cloud_sync_sync_mode == CLOUD_SYNC_MODE_AUTOMATIC)
+      task_push_cloud_sync();
 #endif
 #if !defined(HAVE_MAIN) || defined(HAVE_QT)
    for (;;)

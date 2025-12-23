@@ -781,6 +781,33 @@ static int menu_displaylist_parse_core_info(
          MENU_ENUM_LABEL_CORE_INFO_ENTRY, MENU_SETTINGS_CORE_INFO_NONE, 0, 0, NULL))
       count++;
 
+   if (core_path)
+   {
+      char tmp_desc[PATH_MAX_LENGTH];
+      size_t _len = strlcpy(tmp,
+            msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CORE_INFO_CORE_PATH),
+            sizeof(tmp));
+
+      _len += strlcpy(tmp + _len, ": ", sizeof(tmp) - _len);
+
+#if IOS
+      shortened_path[0] = '\0';
+      fill_pathname_abbreviate_special(shortened_path,
+            core_path, sizeof(shortened_path));
+      strlcpy(tmp_desc, shortened_path, sizeof(tmp_desc));
+#else
+      strlcpy(tmp_desc, core_path, sizeof(tmp_desc));
+#endif
+
+      if (!settings->bools.menu_show_sublabels)
+         _len += strlcpy(tmp + _len, tmp_desc, sizeof(tmp) - _len);
+
+      if (menu_entries_append(list, tmp, tmp_desc,
+            MENU_ENUM_LABEL_CORE_INFO_ENTRY,
+            MENU_SETTINGS_CORE_INFO_NONE, 0, 0, NULL))
+         count++;
+   }
+
    if (core_info->firmware_count > 0)
    {
       char tmp_path[PATH_MAX_LENGTH];
@@ -788,11 +815,10 @@ static int menu_displaylist_parse_core_info(
       core_info_ctx_firmware_t firmware_info;
       uint8_t flags                   = content_get_flags();
       bool update_missing_firmware    = false;
-      bool set_missing_firmware       = false;
       bool systemfiles_in_content_dir = settings->bools.systemfiles_in_content_dir;
       bool content_is_inited          = flags & CONTENT_ST_FLAG_IS_INITED;
 
-      firmware_info.path             = core_info->path;
+      firmware_info.path              = core_info->path;
 
       /* If 'System Files are in Content Directory' is enabled and content is inited,
        * adjust the path to check for firmware files */
@@ -820,12 +846,7 @@ static int menu_displaylist_parse_core_info(
       else
          firmware_info.directory.system = settings->paths.directory_system;
 
-      update_missing_firmware         = core_info_list_update_missing_firmware(&firmware_info, &set_missing_firmware);
-
-      if (set_missing_firmware)
-         runloop_st->missing_bios     = true;
-      else
-         runloop_st->missing_bios     = false;
+      update_missing_firmware         = core_info_list_update_missing_firmware(&firmware_info);
 
       if (update_missing_firmware)
       {
@@ -841,38 +862,64 @@ static int menu_displaylist_parse_core_info(
          tmp[  __len] = ':';
          tmp[++__len] = ' ';
          tmp[++__len] = '\0';
-         if (menu_entries_append(list, tmp, "",
-               MENU_ENUM_LABEL_CORE_INFO_ENTRY, MENU_SETTINGS_CORE_INFO_NONE, 0, 0, NULL))
-            count++;
 
-         /* If 'System Files are in Content Directory' is enabled, let's add a note about it. */
-         if (systemfiles_in_content_dir)
+         /* Show the path that was checked */
          {
-            strlcpy(tmp,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CORE_INFO_FIRMWARE_IN_CONTENT_DIRECTORY),
-                  sizeof(tmp));
-            if (menu_entries_append(list, tmp, "",
+            char tmp_desc[PATH_MAX_LENGTH];
+
+
+#ifdef IOS
+            shortened_path[0] = '\0';
+            fill_pathname_abbreviate_special(shortened_path,
+                  firmware_info.directory.system,
+                  sizeof(shortened_path));
+            snprintf(tmp_desc, sizeof(tmp_desc),
+                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CORE_INFO_FIRMWARE_PATH),
+                  shortened_path);
+#else
+            snprintf(tmp_desc, sizeof(tmp_desc),
+                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CORE_INFO_FIRMWARE_PATH),
+                  firmware_info.directory.system);
+#endif
+
+            if (!settings->bools.menu_show_sublabels)
+            {
+               if (menu_entries_append(list, tmp, "",
+                     MENU_ENUM_LABEL_CORE_INFO_ENTRY, MENU_SETTINGS_CORE_INFO_NONE, 0, 0, NULL))
+                  count++;
+
+               __len = strlcpy(tmp, "- ", sizeof(tmp));
+               strlcpy(tmp + __len, tmp_desc, sizeof(tmp) - __len);
+               tmp_desc[0] = '\0';
+            }
+
+            /* If 'System Files are in Content Directory' is enabled, let's add a note about it. */
+            if (systemfiles_in_content_dir)
+            {
+               if (!settings->bools.menu_show_sublabels)
+               {
+                  char tmp_note[PATH_MAX_LENGTH];
+
+                  snprintf(tmp_note, sizeof(tmp_note), "- %s",
+                        msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CORE_INFO_FIRMWARE_IN_CONTENT_DIRECTORY));
+
+                  if (menu_entries_append(list, tmp_note, "",
+                        MENU_ENUM_LABEL_CORE_INFO_ENTRY, MENU_SETTINGS_CORE_INFO_NONE, 0, 0, NULL))
+                     count++;
+               }
+               else
+               {
+                  strlcat(tmp_desc, "\n", sizeof(tmp_desc));
+                  strlcat(tmp_desc,
+                        msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CORE_INFO_FIRMWARE_IN_CONTENT_DIRECTORY),
+                        sizeof(tmp_desc));
+               }
+            }
+
+            if (menu_entries_append(list, tmp, tmp_desc,
                   MENU_ENUM_LABEL_CORE_INFO_ENTRY, MENU_SETTINGS_CORE_INFO_NONE, 0, 0, NULL))
                count++;
          }
-
-         /* Show the path that was checked */
-#ifdef IOS
-         shortened_path[0] = '\0';
-         fill_pathname_abbreviate_special(shortened_path,
-               firmware_info.directory.system,
-               sizeof(shortened_path));
-         snprintf(tmp, sizeof(tmp),
-               msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CORE_INFO_FIRMWARE_PATH),
-               shortened_path);
-#else
-         snprintf(tmp, sizeof(tmp),
-               msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CORE_INFO_FIRMWARE_PATH),
-               firmware_info.directory.system);
-#endif
-         if (menu_entries_append(list, tmp, "",
-               MENU_ENUM_LABEL_CORE_INFO_ENTRY, MENU_SETTINGS_CORE_INFO_NONE, 0, 0, NULL))
-            count++;
 
          for (i = 0; i < core_info->firmware_count; i++)
          {
@@ -948,26 +995,6 @@ static int menu_displaylist_parse_core_info(
       }
    }
 
-   if (core_path)
-   {
-      size_t _len = strlcpy(tmp,
-            msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CORE_INFO_CORE_PATH),
-            sizeof(tmp));
-      _len       += strlcpy(tmp + _len, ": ", sizeof(tmp) - _len);
-#if IOS
-      shortened_path[0] = '\0';
-      fill_pathname_abbreviate_special(shortened_path,
-            core_path, sizeof(shortened_path));
-      strlcpy(tmp + _len, shortened_path, sizeof(tmp) - _len);
-#else
-      strlcpy(tmp + _len, core_path, sizeof(tmp) - _len);
-#endif
-      if (menu_entries_append(list, tmp, "",
-            MENU_ENUM_LABEL_CORE_INFO_ENTRY,
-            MENU_SETTINGS_CORE_INFO_NONE, 0, 0, NULL))
-         count++;
-   }
-
 end:
    if (!kiosk_mode_enable)
    {
@@ -1034,22 +1061,29 @@ end:
                   MENU_SETTING_ACTION_CORE_CREATE_BACKUP, 0, 0, NULL))
             count++;
 
-         /* Restore core from backup */
-         if (!core_locked)
-            if (menu_entries_append(list,
-                     msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CORE_RESTORE_BACKUP_LIST),
-                     core_path,
-                     MENU_ENUM_LABEL_CORE_RESTORE_BACKUP_LIST,
-                     MENU_SETTING_ACTION_CORE_RESTORE_BACKUP, 0, 0, NULL))
-               count++;
+         {
+            core_backup_list_t *backup_list = core_backup_list_init(core_path, settings->paths.directory_core_assets);
 
-         /* Delete core backup */
-         if (menu_entries_append(list,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CORE_DELETE_BACKUP_LIST),
-                  core_path,
-                  MENU_ENUM_LABEL_CORE_DELETE_BACKUP_LIST,
-                  MENU_SETTING_ACTION_CORE_DELETE_BACKUP, 0, 0, NULL))
-            count++;
+            if (backup_list && core_backup_list_size(backup_list))
+            {
+               /* Restore core from backup */
+               if (!core_locked)
+                  if (menu_entries_append(list,
+                           msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CORE_RESTORE_BACKUP_LIST),
+                           core_path,
+                           MENU_ENUM_LABEL_CORE_RESTORE_BACKUP_LIST,
+                           MENU_SETTING_ACTION_CORE_RESTORE_BACKUP, 0, 0, NULL))
+                     count++;
+
+               /* Delete core backup */
+               if (menu_entries_append(list,
+                        msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CORE_DELETE_BACKUP_LIST),
+                        core_path,
+                        MENU_ENUM_LABEL_CORE_DELETE_BACKUP_LIST,
+                        MENU_SETTING_ACTION_CORE_DELETE_BACKUP, 0, 0, NULL))
+                  count++;
+            }
+         }
 
          /* Delete core
           * > Only add this option if online updater is
@@ -5751,7 +5785,7 @@ static int menu_displaylist_parse_input_retropad_bind_list(
       return 0;
 
    if (turbo_bind && menu_entries_append(info_list,
-         "---",
+         RARCH_NO_BIND,
          "-1",
          MENU_ENUM_LABEL_NO_ITEMS,
          MENU_SETTING_DROPDOWN_ITEM_INPUT_RETROPAD_BIND,
@@ -6134,7 +6168,6 @@ static int menu_displaylist_parse_input_description_list(
    unsigned count                = 0;
    rarch_system_info_t *sys_info = &runloop_state_get_ptr()->system;
    size_t menu_index             = 0;
-   bool current_input_mapped     = false;
    struct menu_state *menu_st    = menu_state_get_ptr();
 
    entry_lbl[0] = '\0';
@@ -6157,8 +6190,8 @@ static int menu_displaylist_parse_input_description_list(
 
    /* Get current mapping for selected button */
    current_remap_idx = settings->uints.input_remap_ids[user_idx][btn_idx];
-
-   if (current_remap_idx >= RARCH_CUSTOM_BIND_LIST_END)
+   if (     current_remap_idx >= RARCH_CUSTOM_BIND_LIST_END
+         || string_is_empty(sys_info->input_desc_btn[mapped_port][current_remap_idx]))
       current_remap_idx = RARCH_UNMAPPED;
 
    /* An annoyance: Menu entries do not have
@@ -6169,6 +6202,27 @@ static int menu_displaylist_parse_input_description_list(
     * and so have to convert 'info->type' to a string
     * and pass it as the entry label... */
    snprintf(entry_lbl, sizeof(entry_lbl), "%u", info->type);
+
+   /* Add 'unmapped' entry */
+   if (menu_entries_append(info->list,
+         RARCH_NO_BIND,
+         entry_lbl,
+         MENU_ENUM_LABEL_INPUT_DESCRIPTION,
+         MENU_SETTING_DROPDOWN_ITEM_INPUT_DESCRIPTION,
+         0, RARCH_UNMAPPED, NULL))
+   {
+      /* Add checkmark if input is currently unmapped */
+      if (current_remap_idx == RARCH_UNMAPPED)
+      {
+         menu_file_list_cbs_t *cbs  = (menu_file_list_cbs_t*)info->list->list[menu_index].actiondata;
+         if (cbs)
+            cbs->checked            = true;
+         menu_st->selection_ptr     = menu_index;
+      }
+
+      count++;
+      menu_index++;
+   }
 
    /* Loop over core input definitions */
    for (j = 0; j < RARCH_CUSTOM_BIND_LIST_END; j++)
@@ -6219,34 +6273,12 @@ static int menu_displaylist_parse_input_description_list(
                if (cbs)
                   cbs->checked            = true;
                menu_st->selection_ptr     = menu_index;
-               current_input_mapped       = true;
             }
 
             count++;
             menu_index++;
          }
       }
-   }
-
-   /* Add 'unmapped' entry at end of list */
-   if (menu_entries_append(info->list,
-         "---",
-         entry_lbl,
-         MENU_ENUM_LABEL_INPUT_DESCRIPTION,
-         MENU_SETTING_DROPDOWN_ITEM_INPUT_DESCRIPTION,
-         0, RARCH_UNMAPPED, NULL))
-   {
-      /* Add checkmark if input is currently unmapped */
-      if (!current_input_mapped)
-      {
-         menu_file_list_cbs_t *cbs  = (menu_file_list_cbs_t*)info->list->list[menu_index].actiondata;
-         if (cbs)
-            cbs->checked            = true;
-         menu_st->selection_ptr     = menu_index;
-      }
-
-      count++;
-      menu_index++;
    }
 
    return count;
@@ -6337,12 +6369,7 @@ static int menu_displaylist_parse_input_description_kbd_list(
          continue;
 
       if (key_id == RETROK_FIRST)
-      {
-         input_description[0] = '-';
-         input_description[1] = '-';
-         input_description[2] = '-';
-         input_description[3] = '\0';
-      }
+         strlcpy(input_description, RARCH_NO_BIND, sizeof(input_description));
       else
       {
          /* TODO/FIXME: Localize 'Keyboard' */
@@ -7512,6 +7539,10 @@ unsigned menu_displaylist_build_list(
                count++;
             if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
                      MENU_ENUM_LABEL_INPUT_HOTKEY_DEVICE_MERGE,
+                     PARSE_ONLY_BOOL, false) == 0)
+               count++;
+            if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
+                     MENU_ENUM_LABEL_INPUT_HOTKEY_FOLLOWS_PLAYER1,
                      PARSE_ONLY_BOOL, false) == 0)
                count++;
 
@@ -9890,17 +9921,29 @@ unsigned menu_displaylist_build_list(
                      count++;
 #endif
 
+            if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
+                     MENU_ENUM_LABEL_VIDEO_ROTATION,
+                     PARSE_ONLY_UINT, false) == 0)
+               count++;
+
+            if (video_display_server_can_set_screen_orientation())
+               if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
+                        MENU_ENUM_LABEL_SCREEN_ORIENTATION,
+                        PARSE_ONLY_UINT, false) == 0)
+                  count++;
+
 #if defined(GEKKO) || defined(PS2) || defined(__PS3__)
             if (true)
 #else
-               if (video_display_server_has_resolution_list())
+            if (video_display_server_has_resolution_list())
 #endif
-               {
-                  if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
-                           MENU_ENUM_LABEL_SCREEN_RESOLUTION,
-                           PARSE_ACTION, false) == 0)
-                     count++;
-               }
+            {
+               if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
+                     MENU_ENUM_LABEL_SCREEN_RESOLUTION,
+                     PARSE_ACTION, false) == 0)
+                  count++;
+            }
+
 #if defined(HAVE_WINDOW_OFFSET)
             if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
                      MENU_ENUM_LABEL_VIDEO_WINDOW_OFFSET_X,
@@ -9911,6 +9954,7 @@ unsigned menu_displaylist_build_list(
                      PARSE_ONLY_INT, false) == 0)
                count++;
 #endif
+
             if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
                      MENU_ENUM_LABEL_PAL60_ENABLE,
                      PARSE_ONLY_BOOL, false) == 0)
@@ -9927,16 +9971,6 @@ unsigned menu_displaylist_build_list(
                      MENU_ENUM_LABEL_VIDEO_FILTER_FLICKER,
                      PARSE_ONLY_UINT, false) == 0)
                count++;
-            if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
-                     MENU_ENUM_LABEL_VIDEO_ROTATION,
-                     PARSE_ONLY_UINT, false) == 0)
-               count++;
-
-            if (video_display_server_can_set_screen_orientation())
-               if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
-                        MENU_ENUM_LABEL_SCREEN_ORIENTATION,
-                        PARSE_ONLY_UINT, false) == 0)
-                  count++;
 #if defined(DINGUX) && defined(DINGUX_BETA)
             if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
                      MENU_ENUM_LABEL_VIDEO_DINGUX_REFRESH_RATE,
@@ -10221,12 +10255,12 @@ unsigned menu_displaylist_build_list(
          {
             static const menu_displaylist_build_info_t build_list[] = {
                {MENU_ENUM_LABEL_CRT_SWITCH_RESOLUTION,                                 PARSE_ONLY_UINT},
-               {MENU_ENUM_LABEL_CRT_SWITCH_RESOLUTION_SUPER,                           PARSE_ONLY_UINT},
-               {MENU_ENUM_LABEL_CRT_SWITCH_X_AXIS_CENTERING,                           PARSE_ONLY_INT },
-               {MENU_ENUM_LABEL_CRT_SWITCH_PORCH_ADJUST,                               PARSE_ONLY_INT },
-               {MENU_ENUM_LABEL_CRT_SWITCH_VERTICAL_ADJUST,                            PARSE_ONLY_INT },
+               {MENU_ENUM_LABEL_CRT_SWITCH_HIRES_MENU,                                 PARSE_ONLY_BOOL},
                {MENU_ENUM_LABEL_CRT_SWITCH_RESOLUTION_USE_CUSTOM_REFRESH_RATE,         PARSE_ONLY_BOOL},
-               {MENU_ENUM_LABEL_CRT_SWITCH_HIRES_MENU,         PARSE_ONLY_BOOL},
+               {MENU_ENUM_LABEL_CRT_SWITCH_RESOLUTION_SUPER,                           PARSE_ONLY_UINT},
+               {MENU_ENUM_LABEL_CRT_SWITCH_PORCH_ADJUST,                               PARSE_ONLY_INT },
+               {MENU_ENUM_LABEL_CRT_SWITCH_X_AXIS_CENTERING,                           PARSE_ONLY_INT },
+               {MENU_ENUM_LABEL_CRT_SWITCH_VERTICAL_ADJUST,                            PARSE_ONLY_INT },
             };
 
             for (i = 0; i < ARRAY_SIZE(build_list); i++)
@@ -10411,7 +10445,7 @@ unsigned menu_displaylist_build_list(
 
             menu_displaylist_build_info_selective_t build_list[] = {
                {MENU_ENUM_LABEL_INPUT_OVERLAY_ENABLE,                      PARSE_ONLY_BOOL,  true  },
-               {MENU_ENUM_LABEL_OVERLAY_AUTOLOAD_PREFERRED,                PARSE_ONLY_BOOL,  true  },
+               {MENU_ENUM_LABEL_OVERLAY_AUTOLOAD_PREFERRED,                PARSE_ONLY_BOOL,  false },
                {MENU_ENUM_LABEL_OVERLAY_PRESET,                            PARSE_ONLY_PATH,  false },
                {MENU_ENUM_LABEL_OVERLAY_OPACITY,                           PARSE_ONLY_FLOAT, false },
                {MENU_ENUM_LABEL_INPUT_OVERLAY_BEHIND_MENU,                 PARSE_ONLY_BOOL,  false },
@@ -10454,6 +10488,7 @@ unsigned menu_displaylist_build_list(
                   case MENU_ENUM_LABEL_INPUT_OVERLAY_SHOW_MOUSE_CURSOR:
                   case MENU_ENUM_LABEL_INPUT_OVERLAY_AUTO_ROTATE:
                   case MENU_ENUM_LABEL_INPUT_OVERLAY_AUTO_SCALE:
+                  case MENU_ENUM_LABEL_OVERLAY_AUTOLOAD_PREFERRED:
                   case MENU_ENUM_LABEL_OVERLAY_PRESET:
                   case MENU_ENUM_LABEL_OVERLAY_OPACITY:
                   case MENU_ENUM_LABEL_INPUT_OVERLAY_POINTER_ENABLE:
@@ -10503,14 +10538,7 @@ unsigned menu_displaylist_build_list(
                         build_list[i].checked = true;
                      break;
                   case MENU_ENUM_LABEL_OSK_OVERLAY_SETTINGS:
-                     /* Show keyboard menu if the main overlay has
-                      * an osk_toggle or if the OSK hotkey is set */
-                     if (input_overlay_enable &&
-                         (BIT16_GET(menu_st->overlay_types, OVERLAY_TYPE_OSK_TOGGLE)
-                          || input_config_binds[0][RARCH_OSK].joykey  != NO_BTN
-                          || input_config_binds[0][RARCH_OSK].joyaxis != AXIS_NONE
-                          || input_config_binds[0][RARCH_OSK].key     != RETROK_UNKNOWN
-                          || input_config_binds[0][RARCH_OSK].mbutton != NO_BTN))
+                     if (input_overlay_enable)
                         build_list[i].checked = true;
                      break;
                   default:
@@ -11064,6 +11092,7 @@ unsigned menu_displaylist_build_list(
          {
             menu_displaylist_build_info_selective_t build_list[] = {
                {MENU_ENUM_LABEL_CLOUD_SYNC_ENABLE,       PARSE_ONLY_BOOL,           true},
+               {MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_MODE,    PARSE_ONLY_UINT,           true},
                {MENU_ENUM_LABEL_CLOUD_SYNC_DESTRUCTIVE,  PARSE_ONLY_BOOL,           true},
                {MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_SAVES,   PARSE_ONLY_BOOL,           true},
                {MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_CONFIGS, PARSE_ONLY_BOOL,           true},
@@ -11085,6 +11114,23 @@ unsigned menu_displaylist_build_list(
                       MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
                         build_list[i].enum_idx,  build_list[i].parse_type,
                         false) == 0)
+                  count++;
+            }
+
+            /* Add action items when cloud sync is enabled */
+            if (settings->bools.cloud_sync_enable)
+            {
+               if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
+                     MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_NOW,
+                     PARSE_ACTION, false) == 0)
+                  count++;
+               if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
+                     MENU_ENUM_LABEL_CLOUD_SYNC_RESOLVE_KEEP_LOCAL,
+                     PARSE_ACTION, false) == 0)
+                  count++;
+               if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
+                     MENU_ENUM_LABEL_CLOUD_SYNC_RESOLVE_KEEP_SERVER,
+                     PARSE_ACTION, false) == 0)
                   count++;
             }
          }
@@ -11502,7 +11548,6 @@ unsigned menu_displaylist_build_list(
             static const menu_displaylist_build_info_t build_list[] = {
                {MENU_ENUM_LABEL_CORE_INFO_CACHE_ENABLE,            PARSE_ONLY_BOOL},
                {MENU_ENUM_LABEL_CORE_INFO_SAVESTATE_BYPASS,        PARSE_ONLY_BOOL},
-               {MENU_ENUM_LABEL_CHECK_FOR_MISSING_FIRMWARE,        PARSE_ONLY_BOOL},
                {MENU_ENUM_LABEL_SYSTEMFILES_IN_CONTENT_DIR_ENABLE, PARSE_ONLY_BOOL},
                {MENU_ENUM_LABEL_CORE_OPTION_CATEGORY_ENABLE,       PARSE_ONLY_BOOL},
                {MENU_ENUM_LABEL_DRIVER_SWITCH_ENABLE,              PARSE_ONLY_BOOL},
@@ -11840,6 +11885,8 @@ unsigned menu_displaylist_build_list(
                {MENU_ENUM_LABEL_XMB_SWITCH_ICONS,                             PARSE_ONLY_BOOL,   true},
                {MENU_ENUM_LABEL_MENU_RGUI_SWITCH_ICONS,                       PARSE_ONLY_BOOL,   true},
                {MENU_ENUM_LABEL_MATERIALUI_SWITCH_ICONS,                      PARSE_ONLY_BOOL,   true},
+               {MENU_ENUM_LABEL_XMB_CURRENT_MENU_ICON,                        PARSE_ONLY_UINT,   true},
+               {MENU_ENUM_LABEL_OZONE_HEADER_ICON,                            PARSE_ONLY_UINT,   true},
                {MENU_ENUM_LABEL_OZONE_HEADER_SEPARATOR,                       PARSE_ONLY_UINT,   true},
                {MENU_ENUM_LABEL_OZONE_COLLAPSE_SIDEBAR,                       PARSE_ONLY_BOOL,   true},
                {MENU_ENUM_LABEL_MATERIALUI_LANDSCAPE_LAYOUT_OPTIMIZATION,     PARSE_ONLY_UINT,   true},
@@ -15244,6 +15291,15 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
                }
 #endif /* HAVE_LAKKA */
 #endif /* HAVE_CDROM */
+
+#if defined(HAVE_CLOUDSYNC)
+               if (settings->bools.cloud_sync_enable)
+                  if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(
+                        info->list,
+                        MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_NOW,
+                        PARSE_ACTION, false) == 0)
+                     count++;
+#endif
 
                if (show_playlists)
                   if (menu_entries_append(info->list,

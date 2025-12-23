@@ -202,6 +202,10 @@ ACHIEVEMENTS
 #include "../cheevos/cheevos_client.c"
 #include "../cheevos/cheevos_menu.c"
 
+#if defined(HAVE_CHEEVOS_RVZ)
+#include "../cheevos/cheevos_rvz.c"
+#endif
+
 #include "../deps/rcheevos/src/rc_client.c"
 #include "../deps/rcheevos/src/rc_compat.c"
 #include "../deps/rcheevos/src/rc_libretro.c"
@@ -1078,6 +1082,10 @@ FILE
 #include "../libretro-common/media/media_detect_cd.c"
 #endif
 
+#ifdef ANDROID
+#include "../libretro-common/vfs/vfs_implementation_saf.c"
+#endif
+
 #include "../libretro-common/string/stdstring.c"
 #include "../libretro-common/file/nbio/nbio_stdio.c"
 #if defined(__linux__)
@@ -1302,7 +1310,6 @@ DATA RUNLOOP
 #include "../tasks/task_image.c"
 #include "../tasks/task_file_transfer.c"
 #include "../tasks/task_playlist_manager.c"
-#include "../tasks/task_manual_content_scan.c"
 #include "../tasks/task_core_backup.c"
 #ifdef HAVE_TRANSLATE
 #include "../tasks/task_translation.c"
@@ -1310,8 +1317,8 @@ DATA RUNLOOP
 #ifdef HAVE_ZLIB
 #include "../tasks/task_decompress.c"
 #endif
-#ifdef HAVE_LIBRETRODB
 #include "../tasks/task_database.c"
+#ifdef HAVE_LIBRETRODB
 #include "../tasks/task_database_cue.c"
 #endif
 #if defined(HAVE_NETWORKING) && defined(HAVE_MENU)

@@ -6,6 +6,20 @@
 #pragma warning(disable:4566)
 #endif
 
+/*
+##### NOTE FOR TRANSLATORS ####
+
+PLEASE do NOT modify any `msg_hash_*.h` files, besides `msg_hash_us.h`!
+
+Translations are handled using the localization platform Crowdin:
+https://crowdin.com/project/retroarch
+
+Translations from Crowdin are applied automatically and will overwrite
+any changes made to the other localization files.
+As a result, any submissions directly altering `msg_hash_*.h` files
+other than `msg_hash_us.h` will be rejected.
+*/
+
 /* Top-Level Menu */
 
 MSG_HASH(
@@ -208,6 +222,14 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_QUIT_RETROARCH,
    "Esci dall'applicazione RetroArch. Il salvataggio della configurazione all'uscita è attivato."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_NOW,
+   "Sincronizza Ora"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CLOUD_SYNC_SYNC_NOW,
+   "Attiva manualmente la sincronizzazione del cloud."
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_QUIT_RETROARCH_NOSAVE,
@@ -529,11 +551,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_INFO_FIRMWARE_IN_CONTENT_DIRECTORY,
-   "- Nota: 'I file di sistema sono contenuti nella directory' è attualmente abilitato."
+   "Nota: 'I file di sistema sono nella cartella contenuti' è abilitato."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_INFO_FIRMWARE_PATH,
-   "- Guardando in: %s"
+   "Guardando in: %s"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MISSING_REQUIRED,
@@ -1287,6 +1309,22 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CLOUD_SYNC_DESTRUCTIVE,
    "Quando questa opzione è disabilitata, i file vengono spostati in una cartella di backup prima di essere sovrascritti o cancellati."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_MODE,
+   "Modalità Sincronizzazione"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CLOUD_SYNC_SYNC_MODE,
+   "Automatico: Sincronizza all'avvio di RetroArch e quando i core vengono scaricati. Manuale: Sincronizza solo quando il pulsante 'Sincronizza' viene attivato manualmente."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_MODE_AUTOMATIC,
+   "Automatico"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_MODE_MANUAL,
+   "Manuale"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_DRIVER,
@@ -2111,7 +2149,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CRT_SWITCH_VERTICAL_ADJUST,
-   "Centratura verticale"
+   "Centraggio verticale"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CRT_SWITCH_VERTICAL_ADJUST,
+   "Utilizza queste opzioni se l'immagine non è centrata correttamente sullo schermo."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CRT_SWITCH_HIRES_MENU,
@@ -2419,7 +2461,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_SCALE_INTEGER_SCALING,
-   "Arrotonda o fino al prossimo intero. 'Smart' scende in sottoscala quando l'immagine viene ritagliata troppo."
+   "Arrotonda o fino al prossimo numero intero. 'Smart' scende in sottoscala quando l'immagine viene ritagliata troppo, e infine cade a scala non-interi se i margini sottoscala sono troppo grandi."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_SCALE_INTEGER_SCALING_UNDERSCALE,
@@ -3266,10 +3308,6 @@ MSG_HASH(
    "Rileva"
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_PAUSE_ON_DISCONNECT,
-   "Contenuto in pausa quando il controller si scollega"
-   )
-MSG_HASH(
    MENU_ENUM_SUBLABEL_PAUSE_ON_DISCONNECT,
    "Metti in pausa il contenuto quando un controller è disconnesso. Riprendi con Avvia."
    )
@@ -3656,6 +3694,14 @@ MSG_HASH(
    "Blocca tutti i tasti di scelta rapida da entrambi i tipi di tastiera e dispositivo di controllo se entrambi i tipi sono impostati con 'Hotkey Abilita'."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_HOTKEY_FOLLOWS_PLAYER1,
+   "Scorciatoie seguono il Giocatore 1"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_HOTKEY_FOLLOWS_PLAYER1,
+   "Le scorciatoie sono collegate alla porta principale 1, anche se la porta principale 1 è rimappata a un utente diverso. Nota: i tasti di scelta rapida della tastiera non funzioneranno se la porta principale 1 viene rimappata a qualsiasi utente > 1 (l'ingresso della tastiera è dall'utente 1)."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_MENU_ENUM_TOGGLE_GAMEPAD_COMBO,
    "Attiva/Disattiva Menu (Controller Combo)"
    )
@@ -3964,6 +4010,14 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_META_PREV_REPLAY_CHECKPOINT_KEY,
    "Riavvolge il replay al checkpoint precedente salvato automaticamente o manualmente."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_META_NEXT_REPLAY_CHECKPOINT_KEY,
+   "Replay Checkpoint Successivo"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_META_NEXT_REPLAY_CHECKPOINT_KEY,
+   "Avanza velocemente il replay al prossimo checkpoint automaticamente o salvato manualmente."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_META_REPLAY_SLOT_PLUS,
@@ -4947,7 +5001,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CORE_SUGGEST_ALWAYS,
-   "Suggerisci i nuclei disponibili anche quando un nucleo è già caricato."
+   "Suggerisci i core disponibili anche quando un core viene caricato manualmente."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_USE_BUILTIN_PLAYER,
@@ -8973,7 +9027,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_RESTART_CONTENT,
-   "Riavvia il contenuto dall'inizio."
+   "Riavvia il contenuto dall'inizio. RetroPad Start attiva il reset rigido."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOSE_CONTENT,
@@ -10981,7 +11035,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_THUMBNAILS_RGUI,
-   "Tipo di miniatura da visualizzare in alto a destra delle playlist. Questo tipo di miniatura può essere ciclato premendo RetroPad Y."
+   "Tipo di miniatura da visualizzare in alto a destra delle playlist. Può essere caricata con destra analogica in alto/sinistra."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LEFT_THUMBNAILS_RGUI,
@@ -10989,7 +11043,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_LEFT_THUMBNAILS_RGUI,
-   "Tipo di copertina da visualizzare in basso a destra delle playlist."
+   "Tipo di miniatura da visualizzare in basso a destra delle playlist. Può essere caricata con destra analogica in basso/destra."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MENU_RGUI_SWAP_THUMBNAILS,
@@ -11292,6 +11346,26 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_XMB_ALPHA_FACTOR,
    "Colore Tema Fattore Alfa"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_XMB_CURRENT_MENU_ICON,
+   "Icona attuale del menu"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_XMB_CURRENT_MENU_ICON,
+   "L'icona attuale del menu può essere nascosta, sotto il menu orizzontale o nel titolo dell'intestazione."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_XMB_CURRENT_MENU_ICON_NONE,
+   "Nessuno"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_XMB_CURRENT_MENU_ICON_NORMAL,
+   "Normale"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_XMB_CURRENT_MENU_ICON_TITLE,
+   "Titolo"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_XMB_FONT,
@@ -11676,12 +11750,32 @@ MSG_HASH(
    "Scala la dimensione orizzontale del riempimento."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_HEADER_ICON,
+   "Logo dell'intestazione"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_OZONE_HEADER_ICON,
+   "Il logo dell'intestazione può essere nascosto, dinamico a seconda della navigazione o fissato all'invasore classico."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_OZONE_HEADER_SEPARATOR,
    "Separatore intestazione"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_OZONE_HEADER_SEPARATOR,
    "Larghezza alternativa per i separatori di intestazione e piè di pagina."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_HEADER_ICON_NONE,
+   "Nessuno"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_HEADER_ICON_DYNAMIC,
+   "Dinamico"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_HEADER_ICON_FIXED,
+   "Fisso"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_OZONE_HEADER_SEPARATOR_NONE,
@@ -13222,6 +13316,14 @@ MSG_HASH(
    "%.*s si è unito con i dispositivi di input %.*s"
    )
 MSG_HASH(
+   MSG_NETPLAY_PLAYERS_INFO,
+   "%d giocatore(i)"
+   )
+MSG_HASH(
+   MSG_NETPLAY_SPECTATORS_INFO,
+   "%d giocatore(i) (%d spettatori)"
+   )
+MSG_HASH(
    MSG_NETPLAY_NOT_RETROARCH,
    "Un tentativo di connessione alla rete fallito perché il peer non esegue RetroArch, o sta eseguendo una vecchia versione di RetroArch."
    )
@@ -13947,6 +14049,22 @@ MSG_HASH(
    "Linea temporale errata; sovrascrittura della registrazione"
    )
 MSG_HASH(
+   MSG_REPLAY_SEEK_TO_PREV_CHECKPOINT,
+   "Cerca indietro"
+   )
+MSG_HASH(
+   MSG_REPLAY_SEEK_TO_PREV_CHECKPOINT_FAILED,
+   "Ricerca Indietro Non Riuscita"
+   )
+MSG_HASH(
+   MSG_REPLAY_SEEK_TO_NEXT_CHECKPOINT,
+   "Cerca avanti"
+   )
+MSG_HASH(
+   MSG_REPLAY_SEEK_TO_NEXT_CHECKPOINT_FAILED,
+   "Ricerca Avanti Non Riuscita"
+   )
+MSG_HASH(
    MSG_REPLAY_SEEK_TO_FRAME,
    "Ricerca Completata"
    )
@@ -14056,11 +14174,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_LOADED_STATE_FROM_SLOT,
-   "Caricamento del salvataggio dallo slot #%d."
+   "Caricamento del salvataggio dallo slot: #%d."
    )
 MSG_HASH(
    MSG_LOADED_STATE_FROM_SLOT_AUTO,
-   "Stato caricato dallo slot #-1 (Auto)."
+   "Stato caricato dallo slot: Auto."
    )
 MSG_HASH(
    MSG_LOADING,
@@ -14260,11 +14378,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_SAVED_STATE_TO_SLOT,
-   "Salvataggio rapido salvato nello slot #%d."
+   "Stato salvato nello slot: %d."
    )
 MSG_HASH(
    MSG_SAVED_STATE_TO_SLOT_AUTO,
-   "Salvataggio rapido salvato nello slot #-1 (Automatico)."
+   "Stato salvato nello slot: Auto."
    )
 MSG_HASH(
    MSG_SAVED_SUCCESSFULLY_TO,
@@ -14285,6 +14403,10 @@ MSG_HASH(
 MSG_HASH(
    MSG_SCANNING_OF_DIRECTORY_FINISHED,
    "Scansione della directory completata."
+   )
+MSG_HASH(
+   MSG_SCANNING_NO_DATABASE,
+   "Scansione non riuscita, nessun database trovato."
    )
 MSG_HASH(
    MSG_SENDING_COMMAND,
@@ -14869,6 +14991,10 @@ MSG_HASH(
 MSG_HASH(
    MSG_CHEEVOS_CHANGE_MEDIA_FAILED,
    "Cambio media RetroAchievements non riuscito: %s"
+   )
+MSG_HASH(
+   MSG_CHEEVOS_LOGIN_TOKEN_EXPIRED,
+   "Login RetroAchievements scaduto. Si prega di reinserire la password e ricaricare il gioco."
    )
 MSG_HASH(
    MSG_RESAMPLER_QUALITY_LOWEST,

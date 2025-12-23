@@ -155,8 +155,7 @@ static const toplevel_listener_t toplevel_listener = {
    },
 };
 
-static const toplevel_listener_t xdg_toplevel_listener = {
-};
+static const toplevel_listener_t xdg_toplevel_listener = {0};
 
 #ifdef HAVE_EGL
 #define WL_EGL_ATTRIBS_BASE \
@@ -176,7 +175,7 @@ static bool gfx_ctx_wl_egl_init_context(gfx_ctx_wayland_data_t *wl)
    };
 
 #ifdef HAVE_OPENGLES
-#ifdef HAVE_OPENGLES2
+#if defined(HAVE_OPENGLES2) || defined(HAVE_OPENGLES3)
    static const EGLint egl_attribs_gles[] = {
       WL_EGL_ATTRIBS_BASE,
       EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
@@ -222,7 +221,7 @@ static bool gfx_ctx_wl_egl_init_context(gfx_ctx_wayland_data_t *wl)
          else
 #endif
 #endif
-#ifdef HAVE_OPENGLES2
+#if defined(HAVE_OPENGLES2) || defined(HAVE_OPENGLES3)
             attrib_ptr = egl_attribs_gles;
 #endif
 #endif
@@ -596,6 +595,26 @@ static void gfx_ctx_wl_set_flags(void *data, uint32_t flags)
       wl->core_hw_context_enable = true;
 }
 
+static bool gfx_ctx_wl_create_surface(void *data)
+{
+#ifdef HAVE_EGL
+   gfx_ctx_wayland_data_t *wl = (gfx_ctx_wayland_data_t*)data;
+   return egl_create_surface(&wl->egl, (void*)wl->win);
+#else
+   return false;
+#endif
+}
+
+static bool gfx_ctx_wl_destroy_surface(void *data)
+{
+#ifdef HAVE_EGL
+   gfx_ctx_wayland_data_t *wl = (gfx_ctx_wayland_data_t*)data;
+   return egl_destroy_surface(&wl->egl);
+#else
+   return false;
+#endif
+}
+
 const gfx_ctx_driver_t gfx_ctx_wayland = {
    gfx_ctx_wl_init,
    gfx_ctx_wl_destroy,
@@ -632,4 +651,6 @@ const gfx_ctx_driver_t gfx_ctx_wayland = {
    gfx_ctx_wl_bind_hw_render,
    NULL,
    NULL,
+   gfx_ctx_wl_create_surface,
+   gfx_ctx_wl_destroy_surface
 };
