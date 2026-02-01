@@ -505,11 +505,14 @@
 /* The number of nits that paper white is at */
 #define DEFAULT_VIDEO_HDR_PAPER_WHITE_NITS 200.0f
 
-/* The contrast setting for hdr used to calculate the display gamma by dividing this value by gamma 2.2  */
-#define DEFAULT_VIDEO_HDR_CONTRAST 5.0f
-
 /* Should we expand the colour gamut when using hdr */
-#define DEFAULT_VIDEO_HDR_EXPAND_GAMUT true
+#define DEFAULT_VIDEO_HDR_EXPAND_GAMUT false
+
+/* Enable a basic HDR scanline implementation which is the main reason for using HDR in RetroArch */
+#define DEFAULT_VIDEO_HDR_SCANLINES true
+
+/* Default to the largely standard RGB layout */
+#define DEFAULT_VIDEO_HDR_SUBPIXEL_LAYOUT 0
 
 /* When presets are saved they will be saved using the #reference
  * directive by default */
@@ -640,6 +643,7 @@
 #define DEFAULT_INPUT_OVERLAY_MOUSE_DTAP_TO_DRAG false
 #define DEFAULT_INPUT_OVERLAY_MOUSE_DTAP_MSEC 200
 #define DEFAULT_INPUT_OVERLAY_MOUSE_SWIPE_THRESHOLD 1.0f
+#define DEFAULT_INPUT_OVERLAY_MOUSE_ALT_TWO_TOUCH_INPUT OVERLAY_MOUSE_BTN_NONE
 
 #ifdef UDEV_TOUCH_SUPPORT
 #define DEFAULT_INPUT_TOUCH_VMOUSE_POINTER true
@@ -706,6 +710,7 @@
 #define DEFAULT_SETTINGS_SHOW_USER true
 #define DEFAULT_SETTINGS_SHOW_DIRECTORY true
 #define DEFAULT_SETTINGS_SHOW_STEAM true
+#define DEFAULT_SETTINGS_SHOW_SMB_CLIENT true
 
 #define DEFAULT_QUICK_MENU_SHOW_RESUME_CONTENT true
 #define DEFAULT_QUICK_MENU_SHOW_RESTART_CONTENT true
@@ -868,7 +873,7 @@
 #define DEFAULT_MENU_FOOTER_OPACITY 1.000f
 #define DEFAULT_MENU_HEADER_OPACITY 1.000f
 
-#if defined(HAVE_OPENGLES2) || (defined(__MACH__)  && defined(MAC_OS_X_VERSION_MAX_ALLOWED) && (MAC_OS_X_VERSION_MAX_ALLOWED < 101200))
+#if (defined(HAVE_OPENGLES2) && !defined(EMSCRIPTEN)) || (defined(__MACH__)  && defined(MAC_OS_X_VERSION_MAX_ALLOWED) && (MAC_OS_X_VERSION_MAX_ALLOWED < 101200))
 #define DEFAULT_MENU_SHADER_PIPELINE 1
 #else
 #define DEFAULT_MENU_SHADER_PIPELINE 2
@@ -973,10 +978,11 @@
 #define DEFAULT_ALL_USERS_CONTROL_MENU false
 #endif
 
-#define DEFAULT_QUIT_PRESS_TWICE true
+#define DEFAULT_CONFIRM_QUIT true
+#define DEFAULT_CONFIRM_CLOSE true
+#define DEFAULT_CONFIRM_RESET true
 
 #define DEFAULT_LOG_TO_FILE false
-
 #define DEFAULT_LOG_TO_FILE_TIMESTAMP false
 
 /* Crop overscanned frames. */
@@ -1631,6 +1637,11 @@
  * resuming content */
 #define DEFAULT_INPUT_AUTO_GAME_FOCUS AUTO_GAME_FOCUS_OFF
 
+/* Make simultaneous buttons easier to hit on Android */
+#if defined(ANDROID)
+#define DEFAULT_INPUT_BLOCK_TIMEOUT 1
+#endif
+
 /* Show the input descriptors set by the core instead
  * of the default ones. */
 #define DEFAULT_INPUT_DESCRIPTOR_LABEL_SHOW true
@@ -1906,4 +1917,12 @@
 
 #define DEFAULT_FILTER_BY_CURRENT_CORE false
 
+#endif
+
+#ifdef HAVE_SMBCLIENT
+#define DEFAULT_SMB_CLIENT_AUTH_MODE 1
+#define DEFAULT_SMB_CLIENT_NUM_CONTEXTS 4
+#define DEFAULT_SMB_CLIENT_MAX_CONTEXTS 20
+#define DEFAULT_SMB_CLIENT_TIMEOUT 5
+#define DEFAULT_SMB_CLIENT_MAX_TIMEOUT 20
 #endif

@@ -998,6 +998,12 @@ static int16_t input_joypad_analog_axis(
          if (idx == RETRO_DEVICE_INDEX_ANALOG_RIGHT)
             return 0;
          break;
+      case ANALOG_DPAD_LRSTICK:
+      case ANALOG_DPAD_TWINSTICK:
+         if (     idx == RETRO_DEVICE_INDEX_ANALOG_LEFT
+               || idx == RETRO_DEVICE_INDEX_ANALOG_RIGHT)
+            return 0;
+         break;
       default:
          break;
    }
@@ -1763,14 +1769,20 @@ static int16_t input_state_device(
                         res = ret;
 
 #ifdef HAVE_OVERLAY
-                        if (   (input_st->overlay_ptr)
-                            && (input_st->overlay_ptr->flags & INPUT_OVERLAY_ALIVE)
-                            && (port == 0)
-                            && (idx != RETRO_DEVICE_INDEX_ANALOG_BUTTON)
-                            && !(((input_analog_dpad_mode == ANALOG_DPAD_LSTICK)
-                            &&   (idx == RETRO_DEVICE_INDEX_ANALOG_LEFT))
-                            || ((input_analog_dpad_mode == ANALOG_DPAD_RSTICK)
-                            &&   (idx == RETRO_DEVICE_INDEX_ANALOG_RIGHT))))
+                        if (     (input_st->overlay_ptr)
+                              && (input_st->overlay_ptr->flags & INPUT_OVERLAY_ALIVE)
+                              && (port == 0)
+                              && (idx != RETRO_DEVICE_INDEX_ANALOG_BUTTON)
+                              && !(    (  input_analog_dpad_mode == ANALOG_DPAD_LSTICK
+                                       && idx == RETRO_DEVICE_INDEX_ANALOG_LEFT)
+                                    || (  input_analog_dpad_mode == ANALOG_DPAD_RSTICK
+                                       && idx == RETRO_DEVICE_INDEX_ANALOG_RIGHT)
+                                    || (  (  input_analog_dpad_mode == ANALOG_DPAD_LRSTICK
+                                          || input_analog_dpad_mode == ANALOG_DPAD_TWINSTICK)
+                                       && (  idx == RETRO_DEVICE_INDEX_ANALOG_LEFT
+                                          || idx == RETRO_DEVICE_INDEX_ANALOG_RIGHT))
+                                 )
+                           )
                         {
                            input_overlay_state_t *ol_state =
                               &input_st->overlay_ptr->overlay_state;
@@ -1917,6 +1929,8 @@ static int16_t input_state_internal(
       {
          case ANALOG_DPAD_LSTICK:
          case ANALOG_DPAD_RSTICK:
+         case ANALOG_DPAD_LRSTICK:
+         case ANALOG_DPAD_TWINSTICK:
             if (input_driver_analog_requested)
                input_analog_dpad_mode = ANALOG_DPAD_NONE;
             break;
@@ -1925,6 +1939,12 @@ static int16_t input_state_internal(
             break;
          case ANALOG_DPAD_RSTICK_FORCED:
             input_analog_dpad_mode = ANALOG_DPAD_RSTICK;
+            break;
+         case ANALOG_DPAD_LRSTICK_FORCED:
+            input_analog_dpad_mode = ANALOG_DPAD_LRSTICK;
+            break;
+         case ANALOG_DPAD_TWINSTICK_FORCED:
+            input_analog_dpad_mode = ANALOG_DPAD_TWINSTICK;
             break;
          default:
             break;
@@ -2037,7 +2057,7 @@ static int16_t input_state_internal(
          /* Handle Analog to Digital */
          if (     (device == RETRO_DEVICE_JOYPAD)
                && (input_analog_dpad_mode != ANALOG_DPAD_NONE)
-               && (bitmask_enabled || (id >= RETRO_DEVICE_ID_JOYPAD_UP && id <= RETRO_DEVICE_ID_JOYPAD_RIGHT)))
+            )
          {
             int16_t ret_axis;
             uint8_t s;
@@ -2045,8 +2065,8 @@ static int16_t input_state_internal(
 
             for (s = RETRO_DEVICE_INDEX_ANALOG_LEFT; s <= RETRO_DEVICE_INDEX_ANALOG_RIGHT; s++)
             {
-               if (     (s == RETRO_DEVICE_INDEX_ANALOG_LEFT  && input_analog_dpad_mode != ANALOG_DPAD_LSTICK)
-                     || (s == RETRO_DEVICE_INDEX_ANALOG_RIGHT && input_analog_dpad_mode != ANALOG_DPAD_RSTICK))
+               if (     (s == RETRO_DEVICE_INDEX_ANALOG_LEFT  && input_analog_dpad_mode == ANALOG_DPAD_RSTICK)
+                     || (s == RETRO_DEVICE_INDEX_ANALOG_RIGHT && input_analog_dpad_mode == ANALOG_DPAD_LSTICK))
                   continue;
 
                for (a = RETRO_DEVICE_ID_ANALOG_X; a <= RETRO_DEVICE_ID_ANALOG_Y; a++)
@@ -2063,34 +2083,47 @@ static int16_t input_state_internal(
 
                   if (ret_axis)
                   {
+                     int bit = -1;
+
                      if (a == RETRO_DEVICE_ID_ANALOG_Y && (float)ret_axis / 0x7fff < -joypad_info.axis_threshold)
                      {
-                        if (bitmask_enabled)
-                           port_result |= (1 << RETRO_DEVICE_ID_JOYPAD_UP);
-                        else if (id == RETRO_DEVICE_ID_JOYPAD_UP)
-                           port_result = RETRO_DEVICE_ID_JOYPAD_UP;
+                        if (input_analog_dpad_mode == ANALOG_DPAD_TWINSTICK && s == RETRO_DEVICE_INDEX_ANALOG_RIGHT)
+                           bit = RETRO_DEVICE_ID_JOYPAD_X;
+                        else
+                           bit = RETRO_DEVICE_ID_JOYPAD_UP;
                      }
                      else if (a == RETRO_DEVICE_ID_ANALOG_Y && (float)ret_axis / 0x7fff > joypad_info.axis_threshold)
                      {
-                        if (bitmask_enabled)
-                           port_result |= (1 << RETRO_DEVICE_ID_JOYPAD_DOWN);
-                        else if (id == RETRO_DEVICE_ID_JOYPAD_DOWN)
-                           port_result = RETRO_DEVICE_ID_JOYPAD_DOWN;
+                        if (input_analog_dpad_mode == ANALOG_DPAD_TWINSTICK && s == RETRO_DEVICE_INDEX_ANALOG_RIGHT)
+                           bit = RETRO_DEVICE_ID_JOYPAD_B;
+                        else
+                           bit = RETRO_DEVICE_ID_JOYPAD_DOWN;
                      }
 
                      if (a == RETRO_DEVICE_ID_ANALOG_X && (float)ret_axis / 0x7fff < -joypad_info.axis_threshold)
                      {
-                        if (bitmask_enabled)
-                           port_result |= (1 << RETRO_DEVICE_ID_JOYPAD_LEFT);
-                        else if (id == RETRO_DEVICE_ID_JOYPAD_LEFT)
-                           port_result = RETRO_DEVICE_ID_JOYPAD_LEFT;
+                        if (input_analog_dpad_mode == ANALOG_DPAD_TWINSTICK && s == RETRO_DEVICE_INDEX_ANALOG_RIGHT)
+                           bit = RETRO_DEVICE_ID_JOYPAD_Y;
+                        else
+                           bit = RETRO_DEVICE_ID_JOYPAD_LEFT;
                      }
                      else if (a == RETRO_DEVICE_ID_ANALOG_X && (float)ret_axis / 0x7fff > joypad_info.axis_threshold)
                      {
+                        if (input_analog_dpad_mode == ANALOG_DPAD_TWINSTICK && s == RETRO_DEVICE_INDEX_ANALOG_RIGHT)
+                           bit = RETRO_DEVICE_ID_JOYPAD_A;
+                        else
+                           bit = RETRO_DEVICE_ID_JOYPAD_RIGHT;
+                     }
+
+                     if (bit > -1)
+                     {
                         if (bitmask_enabled)
-                           port_result |= (1 << RETRO_DEVICE_ID_JOYPAD_RIGHT);
-                        else if (id == RETRO_DEVICE_ID_JOYPAD_RIGHT)
-                           port_result = RETRO_DEVICE_ID_JOYPAD_RIGHT;
+                           port_result |= (1 << bit);
+                        else if (id == (unsigned)bit)
+                        {
+                           port_result = bit;
+                           result      = 1;
+                        }
                      }
                   }
                }
@@ -2961,6 +2994,40 @@ void input_overlay_load_active(
 }
 
 /**
+ * input_overlay_next_move_touch_masks
+ * @ol : Overlay handle.
+ * 
+ * Finds similar descs in the next overlay (i.e. same location and type)
+ * and moves touch masks from active overlay to next.
+ */
+void input_overlay_next_move_touch_masks(input_overlay_t *ol)
+{
+   const struct overlay *active = ol->active;
+   const struct overlay *next   = ol->overlays + ol->next_index;
+   size_t i, j;
+
+   for (i = 0; i < active->size; i++)
+   {
+      struct overlay_desc *desc = active->descs + i;
+
+      if (desc->old_touch_mask)
+      {
+         for (j = 0; j < next->size; j++)
+         {
+            struct overlay_desc *desc2 = next->descs + j;
+
+            if (     desc2->type == desc->type
+                  && fabs(desc2->x - desc->x) < 0.01f
+                  && fabs(desc2->y - desc->y) < 0.01f)
+               desc2->old_touch_mask = desc->old_touch_mask;
+         }
+
+         desc->old_touch_mask = 0;
+      }
+   }
+}
+
+/**
  * input_overlay_poll_clear:
  * @ol                    : overlay handle
  *
@@ -3018,6 +3085,20 @@ void input_overlay_set_alpha_mod(
    }
 }
 
+static void input_overlay_free_images(input_overlay_t *ol)
+{
+   size_t i;
+
+   if (!ol || !ol->images)
+      return;
+
+   for (i = 0; i < ol->num_images; i++)
+      image_texture_free(ol->images[i]);
+
+   free(ol->images);
+   ol->images = NULL;
+}
+
 static void input_overlay_free_overlays(input_overlay_t *ol)
 {
    size_t i;
@@ -3041,7 +3122,6 @@ void input_overlay_free_overlay(struct overlay *overlay)
 
    for (i = 0; i < overlay->size; i++)
    {
-      image_texture_free(&overlay->descs[i].image);
       if (overlay->descs[i].eightway_config)
          free(overlay->descs[i].eightway_config);
       overlay->descs[i].eightway_config = NULL;
@@ -3053,7 +3133,6 @@ void input_overlay_free_overlay(struct overlay *overlay)
    if (overlay->descs)
       free(overlay->descs);
    overlay->descs       = NULL;
-   image_texture_free(&overlay->image);
 }
 
 /**
@@ -3066,6 +3145,8 @@ static void input_overlay_free(input_overlay_t *ol)
 {
    if (!ol)
       return;
+
+   input_overlay_free_images(ol);
 
    input_overlay_free_overlays(ol);
 
@@ -3151,7 +3232,7 @@ void input_overlay_auto_rotate_(
 
 /**
  * input_overlay_poll_lightgun
- * @settings: pointer to settings
+ * @settings : pointer to settings
  * @ol : overlay handle
  * @old_ptr_count : previous poll's non-hitbox pointer count
  *
@@ -3271,8 +3352,10 @@ static void input_overlay_get_mouse_scale(settings_t *settings,
 
 /**
  * input_overlay_poll_mouse
- * @settings: pointer to settings
+ * @settings : pointer to settings
+ * @mouse_st : pointer to overlay mouse state
  * @ol : overlay handle
+ * @ptr_count : this poll's non-hitbox pointer count
  * @old_ptr_count : previous poll's non-hitbox pointer count
  *
  * Updates button state of the overlay mouse.
@@ -3283,15 +3366,16 @@ static void input_overlay_poll_mouse(settings_t *settings,
       const int ptr_count,
       const int old_ptr_count)
 {
-   input_overlay_pointer_state_t *ptr_st      = &ol->pointer_state;
-   const retro_time_t now_usec                = cpu_features_get_time_usec();
-   const retro_time_t hold_usec               = settings->uints.input_overlay_mouse_hold_msec * 1000;
-   const retro_time_t dtap_usec               = settings->uints.input_overlay_mouse_dtap_msec * 1000;
-   int swipe_thres_x                          = 0;
-   int swipe_thres_y                          = 0;
-   const bool hold_to_drag                    = settings->bools.input_overlay_mouse_hold_to_drag;
-   const bool dtap_to_drag                    = settings->bools.input_overlay_mouse_dtap_to_drag;
-   bool want_feedback                         = false;
+   input_overlay_pointer_state_t *ptr_st = &ol->pointer_state;
+   const retro_time_t now_usec           = cpu_features_get_time_usec();
+   const retro_time_t hold_usec          = settings->uints.input_overlay_mouse_hold_msec * 1000;
+   const retro_time_t dtap_usec          = settings->uints.input_overlay_mouse_dtap_msec * 1000;
+   const uint8_t alt_2touch              = settings->uints.input_overlay_mouse_alt_two_touch_input;
+   int swipe_thres_x                     = 0;
+   int swipe_thres_y                     = 0;
+   const bool hold_to_drag               = settings->bools.input_overlay_mouse_hold_to_drag;
+   const bool dtap_to_drag               = settings->bools.input_overlay_mouse_dtap_to_drag;
+   bool want_feedback                    = false;
    bool is_swipe, is_brief, is_long;
 
    static retro_time_t start_usec;
@@ -3304,8 +3388,10 @@ static void input_overlay_poll_mouse(settings_t *settings,
    static int y_start;
    static int peak_ptr_count;
    static int old_peak_ptr_count;
-   static bool skip_buttons;
+   static bool check_gestures;
    static bool pending_click;
+   static const uint8_t btns[OVERLAY_MAX_TOUCH + 1] =
+         {0x0, 0x1, 0x2, 0x4};  /* none, lmb, rmb, mmb */
 
    input_overlay_get_mouse_scale(settings,
          (float*)&mouse_st->scale_x, &mouse_st->scale_y,
@@ -3326,6 +3412,11 @@ static void input_overlay_poll_mouse(settings_t *settings,
          /* Pointer added */
          peak_ptr_count = ptr_count;
          start_usec     = now_usec;
+
+         /* Alt 2-touch input. After gesture checks,
+          * use 2nd touch as a button */
+         if (!check_gestures && ptr_count == 2)
+            mouse_st->hold = btns[alt_2touch];
       }
       else
       {
@@ -3343,7 +3434,7 @@ static void input_overlay_poll_mouse(settings_t *settings,
    is_long  = (now_usec - start_usec) > (hold_to_drag ? hold_usec : 250000);
 
    /* Check if new button input should be created */
-   if (!skip_buttons)
+   if (check_gestures)
    {
       if (!is_swipe)
       {
@@ -3351,7 +3442,7 @@ static void input_overlay_poll_mouse(settings_t *settings,
                && is_long && ptr_count && !mouse_st->hold)
          {
             /* Long press */
-            mouse_st->hold = (1 << (ptr_count - 1));
+            mouse_st->hold = btns[ptr_count];
             want_feedback  = true;
          }
          else if (is_brief)
@@ -3361,7 +3452,7 @@ static void input_overlay_poll_mouse(settings_t *settings,
                /* New input. Check for double tap */
                if (     dtap_to_drag
                      && now_usec - last_up_usec < dtap_usec)
-                  mouse_st->hold = (1 << (old_peak_ptr_count - 1));
+                  mouse_st->hold = btns[old_peak_ptr_count];
 
                last_down_usec = now_usec;
             }
@@ -3377,7 +3468,7 @@ static void input_overlay_poll_mouse(settings_t *settings,
                }
                else
                {
-                  mouse_st->click    = (1 << (peak_ptr_count - 1));
+                  mouse_st->click    = btns[peak_ptr_count];
                   click_end_usec     = now_usec + click_dur_usec;
                }
 
@@ -3387,14 +3478,19 @@ static void input_overlay_poll_mouse(settings_t *settings,
       }
       else
       {
-         /* If dragging 2+ fingers, hold RMB or MMB */
+         /* Swiping. Stop gesture checks and possibly hold a button */
          if (ptr_count > 1)
          {
-            mouse_st->hold = (1 << (ptr_count - 1));
-            if (hold_to_drag)
+            if (hold_to_drag && !alt_2touch)
+            {
+               mouse_st->hold = btns[ptr_count];
                want_feedback = true;
+            }
+            else if (alt_2touch && !hold_to_drag
+                  && ptr_count == 2)
+               mouse_st->hold = btns[alt_2touch];
          }
-         skip_buttons = true;
+         check_gestures = false;
       }
    }
 
@@ -3407,9 +3503,9 @@ static void input_overlay_poll_mouse(settings_t *settings,
    }
 
    if (!ptr_count)
-      skip_buttons = false; /* Reset button checks  */
+      check_gestures = true;
    else if (is_long)
-      skip_buttons = true;  /* End of button checks */
+      check_gestures = false;
 
    /* Remove stale clicks */
    if (mouse_st->click && now_usec > click_end_usec)
@@ -3548,6 +3644,7 @@ static void input_poll_overlay(
    input_overlay_state_t old_ol_state;
    int i, j;
    input_overlay_t *ol                      = (input_overlay_t*)ol_data;
+   int blocked_touch_idx                    = -1;
    uint16_t key_mod                         = 0;
    uint16_t ptrdev_touch_mask               = 0;
    uint16_t hitbox_touch_mask               = 0;
@@ -3566,6 +3663,7 @@ static void input_poll_overlay(
    bool osk_state_changed                   = false;
 
    static int old_ptr_count;
+   static int old_blocked_touch_idx;
    static int16_t old_ptrdev_touch_mask;
    static int16_t old_hitbox_touch_mask;
 
@@ -3653,14 +3751,24 @@ static void input_poll_overlay(
          int old_i           = input_st->old_touch_index_lut[i];
          bool hitbox_pressed = false;
 
-         /* Keep each touch pointer dedicated to the same input type
-          * (hitbox or pointing device) from the previous poll */
          if (old_i != -1)
          {
+            /* Keep each touch pointer dedicated to the same input type
+             * (hitbox or pointing device) from the previous poll */
             if (BIT16_GET(old_hitbox_touch_mask, old_i))
                BIT16_SET(hitbox_touch_mask, i);
             else if (BIT16_GET(old_ptrdev_touch_mask, old_i))
                BIT16_SET(ptrdev_touch_mask, i);
+
+            /* Skip blocked touch pointer and freeze any overlay_next
+             * input until the blocked touch is removed */
+            if (old_i == old_blocked_touch_idx)
+            {
+               blocked_touch_idx = i;
+               if (BIT256_GET(old_ol_state.buttons, RARCH_OVERLAY_NEXT))
+                  BIT256_SET(ol_state->buttons, RARCH_OVERLAY_NEXT);
+               continue;
+            }
          }
 
          memset(&polled_data, 0, sizeof(struct input_overlay_state));
@@ -3677,6 +3785,10 @@ static void input_poll_overlay(
 
          if (hitbox_pressed)
          {
+            /* Block touch pointer if overlay_next was pressed */
+            if (BIT256_GET(polled_data.buttons, RARCH_OVERLAY_NEXT))
+               blocked_touch_idx = i;
+
             bits_or_bits(ol_state->buttons.data,
                   polled_data.buttons.data,
                   ARRAY_SIZE(polled_data.buttons.data));
@@ -3790,6 +3902,60 @@ static void input_poll_overlay(
          break;
       }
 
+      case ANALOG_DPAD_LRSTICK:
+      {
+         float analog_x, analog_y;
+
+         analog_x = (float)ol_state->analog[0] / 0x7fff;
+         analog_y = (float)ol_state->analog[1] / 0x7fff;
+
+         if (!analog_x)
+            analog_x = (float)ol_state->analog[2] / 0x7fff;
+
+         if (!analog_y)
+            analog_y = (float)ol_state->analog[3] / 0x7fff;
+
+         if (analog_x <= -axis_threshold)
+            BIT256_SET(ol_state->buttons, RETRO_DEVICE_ID_JOYPAD_LEFT);
+         if (analog_x >=  axis_threshold)
+            BIT256_SET(ol_state->buttons, RETRO_DEVICE_ID_JOYPAD_RIGHT);
+         if (analog_y <= -axis_threshold)
+            BIT256_SET(ol_state->buttons, RETRO_DEVICE_ID_JOYPAD_UP);
+         if (analog_y >=  axis_threshold)
+            BIT256_SET(ol_state->buttons, RETRO_DEVICE_ID_JOYPAD_DOWN);
+         break;
+      }
+
+      case ANALOG_DPAD_TWINSTICK:
+      {
+         float analog_x, analog_y;
+
+         analog_x = (float)ol_state->analog[0] / 0x7fff;
+         analog_y = (float)ol_state->analog[1] / 0x7fff;
+
+         if (analog_x <= -axis_threshold)
+            BIT256_SET(ol_state->buttons, RETRO_DEVICE_ID_JOYPAD_LEFT);
+         if (analog_x >=  axis_threshold)
+            BIT256_SET(ol_state->buttons, RETRO_DEVICE_ID_JOYPAD_RIGHT);
+         if (analog_y <= -axis_threshold)
+            BIT256_SET(ol_state->buttons, RETRO_DEVICE_ID_JOYPAD_UP);
+         if (analog_y >=  axis_threshold)
+            BIT256_SET(ol_state->buttons, RETRO_DEVICE_ID_JOYPAD_DOWN);
+
+         analog_x = (float)ol_state->analog[2] / 0x7fff;
+         analog_y = (float)ol_state->analog[3] / 0x7fff;
+
+         if (analog_x <= -axis_threshold)
+            BIT256_SET(ol_state->buttons, RETRO_DEVICE_ID_JOYPAD_Y);
+         if (analog_x >=  axis_threshold)
+            BIT256_SET(ol_state->buttons, RETRO_DEVICE_ID_JOYPAD_A);
+         if (analog_y <= -axis_threshold)
+            BIT256_SET(ol_state->buttons, RETRO_DEVICE_ID_JOYPAD_X);
+         if (analog_y >=  axis_threshold)
+            BIT256_SET(ol_state->buttons, RETRO_DEVICE_ID_JOYPAD_B);
+         break;
+      }
+
       default:
          break;
    }
@@ -3825,8 +3991,7 @@ static void input_poll_overlay(
    if (     current_input->keypress_vibrate
          && settings->bools.vibrate_on_keypress
          && ol_state->touch_count
-         && ol_state->touch_count >= old_ol_state.touch_count
-         && !(ol->flags & INPUT_OVERLAY_BLOCKED))
+         && ol_state->touch_count >= old_ol_state.touch_count)
    {
       if (     osk_state_changed
             || bits_any_different(
@@ -3839,6 +4004,7 @@ static void input_poll_overlay(
 
    old_hitbox_touch_mask  = hitbox_touch_mask;
    old_ptrdev_touch_mask  = ptrdev_touch_mask;
+   old_blocked_touch_idx  = blocked_touch_idx;
    ptr_state->device_mask = 0;
 }
 #endif
@@ -5059,7 +5225,10 @@ void input_config_set_mouse_display_name(unsigned port, const char *name)
 
    /* Strip non-ASCII characters */
    if (!string_is_empty(name))
+   {
       string_copy_only_ascii(name_ascii, name);
+      string_trim_whitespace(name_ascii);
+   }
 
    if (!string_is_empty(name_ascii))
       strlcpy(input_st->input_mouse_info[port].display_name, name_ascii,
@@ -5412,6 +5581,25 @@ void input_overlay_check_mouse_cursor(void)
    }
 }
 
+static void input_overlay_loaded_move_images(input_overlay_t *ol,
+      struct string_list *image_list)
+{
+   size_t i;
+
+   ol->images = malloc(ol->num_images * sizeof(struct texture_image *));
+
+   if (!ol->images)
+   {
+      for (i = 0; i < ol->num_images; i++)
+         image_texture_free(image_list->elems[i].attr.p);
+      ol->num_images = 0;
+      RARCH_ERR("[Overlay] Couldn't allocate images array.\n");
+   }
+
+   for (i = 0; i < ol->num_images; i++)
+      ol->images[i] = (struct texture_image*)image_list->elems[i].attr.p;
+}
+
 /* task_data = overlay_task_data_t* */
 static void input_overlay_loaded(retro_task_t *task,
       void *task_data, void *user_data, const char *err)
@@ -5433,6 +5621,7 @@ static void input_overlay_loaded(retro_task_t *task,
    ol->size        = data->size;
    ol->active      = data->active;
    ol->path        = data->overlay_path;
+   ol->num_images  = data->image_list->size;
    ol->next_index  = (unsigned)((ol->index + 1) % ol->size);
    ol->flags      |= INPUT_OVERLAY_ALIVE;
    if (data->flags & OVERLAY_LOADER_IS_OSK)
@@ -5440,6 +5629,10 @@ static void input_overlay_loaded(retro_task_t *task,
 #ifdef HAVE_MENU
    overlay_types   = data->overlay_types;
 #endif
+
+   if (ol->num_images > 0)
+      input_overlay_loaded_move_images(ol, data->image_list);
+   string_list_free(data->image_list);
 
    free(data);
 
@@ -5666,6 +5859,26 @@ static bool input_keys_pressed_other_sources(
    return false;
 }
 
+#define CHECK_GAME_FOCUS_ENABLE_HOTKEY_COMBO(i) \
+   if (     (input_st->flags & INP_FLAG_KB_MAPPING_BLOCKED) \
+         && (  (i == RARCH_ENABLE_HOTKEY) \
+            || (i != RARCH_ENABLE_HOTKEY && !block_hotkey[RARCH_ENABLE_HOTKEY])) \
+      ) \
+   { \
+      if (input_state_wrap( \
+            input_st->current_driver, \
+            input_st->current_data, \
+            input_st->primary_joypad, \
+            sec_joypad, \
+            joypad_info, \
+            binds, \
+            (input_st->flags & INP_FLAG_KB_MAPPING_BLOCKED) ? true : false, \
+            port, RETRO_DEVICE_JOYPAD, 0, \
+            i)) \
+         block_hotkey[i] = false; \
+   } \
+
+
 /**
  * input_keys_pressed:
  *
@@ -5691,6 +5904,7 @@ static void input_keys_pressed(
    int32_t ret                    = 0;
    input_driver_state_t *input_st = &input_driver_st;
    bool block_hotkey[RARCH_BIND_LIST_END];
+   bool enable_hotkey_pressed     = false;
    bool any_pressed               = false;
    bool libretro_hotkey_set       =
             binds_norm->joykey  != NO_BTN
@@ -5722,6 +5936,7 @@ static void input_keys_pressed(
             port, RETRO_DEVICE_JOYPAD, 0,
             RARCH_ENABLE_HOTKEY))
       {
+         enable_hotkey_pressed = true;
          if (input_st->input_hotkey_block_counter < input_hotkey_block_delay)
             input_st->input_hotkey_block_counter++;
          else
@@ -5823,6 +6038,7 @@ static void input_keys_pressed(
    /* Ignore hotkey block delay when menu toggle and hotkey enabler share the same key */
    if (     !any_pressed
          && !(input_st->flags & INP_FLAG_WAIT_INPUT_RELEASE)
+         && !(input_st->flags & INP_FLAG_KB_MAPPING_BLOCKED)
          && binds[port][RARCH_MENU_TOGGLE].key == binds[port][RARCH_ENABLE_HOTKEY].key)
    {
       i = RARCH_MENU_TOGGLE;
@@ -5856,7 +6072,12 @@ static void input_keys_pressed(
    {
       /* Block everything when hotkey bind exists for both device types */
       for (i = RARCH_FIRST_META_KEY; i < RARCH_BIND_LIST_END; i++)
+      {
          block_hotkey[i] = true;
+
+         /* Don't block controller hotkey enabler with Game Focus */
+         CHECK_GAME_FOCUS_ENABLE_HOTKEY_COMBO(i);
+      }
    }
    else if (input_st->flags & INP_FLAG_BLOCK_HOTKEY
          && (!libretro_hotkey_set || !keyboard_hotkey_set))
@@ -5957,6 +6178,9 @@ static void input_keys_pressed(
                }
             }
          }
+
+         /* Don't block controller hotkey enabler with Game Focus */
+         CHECK_GAME_FOCUS_ENABLE_HOTKEY_COMBO(i);
       }
    }
    else
@@ -6013,7 +6237,13 @@ static void input_keys_pressed(
             continue;
          }
          else if (i != RARCH_ENABLE_HOTKEY)
+         {
             input_st->flags |= INP_FLAG_MENU_PRESS_CANCEL;
+
+            /* Game Focus toggle is always allowed, so it must clear menu cancel */
+            if (i == RARCH_GAME_FOCUS_TOGGLE)
+               input_st->flags &= ~INP_FLAG_MENU_PRESS_CANCEL;
+         }
 
          BIT256_SET_PTR(p_new_state, i);
       }
@@ -6044,7 +6274,7 @@ static void input_keys_pressed(
    if ((input_st->flags & INP_FLAG_WAIT_INPUT_RELEASE) && !any_pressed)
       input_st->flags &= ~INP_FLAG_WAIT_INPUT_RELEASE;
 
-   if (input_st->flags & INP_FLAG_BLOCK_HOTKEY)
+   if (input_st->flags & INP_FLAG_BLOCK_HOTKEY && !enable_hotkey_pressed)
       input_st->input_hotkey_block_counter = 0;
 }
 
@@ -6088,6 +6318,8 @@ void input_driver_poll(void)
       {
          case ANALOG_DPAD_LSTICK:
          case ANALOG_DPAD_RSTICK:
+         case ANALOG_DPAD_LRSTICK:
+         case ANALOG_DPAD_TWINSTICK:
             {
                unsigned mapped_port      = settings->uints.input_remap_ports[0];
                if (input_st->analog_requested[mapped_port])
@@ -6099,6 +6331,12 @@ void input_driver_poll(void)
             break;
          case ANALOG_DPAD_RSTICK_FORCED:
             input_analog_dpad_mode       = ANALOG_DPAD_RSTICK;
+            break;
+         case ANALOG_DPAD_LRSTICK_FORCED:
+            input_analog_dpad_mode       = ANALOG_DPAD_LRSTICK;
+            break;
+         case ANALOG_DPAD_TWINSTICK_FORCED:
+            input_analog_dpad_mode       = ANALOG_DPAD_TWINSTICK;
             break;
          default:
             break;
@@ -6210,6 +6448,8 @@ void input_driver_poll(void)
          {
             case ANALOG_DPAD_LSTICK:
             case ANALOG_DPAD_RSTICK:
+            case ANALOG_DPAD_LRSTICK:
+            case ANALOG_DPAD_TWINSTICK:
                if (input_st->analog_requested[mapped_port])
                   input_analog_dpad_mode = ANALOG_DPAD_NONE;
                break;
@@ -6218,6 +6458,12 @@ void input_driver_poll(void)
                break;
             case ANALOG_DPAD_RSTICK_FORCED:
                input_analog_dpad_mode    = ANALOG_DPAD_RSTICK;
+               break;
+            case ANALOG_DPAD_LRSTICK_FORCED:
+               input_analog_dpad_mode    = ANALOG_DPAD_LRSTICK;
+               break;
+            case ANALOG_DPAD_TWINSTICK_FORCED:
+               input_analog_dpad_mode    = ANALOG_DPAD_TWINSTICK;
                break;
             default:
                break;

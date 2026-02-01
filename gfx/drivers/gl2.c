@@ -3557,6 +3557,14 @@ static bool gl2_frame(void *data, const void *frame,
             frame_count, &gl->tex_info, &feedback_info,
             video_scale_integer);
 
+#ifdef EMSCRIPTEN
+   /* Workaround for a chromium-specific bug */
+   glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+   glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);
+   glClear(GL_COLOR_BUFFER_BIT);
+   glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+#endif
+
    /* Set prev textures. */
    gl2_renderchain_bind_prev_texture(gl,
          chain, &gl->tex_info);
@@ -5232,8 +5240,9 @@ static const video_poke_interface_t gl2_poke_interface = {
    NULL, /* get_hw_render_interface */
    NULL, /* set_hdr_max_nits */
    NULL, /* set_hdr_paper_white_nits */
-   NULL, /* set_hdr_contrast */
-   NULL  /* set_hdr_expand_gamut */
+   NULL, /* set_hdr_expand_gamut */
+   NULL, /* set_hdr_scanlines */
+   NULL  /* set_hdr_subpixel_layout */
 };
 
 static void gl2_get_poke_interface(void *data,
