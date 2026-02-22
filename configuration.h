@@ -542,6 +542,7 @@ typedef struct settings
       char webdav_url[NAME_MAX_LENGTH];
       char webdav_username[NAME_MAX_LENGTH];
       char webdav_password[NAME_MAX_LENGTH];
+      char google_drive_refresh_token[2048];
 
       char crt_switch_timings[NAME_MAX_LENGTH];
       char input_reserved_devices[MAX_USERS][NAME_MAX_LENGTH];
@@ -1424,7 +1425,7 @@ void input_config_parse_mouse_button(
       void *conf_data, const char *prefix,
       const char *btn, void *bind_data);
 
-const char *input_config_get_prefix(unsigned user, bool meta);
+void input_config_get_prefix(char *s, char len, char user, bool meta);
 
 RETRO_END_DECLS
 

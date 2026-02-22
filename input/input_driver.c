@@ -3075,6 +3075,9 @@ void input_overlay_set_alpha_mod(
    if (!ol)
       return;
 
+   if (ol->flags & INPUT_OVERLAY_GAMEPAD_HIDDEN)
+      mod = 0.0f;
+
    for (i = 0; i < ol->active->load_images_size; i++)
    {
       if (input_overlay_get_visibility(visibility, i)
@@ -3776,6 +3779,7 @@ static void input_poll_overlay(
          /* Check hitboxes only if this touch pointer
           * is not controlling a pointing device */
          if (   ol->flags & INPUT_OVERLAY_ENABLE
+             && !(ol->flags & INPUT_OVERLAY_GAMEPAD_HIDDEN)
              && !BIT16_GET(ptrdev_touch_mask, i))
             hitbox_pressed = input_overlay_poll(
                   ol, &polled_data, i, old_i,
@@ -4199,14 +4203,16 @@ size_t input_config_get_bind_string_joykey(
             && input_descriptor_label_show)
          return fill_pathname_join_delim(s,
                bind->joykey_label, suffix, ' ', len);
+
       /* TODO/FIXME - localize */
       _len  = strlcpy(s, "Button ", len);
       _len += snprintf(s + _len, len - _len, "%u",
             (unsigned)bind->joykey);
-
-      if (!string_is_empty(suffix))
-         _len += snprintf(s + _len, len - _len, " %s", suffix);
    }
+
+   if (!string_is_empty(suffix))
+      _len += snprintf(s + _len, len - _len, " %s", suffix);
+
    return _len;
 }
 
@@ -4221,14 +4227,20 @@ size_t input_config_get_bind_string_joyaxis(
          && input_descriptor_label_show)
       return fill_pathname_join_delim(s,
             bind->joyaxis_label, suffix, ' ', len);
+
    /* TODO/FIXME - localize */
    _len = strlcpy(s, "Axis ", len);
+
    if (AXIS_NEG_GET(bind->joyaxis) != AXIS_DIR_NONE)
       _len += snprintf(s + _len, len - _len, "-%u",
             (unsigned)AXIS_NEG_GET(bind->joyaxis));
    else if (AXIS_POS_GET(bind->joyaxis) != AXIS_DIR_NONE)
       _len += snprintf(s + _len, len - _len, "+%u",
             (unsigned)AXIS_POS_GET(bind->joyaxis));
+
+   if (!string_is_empty(suffix))
+      _len += snprintf(s + _len, len - _len, " %s", suffix);
+
    return _len;
 }
 
@@ -4699,9 +4711,11 @@ void input_mapper_reset(void *data)
 bool input_set_sensor_state(unsigned port,
       enum retro_sensor_action action, unsigned rate)
 {
-   bool input_sensors_enable   = config_get_ptr()->bools.input_sensors_enable;
+   settings_t *settings        = config_get_ptr();
+   bool input_sensors_enable   = settings->bools.input_sensors_enable;
+   unsigned joy_idx            = settings->uints.input_joypad_index[port];
    return input_driver_set_sensor(
-      port, input_sensors_enable, action, rate);
+      joy_idx, input_sensors_enable, action, rate);
 }
 
 const char *joypad_driver_name(unsigned i)
@@ -4746,12 +4760,13 @@ float input_get_sensor_state(unsigned port, unsigned id)
 {
    settings_t *settings      = config_get_ptr();
    bool input_sensors_enable = settings->bools.input_sensors_enable;
+   unsigned joy_idx          = settings->uints.input_joypad_index[port];
    float sensitivity         = 1.0f;
    if (id >= RETRO_SENSOR_ACCELEROMETER_X && id <= RETRO_SENSOR_ACCELEROMETER_Z)
       sensitivity = settings->floats.input_sensor_accelerometer_sensitivity;
    else if (id >= RETRO_SENSOR_GYROSCOPE_X && id <= RETRO_SENSOR_GYROSCOPE_Z)
       sensitivity = settings->floats.input_sensor_gyroscope_sensitivity;
-   return input_driver_get_sensor(port, input_sensors_enable, id) * sensitivity;
+   return input_driver_get_sensor(joy_idx, input_sensors_enable, id) * sensitivity;
 }
 
 /**
@@ -5267,24 +5282,25 @@ void config_read_keybinds_conf(void *data)
       for (j = 0; input_config_bind_map_get_valid(j); j++)
       {
          char str[NAME_MAX_LENGTH];
+         char prefix[16];
          const struct input_bind_map *keybind =
             (const struct input_bind_map*)INPUT_CONFIG_BIND_MAP_GET(j);
          struct retro_keybind *bind = &input_config_binds[i][j];
          bool meta                  = false;
-         const char *prefix         = NULL;
          const char *btn            = NULL;
          struct config_entry_list
             *entry                  = NULL;
 
+         if (!bind || !bind->valid || !keybind || !keybind->valid)
+            continue;
 
-         if (!bind || !bind->valid || !keybind)
-            continue;
-         if (!keybind->valid)
-            continue;
          meta                       = keybind->meta;
          btn                        = keybind->base;
-         prefix                     = input_config_get_prefix(i, meta);
-         if (!btn || !prefix)
+
+         prefix[0]                  = '\0';
+         input_config_get_prefix(prefix, sizeof(prefix), i, meta);
+
+         if (!btn || string_is_empty(prefix))
             continue;
 
          fill_pathname_join_delim(str, prefix, btn,  '_', sizeof(str));
@@ -5558,7 +5574,8 @@ static bool input_overlay_want_hidden(void)
    if (settings->bools.input_overlay_hide_in_menu)
       hide = (menu_state_get_ptr()->flags & MENU_ST_FLAG_ALIVE) != 0;
 #endif
-   if (settings->bools.input_overlay_hide_when_gamepad_connected)
+   if (settings->bools.input_overlay_hide_when_gamepad_connected
+         && !settings->bools.input_overlay_pointer_enable)
       hide = hide || (input_config_get_device_name(0) != NULL);
 
    return hide;
@@ -5657,6 +5674,16 @@ static void input_overlay_loaded(retro_task_t *task,
    /* Cache or free if hidden */
    if (!enable_overlay)
       input_overlay_unload();
+
+   /* Soft-hide when gamepad connected but pointer input enabled */
+   {
+      settings_t *settings = config_get_ptr();
+      if (enable_overlay
+            && settings->bools.input_overlay_hide_when_gamepad_connected
+            && settings->bools.input_overlay_pointer_enable
+            && input_config_get_device_name(0) != NULL)
+         ol->flags |= INPUT_OVERLAY_GAMEPAD_HIDDEN;
+   }
 
    input_overlay_set_eightway_diagonal_sensitivity();
 

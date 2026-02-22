@@ -2567,12 +2567,12 @@ static int setting_action_ok_bind_all(rarch_setting_t *setting,
 static int setting_action_ok_bind_all_save_autoconfig(
       rarch_setting_t *setting, size_t idx, bool wraparound)
 {
-   unsigned index_offset     = 0;
-   unsigned map              = 0;
-   const char *name          = NULL;
-   settings_t      *settings = config_get_ptr();
+   unsigned index_offset = 0;
+   unsigned map          = 0;
+   const char *name      = NULL;
+   settings_t *settings  = config_get_ptr();
 
-   if (!setting)
+   if (!setting || !settings)
       return -1;
 
    index_offset = setting->index_offset;
@@ -2580,16 +2580,37 @@ static int setting_action_ok_bind_all_save_autoconfig(
    name         = input_config_get_device_name(map);
 
    if (    !string_is_empty(name)
-         && config_save_autoconf_profile(name, index_offset))
+         && config_save_autoconf_profile(name, map))
    {
+      int i;
       size_t _len;
       char buf[128];
       char msg[NAME_MAX_LENGTH];
-      config_get_autoconf_profile_filename(name, index_offset, buf, sizeof(buf));
+      struct retro_keybind *target = &input_config_binds[map][0];
+
+      config_get_autoconf_profile_filename(name, map, buf, sizeof(buf));
       _len = snprintf(msg, sizeof(msg),
             msg_hash_to_str(MSG_AUTOCONFIG_FILE_SAVED_SUCCESSFULLY_NAMED), buf);
       runloop_msg_queue_push(msg, _len, 1, 180, true,
-            NULL, MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
+            NULL, MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_SUCCESS);
+
+      /* Clear manual controller binds */
+      for ( i  = MENU_SETTINGS_BIND_BEGIN;
+            i <= MENU_SETTINGS_BIND_LAST; i++, target++)
+      {
+         target->joykey  = NO_BTN;
+         target->joyaxis = AXIS_NONE;
+      }
+
+      /* Load and activate saved profile */
+      {
+         const input_device_driver_t *joypad = input_state_get_ptr()->primary_joypad;
+
+         if (joypad)
+            input_autoconfigure_connect(joypad->name(map),
+                  NULL, NULL, joypad->ident,
+                  map, 0, 0);
+      }
    }
    else
    {
@@ -3931,6 +3952,11 @@ static size_t setting_get_string_representation_uint_rgui_menu_color_theme(
                   msg_hash_to_str(
                      MENU_ENUM_LABEL_VALUE_RGUI_MENU_COLOR_THEME_GRAY_LIGHT),
                   len);
+         case RGUI_THEME_EVERGARDEN:
+            return strlcpy(s,
+                  msg_hash_to_str(
+                     MENU_ENUM_LABEL_VALUE_RGUI_MENU_COLOR_THEME_EVERGARDEN),
+                  len);
       }
    }
    return 0;
@@ -4612,6 +4638,10 @@ static size_t setting_get_string_representation_uint_materialui_menu_color_theme
             return strlcpy(s,
                   msg_hash_to_str(
                      MENU_ENUM_LABEL_VALUE_MATERIALUI_MENU_COLOR_THEME_GRAY_LIGHT), len);
+         case MATERIALUI_THEME_DRACULA:
+            return strlcpy(s,
+                  msg_hash_to_str(
+                     MENU_ENUM_LABEL_VALUE_MATERIALUI_MENU_COLOR_THEME_DRACULA), len);
          default:
             break;
       }
@@ -4805,6 +4835,10 @@ static size_t setting_get_string_representation_uint_ozone_menu_color_theme(
             return strlcpy(s,
                   msg_hash_to_str(
                      MENU_ENUM_LABEL_VALUE_OZONE_COLOR_THEME_BASIC_WHITE), len);
+         case OZONE_COLOR_THEME_EVERGARDEN:
+            return strlcpy(s,
+                  msg_hash_to_str(
+                     MENU_ENUM_LABEL_VALUE_OZONE_COLOR_THEME_EVERGARDEN), len);
       }
    }
    return 0;
@@ -9461,6 +9495,33 @@ static void systemd_service_toggle(const char *path, char *unit, bool enable)
    }
 }
 
+static void systemd_samba_service_toggle(const char *path, char *unit, bool enable)
+{
+   /* There is difference between samba and ssh/bluetooth.
+    * - samba.service is disabled if "/storage/.cache/services/samba.disabled" file is exist.
+    * - ssh.service is enabled if "/storage/.cache/services/sshd.conf" file is exist.
+    * - bluetooth.service is enabled if "/storage/.cache/services/bluez.conf" file is exist.
+    * So it separates the systemd_service_toggle for samba.service. */
+
+   pid_t pid    = fork();
+   char* args[] = {(char*)"systemctl",
+                   enable ? (char*)"start" : (char*)"stop",
+                   unit,
+                   NULL};
+
+   if (pid == 0)
+   {
+      if (enable)
+         filestream_delete(path);
+      else
+         filestream_close(filestream_open(path,
+                  RETRO_VFS_FILE_ACCESS_WRITE,
+                  RETRO_VFS_FILE_ACCESS_HINT_NONE));
+
+      execvp(args[0], args);
+   }
+}
+
 #ifdef HAVE_LAKKA_SWITCH
 static void switch_oc_enable_toggle_change_handler(rarch_setting_t *setting)
 {
@@ -9509,7 +9570,7 @@ static void ssh_enable_toggle_change_handler(rarch_setting_t *setting)
 
 static void samba_enable_toggle_change_handler(rarch_setting_t *setting)
 {
-   systemd_service_toggle(LAKKA_SAMBA_PATH, (char*)"smbd.service",
+   systemd_samba_service_toggle(LAKKA_SAMBA_DISABLED_FILE_PATH, (char*)"smbd.service",
          *setting->value.target.boolean);
 }
 
@@ -9877,16 +9938,19 @@ static bool setting_append_list_input_player_options(
    }
 
    {
-      const char *value_na =
-         msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NOT_AVAILABLE);
+      const char *value_na               = msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NOT_AVAILABLE);
+      bool input_descriptor_label_show   = settings->bools.input_descriptor_label_show
+            && core_has_set_input_descriptor();
+      bool input_descriptor_hide_unbound = settings->bools.input_descriptor_hide_unbound;
+
       for (j = 0; j < RARCH_BIND_LIST_END; j++)
       {
          char label[NAME_MAX_LENGTH];
          char name[NAME_MAX_LENGTH];
          size_t _len = 0;
-         i           =  (j < RARCH_ANALOG_BIND_LIST_END)
-            ? input_config_bind_order[j]
-            : j;
+         i           = (j < RARCH_ANALOG_BIND_LIST_END)
+               ? input_config_bind_order[j]
+               : j;
 
          if (input_config_bind_map_get_meta(i))
             continue;
@@ -9894,12 +9958,8 @@ static bool setting_append_list_input_player_options(
          name[0]          = '\0';
          label[0]         = '\0';
 
-         if (
-               settings->bools.input_descriptor_label_show
-               && (i < RARCH_FIRST_META_KEY)
-               && core_has_set_input_descriptor()
-               && (i != RARCH_TURBO_ENABLE)
-            )
+         if (     input_descriptor_label_show
+               && i < RARCH_LIGHTGUN_BIND_LIST_END)
          {
             const char *input_desc_btn;
 
@@ -9932,7 +9992,7 @@ static bool setting_append_list_input_player_options(
                      input_config_bind_map_get_desc(i),
                      value_na);
 
-               if (settings->bools.input_descriptor_hide_unbound)
+               if (input_descriptor_hide_unbound)
                   continue;
             }
          }
@@ -11762,7 +11822,7 @@ static bool setting_append_list(
             bool_entries[listing].target         = &settings->bools.savestate_thumbnail_enable;
             bool_entries[listing].name_enum_idx  = MENU_ENUM_LABEL_SAVESTATE_THUMBNAIL_ENABLE;
             bool_entries[listing].SHORT_enum_idx = MENU_ENUM_LABEL_VALUE_SAVESTATE_THUMBNAIL_ENABLE;
-            bool_entries[listing].flags          = SD_FLAG_NONE;
+            bool_entries[listing].flags          = SD_FLAG_ADVANCED;
             if (DEFAULT_SAVESTATE_THUMBNAIL_ENABLE)
                bool_entries[listing].flags      |= SD_FLAG_DEFAULT_VALUE;
             listing++;
@@ -11971,7 +12031,7 @@ static bool setting_append_list(
                   parent_group,
                   general_write_handler,
                   general_read_handler,
-                  SD_FLAG_NONE);
+                  SD_FLAG_ADVANCED);
 
             CONFIG_BOOL(
                   list, list_info,
@@ -11986,7 +12046,7 @@ static bool setting_append_list(
                   parent_group,
                   general_write_handler,
                   general_read_handler,
-                  SD_FLAG_NONE);
+                  SD_FLAG_ADVANCED);
 #endif
 
             CONFIG_ACTION(
@@ -16189,13 +16249,6 @@ static bool setting_append_list(
 
             END_SUB_GROUP(list, list_info, parent_group);
 
-            START_SUB_GROUP(
-                  list,
-                  list_info,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_TURBO_DEADZONE_LIST),
-                  &group_info,
-                  &subgroup_info,
-                  parent_group);
 
             CONFIG_FLOAT(
                   list, list_info,
@@ -16321,8 +16374,6 @@ static bool setting_append_list(
                   &subgroup_info,
                   parent_group);
 
-
-            END_SUB_GROUP(list, list_info, parent_group);
 
             START_SUB_GROUP(list, list_info, "Binds", &group_info, &subgroup_info, parent_group);
 

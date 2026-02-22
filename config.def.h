@@ -342,7 +342,11 @@
 /* Specifies whether to cache core info
  * into a single (compressed) file for improved
  * load times on platforms with slow IO */
+#if defined(__x86_64__) || defined(_M_X64)
+#define DEFAULT_CORE_INFO_CACHE_ENABLE false
+#else
 #define DEFAULT_CORE_INFO_CACHE_ENABLE true
+#endif
 
 /* Specifies whether to ignore core info
  * savestate capabilities, allowing to
@@ -768,10 +772,6 @@
 #ifdef HAVE_MIST
 #define DEFAULT_MENU_SHOW_CORE_MANAGER_STEAM true
 #endif
-#if 0
-/* Thumbnailpack removal */
-#define DEFAULT_MENU_SHOW_LEGACY_THUMBNAIL_UPDATER false
-#endif
 #define DEFAULT_MENU_SHOW_SUBLABELS true
 #define DEFAULT_MENU_DYNAMIC_WALLPAPER_ENABLE true
 #define DEFAULT_MENU_SCROLL_FAST false
@@ -1016,8 +1016,14 @@
  * rather than raw game output. */
 #define DEFAULT_POST_FILTER_RECORD false
 
+/* Screenshots named automatically. */
+#define DEFAULT_AUTO_SCREENSHOT_FILENAME true
+
 /* Screenshots post-shaded GPU output if available. */
-#define DEFAULT_GPU_SCREENSHOT true
+#define DEFAULT_GPU_SCREENSHOT false
+
+/* Record post-shaded GPU output instead of raw game footage if available. */
+#define DEFAULT_GPU_RECORD false
 
 /* Watch shader files for changes and auto-apply as necessary. */
 #define DEFAULT_VIDEO_SHADER_WATCH_FILES false
@@ -1025,12 +1031,6 @@
 /* Initialise file browser with last used directory
  * when selecting shader presets/passes via the menu */
 #define DEFAULT_VIDEO_SHADER_REMEMBER_LAST_DIR false
-
-/* Screenshots named automatically. */
-#define DEFAULT_AUTO_SCREENSHOT_FILENAME true
-
-/* Record post-shaded GPU output instead of raw game footage if available. */
-#define DEFAULT_GPU_RECORD false
 
 /* OSD-messages. */
 #define DEFAULT_FONT_ENABLE true
@@ -1358,8 +1358,6 @@
 
 #define DEFAULT_NETPLAY_NAT_TRAVERSAL false
 
-#define DEFAULT_NETPLAY_DELAY_FRAMES 16
-
 #define DEFAULT_NETPLAY_CHECK_FRAMES 600
 
 #define DEFAULT_NETPLAY_USE_MITM_SERVER false
@@ -1425,7 +1423,7 @@
 #define DEFAULT_SAVESTATE_AUTO_LOAD false
 
 /* Take screenshots for save states */
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(_M_X64)
 #define DEFAULT_SAVESTATE_THUMBNAIL_ENABLE true
 #else
 #define DEFAULT_SAVESTATE_THUMBNAIL_ENABLE false
