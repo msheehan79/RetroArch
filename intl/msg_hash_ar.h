@@ -36,11 +36,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_HISTORY_TAB,
-   "مؤخرًا"
+   "السجل"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_IMAGES_TAB,
-   "الصّور"
+   "الصور"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MUSIC_TAB,
@@ -52,7 +52,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_NETPLAY_TAB,
-   "نت بلاي"
+   "اللعب عبر الشبكة"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_EXPLORE_TAB,
@@ -60,11 +60,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENTLESS_CORES_TAB,
-   "محاكيات دون محتوى"
+   "أنوية بدون محتوى"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_ADD_TAB,
-   "استيراد مُحتوى"
+   "استيراد محتوى"
    )
 
 /* Main Menu */
@@ -79,7 +79,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_LIST,
-   "تحميل محاكي"
+   "تحميل النواة"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CORE_LIST,
@@ -87,11 +87,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_LIST_UNLOAD,
-   "إيقاف تشغيل المحاكي"
+   "إيقاف تشغيل النواة"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CORE_LIST_UNLOAD,
-   "تحرير المحاكي المحمل."
+   "تحرير النواة المحملة."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_CORE_LIST,
@@ -169,11 +169,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_ONLINE_UPDATER,
-   "المُحَدّث عبر الإنترنت"
+   "المحدث عبر الإنترنت"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_ONLINE_UPDATER,
-   "تنزيل الإضافات، المكونات و المحتويات لريترو أرك."
+   "تحميل الإضافات والمكونات والمحتوى لـ RetroArch."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_NETPLAY,
@@ -252,7 +252,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_DOWNLOAD_CORE,
-   "تنزيل و تثبيت محاكي من المُحَدّث عبر الإنترنت."
+   "تنزيل وتثبيت النواة من المحدث عبر الإنترنت."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SIDELOAD_CORE_LIST,
@@ -334,7 +334,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_GOTO_CONTENTLESS_CORES,
-   "محاكيات دون محتوى"
+   "أنوية بدون محتوى"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_GOTO_CONTENTLESS_CORES,
@@ -345,7 +345,7 @@ MSG_HASH(
 
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_UPDATER_LIST,
-   "مُنَزّل محاكيات"
+   "منزل النواة"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_UPDATE_INSTALLED_CORES,
@@ -365,7 +365,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PL_THUMBNAILS_UPDATER_LIST,
-   "مُحَدّث قائمة التشغيل المصغرة"
+   "تحديث الصور المصغرة لقوائم التشغيل"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_PL_THUMBNAILS_UPDATER_LIST,
@@ -373,7 +373,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DOWNLOAD_CORE_CONTENT,
-   "مُنَزّل المحتوى"
+   "منزل المحتوى"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_DOWNLOAD_CORE_CONTENT,
@@ -393,11 +393,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_UPDATE_ASSETS,
-   "تحديث الأصل"
+   "تحديث الأصول"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_UPDATE_AUTOCONFIG_PROFILES,
-   "تحديث ملفات Joypad"
+   "تحديث بيانات وحدة التحكم"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_UPDATE_CHEATS,
@@ -409,7 +409,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_UPDATE_OVERLAYS,
-   "تحديث overlays"
+   "تحديث التراكبات"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_UPDATE_GLSL_SHADERS,
@@ -421,7 +421,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_UPDATE_SLANG_SHADERS,
-   "تحديث Sla Shaders"
+   "تحديث الظلال العامية"
    )
 
 /* Main Menu > Information */
@@ -658,7 +658,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CPU_CORES,
-   "نَوَيات المُعالِجْ"
+   "أنوية المعالج"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_JIT_AVAILABLE,
@@ -717,7 +717,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_RDB_ENTRY_LANGUAGE,
-   "اللّغة"
+   "اللغة"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_RDB_ENTRY_REGION,
@@ -1907,12 +1907,8 @@ MSG_HASH(
 /* Settings > Video > HDR */
 
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_VIDEO_HDR_ENABLE,
-   "تمكين HDR"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_VIDEO_HDR_ENABLE,
-   "تمكين HDR إذا كانت الشاشة تدعمه."
+   MENU_ENUM_LABEL_VALUE_VIDEO_HDR_EXPAND_GAMUT_ACCURATE,
+   "دقيق"
    )
 
 
@@ -3906,6 +3902,14 @@ MSG_HASH(
    MENU_ENUM_LABEL_VALUE_NETWORK_ON_DEMAND_THUMBNAILS,
    "التنزيلات المصغرة عند الطلب"
    )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_UPDATER_SETTINGS,
+   "اعدادات التحديث"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_UPDATER_SETTINGS,
+   "الوصول إلى إعدادات تحديث النواة"
+   )
 
 /* Settings > Network > Updater */
 
@@ -4104,7 +4108,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_USER_LANGUAGE,
-   "اللّغة"
+   "اللغة"
    )
 
 /* Settings > User > Privacy */
@@ -4169,7 +4173,11 @@ MSG_HASH(
 
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SYSTEM_DIRECTORY,
-   "النظام/BIOS"
+   "النظام/البيوس"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_SYSTEM_DIRECTORY,
+   "يتم تخزين البيوسات، والرومات، والملفات الأخرى الخاصة بالنظام في هذا الدليل."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_ASSETS_DIRECTORY,
@@ -4194,6 +4202,14 @@ MSG_HASH(
 MSG_HASH( /* FIXME Not RGUI specific */
    MENU_ENUM_LABEL_VALUE_RGUI_BROWSER_DIRECTORY,
    "مجلد البداية"
+   )
+MSG_HASH( /* FIXME Not RGUI specific */
+   MENU_ENUM_SUBLABEL_RGUI_BROWSER_DIRECTORY,
+   "تعيين دليل بدء متصفح الملف."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_LIBRETRO_DIR_PATH,
+   "الأنوية"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LIBRETRO_INFO_PATH,
@@ -4232,12 +4248,24 @@ MSG_HASH(
    "سجلات وقت التشغيل"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SAVEFILE_DIRECTORY,
+   "ملفات الحفظ"
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_SAVEFILE_DIRECTORY,
-   "حفظ جميع الملفات إلى هذا الدليل. إذا لم يتم تعيينه، سوف تحاول الحفظ داخل دليل عمل ملف المحتوى."
+   "حفظ جميع ملفات الحفظ في هذا الدليل. إذا لم يتم تعينه، فسيتم محاولة الحفظ داخل دليل عمل ملف المحتوى."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SAVESTATE_DIRECTORY,
+   "حالات الحفظ"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CACHE_DIRECTORY,
    "ذاكرة التخزين المؤقت"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CACHE_DIRECTORY,
+   "سيتم استخراج المحتوى المؤرشف مؤقتاً إلى هذا الدليل."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LOG_DIR,
@@ -4679,6 +4707,10 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_STOP_STREAMING,
    "ايقاف البث"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SAVESTATE_LIST,
+   "حالات الحفظ"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_OPTIONS,
@@ -7232,6 +7264,10 @@ MSG_HASH(
 
 /* Unsorted */
 
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CORE_UPDATER_SETTINGS,
+   "اعدادات تحديث النواة"
+   )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_ACCOUNTS_CHEEVOS_SETTINGS,
    "حسابات Cheevos"
