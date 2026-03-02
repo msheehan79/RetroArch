@@ -2400,7 +2400,7 @@ MSG_HASH(
 
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_HDR_ENABLE,
-   "Selecciona el mode de sortida HDR si la pantalla el suporta."
+   "Estableix el mode de sortida HDR si el teu monitor en té l'opció. Nota: el mode sRGB pot aclarir les màscares de shaders CRT perquè en compondre les imatges per part del sistema operatiu, es converteix la imatge a HDR10 després d'aplicar la màscara."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_HDR_MODE_OFF,

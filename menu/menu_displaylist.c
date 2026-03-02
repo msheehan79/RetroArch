@@ -1340,6 +1340,23 @@ static unsigned menu_displaylist_parse_core_manager_list(file_list_t *list,
          count++;
 #endif
 
+   {
+      /* MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM requires 'settings' */
+      settings_t *settings = config_get_ptr();
+#ifdef HAVE_IMAGEVIEWER
+      if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
+            MENU_ENUM_LABEL_USE_BUILTIN_IMAGE_VIEWER, PARSE_ONLY_BOOL,
+            false) == 0)
+         count++;
+#endif
+#if defined(HAVE_FFMPEG) || defined(HAVE_MPV) || defined (HAVE_AUDIOMIXER)
+      if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
+            MENU_ENUM_LABEL_USE_BUILTIN_PLAYER, PARSE_ONLY_BOOL,
+            false) == 0)
+         count++;
+#endif
+   }
+
    return count;
 }
 
@@ -4086,9 +4103,9 @@ static int menu_displaylist_parse_load_content_settings(
       }
 #if HAVE_GAME_AI
       if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
-                        MENU_ENUM_LABEL_GAME_AI_MENU_OPTION,
-                        PARSE_ONLY_BOOL, false) == 0)
-                  count++;
+            MENU_ENUM_LABEL_GAME_AI_MENU_OPTION,
+            PARSE_ONLY_BOOL, false) == 0)
+         count++;
 
       if (settings->bools.quick_menu_show_game_ai)
       {
@@ -4102,9 +4119,9 @@ static int menu_displaylist_parse_load_content_settings(
 #endif
 #ifdef HAVE_SMBCLIENT
       if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
-         MENU_ENUM_LABEL_SMB_CLIENT_SETTINGS,
-                        PARSE_ONLY_BOOL, false) == 0)
-                  count++;
+            MENU_ENUM_LABEL_SMB_CLIENT_SETTINGS,
+            PARSE_ONLY_BOOL, false) == 0)
+         count++;
 
       if (settings->bools.smb_client_enable)
       {
@@ -6235,8 +6252,8 @@ static int menu_displaylist_parse_input_description_list(
       return 0;
 
    /* Determine user/button indices */
-   user_idx    = (info->type - MENU_SETTINGS_INPUT_DESC_BEGIN) / (RARCH_FIRST_CUSTOM_BIND + 8);
-   btn_idx     = (info->type - MENU_SETTINGS_INPUT_DESC_BEGIN) - (RARCH_FIRST_CUSTOM_BIND + 8) * user_idx;
+   user_idx    = (info->type - MENU_SETTINGS_INPUT_DESC_BEGIN) / RARCH_ANALOG_BIND_LIST_END;
+   btn_idx     = (info->type - MENU_SETTINGS_INPUT_DESC_BEGIN) - RARCH_ANALOG_BIND_LIST_END * user_idx;
 
    if (   (user_idx >= MAX_USERS)
        || (btn_idx >= RARCH_CUSTOM_BIND_LIST_END))
@@ -10596,8 +10613,8 @@ unsigned menu_displaylist_build_list(
                {MENU_ENUM_LABEL_FILTER_BY_CURRENT_CORE,                                PARSE_ONLY_BOOL},
                {MENU_ENUM_LABEL_USE_LAST_START_DIRECTORY,                              PARSE_ONLY_BOOL},
                {MENU_ENUM_LABEL_CORE_SUGGEST_ALWAYS,                                   PARSE_ONLY_BOOL},
-               {MENU_ENUM_LABEL_USE_BUILTIN_PLAYER,                                    PARSE_ONLY_BOOL},
                {MENU_ENUM_LABEL_USE_BUILTIN_IMAGE_VIEWER,                              PARSE_ONLY_BOOL},
+               {MENU_ENUM_LABEL_USE_BUILTIN_PLAYER,                                    PARSE_ONLY_BOOL},
             };
 
             for (i = 0; i < ARRAY_SIZE(build_list); i++)
@@ -12774,98 +12791,44 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
                   snprintf(key, sizeof(key),
                         msg_hash_to_str(MENU_ENUM_LABEL_INPUT_LIBRETRO_DEVICE), mapped_port + 1);
                   if (MENU_DISPLAYLIST_PARSE_SETTINGS(list,
-                           key, PARSE_ONLY_UINT, true, MENU_SETTINGS_INPUT_LIBRETRO_DEVICE) == 0)
+                        key, PARSE_ONLY_UINT, true, MENU_SETTINGS_INPUT_LIBRETRO_DEVICE) == 0)
                      count++;
                   snprintf(key, sizeof(key),
                         msg_hash_to_str(MENU_ENUM_LABEL_INPUT_PLAYER_ANALOG_DPAD_MODE), port + 1);
                   if (MENU_DISPLAYLIST_PARSE_SETTINGS(list,
-                           key, PARSE_ONLY_UINT, true, MENU_SETTINGS_INPUT_ANALOG_DPAD_MODE) == 0)
+                        key, PARSE_ONLY_UINT, true, MENU_SETTINGS_INPUT_ANALOG_DPAD_MODE) == 0)
                      count++;
                   snprintf(key, sizeof(key),
                         msg_hash_to_str(MENU_ENUM_LABEL_INPUT_REMAP_PORT), port + 1);
                   if (MENU_DISPLAYLIST_PARSE_SETTINGS(list,
-                           key, PARSE_ONLY_UINT, true, MENU_SETTINGS_INPUT_INPUT_REMAP_PORT) == 0)
+                        key, PARSE_ONLY_UINT, true, MENU_SETTINGS_INPUT_INPUT_REMAP_PORT) == 0)
                      count++;
                }
 
                {
+                  char name[NAME_MAX_LENGTH];
+                  size_t _len      = 0;
                   unsigned j;
                   unsigned device  = settings->uints.input_libretro_device[mapped_port];
                   device          &= RETRO_DEVICE_MASK;
 
-                  if (device == RETRO_DEVICE_JOYPAD || device == RETRO_DEVICE_ANALOG)
-                  {
-                     const char *msg_val_port =
-                        msg_hash_to_str(MENU_ENUM_LABEL_VALUE_PORT);
-                     for (j = 0; j < RARCH_ANALOG_BIND_LIST_END; j++)
-                     {
-                        char descriptor[300];
-                        unsigned retro_id                     =
-                           (j < RARCH_ANALOG_BIND_LIST_END)
-                           ? input_config_bind_order[j]
-                           : j;
-                        const struct retro_keybind *keybind   =
-                           &input_config_binds[port][retro_id];
-                        const struct retro_keybind *auto_bind =
-                           (const struct retro_keybind*)
-                           input_config_get_bind_auto(port, retro_id);
-                        size_t desc_len = input_config_get_bind_string(
-                              settings, descriptor,
-                              keybind, auto_bind, sizeof(descriptor));
-
-                        if (!strstr(descriptor, "Auto"))
-                        {
-                           char desc_lbl[400];
-                           const struct retro_keybind *keyptr =
-                              &input_config_binds[port][retro_id];
-                           size_t _len  = strlcpy(desc_lbl,
-                                 msg_hash_to_str(keyptr->enum_idx),
-                                 sizeof(desc_lbl));
-                           _len        += strlcpy(desc_lbl + _len, ", ", sizeof(desc_lbl) - _len);
-                           strlcpy(desc_lbl + _len, descriptor, sizeof(desc_lbl) - _len);
-                           desc_len = strlcpy(descriptor, desc_lbl, sizeof(descriptor));
-                        }
-
-#ifdef HAVE_RGUI
-                        /* Add user index when display driver == rgui and sublabels
-                         * are disabled, but only if there is more than one user */
-                        if (
-                                    (is_rgui)
-                                 && (max_users > 1)
-                              && !settings->bools.menu_show_sublabels)
-                        {
-                           desc_len += strlcpy(descriptor + desc_len,
-                                 " [", sizeof(descriptor) - desc_len);
-                           desc_len += strlcpy(descriptor + desc_len,
-                                 msg_val_port, sizeof(descriptor) - desc_len);
-                           snprintf(descriptor + desc_len,
-                                 sizeof(descriptor) - desc_len," %u]", port + 1);
-                        }
-#endif
-
-                        /* Note: 'physical' port is passed as label */
-                        if (menu_entries_append(list, descriptor, info->path,
-                                 MSG_UNKNOWN,
-                                 MENU_SETTINGS_INPUT_DESC_BEGIN +
-                                 (port * (RARCH_FIRST_CUSTOM_BIND + 8)) + retro_id, 0, 0, NULL))
-                           count++;
-                     }
-                  }
-                  else if (device == RETRO_DEVICE_KEYBOARD)
+                  if (     device == RETRO_DEVICE_JOYPAD
+                        || device == RETRO_DEVICE_ANALOG
+                        || device == RETRO_DEVICE_KEYBOARD)
                   {
                      const char *val_port = msg_hash_to_str(MENU_ENUM_LABEL_VALUE_PORT);
                      for (j = 0; j < RARCH_ANALOG_BIND_LIST_END; j++)
                      {
                         char descriptor[300];
                         unsigned retro_id                     =
-                           (j < RARCH_ANALOG_BIND_LIST_END)
-                           ? input_config_bind_order[j]
-                           : j;
+                              (j < RARCH_ANALOG_BIND_LIST_END)
+                                 ? input_config_bind_order[j]
+                                 : j;
                         const struct retro_keybind *keybind   =
-                           &input_config_binds[port][retro_id];
+                              &input_config_binds[port][retro_id];
                         const struct retro_keybind *auto_bind =
-                           (const struct retro_keybind*)
-                           input_config_get_bind_auto(port, retro_id);
+                              (const struct retro_keybind*)
+                              input_config_get_bind_auto(port, retro_id);
                         size_t desc_len = input_config_get_bind_string(
                               settings, descriptor,
                               keybind, auto_bind, sizeof(descriptor));
@@ -12874,8 +12837,8 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
                         {
                            char desc_lbl[400];
                            const struct retro_keybind *keyptr =
-                              &input_config_binds[port][retro_id];
-                           size_t _len  = strlcpy(desc_lbl,
+                                 &input_config_binds[port][retro_id];
+                           _len         = strlcpy(desc_lbl,
                                  msg_hash_to_str(keyptr->enum_idx),
                                  sizeof(desc_lbl));
                            _len        += strlcpy(desc_lbl + _len, ", ", sizeof(desc_lbl) - _len);
@@ -12886,22 +12849,37 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
 #ifdef HAVE_RGUI
                         /* Add user index when display driver == rgui and sublabels
                          * are disabled, but only if there is more than one user */
-                        if (     (is_rgui)
-                              && (max_users > 1)
+                        if (     is_rgui
+                              && max_users > 1
                               && !settings->bools.menu_show_sublabels)
                         {
                            desc_len += strlcpy(descriptor + desc_len, " [", sizeof(descriptor) - desc_len);
-                           snprintf(descriptor + desc_len, sizeof(descriptor) - desc_len, "%s %u]",
+                           snprintf(descriptor + desc_len, sizeof(descriptor) - desc_len," %s %u]",
                                  val_port, port + 1);
                         }
 #endif
 
-                        /* Note: 'physical' port is passed as label */
-                        if (menu_entries_append(list, descriptor, info->path,
+                        _len = snprintf(name, sizeof(name), "p%u_", port + 1);
+                        strlcpy(name + _len,
+                              input_config_bind_map_get_base(retro_id),
+                              sizeof(name) - _len);
+
+                        if (device == RETRO_DEVICE_JOYPAD || device == RETRO_DEVICE_ANALOG)
+                        {
+                           if (menu_entries_append(list, descriptor, name,
                                  MSG_UNKNOWN,
-                                 MENU_SETTINGS_INPUT_DESC_KBD_BEGIN +
+                                 MENU_SETTINGS_INPUT_DESC_BEGIN +
                                  (port * RARCH_ANALOG_BIND_LIST_END) + retro_id, 0, 0, NULL))
-                           count++;
+                              count++;
+                        }
+                        else if (device == RETRO_DEVICE_KEYBOARD)
+                        {
+                           if (menu_entries_append(list, descriptor, name,
+                                    MSG_UNKNOWN,
+                                    MENU_SETTINGS_INPUT_DESC_KBD_BEGIN +
+                                    (port * RARCH_ANALOG_BIND_LIST_END) + retro_id, 0, 0, NULL))
+                              count++;
+                        }
                      }
                   }
                }

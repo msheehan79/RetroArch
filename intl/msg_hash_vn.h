@@ -2428,7 +2428,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_HDR_ENABLE,
-   "Đặt chế độ xuất HDR nếu màn hình hỗ trợ."
+   "Bật chế độ xuất HDR nếu màn hình hỗ trợ. Lưu ý: Khi sử dụng scRGB, các mặt nạ shader CRT có thể bị giảm độ sắc nét do hệ điều hành sẽ chuyển sang HDR10 sau khi áp dụng mặt nạ."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_HDR_MODE_OFF,
@@ -4101,7 +4101,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_DEVICE_RESERVED_DEVICE_NAME,
-   "Thiết bị dành riêng cho người chơi này"
+   "Thiết bị được dành riêng cho người chơi này"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_DEVICE_RESERVED_DEVICE_NAME,

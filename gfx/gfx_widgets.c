@@ -280,7 +280,7 @@ void gfx_widgets_msg_queue_push(
             /* Text is too wide, split it into two lines */
             if (text_width > width)
             {
-               size_t wrap_length       = 0;
+               int wrap_length          = 0;
 
                /* If the second line is too short, the widget may
                 * look unappealing - ensure that second line is at
@@ -294,11 +294,11 @@ void gfx_widgets_msg_queue_push(
 
                /* Recalculate widget width with longest wrapped line */
                wrap_length              = string_index_last_occurance(msg, '\n');
-               if (wrap_length)
+               if (wrap_length != -1)
                {
                   len                  -= wrap_length;
 
-                  if (len < wrap_length)
+                  if ((int)len < wrap_length)
                      len       = wrap_length;
 
                   text_width            = font_driver_get_message_width(

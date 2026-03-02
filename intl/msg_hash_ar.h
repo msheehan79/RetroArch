@@ -248,7 +248,7 @@ MSG_HASH(
 
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DOWNLOAD_CORE,
-   "تنزيل محاكي"
+   "تنزيل نواة"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_DOWNLOAD_CORE,
@@ -275,7 +275,7 @@ MSG_HASH( /* FIXME Maybe add a description? */
 
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_FAVORITES,
-   "مجلد البداية"
+   "مسار البداية"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DOWNLOADED_FILE_DETECT_CORE_LIST,
@@ -479,7 +479,7 @@ MSG_HASH(
 
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_INFO_CORE_NAME,
-   "اسم المحاكي"
+   "اسم النواة"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_INFO_CORE_LABEL,
@@ -487,7 +487,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_INFO_CORE_VERSION,
-   "النسخة المحاكي"
+   "نسخة النواة"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_INFO_SYSTEM_NAME,
@@ -860,35 +860,51 @@ MSG_HASH(
 
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONFIGURATIONS,
-   "تحميل ملف التكوين"
+   "تحميل الإعدادات"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CONFIGURATIONS,
-   "تحميل الإعدادات الحالية واستبدال القيم الموجودة"
+   "تحميل الإعدادات الموجودة واستبدل القيم الحالية."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SAVE_CURRENT_CONFIG,
-   "قراءة إعدادات التكوين الحالية"
+   "حفظ الإعدادات الحالية"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_SAVE_CURRENT_CONFIG,
-   "استبدال ملف الإعدادات الحالي"
+   "استبدال ملف الإعدادات الحالي."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SAVE_NEW_CONFIG,
-   "حفظ الإعدادات"
+   "حفظ إعدادات جديدة"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_SAVE_NEW_CONFIG,
-   "حفظ الإعدادات الحالية في ملف منفصل"
+   "حفظ الإعدادات الحالية في ملف منفصل."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SAVE_AS_CONFIG,
+   "حفظ الإعدادات كـ"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_SAVE_AS_CONFIG,
+   "احفظ الإعدادات الحالية كملف إعدادات مخصص."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SAVE_MAIN_CONFIG,
+   "حفظ الإعدادات الرئيسية"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_SAVE_MAIN_CONFIG,
+   "احفظ الإعدادات الحالية كإعدادات رئيسية."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_RESET_TO_DEFAULT_CONFIG,
-   "إعادة التعيين إلى الافتراضي"
+   "إعادة التعيين إلى الوضع الإفتراضي"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_RESET_TO_DEFAULT_CONFIG,
-   "إعادة الإعدادات للوضع الافتراضي."
+   "إعادة ضبط الإعدادات الحالية إلى القيم الافتراضية."
    )
 
 /* Main Menu > Help */
@@ -1188,7 +1204,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_FILE_BROWSER_DIRECTORY,
-   "الدليل. حدده لفتح هذا الدليل."
+   "المسار. حدده لفتح هذا المسار."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_FRAME_THROTTLE_SETTINGS,
@@ -1276,11 +1292,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DIRECTORY_SETTINGS,
-   "الدلائل"
+   "المسار"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_DIRECTORY_SETTINGS,
-   "تغيير الدلائل الافتراضية حيث توجد الملفات."
+   "تغيير المسارات الافتراضية حيث توجد الملفات."
    )
 
 /* Core option category placeholders for icons */
@@ -2858,12 +2874,12 @@ MSG_HASH(
 
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_STEAM_INSTALL,
-   "تثبيت محاكي"
+   "تثبيت النواة"
 )
 
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_STEAM_UNINSTALL,
-   "إلغاء تثبيت محاكي"
+   "إلغاء تثبيت النواة"
 )
 
 MSG_HASH(
@@ -2929,11 +2945,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_SORT_SAVEFILES_BY_CONTENT_ENABLE,
-   "فرز الملفات المحفوظة في المجلدات المسماة باسم الدليل الذي يقع فيه المحتوى."
+   "فرز الملفات المحفوظة في المجلدات المسماة باسم المسار الذي يقع فيه المحتوى."
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_SORT_SAVESTATES_BY_CONTENT_ENABLE,
-   "فرز الملفات المحفوظة في المجلدات المسماة باسم الدليل الذي يقع فيه المحتوى."
+   "فرز الحالات المحفوظة في المجلدات المسماة باسم الدليل الذي يقع فيه المحتوى."
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_BLOCK_SRAM_OVERWRITE,
@@ -2953,11 +2969,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SYSTEMFILES_IN_CONTENT_DIR_ENABLE,
-   "ملفات النظام في دليل المحتوى"
+   "ملفات النظام في مسار المحتوى"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_SORT_SCREENSHOTS_BY_CONTENT_ENABLE,
-   "فرز الملفات المحفوظة في المجلدات المسماة باسم الدليل الذي يقع فيه المحتوى."
+   "فرز لقطات الشاشة في المجلدات المسماة باسم المسار الذي يقع فيه المحتوى."
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_GPU_SCREENSHOT,
@@ -4130,7 +4146,7 @@ MSG_HASH(
 
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_ACCOUNTS_RETRO_ACHIEVEMENTS,
-   "الإنجازات التراجعية"
+   "الإنجازات"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_ACCOUNTS_YOUTUBE,
@@ -4177,7 +4193,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_SYSTEM_DIRECTORY,
-   "يتم تخزين البيوسات، والرومات، والملفات الأخرى الخاصة بالنظام في هذا الدليل."
+   "يتم تخزين البيوسات، والرومات، والملفات الأخرى الخاصة بالنظام في هذا المسار."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_ASSETS_DIRECTORY,
@@ -4185,11 +4201,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_ASSETS_DIRECTORY,
-   "مصادر"
+   "الأصول"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_ASSETS_DIRECTORY,
-   "يتم تخزين أصول القائمة المستخدمة بواسطة RetroArch في هذا الدليل."
+   "يتم تخزين أصول القائمة المستخدمة بواسطة RetroArch في هذا المسار."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DYNAMIC_WALLPAPERS_DIRECTORY,
@@ -4201,11 +4217,11 @@ MSG_HASH(
    )
 MSG_HASH( /* FIXME Not RGUI specific */
    MENU_ENUM_LABEL_VALUE_RGUI_BROWSER_DIRECTORY,
-   "مجلد البداية"
+   "مسار البداية"
    )
 MSG_HASH( /* FIXME Not RGUI specific */
    MENU_ENUM_SUBLABEL_RGUI_BROWSER_DIRECTORY,
-   "تعيين دليل بدء متصفح الملف."
+   "تعيين مسار بدء متصفح الملف."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LIBRETRO_DIR_PATH,
@@ -4221,11 +4237,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_RECORDING_CONFIG_DIRECTORY,
-   "يتم تخزين إعدادات التسجيل في هذا الدليل."
+   "يتم تخزين إعدادات التسجيل في هذا المسار."
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_OVERLAY_DIRECTORY,
-   "يتم تخزين الاستفسارات المحفوظة في هذا الدليل."
+   "يتم تخزين الاستفسارات المحفوظة في هذا المسار."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SCREENSHOT_DIRECTORY,
@@ -4233,15 +4249,27 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_JOYPAD_AUTOCONFIG_DIR,
-   "يتم تخزين ملفات تعريف التحكم المستخدمة لتهيئة المتحكم تلقائياً في هذا الدليل."
+   "يتم تخزين ملفات تعريف التحكم المستخدمة لتهيئة المتحكم تلقائياً في هذا المسار."
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_REMAPPING_DIRECTORY,
-   "يتم تخزين رسائل الإدخال في هذا الدليل."
+   "يتم تخزين رسائل الإدخال في هذا المسار."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PLAYLIST_DIRECTORY,
-   "قائمة التشغيل"
+   "قوائم التشغيل"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_PLAYLIST_DIRECTORY,
+   "يتم تخزين قوائم التشغيل المحفوظة في هذا المسار."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CONTENT_FAVORITES_DIRECTORY,
+   "قائمة التشغيل المفضلة"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CONTENT_HISTORY_DIRECTORY,
+   "سجل قائمة التشغيل"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_RUNTIME_LOG_DIRECTORY,
@@ -4253,7 +4281,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_SAVEFILE_DIRECTORY,
-   "حفظ جميع ملفات الحفظ في هذا الدليل. إذا لم يتم تعينه، فسيتم محاولة الحفظ داخل دليل عمل ملف المحتوى."
+   "حفظ جميع ملفات الحفظ في هذا المسار. إذا لم يتم تعينه، فسيتم محاولة الحفظ داخل مسار عمل ملف المحتوى."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SAVESTATE_DIRECTORY,
@@ -4265,7 +4293,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CACHE_DIRECTORY,
-   "سيتم استخراج المحتوى المؤرشف مؤقتاً إلى هذا الدليل."
+   "سيتم استخراج المحتوى المؤرشف مؤقتاً إلى هذا المسار."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LOG_DIR,
@@ -4338,15 +4366,15 @@ MSG_HASH(
 
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SCAN_DIRECTORY,
-   "مسح الدليل"
+   "فحص المسار"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_SCAN_DIRECTORY,
-   "يقوم بمسح دليل للمحتوى يتطابق مع قاعدة البيانات."
+   "فحص المسار بحثًا عن محتوى يطابق قاعدة البيانات."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SCAN_THIS_DIRECTORY,
-   "<مسح هذا الدليل>"
+   "<فحص هذا المسار>"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SCAN_FILE,
@@ -4380,7 +4408,7 @@ MSG_HASH(
 
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_DIR,
-   "دليل المحتوى"
+   "مسار المحتوى"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_SYSTEM_NAME,
@@ -4420,7 +4448,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_MANUAL_CONTENT_SCAN_SEARCH_RECURSIVELY,
-   "عند التمكين، سيتم تضمين جميع الدلائل الفرعية لـ 'دليل المحتوى' المحدد في المسح."
+   "عند التمكين، سيتم تضمين جميع المسارات الفرعية لـ 'مسار المحتوى' المحدد في الفحص."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_SEARCH_ARCHIVES,
@@ -5139,7 +5167,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_SHADER_PRESET_SAVE_PARENT,
-   "حفظ تجهيز مجلد المحتوى"
+   "حفظ تجهيز مسار المحتوى"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_SHADER_PRESET_SAVE_GAME,
@@ -5171,11 +5199,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_SHADER_PRESET_REMOVE_PARENT,
-   "حفظ تجهيز مجلد المحتوى"
+   "حفظ تجهيز مسار المحتوى"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_SHADER_PRESET_REMOVE_PARENT,
-   "إزالة الإعداد المسبق لدليل المحتوى، الذي تستخدمه جميع المحتويات داخل دليل العمل الحالي."
+   "إزالة الإعداد المسبق لمسار المحتوى، الذي تستخدمه جميع المحتويات داخل مسار العمل الحالي."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_SHADER_PRESET_REMOVE_GAME,
@@ -5201,7 +5229,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SAVE_CURRENT_CONFIG_OVERRIDE_CONTENT_DIR,
-   "حفظ تجاوز دليل المحتوى"
+   "حفظ تجاوز مسار المحتوى"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SAVE_CURRENT_CONFIG_OVERRIDE_GAME,
@@ -5314,11 +5342,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PARENT_DIRECTORY,
-   "الدليل الأصلي"
+   "المسار الأصلي"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DIRECTORY_NOT_FOUND,
-   "لم يتم العثور على الدليل"
+   "لم يتم العثور على المسار"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_NO_ITEMS,
@@ -5441,19 +5469,19 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_USE_THIS_DIRECTORY,
-   "<استخدم هذا الدليل>"
+   "<استخدم هذا المسار>"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DIRECTORY_CONTENT,
-   "<دليل المحتوى>"
+   "<مسار المحتوى>"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DIRECTORY_DEFAULT,
-   "افتراضي"
+   "<افتراضي>"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DIRECTORY_NONE,
-   "لا"
+   "<لا>"
    )
 MSG_HASH( /* FIXME Unused? */
    MENU_ENUM_LABEL_VALUE_RETROKEYBOARD,
@@ -5725,7 +5753,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_SYSTEM_NAME_USE_CONTENT_DIR,
-   "<دليل المحتوى>"
+   "<مسار المحتوى>"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_SYSTEM_NAME_USE_CUSTOM,
@@ -6815,7 +6843,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QT_LOAD_CORE,
-   "تحميل الكور"
+   "تحميل النواة"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QT_LOADING_CORE,
@@ -7733,7 +7761,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_APPLICATION_DIR,
-   "دليل التطبيق"
+   "مسار التطبيق"
    )
 MSG_HASH(
    MSG_APPLYING_CHEAT,
@@ -7781,7 +7809,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_CONFIG_DIRECTORY_NOT_SET,
-   "لم يتم تعيين دليل الإعداد. لا يمكن حفظ تكوين جديد."
+   "لم يتم تعيين مسار الإعداد. لا يمكن حفظ تكوين جديد."
    )
 MSG_HASH(
    MSG_CONNECTED_TO,
@@ -7905,7 +7933,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_EXTERNAL_APPLICATION_DIR,
-   "دليل التطبيق الخارجي"
+   "مسار التطبيق الخارجي"
    )
 MSG_HASH(
    MSG_EXTRACTING,
@@ -7941,7 +7969,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_FAILED_TO_CREATE_THE_DIRECTORY,
-   "فشل في إنشاء الدليل."
+   "فشل في إنشاء المسار."
    )
 MSG_HASH(
    MSG_FAILED_TO_EXTRACT_CONTENT_FROM_COMPRESSED_FILE,
@@ -8277,7 +8305,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_REVERTING_SAVESTATE_DIRECTORY_TO,
-   "إعادة حفظ دليل الحالة إلى"
+   "إعادة مسار حفظ الحالة إلى"
    )
 MSG_HASH(
    MSG_REWINDING,
@@ -8521,7 +8549,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_DIRECTORY_REMAP_FILE_LOADED,
-   "تم تحميل ملف إعادة خريطة دليل المحتوى."
+   "تم تحميل ملف إعادة خريطة مسار المحتوى."
    )
 MSG_HASH(
    MSG_CORE_REMAP_FILE_LOADED,
@@ -8731,7 +8759,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_FILE_BROWSER_OPEN_PICKER,
-   "فتح دليل آخر باستخدام منتقي ملفات النظام"
+   "فتح مسار آخر باستخدام منتقي ملفات النظام"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_FILTER_FLICKER,
