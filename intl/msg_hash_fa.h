@@ -2005,6 +2005,10 @@ MSG_HASH(
    "تنظیم حساسیت اهرمک‌های آنالوگ."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SENSOR_ORIENTATION_AUTO,
+   "خودکار"
+   )
+MSG_HASH(
    MSG_INPUT_BIND_TIMEOUT,
    "اتمام مهلت"
    )
@@ -2455,14 +2459,6 @@ MSG_HASH(
 
 /* Settings > User Interface > Menu Item Visibility > Quick Menu */
 
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_RESTART_CONTENT,
-   "نمایش «شروع مجدد»"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_RESTART_CONTENT,
-   "نمایش گزینهٔ شروع مجدد محتوا."
-   )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_START_RECORDING,
    "نمایش «آغاز ضبط»"
@@ -2979,10 +2975,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_RESUME_CONTENT,
    "ادامه"
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_RESTART_CONTENT,
-   "شروع مجدد"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOSE_CONTENT,

@@ -232,6 +232,14 @@ MSG_HASH(
    "RetroArch 응용 프로그램을 종료합니다. 종료 시 구성 저장이 활성화되어 있습니다."
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_QUIT_RETROARCH_NOSAVE,
+   "RetroArch 응용 프로그램을 종료합니다. 종료 시 구성 저장이 비활성화되어 있습니다."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_HELP_QUIT_RETROARCH,
+   "RetroArch를 종료합니다. 어떤 어려운 방법(SIGKILL 등) 으로 프로그램을 종료하면 어떤 경우에도 구성을 저장하지 않고 RetroArch가 종료됩니다. Unix와 유사한 경우 SIGINT/SIGTERM을 사용하면 구성 저장을 포함하는 깔끔한 초기화 해제가 가능합니다."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_NOW,
    "지금 동기화"
    )
@@ -254,14 +262,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CLOUD_SYNC_RESOLVE_KEEP_SERVER,
    "서버에서 파일을 다운로드하여 로컬 사본을 덮어씀으로써 충돌을 해결합니다."
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_QUIT_RETROARCH_NOSAVE,
-   "RetroArch 응용 프로그램을 종료합니다. 종료 시 구성 저장이 비활성화되어 있습니다."
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_HELP_QUIT_RETROARCH,
-   "RetroArch를 종료합니다. 어떤 어려운 방법(SIGKILL 등) 으로 프로그램을 종료하면 어떤 경우에도 구성을 저장하지 않고 RetroArch가 종료됩니다. Unix와 유사한 경우 SIGINT/SIGTERM을 사용하면 구성 저장을 포함하는 깔끔한 초기화 해제가 가능합니다."
    )
 
 /* Main Menu > Load Core */
@@ -3221,8 +3221,20 @@ MSG_HASH(
    "가속도계의 감도를 조정합니다."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_SENSOR_ORIENTATION,
+   "센서 방향"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_SENSOR_ORIENTATION,
+   "가속도계와 자이로스코프의 축을 회전시켜 장치의 방향과 일치시킵니다."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SENSOR_ORIENTATION_AUTO,
+   "자동"
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_SENSOR_GYROSCOPE_SENSITIVITY,
-  "자이로스코프의 감도를 조정합니다."
+   "자이로스코프의 감도를 조정합니다."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_BIND_TIMEOUT,
@@ -3364,6 +3376,14 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_HAPTIC_FEEDBACK_SETTINGS,
    "햅틱 피드백 및 진동 설정을 변경합니다."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_SENSOR_SETTINGS,
+   "움직임/빛 센서"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_SENSOR_SETTINGS,
+   "가속도계, 자이로스코프, 빛 감지 설정을 변경합니다."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_MENU_SETTINGS,
@@ -4914,8 +4934,16 @@ MSG_HASH(
    "내장 미디어 플레이어 사용"
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_USE_BUILTIN_PLAYER,
+   "지원되는 형식의 미디어 파일들을 파일 탐색기에 표시합니다."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_USE_BUILTIN_IMAGE_VIEWER,
    "내장 이미지 뷰어 사용"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_USE_BUILTIN_IMAGE_VIEWER,
+   "지원되는 형식의 이미지 파일들을 파일 탐색기에 표시합니다."
    )
 
 /* Settings > Frame Throttle */
@@ -6469,11 +6497,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_RESTART_CONTENT,
-   "'다시 시작' 표시"
+   "'초기화' 표시"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_RESTART_CONTENT,
-   "'다시 시작' 옵션을 표시합니다."
+   "콘텐츠 초기화 옵션을 표시합니다."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_CLOSE_CONTENT,
@@ -6481,7 +6509,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_CLOSE_CONTENT,
-   "'콘텐츠 종료' 옵션을 표시합니다."
+   "콘텐츠 종료 옵션을 표시합니다."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_SAVESTATE_SUBMENU,
@@ -8994,11 +9022,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_RESTART_CONTENT,
-   "다시 시작"
+   "초기화"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_RESTART_CONTENT,
-   "콘텐츠를 처음부터 다시 시작합니다. RetroPad 시작을 누르면 하드 리셋을 수행합니다."
+   "소프트 리셋을 수행합니다. RetroPad 시작을 누르면 하드 리셋을 수행합니다."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOSE_CONTENT,
@@ -9387,10 +9415,6 @@ MSG_HASH(
    "치트 검색 시작 또는 재개"
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_HELP_CHEAT_START_OR_CONT,
-   "새로운 치트를 만들기위해 메모리를 스캔합니다."
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CHEAT_FILE_LOAD,
    "치트 파일 불러오기 (교체)"
    )
@@ -9560,10 +9584,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_CHEAT_SEARCH_EQMINUS_VAL,
    "이전과 동일-%u (%X)"
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_CHEAT_ADD_MATCHES,
-   "%u 일치항목을 목록에 추가"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CHEAT_DELETE_MATCH,

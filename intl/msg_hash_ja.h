@@ -2921,6 +2921,10 @@ MSG_HASH(
    "加速度センサの感度を調整。"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SENSOR_ORIENTATION_AUTO,
+   "自動"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_BIND_TIMEOUT,
    "割り当て時のタイムアウト時間"
    )
@@ -5680,20 +5684,8 @@ MSG_HASH(
    "コンテンツの [再開] オプションを表示します。"
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_RESTART_CONTENT,
-   "[再起動] を表示"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_RESTART_CONTENT,
-   "コンテンツの [再起動] オプションを表示します。"
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_CLOSE_CONTENT,
    "[コンテンツを閉じる] を表示"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_CLOSE_CONTENT,
-   "[コンテンツを閉じる] オプションを表示します。"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_SAVESTATE_SUBMENU,
@@ -8118,7 +8110,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_RESTART_CONTENT,
-   "再起動"
+   "リセット"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOSE_CONTENT,
@@ -8479,10 +8471,6 @@ MSG_HASH(
    "チート検索を開始または続行"
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_HELP_CHEAT_START_OR_CONT,
-   "メモリをスキャンして新しいチートを作成します。"
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CHEAT_FILE_LOAD,
    "チートファイルをロード (置換)"
    )
@@ -8652,10 +8640,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_CHEAT_SEARCH_EQMINUS_VAL,
    "以前の値 -%u (%X ) に等しい"
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_CHEAT_ADD_MATCHES,
-   "マッチした %u 件をリストに追加"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CHEAT_DELETE_MATCH,

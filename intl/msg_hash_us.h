@@ -3277,8 +3277,36 @@ MSG_HASH(
    "Adjust the sensitivity of the Accelerometer."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_SENSOR_ORIENTATION,
+   "Sensor Orientation"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_SENSOR_ORIENTATION,
+   "Rotate accelerometer and gyroscope axes to match device orientation."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SENSOR_ORIENTATION_AUTO,
+   "Auto"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SENSOR_ORIENTATION_0,
+   "0°"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SENSOR_ORIENTATION_90,
+   "90°"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SENSOR_ORIENTATION_180,
+   "180°"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SENSOR_ORIENTATION_270,
+   "270°"
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_SENSOR_GYROSCOPE_SENSITIVITY,
-  "Adjust the sensitivity of the Gyroscope."
+   "Adjust the sensitivity of the Gyroscope."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_BIND_TIMEOUT,
@@ -3420,6 +3448,14 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_HAPTIC_FEEDBACK_SETTINGS,
    "Change haptic feedback and vibration settings."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_SENSOR_SETTINGS,
+   "Motion/Light Sensors"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_SENSOR_SETTINGS,
+   "Change accelerometer, gyroscope and illuminance settings."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_MENU_SETTINGS,
@@ -9492,10 +9528,6 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CHEAT_START_OR_CONT,
-   ""
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_HELP_CHEAT_START_OR_CONT,
    "Scan memory to create new cheats."
    )
 MSG_HASH(
@@ -9520,7 +9552,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CHEAT_RELOAD_CHEATS,
-   ""
+   "Reload all existing cheats."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CHEAT_FILE_SAVE_AS,
@@ -9536,7 +9568,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CHEAT_ADD_NEW_TOP,
-   ""
+   "Prepend a cheat to the list."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CHEAT_ADD_NEW_BOTTOM,
@@ -9544,7 +9576,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CHEAT_ADD_NEW_BOTTOM,
-   ""
+   "Append a cheat to the list."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CHEAT_DELETE_ALL,
@@ -9552,7 +9584,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CHEAT_DELETE_ALL,
-   ""
+   "Clear the cheat list."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CHEAT_APPLY_AFTER_LOAD,
@@ -9711,7 +9743,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CHEAT_ADD_MATCHES,
-   "Add the %u Matches to Your List"
+   "Add %u Matches to the List"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CHEAT_ADD_MATCHES,
@@ -15362,6 +15394,10 @@ MSG_HASH(
 MSG_HASH(
    MSG_CHEAT_DELETE_ALL_SUCCESS,
    "All cheats deleted."
+   )
+MSG_HASH(
+   MSG_CHEAT_RELOAD_ALL_SUCCESS,
+   "All cheats reloaded."
    )
 MSG_HASH(
    MSG_CHEAT_ADD_BEFORE_SUCCESS,

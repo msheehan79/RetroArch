@@ -2341,6 +2341,10 @@ MSG_HASH(
    "LIGADO"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SENSOR_ORIENTATION_AUTO,
+   "Automático"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_BIND_TIMEOUT,
    "Tempo limite para associação de teclas"
    )
@@ -3622,7 +3626,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_RESTART_CONTENT,
-   "Reiniciar"
+   "Reiniciar (reset)"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOSE_CONTENT,

@@ -224,6 +224,14 @@ MSG_HASH(
    "Esci dall'applicazione RetroArch. Il salvataggio della configurazione all'uscita è attivato."
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_QUIT_RETROARCH_NOSAVE,
+   "Esci dall'applicazione RetroArch. Il salvataggio della configurazione all'uscita è disattivato."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_HELP_QUIT_RETROARCH,
+   "Esci da RetroArch. Terminare il programma con metodi forzati (SIGKILL, ecc.) chiuderà RetroArch senza salvare la configurazione in nessun caso. Su sistemi simili a Unix, invece, i segnali SIGINT e SIGTERM permettono un'uscita \"pulita\" che include il salvataggio della configurazione, se abilitato."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_NOW,
    "Sincronizza Ora"
    )
@@ -246,14 +254,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CLOUD_SYNC_RESOLVE_KEEP_SERVER,
    "Risolvi tutti i conflitti scaricando file server, sostituendo copie locali."
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_QUIT_RETROARCH_NOSAVE,
-   "Esci dall'applicazione RetroArch. Il salvataggio della configurazione all'uscita è disattivato."
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_HELP_QUIT_RETROARCH,
-   "Esci da RetroArch. Terminare il programma con metodi forzati (SIGKILL, ecc.) chiuderà RetroArch senza salvare la configurazione in nessun caso. Su sistemi simili a Unix, invece, i segnali SIGINT e SIGTERM permettono un'uscita \"pulita\" che include il salvataggio della configurazione, se abilitato."
    )
 
 /* Main Menu > Load Core */
@@ -3058,7 +3058,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_SENSOR_GYROSCOPE_SENSITIVITY,
-  "Regola la sensibilità del giroscopio."
+   "Regola la sensibilità del giroscopio."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_BIND_TIMEOUT,
@@ -6144,20 +6144,8 @@ MSG_HASH(
    "Mostra l'opzione per riprendere il contenuto."
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_RESTART_CONTENT,
-   "Mostra 'Riavvio'"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_RESTART_CONTENT,
-   "Mostra l'opzione di riavvio del contenuto."
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_CLOSE_CONTENT,
    "Mostra 'Chiudi Contenuto'"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_CLOSE_CONTENT,
-   "Mostra l'opzione 'Chiudi contenuto'."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_SAVESTATE_SUBMENU,
@@ -8582,11 +8570,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_RESTART_CONTENT,
-   "Riavvia"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_RESTART_CONTENT,
-   "Riavvia il contenuto dall'inizio. RetroPad Start attiva il reset rigido."
+   "Resetta"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOSE_CONTENT,
@@ -8971,10 +8955,6 @@ MSG_HASH(
    "Inizia o continua la ricerca di trucchi"
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_HELP_CHEAT_START_OR_CONT,
-   "Scansiona la memoria per creare nuovi trucchi."
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CHEAT_FILE_LOAD,
    "Carica file trucchi (sostituisci)"
    )
@@ -9140,10 +9120,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_CHEAT_SEARCH_EQMINUS_VAL,
    "Uguale a prima -%u (%X)"
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_CHEAT_ADD_MATCHES,
-   "Aggiungi le %u partite alla tua lista"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CHEAT_DELETE_MATCH,

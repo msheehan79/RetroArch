@@ -232,6 +232,14 @@ MSG_HASH(
    "Thoát RetroArch. Lưu thiết lập khi thoát được bật."
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_QUIT_RETROARCH_NOSAVE,
+   "Thoát RetroArch. Lưu thiết lập khi thoát bị tắt."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_HELP_QUIT_RETROARCH,
+   "Thoát RetroArch. Nếu bạn cưỡng ép tắt ứng dụng theo bất kỳ cách nào (SIGKILL,...), RetroArch sẽ không kịp lưu bất kỳ cấu hình nào trong mọi trường hợp.Trên hệ Unix (Linux, macOS,...), các tín hiệu SIGINT/SIGTERM cho phép RetroArch tắt đúng cách, giải phóng bộ nhớ đầy đủ và lưu cấu hình nếu 'Lưu tự động' được bật."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_NOW,
    "Đồng bộ ngay"
    )
@@ -254,14 +262,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CLOUD_SYNC_RESOLVE_KEEP_SERVER,
    "Giải quyết mọi xung đột bằng cách tải xuống các tệp trên máy chủ và thay thế các bản sao cục bộ."
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_QUIT_RETROARCH_NOSAVE,
-   "Thoát RetroArch. Lưu thiết lập khi thoát bị tắt."
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_HELP_QUIT_RETROARCH,
-   "Thoát RetroArch. Nếu bạn cưỡng ép tắt ứng dụng theo bất kỳ cách nào (SIGKILL,...), RetroArch sẽ không kịp lưu bất kỳ cấu hình nào trong mọi trường hợp.Trên hệ Unix (Linux, macOS,...), các tín hiệu SIGINT/SIGTERM cho phép RetroArch tắt đúng cách, giải phóng bộ nhớ đầy đủ và lưu cấu hình nếu 'Lưu tự động' được bật."
    )
 
 /* Main Menu > Load Core */
@@ -3213,8 +3213,20 @@ MSG_HASH(
    "Điều chỉnh độ nhạy của cảm biến gia tốc."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_SENSOR_ORIENTATION,
+   "Hướng cảm biến"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_SENSOR_ORIENTATION,
+   "Xoay trục gia tốc kế và con quay hồi chuyển để khớp với hướng thiết bị."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SENSOR_ORIENTATION_AUTO,
+   "Tự động"
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_SENSOR_GYROSCOPE_SENSITIVITY,
-  "Điều chỉnh độ nhạy của con quay hồi chuyển."
+   "Điều chỉnh độ nhạy của con quay hồi chuyển."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_BIND_TIMEOUT,
@@ -3356,6 +3368,14 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_HAPTIC_FEEDBACK_SETTINGS,
    "Thay đổi cài đặt phản hồi xúc giác và rung."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_SENSOR_SETTINGS,
+   "Cảm biến Chuyển động/Ánh sáng"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_SENSOR_SETTINGS,
+   "Thay đổi cài đặt gia tốc kế, con quay hồi chuyển và cảm biến độ sáng."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_MENU_SETTINGS,
@@ -4906,8 +4926,16 @@ MSG_HASH(
    "Sử dụng Trình phát Media tích hợp sẵn"
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_USE_BUILTIN_PLAYER,
+   "Hiển thị tệp được Media Player hỗ trợ trong Trình duyệt tệp."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_USE_BUILTIN_IMAGE_VIEWER,
    "Sử dụng Trình xem Hình ảnh tích hợp sẵn"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_USE_BUILTIN_IMAGE_VIEWER,
+   "Hiển thị tệp được Image Viewer hỗ trợ trong Trình duyệt tệp."
    )
 
 /* Settings > Frame Throttle */
@@ -6465,11 +6493,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_RESTART_CONTENT,
-   "Hiển thị 'Chạy lại'"
+   "Hiển thị “Reset”"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_RESTART_CONTENT,
-   "Hiển thị tùy chọn chạy lại trò chơi."
+   "Hiển thị tùy chọn đặt lại trò chơi."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_CLOSE_CONTENT,
@@ -6477,7 +6505,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_CLOSE_CONTENT,
-   "Hiển thị tùy chọn 'Đóng trò chơi'."
+   "Hiển thị tùy chọn đóng trò chơi."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_SAVESTATE_SUBMENU,
@@ -8990,11 +9018,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_RESTART_CONTENT,
-   "Khởi động lại"
+   "Đặt lại"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_RESTART_CONTENT,
-   "Khởi động lại nội dung từ đầu. Nhấn Start trên RetroPad để thực hiện reset cứng."
+   "Kích hoạt reset mềm. Nút Start trên RetroPad sẽ kích hoạt reset cứng."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOSE_CONTENT,
@@ -9383,8 +9411,8 @@ MSG_HASH(
    "Bắt đầu hoặc Tiếp tục Tìm Cheat"
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_HELP_CHEAT_START_OR_CONT,
-   "Quét bộ nhớ để tạo cheat mới."
+   MENU_ENUM_SUBLABEL_CHEAT_START_OR_CONT,
+   "Quét bộ nhớ để tạo Cheat mới."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CHEAT_FILE_LOAD,
@@ -9407,6 +9435,10 @@ MSG_HASH(
    "Tải lại cheat riêng cho trò chơi"
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_CHEAT_RELOAD_CHEATS,
+   "Tải lại tất cả Cheat hiện có."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CHEAT_FILE_SAVE_AS,
    "Lưu tập tin Cheat thành..."
    )
@@ -9419,12 +9451,24 @@ MSG_HASH(
    "Thêm cheat mới lên trên cùng"
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_CHEAT_ADD_NEW_TOP,
+   "Thêm một Cheat vào đầu danh sách."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CHEAT_ADD_NEW_BOTTOM,
    "Thêm cheat mới xuống cuối"
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_CHEAT_ADD_NEW_BOTTOM,
+   "Thêm một Cheat vào cuối danh sách."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CHEAT_DELETE_ALL,
    "Xóa tất cả cheat"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CHEAT_DELETE_ALL,
+   "Xóa toàn bộ danh sách Cheat."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CHEAT_APPLY_AFTER_LOAD,
@@ -9551,7 +9595,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CHEAT_ADD_MATCHES,
-   "Thêm %u kết quả khớp vào danh sách của bạn"
+   "Thêm %u kết quả khớp vào danh sách"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CHEAT_DELETE_MATCH,
@@ -14618,6 +14662,10 @@ MSG_HASH(
 MSG_HASH(
    MSG_CHEAT_DELETE_ALL_SUCCESS,
    "Tất cả Cheat đã bị xóa."
+   )
+MSG_HASH(
+   MSG_CHEAT_RELOAD_ALL_SUCCESS,
+   "Tất cả Cheat đã được tải lại."
    )
 MSG_HASH(
    MSG_CHEAT_ADD_BEFORE_SUCCESS,

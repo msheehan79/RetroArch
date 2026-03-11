@@ -38,6 +38,7 @@
 #include "../../retroarch.h"
 #include "../../verbosity.h"
 #include "../../msg_hash.h"
+#include "../../input/input_driver.h"
 
 static const uint32_t opaque_vert[] =
 #include "../drivers/vulkan_shaders/opaque.vert.inc"
@@ -352,6 +353,7 @@ class Pass
       void build_semantic_uint(uint8_t *data, slang_semantic semantic, uint32_t value);
       void build_semantic_int(uint8_t *data, slang_semantic semantic, int32_t value);
       void build_semantic_float(uint8_t *data,slang_semantic semantic, float value);
+      void build_semantic_vec3(uint8_t *data, slang_semantic semantic, const float *values);
       void build_semantic_parameter(uint8_t *data, unsigned index, float value);
       void build_semantic_texture_vec4(uint8_t *data,
             slang_texture_semantic semantic,
@@ -2307,6 +2309,16 @@ bool Pass::build()
    if (!slang_reflect_spirv(vertex_shader, fragment_shader, &reflection))
       return false;
 
+   {
+      auto &g = reflection.semantics[SLANG_SEMANTIC_GYROSCOPE];
+      auto &a = reflection.semantics[SLANG_SEMANTIC_ACCELEROMETER];
+      auto &r = reflection.semantics[SLANG_SEMANTIC_ACCELEROMETER_REST];
+      if (g.uniform || g.push_constant ||
+          a.uniform || a.push_constant ||
+          r.uniform || r.push_constant)
+         input_state_get_ptr()->shader_uses_sensors = true;
+   }
+
    /* Filter out parameters which we will never use anyways. */
    filtered_parameters.clear();
 
@@ -2446,6 +2458,18 @@ void Pass::build_semantic_float(uint8_t *data, slang_semantic semantic,
       *reinterpret_cast<float*>(push.buffer.data() + (refl.push_constant_offset >> 2)) = value;
 }
 
+void Pass::build_semantic_vec3(uint8_t *data, slang_semantic semantic,
+                              const float *values)
+{
+   auto &refl = reflection.semantics[semantic];
+
+   if (data && refl.uniform)
+      memcpy(data + refl.ubo_offset, values, 3 * sizeof(float));
+
+   if (refl.push_constant)
+      memcpy(push.buffer.data() + (refl.push_constant_offset >> 2), values, 3 * sizeof(float));
+}
+
 
 void Pass::build_semantic_texture(VkDescriptorSet set, uint8_t *buffer,
       slang_texture_semantic semantic, const Texture &texture)
@@ -2549,6 +2573,18 @@ void Pass::build_semantics(VkDescriptorSet set, uint8_t *buffer,
    build_semantic_float(buffer, SLANG_SEMANTIC_HDR10,
                       hdr10);
 #endif /* VULKAN_HDR_SWAPCHAIN */
+
+   /* Sensor uniforms — per-frame snapshot cached
+    * by input_driver_poll() on the main thread */
+   {
+      input_driver_state_t *input_st = input_state_get_ptr();
+      build_semantic_vec3(buffer, SLANG_SEMANTIC_GYROSCOPE,
+                        input_st->sensor_gyroscope_cache);
+      build_semantic_vec3(buffer, SLANG_SEMANTIC_ACCELEROMETER,
+                        input_st->sensor_accelerometer_cache);
+      build_semantic_vec3(buffer, SLANG_SEMANTIC_ACCELEROMETER_REST,
+                        input_st->sensor_accelerometer_rest);
+   }
 
    /* Standard inputs */
    build_semantic_texture(set, buffer, SLANG_TEXTURE_SEMANTIC_ORIGINAL, original);
@@ -3330,6 +3366,7 @@ void vulkan_filter_chain_free(
       vulkan_filter_chain_t *chain)
 {
    delete chain;
+   input_state_get_ptr()->shader_uses_sensors = false;
 }
 
 void vulkan_filter_chain_set_shader(

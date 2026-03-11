@@ -232,6 +232,14 @@ MSG_HASH(
    "Abandona la aplicación RetroArch. La opción «Guardar configuración al salir» está activada."
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_QUIT_RETROARCH_NOSAVE,
+   "Abandona la aplicación RetroArch. La opción «Guardar configuración al salir» está desactivada."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_HELP_QUIT_RETROARCH,
+   "Abandona RetroArch. Si cierras RetroArch de cualquier forma brusca (SIGKILL, etc.) no se guardará la configuración bajo ninguna circunstancia. En sistemas Unix, SIGINT/SIGTERM permite un cierre limpio, lo que guardará la configuración si la opción «Guardar configuración al salir» está activada."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_NOW,
    "Sincronizar ahora"
    )
@@ -254,14 +262,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CLOUD_SYNC_RESOLVE_KEEP_SERVER,
    "Resuelve todos los conflictos descargando los archivos del servidor, reemplazando las copias locales."
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_QUIT_RETROARCH_NOSAVE,
-   "Abandona la aplicación RetroArch. La opción «Guardar configuración al salir» está desactivada."
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_HELP_QUIT_RETROARCH,
-   "Abandona RetroArch. Si cierras RetroArch de cualquier forma brusca (SIGKILL, etc.) no se guardará la configuración bajo ninguna circunstancia. En sistemas Unix, SIGINT/SIGTERM permite un cierre limpio, lo que guardará la configuración si la opción «Guardar configuración al salir» está activada."
    )
 
 /* Main Menu > Load Core */
@@ -3185,8 +3185,20 @@ MSG_HASH(
    "Ajusta la sensibilidad del acelerómetro."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_SENSOR_ORIENTATION,
+   "Orientación de sensores"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_SENSOR_ORIENTATION,
+   "Rota los ejes del acelerómetro y del giroscopio para que coincidan con la orientación del dispositivo."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SENSOR_ORIENTATION_AUTO,
+   "Automático"
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_SENSOR_GYROSCOPE_SENSITIVITY,
-  "Ajusta la sensibilidad del giroscopio."
+   "Ajusta la sensibilidad del giroscopio."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_BIND_TIMEOUT,
@@ -3328,6 +3340,14 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_HAPTIC_FEEDBACK_SETTINGS,
    "Cambia los ajustes de la respuesta háptica y la vibración."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_SENSOR_SETTINGS,
+   "Sensores de movimiento y luz"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_SENSOR_SETTINGS,
+   "Cambia las opciones del acelerómetro, del giroscopio y de iluminación."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_MENU_SETTINGS,
@@ -4878,8 +4898,16 @@ MSG_HASH(
    "Usar visor de medios integrado"
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_USE_BUILTIN_PLAYER,
+   "Muestra en el explorador de archivos los archivos compatibles con el visor de medios."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_USE_BUILTIN_IMAGE_VIEWER,
    "Usar visor de imágenes integrado"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_USE_BUILTIN_IMAGE_VIEWER,
+   "Muestra en el explorador de archivos los archivos compatibles con el visor de imágenes."
    )
 
 /* Settings > Frame Throttle */
@@ -6437,7 +6465,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_CLOSE_CONTENT,
-   "Muestra la opción «Cerrar contenido»."
+   "Muestra la opción que permite cerrar el contenido actual."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_SAVESTATE_SUBMENU,
@@ -8954,7 +8982,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_RESTART_CONTENT,
-   "Reinicia el contenido desde el principio. Pulsa Start en el RetroPad para hacer un reinicio completo."
+   "Activa el reinicio por software. Pulsa Start en el RetroPad para activar el reinicio completo."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOSE_CONTENT,
@@ -9339,7 +9367,7 @@ MSG_HASH(
    "Iniciar o continuar búsqueda de trucos"
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_HELP_CHEAT_START_OR_CONT,
+   MENU_ENUM_SUBLABEL_CHEAT_START_OR_CONT,
    "Busca dentro de la memoria para crear trucos nuevos."
    )
 MSG_HASH(
@@ -9363,6 +9391,10 @@ MSG_HASH(
    "Recargar trucos específicos del juego"
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_CHEAT_RELOAD_CHEATS,
+   "Vuelve a cargar todos los trucos existentes."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CHEAT_FILE_SAVE_AS,
    "Guardar archivo de trucos como..."
    )
@@ -9375,12 +9407,24 @@ MSG_HASH(
    "Agregar truco nuevo al principio"
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_CHEAT_ADD_NEW_TOP,
+   "Antepone un truco en la lista."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CHEAT_ADD_NEW_BOTTOM,
    "Agregar truco nuevo al final"
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_CHEAT_ADD_NEW_BOTTOM,
+   "Añade un truco a la lista."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CHEAT_DELETE_ALL,
    "Eliminar todos los trucos"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CHEAT_DELETE_ALL,
+   "Borra la lista de trucos."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CHEAT_APPLY_AFTER_LOAD,
@@ -9507,7 +9551,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CHEAT_ADD_MATCHES,
-   "Agregar %u coincidencias a tu lista"
+   "Agregar %u coincidencias a lista"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CHEAT_DELETE_MATCH,
@@ -14534,6 +14578,10 @@ MSG_HASH(
 MSG_HASH(
    MSG_CHEAT_DELETE_ALL_SUCCESS,
    "Se han eliminado todos los trucos."
+   )
+MSG_HASH(
+   MSG_CHEAT_RELOAD_ALL_SUCCESS,
+   "Se han recargado todos los trucos."
    )
 MSG_HASH(
    MSG_CHEAT_ADD_BEFORE_SUCCESS,

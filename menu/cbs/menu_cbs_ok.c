@@ -330,6 +330,8 @@ static enum msg_hash_enums action_ok_dl_to_enum(unsigned lbl)
          return MENU_ENUM_LABEL_DEFERRED_INPUT_TURBO_FIRE_SETTINGS_LIST;
       case ACTION_OK_DL_INPUT_HAPTIC_FEEDBACK_SETTINGS_LIST:
          return MENU_ENUM_LABEL_DEFERRED_INPUT_HAPTIC_FEEDBACK_SETTINGS_LIST;
+      case ACTION_OK_DL_INPUT_SENSOR_SETTINGS_LIST:
+         return MENU_ENUM_LABEL_DEFERRED_INPUT_SENSOR_SETTINGS_LIST;
       case ACTION_OK_DL_LATENCY_SETTINGS_LIST:
          return MENU_ENUM_LABEL_DEFERRED_LATENCY_SETTINGS_LIST;
       case ACTION_OK_DL_DRIVER_SETTINGS_LIST:
@@ -1781,6 +1783,7 @@ int generic_action_ok_displaylist_push(
       case ACTION_OK_DL_INPUT_MENU_SETTINGS_LIST:
       case ACTION_OK_DL_INPUT_TURBO_FIRE_SETTINGS_LIST:
       case ACTION_OK_DL_INPUT_HAPTIC_FEEDBACK_SETTINGS_LIST:
+      case ACTION_OK_DL_INPUT_SENSOR_SETTINGS_LIST:
       case ACTION_OK_DL_LATENCY_SETTINGS_LIST:
       case ACTION_OK_DL_DRIVER_SETTINGS_LIST:
       case ACTION_OK_DL_CORE_SETTINGS_LIST:
@@ -2441,7 +2444,7 @@ static int generic_action_ok(const char *path,
          flush_char = msg_hash_to_str(flush_id);
          cheat_manager_state_free();
 
-         if (!cheat_manager_load(action_path,false))
+         if (!cheat_manager_load(action_path, false))
             return -1;
 #endif
          break;
@@ -2449,7 +2452,7 @@ static int generic_action_ok(const char *path,
 #ifdef HAVE_CHEATS
          flush_char = msg_hash_to_str(flush_id);
 
-         if (!cheat_manager_load(action_path,true))
+         if (!cheat_manager_load(action_path, true))
             return -1;
 #endif
          break;
@@ -3768,39 +3771,31 @@ static int generic_action_ok_remap_file_operation(const char *path,
    const char *rarch_path_basename        = path_get(RARCH_PATH_BASENAME);
    bool has_content                       = !string_is_empty(rarch_path_basename);
    settings_t *settings                   = config_get_ptr();
-   const char *directory_input_remapping  = settings->paths.directory_input_remapping;
    unsigned joypad_port                   = settings->uints.input_joypad_index[0];
-   const char *input_device_name          = input_config_get_device_display_name(joypad_port);
-   const char *input_device_dir           = NULL;
    bool sort_remaps_by_controller         = settings->bools.input_remap_sort_by_controller_enable;
-   size_t _len                            = 0;
+   const char *directory_input_remapping  = settings->paths.directory_input_remapping;
 
-   remap_file_path[0]  = '\0';
+   remap_file_path[0] = '\0';
 
    /* Cannot perform remap file operation if we
     * have no core */
    if (string_is_empty(core_name))
       return -1;
 
-   if (   sort_remaps_by_controller
-       && (input_device_name != NULL)
-       && !string_is_empty(input_device_name))
+   strlcpy(remap_path, core_name, sizeof(remap_path));
+
+   if (sort_remaps_by_controller)
    {
-      /* Ensure directory does not contain special chars */
-      input_device_dir = sanitize_path_part(input_device_name, strlen(input_device_name));
+      const char *input_device_name = input_config_get_device_display_name(joypad_port);
 
-      /* Allocate memory for the new path */
-      /* Build the new path with the controller name */
-      _len  = strlcpy(remap_path, core_name, sizeof(remap_path));
-      _len += strlcpy(remap_path + _len, PATH_DEFAULT_SLASH(), sizeof(remap_path) - _len);
-      strlcpy(remap_path + _len, input_device_dir,     sizeof(remap_path) - _len);
+      if (!string_is_empty(input_device_name))
+      {
+         /* Ensure directory does not contain special chars */
+         const char *input_device_dir = sanitize_path_part(input_device_name, strlen(input_device_name));
 
-      /* Deallocate as we no longer this */
-      free((char*)input_device_dir);
-      input_device_dir = NULL;
+         fill_pathname_join_special(remap_path, core_name, input_device_dir, sizeof(remap_path));
+      }
    }
-   else /* We're not using controller path, just use core name */
-      strlcpy(remap_path, core_name, sizeof(remap_path));
 
    switch (action_type)
    {
@@ -4484,6 +4479,8 @@ push_dropdown_list:
 static int action_ok_cheat_reload_cheats(const char *path,
       const char *label, unsigned type, size_t idx, size_t entry_idx)
 {
+   size_t _len;
+   char msg[128];
    struct menu_state *menu_st      = menu_state_get_ptr();
    settings_t           *settings  = config_get_ptr();
    const char *path_cheat_database = settings->paths.path_cheat_database;
@@ -4495,6 +4492,13 @@ static int action_ok_cheat_reload_cheats(const char *path,
 
    menu_st->flags                 |=  MENU_ST_FLAG_ENTRIES_NEED_REFRESH
                                    |  MENU_ST_FLAG_PREVENT_POPULATE;
+
+   _len = strlcpy(msg,
+         msg_hash_to_str(MSG_CHEAT_RELOAD_ALL_SUCCESS), sizeof(msg));
+
+   runloop_msg_queue_push(msg, _len, 1, 180, true, NULL,
+         MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_SUCCESS);
+
    return 0;
 }
 #endif
@@ -4560,7 +4564,7 @@ static int action_ok_cheat_add_top(const char *path,
    _len = strlcpy(msg, msg_hash_to_str(MSG_CHEAT_ADD_TOP_SUCCESS), sizeof(msg));
 
    runloop_msg_queue_push(msg, _len, 1, 180, true, NULL,
-         MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
+         MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_SUCCESS);
 
    return 0;
 }
@@ -4581,7 +4585,7 @@ static int action_ok_cheat_add_bottom(const char *path,
          msg_hash_to_str(MSG_CHEAT_ADD_BOTTOM_SUCCESS), sizeof(msg));
 
    runloop_msg_queue_push(msg, _len, 1, 180, true, NULL,
-         MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
+         MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_SUCCESS);
 
    return 0;
 }
@@ -4593,7 +4597,6 @@ static int action_ok_cheat_delete_all(const char *path,
    char msg[128];
    struct menu_state *menu_st       = menu_state_get_ptr();
 
-   cheat_manager_state.delete_state = 0;
    cheat_manager_realloc(0, CHEAT_HANDLER_TYPE_EMU);
    menu_st->flags                  |= MENU_ST_FLAG_ENTRIES_NEED_REFRESH
                                     | MENU_ST_FLAG_PREVENT_POPULATE;
@@ -4766,26 +4769,23 @@ static int action_ok_cheat_delete(const char *path,
    struct menu_state *menu_st = menu_state_get_ptr();
    unsigned int new_size      = cheat_manager_get_size() - 1;
 
-   if (new_size >0)
+   if (new_size > 0)
    {
       unsigned i;
 
-      if (cheat_manager_state.cheats[cheat_manager_state.working_cheat.idx].code)
-         free(cheat_manager_state.cheats[cheat_manager_state.working_cheat.idx].code);
-      if (cheat_manager_state.cheats[cheat_manager_state.working_cheat.idx].desc)
-         free(cheat_manager_state.cheats[cheat_manager_state.working_cheat.idx].desc);
-
-      for (i = cheat_manager_state.working_cheat.idx; i <cheat_manager_state.size-1; i++)
+      for (i = cheat_manager_state.working_cheat.idx; i < cheat_manager_state.size - 1; i++)
       {
-         memcpy(&cheat_manager_state.cheats[i], &cheat_manager_state.cheats[i+1], sizeof(struct item_cheat ));
-         cheat_manager_state.cheats[i].idx--;
+         memcpy(&cheat_manager_state.cheats[i], &cheat_manager_state.cheats[i + 1], sizeof(struct item_cheat));
+
+         if (cheat_manager_state.cheats[i + 1].code)
+            cheat_manager_state.cheats[i].code = strdup(cheat_manager_state.cheats[i + 1].code);
+
+         if (cheat_manager_state.cheats[i + 1].desc)
+            cheat_manager_state.cheats[i].desc = strdup(cheat_manager_state.cheats[i + 1].desc);
+
+         if (cheat_manager_state.cheats[i].idx)
+            cheat_manager_state.cheats[i].idx--;
       }
-
-      cheat_manager_state.cheats[cheat_manager_state.size-1].code            = NULL;
-      cheat_manager_state.cheats[cheat_manager_state.size-1].desc            = NULL;
-      cheat_manager_state.cheats[cheat_manager_state.working_cheat.idx].desc = NULL;
-      cheat_manager_state.cheats[cheat_manager_state.working_cheat.idx].code = NULL;
-
    }
 
    cheat_manager_realloc(new_size, CHEAT_HANDLER_TYPE_RETRO);
@@ -6240,8 +6240,8 @@ static int action_ok_add_entry_to_playlist(const char *path,
       }
       else
       {
-         string_list_append(str_list, FILE_PATH_DETECT, attr);
-         string_list_append(str_list, FILE_PATH_DETECT, attr);
+         string_list_append_n(str_list, FILE_PATH_DETECT, STRLEN_CONST(FILE_PATH_DETECT), attr);
+         string_list_append_n(str_list, FILE_PATH_DETECT, STRLEN_CONST(FILE_PATH_DETECT), attr);
       }
 
       /* crc32 */
@@ -6415,7 +6415,8 @@ static int action_ok_add_to_favorites_playlist(const char *path,
           * (always use display name, if available) */
          if (core_info_find(core_path, &core_info))
             if (!string_is_empty(core_info->display_name))
-               strlcpy(core_display_name, core_info->display_name, sizeof(core_display_name));
+               strlcpy(core_display_name, core_info->display_name,
+               sizeof(core_display_name));
 
          if (!string_is_empty(core_display_name))
             string_list_append(str_list, core_display_name, attr);
@@ -6424,8 +6425,8 @@ static int action_ok_add_to_favorites_playlist(const char *path,
       }
       else
       {
-         string_list_append(str_list, FILE_PATH_DETECT, attr);
-         string_list_append(str_list, FILE_PATH_DETECT, attr);
+         string_list_append_n(str_list, FILE_PATH_DETECT, STRLEN_CONST(FILE_PATH_DETECT), attr);
+         string_list_append_n(str_list, FILE_PATH_DETECT, STRLEN_CONST(FILE_PATH_DETECT), attr);
       }
 
       /* crc32 */
@@ -6652,6 +6653,7 @@ STATIC_DEFAULT_ACTION_OK_FUNC(action_ok_push_input_settings_list, ACTION_OK_DL_I
 STATIC_DEFAULT_ACTION_OK_FUNC(action_ok_push_input_menu_settings_list, ACTION_OK_DL_INPUT_MENU_SETTINGS_LIST)
 STATIC_DEFAULT_ACTION_OK_FUNC(action_ok_push_input_turbo_fire_settings_list, ACTION_OK_DL_INPUT_TURBO_FIRE_SETTINGS_LIST)
 STATIC_DEFAULT_ACTION_OK_FUNC(action_ok_push_input_haptic_feedback_settings_list, ACTION_OK_DL_INPUT_HAPTIC_FEEDBACK_SETTINGS_LIST)
+STATIC_DEFAULT_ACTION_OK_FUNC(action_ok_push_input_sensor_settings_list, ACTION_OK_DL_INPUT_SENSOR_SETTINGS_LIST)
 STATIC_DEFAULT_ACTION_OK_FUNC(action_ok_push_latency_settings_list, ACTION_OK_DL_LATENCY_SETTINGS_LIST)
 STATIC_DEFAULT_ACTION_OK_FUNC(action_ok_push_recording_settings_list, ACTION_OK_DL_RECORDING_SETTINGS_LIST)
 STATIC_DEFAULT_ACTION_OK_FUNC(action_ok_push_playlist_settings_list, ACTION_OK_DL_PLAYLIST_SETTINGS_LIST)
@@ -6685,7 +6687,6 @@ STATIC_DEFAULT_ACTION_OK_FUNC(action_ok_push_savestate_list, ACTION_OK_DL_SAVEST
 STATIC_DEFAULT_ACTION_OK_FUNC(action_ok_push_core_options_list, ACTION_OK_DL_CORE_OPTIONS_LIST)
 STATIC_DEFAULT_ACTION_OK_FUNC(action_ok_push_add_to_playlist_list, ACTION_OK_DL_ADD_TO_PLAYLIST)
 STATIC_DEFAULT_ACTION_OK_FUNC(action_ok_push_add_to_playlist_quickmenu, ACTION_OK_DL_ADD_TO_PLAYLIST_QUICKMENU)
-DEFAULT_ACTION_OK_FUNC(action_ok_push_playlist_manager_settings, ACTION_OK_DL_PLAYLIST_MANAGER_SETTINGS)
 #ifdef HAVE_CHEEVOS
 DEFAULT_ACTION_OK_FUNC(action_ok_push_achievements_hardcore_pause_list, ACTION_OK_DL_ACHIEVEMENTS_HARDCORE_PAUSE_LIST)
 #endif
@@ -6693,6 +6694,21 @@ DEFAULT_ACTION_OK_FUNC(action_ok_push_core_information_list, ACTION_OK_DL_CORE_I
 #ifdef HAVE_MIST
 DEFAULT_ACTION_OK_FUNC(action_ok_push_core_information_steam_list, ACTION_OK_DL_CORE_INFORMATION_STEAM_LIST)
 #endif
+
+int action_ok_push_playlist_manager_settings(const char *path,
+      const char *label, unsigned type, size_t idx, size_t entry_idx)
+{
+   settings_t *settings = config_get_ptr();
+
+   if (settings->bools.kiosk_mode_enable)
+      return 0;
+
+   return generic_action_ok_displaylist_push(
+         path, NULL,
+         label, type,
+         idx, entry_idx,
+         ACTION_OK_DL_PLAYLIST_MANAGER_SETTINGS);
+}
 
 static int action_ok_open_uwp_permission_settings(const char *path,
    const char *label, unsigned type, size_t idx, size_t entry_idx)
@@ -9230,6 +9246,7 @@ static int menu_cbs_init_bind_ok_compare_label(menu_file_list_cbs_t *cbs,
          {MENU_ENUM_LABEL_INPUT_MENU_SETTINGS,                 action_ok_push_input_menu_settings_list},
          {MENU_ENUM_LABEL_INPUT_TURBO_FIRE_SETTINGS,           action_ok_push_input_turbo_fire_settings_list},
          {MENU_ENUM_LABEL_INPUT_HAPTIC_FEEDBACK_SETTINGS,      action_ok_push_input_haptic_feedback_settings_list},
+         {MENU_ENUM_LABEL_INPUT_SENSOR_SETTINGS,              action_ok_push_input_sensor_settings_list},
          {MENU_ENUM_LABEL_DRIVER_SETTINGS,                     action_ok_push_driver_settings_list},
          {MENU_ENUM_LABEL_VIDEO_SETTINGS,                      action_ok_push_video_settings_list},
          {MENU_ENUM_LABEL_VIDEO_SYNCHRONIZATION_SETTINGS,      action_ok_push_video_synchronization_settings_list},

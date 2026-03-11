@@ -78,6 +78,10 @@
 #include "../cheevos/cheevos.h"
 #endif
 
+#if defined(ANDROID) && defined(HAVE_SAF)
+#include <vfs/vfs_implementation_saf.h>
+#endif
+
 #include "task_content.h"
 #include "tasks_internal.h"
 
@@ -462,7 +466,7 @@ static const char *content_file_list_append_temporary(
    return NULL;
 }
 
-/* Note: Takes ownership of supplied 'data' buffer */
+/* NOTE: Takes ownership of supplied 'data' buffer */
 static bool content_file_list_set_info(
       content_file_list_t *file_list,
       const char *path,
@@ -808,6 +812,28 @@ static void content_file_get_path(
 
    if (string_is_empty(content_path))
       return;
+
+#if defined(ANDROID) && defined(HAVE_SAF)
+   /* Convert content:// URIs to the path format used by the VFS */
+   if (strncmp(content_path, "content://", sizeof "content://" - 1) == 0)
+   {
+      struct libretro_vfs_implementation_saf_path_split_result result;
+      if (retro_vfs_path_split_content_saf(&result, content_path))
+      {
+         static char *previous_serialized_path = NULL;
+         char *serialized_path = retro_vfs_path_join_saf(result.tree, result.path);
+         free(result.path);
+         free(result.tree);
+         if (serialized_path != NULL)
+         {
+            if (previous_serialized_path != NULL)
+               free(previous_serialized_path);
+            previous_serialized_path = (char*)serialized_path;
+            content_path             = (char*)serialized_path;
+         }
+      }
+   }
+#endif
 
 #ifdef HAVE_COMPRESSION
    /* Check whether we are dealing with a
@@ -1261,8 +1287,8 @@ static void content_file_set_attributes(
       {
          if (  (flags & CONTENT_ST_FLAG_CORE_DOES_NOT_NEED_CONTENT)
              && content_ctx->flags
-             & CONTENT_INFO_FLAG_SET_SUPPORTS_NO_GAME_ENABLE)
-            string_list_append(content, "", attr);
+             &  CONTENT_INFO_FLAG_SET_SUPPORTS_NO_GAME_ENABLE)
+            string_list_append_n(content, "", STRLEN_CONST(""), attr);
       }
       else
          string_list_append(content, content_path, attr);

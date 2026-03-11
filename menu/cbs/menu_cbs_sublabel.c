@@ -377,6 +377,7 @@ DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_input_settings_list,           MENU_
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_input_menu_settings_list,           MENU_ENUM_SUBLABEL_INPUT_MENU_SETTINGS)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_input_turbo_fire_settings_list,     MENU_ENUM_SUBLABEL_INPUT_TURBO_FIRE_SETTINGS)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_input_haptic_feedback_settings_list,MENU_ENUM_SUBLABEL_INPUT_HAPTIC_FEEDBACK_SETTINGS)
+DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_input_sensor_settings_list,    MENU_ENUM_SUBLABEL_INPUT_SENSOR_SETTINGS)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_latency_settings_list,         MENU_ENUM_SUBLABEL_LATENCY_SETTINGS)
 #ifdef HAVE_BLUETOOTH
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_bluetooth_settings_list,       MENU_ENUM_SUBLABEL_BLUETOOTH_SETTINGS)
@@ -582,6 +583,7 @@ DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_analog_deadzone,               MENU_
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_analog_sensitivity,            MENU_ENUM_SUBLABEL_INPUT_ANALOG_SENSITIVITY)
 
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_sensor_accelerometer_sensitivity,            MENU_ENUM_SUBLABEL_INPUT_SENSOR_ACCELEROMETER_SENSITIVITY)
+DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_sensor_orientation,            MENU_ENUM_SUBLABEL_INPUT_SENSOR_ORIENTATION)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_sensor_gyroscope_sensitivity,            MENU_ENUM_SUBLABEL_INPUT_SENSOR_GYROSCOPE_SENSITIVITY)
 
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_input_turbo_enable,            MENU_ENUM_SUBLABEL_INPUT_TURBO_ENABLE)
@@ -690,9 +692,6 @@ DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_menu_widgets,                  MENU_
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_menu_show_load_content_animation, MENU_ENUM_SUBLABEL_MENU_SHOW_LOAD_CONTENT_ANIMATION)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_notification_show_autoconfig,  MENU_ENUM_SUBLABEL_NOTIFICATION_SHOW_AUTOCONFIG)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_notification_show_autoconfig_fails, MENU_ENUM_SUBLABEL_NOTIFICATION_SHOW_AUTOCONFIG_FAILS)
-#ifdef HAVE_CHEATS
-DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_notification_show_cheats_applied,  MENU_ENUM_SUBLABEL_NOTIFICATION_SHOW_CHEATS_APPLIED)
-#endif
 #ifdef HAVE_PATCH
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_notification_show_patch_applied,   MENU_ENUM_SUBLABEL_NOTIFICATION_SHOW_PATCH_APPLIED)
 #endif
@@ -778,6 +777,7 @@ DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_run_ahead_frames,              MENU_
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_preempt_frames,                MENU_ENUM_SUBLABEL_PREEMPT_FRAMES)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_input_block_timeout,           MENU_ENUM_SUBLABEL_INPUT_BLOCK_TIMEOUT)
 #ifdef HAVE_CHEATS
+DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_notification_show_cheats_applied, MENU_ENUM_SUBLABEL_NOTIFICATION_SHOW_CHEATS_APPLIED)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_cheat_apply_after_toggle,      MENU_ENUM_SUBLABEL_CHEAT_APPLY_AFTER_TOGGLE)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_cheat_apply_after_load,        MENU_ENUM_SUBLABEL_CHEAT_APPLY_AFTER_LOAD)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_cheat_idx,                     MENU_ENUM_SUBLABEL_CHEAT_IDX)
@@ -1742,15 +1742,23 @@ static int action_bind_sublabel_cheat_desc(
       const char *label, const char *path,
       char *s, size_t len)
 {
-   unsigned offset = (type - MENU_SETTINGS_CHEAT_BEGIN);
+   size_t _len          = 0;
+   unsigned cheat_index = (type - MENU_SETTINGS_CHEAT_BEGIN);
 
    if (cheat_manager_state.cheats)
    {
-      /* TODO/FIXME - localize */
-      if (cheat_manager_state.cheats[offset].handler == CHEAT_HANDLER_TYPE_EMU)
-         strlcpy(s, "Emulator-Handled", len);
+      if (cheat_manager_state.cheats[cheat_index].handler == CHEAT_HANDLER_TYPE_EMU)
+      {
+         const char *code = cheat_manager_get_code(cheat_index);
+         _len += strlcpy(s + _len,
+               !string_is_empty(code)
+                  ? code
+                  : msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NOT_AVAILABLE),
+               len - _len);
+      }
       else
-         strlcpy(s, "RetroArch-Handled", len);
+         _len += snprintf(s + _len, len - _len, "%08X",
+               cheat_manager_state.cheats[cheat_index].address);
    }
 
    return 0;
@@ -4733,6 +4741,9 @@ int menu_cbs_init_bind_sublabel(menu_file_list_cbs_t *cbs,
          case MENU_ENUM_LABEL_INPUT_SENSOR_ACCELEROMETER_SENSITIVITY:
             BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_sensor_accelerometer_sensitivity);
             break;
+         case MENU_ENUM_LABEL_INPUT_SENSOR_ORIENTATION:
+            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_sensor_orientation);
+            break;
          case MENU_ENUM_LABEL_INPUT_SENSOR_GYROSCOPE_SENSITIVITY:
             BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_sensor_gyroscope_sensitivity);
             break;
@@ -5412,6 +5423,9 @@ int menu_cbs_init_bind_sublabel(menu_file_list_cbs_t *cbs,
             break;
          case MENU_ENUM_LABEL_INPUT_HAPTIC_FEEDBACK_SETTINGS:
             BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_input_haptic_feedback_settings_list);
+            break;
+         case MENU_ENUM_LABEL_INPUT_SENSOR_SETTINGS:
+            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_input_sensor_settings_list);
             break;
          case MENU_ENUM_LABEL_BLUETOOTH_SETTINGS:
 #ifdef HAVE_BLUETOOTH
