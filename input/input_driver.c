@@ -4378,7 +4378,7 @@ static unsigned get_kr_composition(char* pcur, char* padd)
             /* 2nd element transform */
             strlcpy(utf8, s1 + (19 + c2) * 3, 4);
             utf8[3] = 0;
-            strlcat(utf8, padd, sizeof(utf8));
+            strlcpy(utf8 + 3, padd, sizeof(utf8) - 3);
             if (    !(tmp2 = strstr(cc2, utf8))
                   || (tmp2 >= cc2 + sizeof(cc2) - 10))
                return ret;
@@ -4397,7 +4397,7 @@ static unsigned get_kr_composition(char* pcur, char* padd)
             if (nv < 19)
             {
                /* 3rd element transform */
-               strlcat(utf8, padd, sizeof(utf8));
+               strlcpy(utf8 + 3, padd, sizeof(utf8) - 3);
                if (    !(tmp2 = strstr(cc3, utf8))
                      || (tmp2 >= cc3 + sizeof(cc3) - 10))
                      return ret;
@@ -5794,12 +5794,12 @@ static void input_overlay_loaded_move_images(input_overlay_t *ol,
 {
    size_t i;
 
-   ol->images = malloc(ol->num_images * sizeof(struct texture_image *));
+   ol->images = (struct texture_image**)malloc(ol->num_images * sizeof(struct texture_image *));
 
    if (!ol->images)
    {
       for (i = 0; i < ol->num_images; i++)
-         image_texture_free(image_list->elems[i].attr.p);
+         image_texture_free((struct texture_image*)image_list->elems[i].attr.p);
       ol->num_images = 0;
       RARCH_ERR("[Overlay] Couldn't allocate images array.\n");
    }

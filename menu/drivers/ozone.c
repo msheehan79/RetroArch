@@ -3841,6 +3841,7 @@ static bool ozone_is_main_menu_playlist(void)
    return entry.type == FILE_TYPE_RPL_ENTRY;
 }
 
+#ifdef HAVE_LIBRETRODB
 static bool ozone_is_main_menu_explore(void)
 {
    menu_entry_t entry;
@@ -3848,6 +3849,7 @@ static bool ozone_is_main_menu_explore(void)
    menu_entry_get(&entry, 0, 0, NULL, true);
    return entry.type == FILE_TYPE_RDB;
 }
+#endif
 
 static void ozone_update_savestate_thumbnail_path(void *data, unsigned i)
 {
@@ -4254,9 +4256,15 @@ static void ozone_go_to_sidebar(ozone_handle_t *ozone,
 
 static void linebreak_after_colon(char (*str)[NAME_MAX_LENGTH])
 {
-   char *delim = (char*)strchr(*str, ':');
-   if (delim)
-      *++delim = '\n';
+   char *p;
+   for (p = *str; *p; p++)
+   {
+      if (*p == ':')
+      {
+         *++p = '\n';
+         break;
+      }
+   }
 }
 
 static void ozone_update_content_metadata(ozone_handle_t *ozone)
@@ -12220,7 +12228,7 @@ static void ozone_search_header_icon(ozone_handle_t *ozone,
 
    for (i = 0; i < MSG_LAST && *enum_idx == MSG_UNKNOWN; i++)
    {
-      if (string_is_equal(label, msg_hash_to_str(i)))
+      if (string_is_equal(label, msg_hash_to_str((enum msg_hash_enums)i)))
          *enum_idx = (enum msg_hash_enums)i;
    }
 
@@ -12281,7 +12289,6 @@ static void ozone_set_header(ozone_handle_t *ozone)
       ozone->header_icon = ozone->textures[OZONE_TEXTURE_RETROARCH];
    else if (header_icon == OZONE_HEADER_ICON_DYNAMIC)
    {
-      int i;
       unsigned type                = FILE_TYPE_NONE;
       enum msg_hash_enums enum_idx = MSG_UNKNOWN;
       const char *path             = NULL;

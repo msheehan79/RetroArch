@@ -229,6 +229,9 @@ static int filebrowser_parse(
 
    if (path_is_compressed)
    {
+      if (filebrowser_type == FILEBROWSER_SELECT_OVERLAY)
+         filter_ext = true;
+
       if (filebrowser_type == FILEBROWSER_SELECT_FILE_SUBSYSTEM)
       {
          runloop_state_t    *runloop_st = runloop_state_get_ptr();
@@ -569,7 +572,6 @@ static int menu_displaylist_parse_core_info(
    core_info_t *core_info        = NULL;
    const char *core_path         = NULL;
    const char *savestate_support = NULL;
-   runloop_state_t *runloop_st   = runloop_state_get_ptr();
    bool kiosk_mode_enable        = settings->bools.kiosk_mode_enable;
    bool core_info_list_hide[64]  = {false};
 #if defined(HAVE_DYNAMIC)
@@ -632,7 +634,8 @@ static int menu_displaylist_parse_core_info(
          core_info = core_info_menu;
    }
 
-   if (!core_info || !core_info->has_info)
+   if (   !core_info 
+       || !(core_info->flags & CORE_INFO_FLAG_HAS_INFO))
    {
       if (menu_entries_append(list,
             msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NO_CORE_INFORMATION_AVAILABLE),
@@ -931,10 +934,11 @@ static int menu_displaylist_parse_core_info(
                }
                else
                {
-                  strlcat(tmp_desc, "\n", sizeof(tmp_desc));
-                  strlcat(tmp_desc,
-                        msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CORE_INFO_FIRMWARE_IN_CONTENT_DIRECTORY),
-                        sizeof(tmp_desc));
+                  size_t ___len = strlen(tmp_desc);
+                  ___len += strlcpy(tmp_desc + ___len, "\n", sizeof(tmp_desc) - ___len);
+                  strlcpy(tmp_desc    + ___len,
+                     msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CORE_INFO_FIRMWARE_IN_CONTENT_DIRECTORY),
+                     sizeof(tmp_desc) - ___len);
                }
             }
 
@@ -1025,7 +1029,7 @@ end:
       if ((contentless_display_type ==
                MENU_CONTENTLESS_CORES_DISPLAY_CUSTOM)
             && core_info
-            && core_info->supports_no_game
+            && (core_info->flags & CORE_INFO_FLAG_SUPPORTS_NO_GAME)
             && !string_is_empty(core_path))
       {
          /* Note: Have to set core_path as both the
@@ -2864,14 +2868,18 @@ static int menu_displaylist_parse_database_entry(menu_handle_t *menu,
 
    for (i = 0; i < db_info->count; i++)
    {
+      char tmp[NAME_MAX_LENGTH];
       char crc_str[20];
       database_info_t *db_info_entry = &db_info->list[i];
+      const char *val_str;
+      size_t tmp_len;
 
       snprintf(crc_str, sizeof(crc_str), "%08lX", (unsigned long)db_info_entry->crc32);
 
       if (playlist)
       {
-         for (j = 0; j < playlist_size(playlist); j++)
+         size_t pl_size = playlist_size(playlist);
+         for (j = 0; j < pl_size; j++)
          {
             const struct playlist_entry *entry  = NULL;
             bool match_found                    = false;
@@ -2880,54 +2888,57 @@ static int menu_displaylist_parse_database_entry(menu_handle_t *menu,
 
             if (entry->crc32)
             {
-               char *save            = NULL;
-               char *entry_crc32_cpy = strdup(entry->crc32);
-               const char *con       = strtok_r(entry_crc32_cpy, "|", &save);
+               char entry_crc32_buf[256];
+               char *save      = NULL;
+               const char *con = NULL;
+               size_t crc_len  = strlcpy(entry_crc32_buf,
+                     entry->crc32, sizeof(entry_crc32_buf));
+
+               if (crc_len < sizeof(entry_crc32_buf))
+                  con = strtok_r(entry_crc32_buf, "|", &save);
 
                if (con)
                {
-                  char *elem0        = strdup(con);
-                  if ((con = strtok_r(NULL, "|", &save)))
+                  const char *elem0     = con;
+                  const char *hash_type = strtok_r(NULL, "|", &save);
+
+                  if (hash_type)
                   {
-                     switch (extension_to_file_hash_type(con))
+                     switch (extension_to_file_hash_type(hash_type))
                      {
                         case FILE_TYPE_CRC:
-                           if (string_is_equal(crc_str, elem0))
-                              match_found = true;
+                           match_found = string_is_equal(crc_str, elem0);
                            break;
                         case FILE_TYPE_SHA1:
-                           if (string_is_equal(db_info_entry->sha1, elem0))
-                              match_found = true;
+                           match_found = string_is_equal(
+                                 db_info_entry->sha1, elem0);
                            break;
                         case FILE_TYPE_MD5:
-                           if (string_is_equal(db_info_entry->md5, elem0))
-                              match_found = true;
+                           match_found = string_is_equal(
+                                 db_info_entry->md5, elem0);
                            break;
                         default:
                            break;
                      }
                   }
-                  free(elem0);
                }
-
-               free(entry_crc32_cpy);
             }
 
             if (!match_found)
                continue;
 
             menu->scratchpad.unsigned_var = j;
+            break;
          }
       }
 
       if (db_info_entry->name)
       {
-         char tmp[NAME_MAX_LENGTH];
-         size_t _len = strlcpy(tmp,
+         tmp_len  = strlcpy(tmp,
                msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_NAME),
                sizeof(tmp));
-         _len          += strlcpy(tmp + _len, ": ", sizeof(tmp) - _len);
-         strlcpy(tmp + _len, db_info_entry->name, sizeof(tmp) - _len);
+         tmp_len += strlcpy(tmp + tmp_len, ": ", sizeof(tmp) - tmp_len);
+         strlcpy(tmp + tmp_len, db_info_entry->name, sizeof(tmp) - tmp_len);
          menu_entries_append(info->list, tmp,
                msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_NAME),
                MENU_ENUM_LABEL_RDB_ENTRY_NAME,
@@ -2936,178 +2947,84 @@ static int menu_displaylist_parse_database_entry(menu_handle_t *menu,
 
       if (db_info_entry->description)
       {
-         char tmp[NAME_MAX_LENGTH];
-         size_t _len = strlcpy(tmp,
+         tmp_len  = strlcpy(tmp,
                msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_DESCRIPTION),
                sizeof(tmp));
-         _len          += strlcpy(tmp + _len, ": ", sizeof(tmp) - _len);
-         strlcpy(tmp + _len, db_info_entry->description, sizeof(tmp) - _len);
+         tmp_len += strlcpy(tmp + tmp_len, ": ", sizeof(tmp) - tmp_len);
+         strlcpy(tmp + tmp_len, db_info_entry->description,
+               sizeof(tmp) - tmp_len);
          menu_entries_append(info->list, tmp,
                msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_DESCRIPTION),
                MENU_ENUM_LABEL_RDB_ENTRY_DESCRIPTION,
                0, 0, 0, NULL);
       }
 
-      if (db_info_entry->genre)
-      {
-
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_GENRE,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_GENRE),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_GENRE),
-                  db_info_entry->genre, info->path, info->list) == -1)
-            goto error;
+#define RDB_ENTRY_STR(field, enum_label, enum_val_label) \
+      if (db_info_entry->field) \
+      { \
+         if (create_string_list_rdb_entry_string( \
+                  enum_label, \
+                  msg_hash_to_str(enum_val_label), \
+                  msg_hash_to_str(enum_label), \
+                  db_info_entry->field, info->path, info->list) == -1) \
+            goto error; \
       }
 
-      if (db_info_entry->publisher)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_PUBLISHER,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_PUBLISHER),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_PUBLISHER),
-                  db_info_entry->publisher, info->path, info->list) == -1)
-            goto error;
+#define RDB_ENTRY_INT(field, enum_label, enum_val_label) \
+      if (db_info_entry->field) \
+      { \
+         if (create_string_list_rdb_entry_int( \
+                  enum_label, \
+                  msg_hash_to_str(enum_val_label), \
+                  msg_hash_to_str(enum_label), \
+                  db_info_entry->field, info->path, info->list) == -1) \
+            goto error; \
       }
 
-      if (db_info_entry->category)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_CATEGORY,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_CATEGORY),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_CATEGORY),
-                  db_info_entry->category, info->path, info->list) == -1)
-            goto error;
+#define RDB_ENTRY_BOOL(field, enum_label, enum_val_label) \
+      if (db_info_entry->field == 1) \
+      { \
+         if (create_string_list_rdb_entry_string( \
+                  enum_label, \
+                  msg_hash_to_str(enum_val_label), \
+                  msg_hash_to_str(enum_label), \
+                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_TRUE), \
+                  info->path, info->list) == -1) \
+            goto error; \
       }
 
-      if (db_info_entry->language)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_LANGUAGE,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_LANGUAGE),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_LANGUAGE),
-                  db_info_entry->language, info->path, info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->region)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_REGION,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_REGION),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_REGION),
-                  db_info_entry->region, info->path, info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->score)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_SCORE,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_SCORE),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_SCORE),
-                  db_info_entry->score, info->path, info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->media)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_MEDIA,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_MEDIA),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_MEDIA),
-                  db_info_entry->media, info->path, info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->controls)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_CONTROLS,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_CONTROLS),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_CONTROLS),
-                  db_info_entry->controls, info->path, info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->artstyle)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_ARTSTYLE,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_ARTSTYLE),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_ARTSTYLE),
-                  db_info_entry->artstyle, info->path, info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->gameplay)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_GAMEPLAY,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_GAMEPLAY),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_GAMEPLAY),
-                  db_info_entry->gameplay, info->path, info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->narrative)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_NARRATIVE,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_NARRATIVE),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_NARRATIVE),
-                  db_info_entry->narrative, info->path, info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->pacing)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_PACING,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_PACING),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_PACING),
-                  db_info_entry->pacing, info->path, info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->perspective)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_PERSPECTIVE,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_PERSPECTIVE),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_PERSPECTIVE),
-                  db_info_entry->perspective, info->path, info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->setting)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_SETTING,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_SETTING),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_SETTING),
-                  db_info_entry->setting, info->path, info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->visual)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_VISUAL,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_VISUAL),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_VISUAL),
-                  db_info_entry->visual, info->path, info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->vehicular)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_VEHICULAR,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_VEHICULAR),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_VEHICULAR),
-                  db_info_entry->vehicular, info->path, info->list) == -1)
-            goto error;
-      }
+      RDB_ENTRY_STR(genre,       MENU_ENUM_LABEL_RDB_ENTRY_GENRE,
+                                  MENU_ENUM_LABEL_VALUE_RDB_ENTRY_GENRE)
+      RDB_ENTRY_STR(publisher,   MENU_ENUM_LABEL_RDB_ENTRY_PUBLISHER,
+                                  MENU_ENUM_LABEL_VALUE_RDB_ENTRY_PUBLISHER)
+      RDB_ENTRY_STR(category,    MENU_ENUM_LABEL_RDB_ENTRY_CATEGORY,
+                                  MENU_ENUM_LABEL_VALUE_RDB_ENTRY_CATEGORY)
+      RDB_ENTRY_STR(language,    MENU_ENUM_LABEL_RDB_ENTRY_LANGUAGE,
+                                  MENU_ENUM_LABEL_VALUE_RDB_ENTRY_LANGUAGE)
+      RDB_ENTRY_STR(region,      MENU_ENUM_LABEL_RDB_ENTRY_REGION,
+                                  MENU_ENUM_LABEL_VALUE_RDB_ENTRY_REGION)
+      RDB_ENTRY_STR(score,       MENU_ENUM_LABEL_RDB_ENTRY_SCORE,
+                                  MENU_ENUM_LABEL_VALUE_RDB_ENTRY_SCORE)
+      RDB_ENTRY_STR(media,       MENU_ENUM_LABEL_RDB_ENTRY_MEDIA,
+                                  MENU_ENUM_LABEL_VALUE_RDB_ENTRY_MEDIA)
+      RDB_ENTRY_STR(controls,    MENU_ENUM_LABEL_RDB_ENTRY_CONTROLS,
+                                  MENU_ENUM_LABEL_VALUE_RDB_ENTRY_CONTROLS)
+      RDB_ENTRY_STR(artstyle,    MENU_ENUM_LABEL_RDB_ENTRY_ARTSTYLE,
+                                  MENU_ENUM_LABEL_VALUE_RDB_ENTRY_ARTSTYLE)
+      RDB_ENTRY_STR(gameplay,    MENU_ENUM_LABEL_RDB_ENTRY_GAMEPLAY,
+                                  MENU_ENUM_LABEL_VALUE_RDB_ENTRY_GAMEPLAY)
+      RDB_ENTRY_STR(narrative,   MENU_ENUM_LABEL_RDB_ENTRY_NARRATIVE,
+                                  MENU_ENUM_LABEL_VALUE_RDB_ENTRY_NARRATIVE)
+      RDB_ENTRY_STR(pacing,      MENU_ENUM_LABEL_RDB_ENTRY_PACING,
+                                  MENU_ENUM_LABEL_VALUE_RDB_ENTRY_PACING)
+      RDB_ENTRY_STR(perspective, MENU_ENUM_LABEL_RDB_ENTRY_PERSPECTIVE,
+                                  MENU_ENUM_LABEL_VALUE_RDB_ENTRY_PERSPECTIVE)
+      RDB_ENTRY_STR(setting,     MENU_ENUM_LABEL_RDB_ENTRY_SETTING,
+                                  MENU_ENUM_LABEL_VALUE_RDB_ENTRY_SETTING)
+      RDB_ENTRY_STR(visual,      MENU_ENUM_LABEL_RDB_ENTRY_VISUAL,
+                                  MENU_ENUM_LABEL_VALUE_RDB_ENTRY_VISUAL)
+      RDB_ENTRY_STR(vehicular,   MENU_ENUM_LABEL_RDB_ENTRY_VEHICULAR,
+                                  MENU_ENUM_LABEL_VALUE_RDB_ENTRY_VEHICULAR)
 
       if (db_info_entry->developer)
       {
@@ -3129,241 +3046,58 @@ static int menu_displaylist_parse_database_entry(menu_handle_t *menu,
          }
       }
 
-      if (db_info_entry->origin)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_ORIGIN,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_ORIGIN),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_ORIGIN),
-                  db_info_entry->origin, info->path, info->list) == -1)
-            goto error;
-      }
+      RDB_ENTRY_STR(origin,              MENU_ENUM_LABEL_RDB_ENTRY_ORIGIN,
+                                          MENU_ENUM_LABEL_VALUE_RDB_ENTRY_ORIGIN)
+      RDB_ENTRY_STR(franchise,           MENU_ENUM_LABEL_RDB_ENTRY_FRANCHISE,
+                                          MENU_ENUM_LABEL_VALUE_RDB_ENTRY_FRANCHISE)
 
-      if (db_info_entry->franchise)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_FRANCHISE,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_FRANCHISE),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_FRANCHISE),
-                  db_info_entry->franchise, info->path, info->list) == -1)
-            goto error;
-      }
+      RDB_ENTRY_INT(max_users,           MENU_ENUM_LABEL_RDB_ENTRY_MAX_USERS,
+                                          MENU_ENUM_LABEL_VALUE_INPUT_MAX_USERS)
+      RDB_ENTRY_INT(tgdb_rating,         MENU_ENUM_LABEL_RDB_ENTRY_TGDB_RATING,
+                                          MENU_ENUM_LABEL_VALUE_RDB_ENTRY_TGDB_RATING)
+      RDB_ENTRY_INT(famitsu_magazine_rating,
+                                          MENU_ENUM_LABEL_RDB_ENTRY_FAMITSU_MAGAZINE_RATING,
+                                          MENU_ENUM_LABEL_VALUE_RDB_ENTRY_FAMITSU_MAGAZINE_RATING)
 
-      if (db_info_entry->max_users)
-      {
-         if (create_string_list_rdb_entry_int(
-                  MENU_ENUM_LABEL_RDB_ENTRY_MAX_USERS,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_INPUT_MAX_USERS),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_MAX_USERS),
-                  db_info_entry->max_users, info->path, info->list) == -1)
-            goto error;
-      }
+      RDB_ENTRY_STR(edge_magazine_review, MENU_ENUM_LABEL_RDB_ENTRY_EDGE_MAGAZINE_REVIEW,
+                                          MENU_ENUM_LABEL_VALUE_RDB_ENTRY_EDGE_MAGAZINE_REVIEW)
+      RDB_ENTRY_INT(edge_magazine_rating, MENU_ENUM_LABEL_RDB_ENTRY_EDGE_MAGAZINE_RATING,
+                                          MENU_ENUM_LABEL_VALUE_RDB_ENTRY_EDGE_MAGAZINE_RATING)
+      RDB_ENTRY_INT(edge_magazine_issue,  MENU_ENUM_LABEL_RDB_ENTRY_EDGE_MAGAZINE_ISSUE,
+                                          MENU_ENUM_LABEL_VALUE_RDB_ENTRY_EDGE_MAGAZINE_ISSUE)
 
-      if (db_info_entry->tgdb_rating)
-      {
-         if (create_string_list_rdb_entry_int(
-                  MENU_ENUM_LABEL_RDB_ENTRY_TGDB_RATING,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_TGDB_RATING),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_TGDB_RATING),
-                  db_info_entry->tgdb_rating, info->path, info->list) == -1)
-            goto error;
-      }
+      RDB_ENTRY_INT(releasemonth,        MENU_ENUM_LABEL_RDB_ENTRY_RELEASE_MONTH,
+                                          MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_MONTH)
+      RDB_ENTRY_INT(releaseyear,         MENU_ENUM_LABEL_RDB_ENTRY_RELEASE_YEAR,
+                                          MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_YEAR)
 
-      if (db_info_entry->famitsu_magazine_rating)
-      {
-         if (create_string_list_rdb_entry_int(
-                  MENU_ENUM_LABEL_RDB_ENTRY_FAMITSU_MAGAZINE_RATING,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_FAMITSU_MAGAZINE_RATING),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_FAMITSU_MAGAZINE_RATING),
-                  db_info_entry->famitsu_magazine_rating, info->path, info->list) == -1)
-            goto error;
-      }
+      RDB_ENTRY_STR(bbfc_rating,         MENU_ENUM_LABEL_RDB_ENTRY_BBFC_RATING,
+                                          MENU_ENUM_LABEL_VALUE_RDB_ENTRY_BBFC_RATING)
+      RDB_ENTRY_STR(esrb_rating,         MENU_ENUM_LABEL_RDB_ENTRY_ESRB_RATING,
+                                          MENU_ENUM_LABEL_VALUE_RDB_ENTRY_ESRB_RATING)
+      RDB_ENTRY_STR(elspa_rating,        MENU_ENUM_LABEL_RDB_ENTRY_ELSPA_RATING,
+                                          MENU_ENUM_LABEL_VALUE_RDB_ENTRY_ELSPA_RATING)
+      RDB_ENTRY_STR(pegi_rating,         MENU_ENUM_LABEL_RDB_ENTRY_PEGI_RATING,
+                                          MENU_ENUM_LABEL_VALUE_RDB_ENTRY_PEGI_RATING)
+      RDB_ENTRY_STR(enhancement_hw,      MENU_ENUM_LABEL_RDB_ENTRY_ENHANCEMENT_HW,
+                                          MENU_ENUM_LABEL_VALUE_RDB_ENTRY_ENHANCEMENT_HW)
+      RDB_ENTRY_STR(cero_rating,         MENU_ENUM_LABEL_RDB_ENTRY_CERO_RATING,
+                                          MENU_ENUM_LABEL_VALUE_RDB_ENTRY_CERO_RATING)
+      RDB_ENTRY_STR(serial,              MENU_ENUM_LABEL_RDB_ENTRY_SERIAL,
+                                          MENU_ENUM_LABEL_VALUE_RDB_ENTRY_SERIAL)
 
-      if (db_info_entry->edge_magazine_review)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_EDGE_MAGAZINE_REVIEW,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_EDGE_MAGAZINE_REVIEW),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_EDGE_MAGAZINE_REVIEW),
-                  db_info_entry->edge_magazine_review, info->path, info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->edge_magazine_rating)
-      {
-         if (create_string_list_rdb_entry_int(
-                  MENU_ENUM_LABEL_RDB_ENTRY_EDGE_MAGAZINE_RATING,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_EDGE_MAGAZINE_RATING),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_EDGE_MAGAZINE_RATING),
-                  db_info_entry->edge_magazine_rating, info->path, info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->edge_magazine_issue)
-      {
-         if (create_string_list_rdb_entry_int(
-                  MENU_ENUM_LABEL_RDB_ENTRY_EDGE_MAGAZINE_ISSUE,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_EDGE_MAGAZINE_ISSUE),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_EDGE_MAGAZINE_ISSUE),
-                  db_info_entry->edge_magazine_issue, info->path, info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->releasemonth)
-      {
-         if (create_string_list_rdb_entry_int(
-                  MENU_ENUM_LABEL_RDB_ENTRY_RELEASE_MONTH,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_MONTH),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_RELEASE_MONTH),
-                  db_info_entry->releasemonth, info->path, info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->releaseyear)
-      {
-         if (create_string_list_rdb_entry_int(
-                  MENU_ENUM_LABEL_RDB_ENTRY_RELEASE_YEAR,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_YEAR),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_RELEASE_YEAR),
-                  db_info_entry->releaseyear, info->path, info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->bbfc_rating)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_BBFC_RATING,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_BBFC_RATING),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_BBFC_RATING),
-                  db_info_entry->bbfc_rating, info->path, info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->esrb_rating)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_ESRB_RATING,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_ESRB_RATING),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_ESRB_RATING),
-                  db_info_entry->esrb_rating, info->path, info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->elspa_rating)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_ELSPA_RATING,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_ELSPA_RATING),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_ELSPA_RATING),
-                  db_info_entry->elspa_rating, info->path, info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->pegi_rating)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_PEGI_RATING,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_PEGI_RATING),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_PEGI_RATING),
-                  db_info_entry->pegi_rating, info->path, info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->enhancement_hw)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_ENHANCEMENT_HW,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_ENHANCEMENT_HW),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_ENHANCEMENT_HW),
-                  db_info_entry->enhancement_hw, info->path, info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->cero_rating)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_CERO_RATING,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_CERO_RATING),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_CERO_RATING),
-                  db_info_entry->cero_rating, info->path, info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->serial)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_SERIAL,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_SERIAL),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_SERIAL),
-                  db_info_entry->serial, info->path, info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->analog_supported == 1)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_ANALOG,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_ANALOG),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_ANALOG),
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_TRUE), info->path,
-                  info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->rumble_supported == 1)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_RUMBLE,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RUMBLE),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_RUMBLE),
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_TRUE), info->path,
-                  info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->coop_supported == 1)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_COOP,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_COOP),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_COOP),
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_TRUE), info->path,
-                  info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->achievements == 1)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_ACHIEVEMENTS,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_ACHIEVEMENTS),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_ACHIEVEMENTS),
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_TRUE), info->path,
-                  info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->console_exclusive == 1)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_CONSOLE_EXCLUSIVE,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_CONSOLE_EXCLUSIVE),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_CONSOLE_EXCLUSIVE),
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_TRUE), info->path,
-                  info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->platform_exclusive == 1)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_PLATFORM_EXCLUSIVE,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_PLATFORM_EXCLUSIVE),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_PLATFORM_EXCLUSIVE),
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_TRUE), info->path,
-                  info->list) == -1)
-            goto error;
-      }
+      RDB_ENTRY_BOOL(analog_supported,   MENU_ENUM_LABEL_RDB_ENTRY_ANALOG,
+                                          MENU_ENUM_LABEL_VALUE_RDB_ENTRY_ANALOG)
+      RDB_ENTRY_BOOL(rumble_supported,    MENU_ENUM_LABEL_RDB_ENTRY_RUMBLE,
+                                          MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RUMBLE)
+      RDB_ENTRY_BOOL(coop_supported,      MENU_ENUM_LABEL_RDB_ENTRY_COOP,
+                                          MENU_ENUM_LABEL_VALUE_RDB_ENTRY_COOP)
+      RDB_ENTRY_BOOL(achievements,        MENU_ENUM_LABEL_RDB_ENTRY_ACHIEVEMENTS,
+                                          MENU_ENUM_LABEL_VALUE_RDB_ENTRY_ACHIEVEMENTS)
+      RDB_ENTRY_BOOL(console_exclusive,   MENU_ENUM_LABEL_RDB_ENTRY_CONSOLE_EXCLUSIVE,
+                                          MENU_ENUM_LABEL_VALUE_RDB_ENTRY_CONSOLE_EXCLUSIVE)
+      RDB_ENTRY_BOOL(platform_exclusive,  MENU_ENUM_LABEL_RDB_ENTRY_PLATFORM_EXCLUSIVE,
+                                          MENU_ENUM_LABEL_VALUE_RDB_ENTRY_PLATFORM_EXCLUSIVE)
 
       if (!show_advanced_settings)
          continue;
@@ -3378,26 +3112,15 @@ static int menu_displaylist_parse_database_entry(menu_handle_t *menu,
             goto error;
       }
 
-      if (db_info_entry->sha1)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_SHA1,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_SHA1),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_SHA1),
-                  db_info_entry->sha1, info->path, info->list) == -1)
-            goto error;
-      }
-
-      if (db_info_entry->md5)
-      {
-         if (create_string_list_rdb_entry_string(
-                  MENU_ENUM_LABEL_RDB_ENTRY_MD5,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RDB_ENTRY_MD5),
-                  msg_hash_to_str(MENU_ENUM_LABEL_RDB_ENTRY_MD5),
-                  db_info_entry->md5, info->path, info->list) == -1)
-            goto error;
-      }
+      RDB_ENTRY_STR(sha1, MENU_ENUM_LABEL_RDB_ENTRY_SHA1,
+                           MENU_ENUM_LABEL_VALUE_RDB_ENTRY_SHA1)
+      RDB_ENTRY_STR(md5,  MENU_ENUM_LABEL_RDB_ENTRY_MD5,
+                           MENU_ENUM_LABEL_VALUE_RDB_ENTRY_MD5)
    }
+
+#undef RDB_ENTRY_STR
+#undef RDB_ENTRY_INT
+#undef RDB_ENTRY_BOOL
 
    if (db_info->count < 1)
       info->flags |= MD_FLAG_NEED_PUSH_NO_PLAYLIST_ENTRIES;
@@ -4337,8 +4060,8 @@ static unsigned menu_displaylist_parse_information_list(file_list_t *info_list)
          &&  !string_is_equal(sysinfo->library_name,
              msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NO_CORE))
          )
-         && core_info
-         && core_info->has_info
+         &&  core_info
+         && (core_info->flags & CORE_INFO_FLAG_HAS_INFO)
       )
       if (menu_entries_append(info_list,
             msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CORE_INFORMATION),
@@ -5339,8 +5062,8 @@ static unsigned menu_displaylist_parse_content_information(
 
       if (core_info_find(core_path, &core_info))
       {
-         core_supports_no_game = core_info->supports_no_game;
-
+         core_supports_no_game = (core_info->flags 
+                                & CORE_INFO_FLAG_SUPPORTS_NO_GAME);
          if (!string_is_empty(core_info->display_name))
             strlcpy(core_name, core_info->display_name, sizeof(core_name));
       }
@@ -13509,34 +13232,38 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
 #endif
                if (!string_is_empty(info->label))
                {
-                  char *tok, *save     = NULL;
-                  char *info_label_cpy = strdup(info->label);
-
-                  if ((tok = strtok_r(info_label_cpy, "|", &save)))
-                     elem0     = strdup(tok);
-                  if ((tok = strtok_r(NULL, "|", &save)))
-                     elem1     = strdup(tok);
-                  free(info_label_cpy);
-                  free(info->label);
-                  info->label  = NULL;
+                  char *delim = strchr(info->label, '|');
+                  if (delim)
+                  {
+                     *delim = '\0';
+                     if (*(delim + 1) != '\0')
+                        elem1 = delim + 1;
+                     if (info->label[0] != '\0')
+                        elem0 = info->label;
+                  }
                }
-
                if (!string_is_empty(info->path_b))
                {
                   free(info->path_b);
                   info->path_b = NULL;
                }
-
-               if (     !string_is_empty(elem0)
-                     && !string_is_empty(elem1))
+               if (elem0 && elem1)
                {
-                  info->path_b   = elem1;
-                  info->label    = elem0;
+                  info->path_b   = strdup(elem1);
+                  /* Trim label in place by null-terminating at the delimiter
+                   * (already done above). info->label still owns the buffer
+                   * and now only contains elem0. */
 #ifdef HAVE_LIBRETRODB
                   parse_database = true;
 #endif
                }
-
+               else
+               {
+                  /* Neither element needed; free label since the original
+                   * code path freed it unconditionally. */
+                  free(info->label);
+                  info->label = NULL;
+               }
 #ifdef HAVE_LIBRETRODB
                if (parse_database)
                   ret = menu_displaylist_parse_database_entry(menu, info,
@@ -13740,19 +13467,25 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
          case DISPLAYLIST_CORE_CONTENT_DIRS_SUBDIR:
             {
 #ifdef HAVE_NETWORKING
+               size_t label_len;
                char new_label[NAME_MAX_LENGTH];
-               char *save                  = NULL;
-               char *info_path_cpy         = strdup(info->path);
-               const char *con             = strtok_r(info_path_cpy, ";", &save);
+               const char *con       = info->path;
+               const char *semi      = strchr(con, ';');
 
-               if (con)
-                  strlcpy(new_label, con, sizeof(new_label));
+               if (semi)
+               {
+                  label_len = (size_t)(semi - con);
+                  if (label_len >= sizeof(new_label))
+                     label_len = sizeof(new_label) - 1;
+                  memcpy(new_label, con, label_len);
+                  new_label[label_len] = '\0';
+                  strlcpy(menu->core_buf, semi + 1, menu->core_len);
+               }
                else
-                  new_label[0] = '\0';
-
-               if ((con = strtok_r(NULL, ";", &save))) /* Get second parameter */
-                  strlcpy(menu->core_buf, con, menu->core_len);
-               free(info_path_cpy);
+               {
+                  strlcpy(new_label, con, sizeof(new_label));
+                  menu->core_buf[0] = '\0';
+               }
 
                if ((count = (unsigned)print_buf_lines(
                            info->list, new_label, menu->core_buf,
@@ -13765,10 +13498,9 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
                            MENU_ENUM_LABEL_NO_ENTRIES_TO_DISPLAY),
                         MENU_ENUM_LABEL_NO_ENTRIES_TO_DISPLAY,
                         FILE_TYPE_NONE, 0, 0, NULL);
-
                info->flags       |= MD_FLAG_NEED_REFRESH
-                                  | MD_FLAG_NEED_PUSH
-                                  | MD_FLAG_NEED_CLEAR;
+                  | MD_FLAG_NEED_PUSH
+                  | MD_FLAG_NEED_CLEAR;
 #endif
             }
             break;
@@ -16040,6 +15772,7 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
                case DISPLAYLIST_OVERLAYS:
                   info->type_default = FILE_TYPE_OVERLAY;
                   info->exts         = strldup("cfg", sizeof("cfg"));
+                  filebrowser_set_type(FILEBROWSER_SELECT_OVERLAY);
                   break;
                case DISPLAYLIST_OSK_OVERLAYS:
                   info->type_default = FILE_TYPE_OSK_OVERLAY;
@@ -16181,63 +15914,98 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
                         case ST_STRING_OPTIONS:
                            {
                               char val_d[16];
-                              char *tok, *save         = NULL;
-                              unsigned i               = 0;
-                              bool checked_found       = false;
-                              unsigned checked         = 0;
-                              char* orig_val           = setting->get_string_representation ?
-                                 strdup(setting->value.target.string) : setting->value.target.string;
-                              char *setting_values_cpy = strdup(setting->values);
+                              char val_s[NAME_MAX_LENGTH];
+                              char orig_val[NAME_MAX_LENGTH];
+                              const char *values        = setting->values;
+                              const char *p             = values;
+                              unsigned i                = 0;
+                              bool checked_found        = false;
+                              unsigned checked          = 0;
+                              int has_repr              = (setting->get_string_representation != NULL);
+
                               snprintf(val_d, sizeof(val_d), "%d", setting->enum_idx);
 
-                              for (tok = strtok_r(setting_values_cpy, "|", &save); tok;
-                                    tok = strtok_r(NULL, "|", &save), i++)
+                              if (has_repr)
+                                 strlcpy(orig_val, setting->value.target.string, sizeof(orig_val));
+
+                              while (*p)
                               {
-                                    if (setting->get_string_representation)
+                                 const char *end = p;
+                                 size_t len;
+
+                                 while (*end && *end != '|')
+                                    end++;
+
+                                 len = (size_t)(end - p);
+
+                                 if (has_repr)
+                                 {
+                                    if (len < setting->size)
                                     {
-                                       char val_s[NAME_MAX_LENGTH];
-                                       strlcpy(setting->value.target.string, tok, setting->size);
-                                       setting->get_string_representation(setting,
-                                             val_s, sizeof(val_s));
-                                       if (menu_entries_append(info->list,
-                                                val_s,
-                                                val_d,
-                                                MENU_ENUM_LABEL_NO_ITEMS,
-                                                MENU_SETTING_DROPDOWN_SETTING_STRING_OPTIONS_ITEM,
-                                                i, 0, NULL))
-                                          count++;
+                                       memcpy(setting->value.target.string, p, len);
+                                       setting->value.target.string[len] = '\0';
+                                    }
+                                    else
+                                       strlcpy(setting->value.target.string, p, setting->size);
+
+                                    setting->get_string_representation(setting,
+                                          val_s, sizeof(val_s));
+
+                                    if (menu_entries_append(info->list,
+                                             val_s,
+                                             val_d,
+                                             MENU_ENUM_LABEL_NO_ITEMS,
+                                             MENU_SETTING_DROPDOWN_SETTING_STRING_OPTIONS_ITEM,
+                                             i, 0, NULL))
+                                       count++;
+                                 }
+                                 else
+                                 {
+                                    if (len < sizeof(val_s))
+                                    {
+                                       memcpy(val_s, p, len);
+                                       val_s[len] = '\0';
                                     }
                                     else
                                     {
-                                       if (menu_entries_append(info->list,
-                                                tok,
-                                                val_d,
-                                                MENU_ENUM_LABEL_NO_ITEMS,
-                                                MENU_SETTING_DROPDOWN_SETTING_STRING_OPTIONS_ITEM,
-                                                i, 0, NULL))
-                                          count++;
+                                       memcpy(val_s, p, sizeof(val_s) - 1);
+                                       val_s[sizeof(val_s) - 1] = '\0';
                                     }
 
-                                    if (!checked_found && string_is_equal(tok, orig_val))
+                                    if (menu_entries_append(info->list,
+                                             val_s,
+                                             val_d,
+                                             MENU_ENUM_LABEL_NO_ITEMS,
+                                             MENU_SETTING_DROPDOWN_SETTING_STRING_OPTIONS_ITEM,
+                                             i, 0, NULL))
+                                       count++;
+                                 }
+
+                                 if (!checked_found)
+                                 {
+                                    const char *cur = has_repr ? orig_val : setting->value.target.string;
+                                    size_t cur_len  = strlen(cur);
+                                    if (cur_len == len && memcmp(p, cur, len) == 0)
                                     {
                                        checked       = i;
                                        checked_found = true;
                                     }
-                              }
-                              free(setting_values_cpy);
+                                 }
 
-                              if (setting->get_string_representation)
-                              {
-                                 strlcpy(setting->value.target.string, orig_val, setting->size);
-                                 free(orig_val);
+                                 i++;
+                                 p = *end ? end + 1 : end;
                               }
+
+                              if (has_repr)
+                                 strlcpy(setting->value.target.string, orig_val, setting->size);
 
                               if (checked_found)
                               {
-                                 menu_file_list_cbs_t *cbs  = (menu_file_list_cbs_t*)info->list->list[checked].actiondata;
+                                 menu_file_list_cbs_t *cbs = (menu_file_list_cbs_t*)
+                                    info->list->list[checked].actiondata;
                                  if (cbs)
-                                    cbs->checked            = true;
-                                 menu_st->selection_ptr     = checked;
+                                    cbs->checked           = true;
+                                 menu_st->selection_ptr    = checked;
                               }
                            }
                            break;
@@ -16530,41 +16298,60 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
                      case ST_STRING_OPTIONS:
                         {
                            char val_d[16];
-                           char *tok, *save         = NULL;
-                           unsigned i               = 0;
-                           bool checked_found       = false;
-                           unsigned checked         = 0;
-                           char *setting_values_cpy = strdup(setting->values);
+                           const char *p       = setting->values;
+                           const char *tok;
+                           unsigned i          = 0;
+                           int checked_found   = 0;
+                           unsigned checked    = 0;
+                           size_t tok_len;
 
                            snprintf(val_d, sizeof(val_d), "%d", setting->enum_idx);
 
-                           for (tok = strtok_r(setting_values_cpy, "|", &save); tok;
-                                 tok = strtok_r(NULL, "|", &save), i++)
+                           while (p && *p)
                            {
+                              const char *delim = strchr(p, '|');
+                              char tmp[256];
+
+                              if (delim)
+                                 tok_len = (size_t)(delim - p);
+                              else
+                                 tok_len = strlen(p);
+
+                              if (tok_len >= sizeof(tmp))
+                                 tok_len = sizeof(tmp) - 1;
+
+                              memcpy(tmp, p, tok_len);
+                              tmp[tok_len] = '\0';
+
                               if (menu_entries_append(info->list,
-                                       tok,
+                                       tmp,
                                        val_d,
                                        MENU_ENUM_LABEL_NO_ITEMS,
                                        MENU_SETTING_DROPDOWN_SETTING_STRING_OPTIONS_ITEM_SPECIAL, i, 0, NULL))
                                  count++;
 
-                              if (    !checked_found
-                                    && string_is_equal(tok, setting->value.target.string))
+                              if (!checked_found
+                                    && tok_len == strlen(setting->value.target.string)
+                                    && memcmp(tmp, setting->value.target.string, tok_len) == 0)
                               {
                                  checked       = i;
-                                 checked_found = true;
+                                 checked_found = 1;
                               }
+
+                              i++;
+                              p = delim ? delim + 1 : NULL;
                            }
-                           free(setting_values_cpy);
 
                            if (checked_found)
                            {
-                              menu_file_list_cbs_t *cbs  = (menu_file_list_cbs_t*)info->list->list[checked].actiondata;
+                              menu_file_list_cbs_t *cbs = (menu_file_list_cbs_t*)
+                                 info->list->list[checked].actiondata;
                               if (cbs)
-                                 cbs->checked            = true;
-                              menu_st->selection_ptr     = checked;
+                                 cbs->checked        = 1;
+                              menu_st->selection_ptr  = checked;
                            }
                         }
+
                         break;
                      case ST_INT:
                         {

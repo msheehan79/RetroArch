@@ -49,6 +49,7 @@
 
 #include "../menu_driver.h"
 #include "../menu_cbs.h"
+#include "../menu_displaylist.h"
 #include "../menu_entries.h"
 #include "../menu_setting.h"
 #if defined(HAVE_CG) || defined(HAVE_GLSL) || defined(HAVE_SLANG) || defined(HAVE_HLSL)
@@ -1141,16 +1142,31 @@ int generic_action_ok_displaylist_push(
          info_path          = parent_dir;
          break;
       case ACTION_OK_DL_OVERLAY_PRESET:
-         filebrowser_clear_type();
+         filebrowser_set_type(FILEBROWSER_SELECT_OVERLAY);
          info.directory_ptr = idx;
          info_label         = msg_hash_to_str(MENU_ENUM_LABEL_OVERLAY_PRESET);
          info.enum_idx      = MENU_ENUM_LABEL_OVERLAY_PRESET;
          dl_type            = DISPLAYLIST_FILE_BROWSER_SELECT_FILE;
 
-         action_ok_get_file_browser_start_path(
-               settings->paths.path_overlay,
-               settings->paths.directory_overlay,
-               parent_dir, sizeof(parent_dir), true);
+         {
+            char expanded[PATH_MAX_LENGTH];
+            /* Expand ~ so path_is_directory works on iOS */
+            fill_pathname_expand_special(expanded,
+                  settings->paths.path_overlay, sizeof(expanded));
+#ifdef HAVE_COMPRESSION
+            {
+               /* For archive paths (zip#inner/file.cfg), use just
+                * the zip path so the browser starts in the right dir */
+               char *delim = (char*)path_get_archive_delim(expanded);
+               if (delim)
+                  *delim = '\0';
+            }
+#endif
+            action_ok_get_file_browser_start_path(
+                  expanded,
+                  settings->paths.directory_overlay,
+                  parent_dir, sizeof(parent_dir), true);
+         }
 
          info_path          = parent_dir;
          break;
@@ -1422,7 +1438,9 @@ int generic_action_ok_displaylist_push(
                strlcpy(path_content, path_get(RARCH_PATH_CONTENT), sizeof(path_content));
                /* Remove archive browsed file from the path */
                {
-                  char *delim = (char*)strchr(path_content, '#');
+                  char *delim = path_content;
+                  while (*delim && *delim != '#')
+                     delim++;
                   if (delim)
                      *delim = '\0';
                }
@@ -2563,6 +2581,102 @@ DEFAULT_ACTION_OK_SET(action_ok_set_path_audiofilter, ACTION_OK_SET_PATH_AUDIO_F
 DEFAULT_ACTION_OK_SET(action_ok_set_path_videofilter, ACTION_OK_SET_PATH_VIDEO_FILTER, MSG_UNKNOWN)
 DEFAULT_ACTION_OK_SET(action_ok_set_path_overlay,     ACTION_OK_SET_PATH_OVERLAY,      MSG_UNKNOWN)
 DEFAULT_ACTION_OK_SET(action_ok_set_path_osk_overlay, ACTION_OK_SET_PATH_OSK_OVERLAY,  MSG_UNKNOWN)
+
+#ifdef HAVE_COMPRESSION
+static int action_ok_compressed_archive_push_overlay(const char *path,
+      const char *label, unsigned type, size_t idx, size_t entry_idx)
+{
+   menu_displaylist_info_t info;
+   struct menu_state *menu_st = menu_state_get_ptr();
+   menu_handle_t *menu        = menu_st->driver_data;
+   menu_list_t *menu_list     = menu_st->entries.list;
+   const char *menu_path      = NULL;
+   settings_t *settings       = config_get_ptr();
+
+   if (!menu)
+      return -1;
+
+   menu_entries_get_last_stack(&menu_path, NULL, NULL, NULL, NULL);
+
+   /* Set scratch buffers so deferred_archive_open can build
+    * the full archive path (same as COMPRESSED_ARCHIVE_PUSH) */
+   if (!string_is_empty(path))
+      strlcpy(menu->scratch_buf, path, sizeof(menu->scratch_buf));
+   if (!string_is_empty(menu_path))
+      strlcpy(menu->scratch2_buf, menu_path, sizeof(menu->scratch2_buf));
+
+   /* Build detect_content_path for later use by the
+    * in-archive file selection handler */
+   if (menu_path && path)
+      fill_pathname_join_special(menu->detect_content_path,
+            menu_path, path,
+            sizeof(menu->detect_content_path));
+
+   /* Go directly to browsing the archive contents */
+   menu_displaylist_info_init(&info);
+   info.list          = MENU_LIST_GET(menu_list, 0);
+   info.type          = type;
+   info.directory_ptr = idx;
+   info.label         = strdup(msg_hash_to_str(
+            MENU_ENUM_LABEL_DEFERRED_ARCHIVE_OPEN));
+   info.path          = strdup(path);
+   info.enum_idx      = MENU_ENUM_LABEL_DEFERRED_ARCHIVE_OPEN;
+
+   if (menu_displaylist_ctl(DISPLAYLIST_GENERIC, &info, settings))
+   {
+      if (menu_displaylist_process(&info))
+      {
+         menu_displaylist_info_free(&info);
+         return 0;
+      }
+   }
+
+   menu_displaylist_info_free(&info);
+   return -1;
+}
+
+static int action_ok_set_path_overlay_carchive(const char *path,
+      const char *label, unsigned type, size_t idx, size_t entry_idx)
+{
+   char action_path[PATH_MAX_LENGTH];
+   const char *flush_char = msg_hash_to_str(
+         MENU_ENUM_LABEL_DEFERRED_ONSCREEN_OVERLAY_SETTINGS_LIST);
+   menu_handle_t *menu    = menu_state_get_ptr()->driver_data;
+   rarch_setting_t *setting;
+
+   if (!menu)
+      return -1;
+
+   /* detect_content_path holds the path to the archive,
+    * set when "Open Archive" was selected */
+   if (!string_is_empty(path))
+      fill_pathname_join_delim(action_path,
+            menu->detect_content_path, path,
+            '#', sizeof(action_path));
+   else
+      strlcpy(action_path,
+            menu->detect_content_path, sizeof(action_path));
+
+   RARCH_LOG("[Overlay] Setting overlay from archive: \"%s\"\n",
+         action_path);
+
+   retroarch_override_setting_set(
+         RARCH_OVERRIDE_SETTING_OVERLAY_PRESET, NULL);
+
+   setting = menu_setting_find_enum(MENU_ENUM_LABEL_OVERLAY_PRESET);
+   if (setting)
+   {
+      if (setting->value.target.string)
+         strlcpy(setting->value.target.string,
+               action_path, setting->size);
+      if (setting->change_handler)
+         setting->change_handler(setting);
+   }
+
+   menu_entries_flush_stack(flush_char, 0);
+   return 0;
+}
+#endif
 DEFAULT_ACTION_OK_SET(action_ok_set_path_video_font,  ACTION_OK_SET_PATH_VIDEO_FONT,   MSG_UNKNOWN)
 DEFAULT_ACTION_OK_SET(action_ok_set_path,             ACTION_OK_SET_PATH,              MSG_UNKNOWN)
 DEFAULT_ACTION_OK_SET(action_ok_load_core,            ACTION_OK_LOAD_CORE,             MSG_UNKNOWN)
@@ -2672,45 +2786,26 @@ static int action_ok_file_load(const char *path,
 
 static bool playlist_entry_path_is_valid(const char *entry_path)
 {
-   char *archive_delim = NULL;
-   char *file_path     = NULL;
+   const char *archive_delim = NULL;
 
    if (string_is_empty(entry_path))
       return false;
 
-   file_path = strdup(entry_path);
+   archive_delim = path_get_archive_delim(entry_path);
 
-   /* We need to check whether the file referenced by the
-    * entry path actually exists. If it is a normal file,
-    * we can do this directly. If the path contains an
-    * archive delimiter, then we have to trim everything
-    * after the archive extension
-    * > Note: Have to do a nasty cast here, since
-    *   path_get_archive_delim() returns a const char *
-    *   (this cast is safe, though, and is done in many
-    *   places throughout the codebase...) */
-   if ((archive_delim = (char *)path_get_archive_delim(file_path)))
+   if (archive_delim)
    {
-      *archive_delim = '\0';
-      if (string_is_empty(file_path))
-         goto error;
+      char buf[PATH_MAX_LENGTH];
+      /* Archive path: validate the portion before the delimiter */
+      size_t __len = (size_t)(archive_delim - entry_path);
+      if (__len == 0 || __len >= sizeof(buf))
+         return false;
+      memcpy(buf, entry_path, __len);
+      buf[__len] = '\0';
+      return path_is_valid(buf);
    }
 
-   /* Path is 'sanitised' - can now check if it exists */
-   if (!path_is_valid(file_path))
-      goto error;
-
-   /* File is valid */
-   free(file_path);
-   file_path = NULL;
-
-   return true;
-
-error:
-   free(file_path);
-   file_path = NULL;
-
-   return false;
+   return path_is_valid(entry_path);
 }
 
 static int action_ok_playlist_entry_collection(const char *path,
@@ -5306,8 +5401,8 @@ void cb_generic_download(retro_task_t *task,
              * See: 'file_decompressed_subdir()' */
             if (!string_is_empty(subdir_options))
             {
-               strlcpy(buf, subdir_options, sizeof(buf));
-               strlcat(buf, "|", sizeof(buf));
+               size_t __len = strlcpy(buf, subdir_options, sizeof(buf));
+               strlcpy(buf + __len, "|", sizeof(buf) - __len);
                subdir = buf;
             }
          }
@@ -5491,11 +5586,12 @@ static int action_ok_download_generic(const char *path,
          break;
       case MENU_ENUM_LABEL_CB_CORE_CONTENT_DOWNLOAD:
          {
-            char *tok, *save     = NULL;
-            char *menu_label_cpy = strdup(menu_label);
-            if ((tok = strtok_r(menu_label_cpy, ";", &save)))
-               strlcpy(s, tok, sizeof(s));
-            free(menu_label_cpy);
+            const char *end = strchr(menu_label, ';');
+            if (end)
+               strlcpy(s, menu_label,
+               MIN((size_t)(end - menu_label + 1), sizeof(s)));
+            else
+               strlcpy(s, menu_label, sizeof(s));
          }
          break;
       case MENU_ENUM_LABEL_CB_CORE_SYSTEM_FILES_DOWNLOAD:
@@ -7200,22 +7296,25 @@ static int generic_action_ok_dropdown_setting(const char *path, const char *labe
       case ST_STRING_OPTIONS:
          if (setting->get_string_representation)
          {
-            char *tok, *save         = NULL;
-            unsigned tok_idx         = 0;
-            char *setting_values_cpy = strdup(setting->values);
+            const char *tok       = setting->values;
+            unsigned tok_idx      = 0;
 
-            for (tok = strtok_r(setting_values_cpy, "|", &save); tok != NULL;
-                 tok = strtok_r(NULL, "|", &save), tok_idx++)
+            while (tok)
             {
+               const char *next = strchr(tok, '|');
                if (idx == tok_idx)
                {
-                  strlcpy(setting->value.target.string, tok,
-                        setting->size);
+                  size_t __len = next ? (size_t)(next - tok) : strlen(tok);
+                  if (__len >= setting->size)
+                     __len = setting->size - 1;
+                  memcpy(setting->value.target.string, tok, __len);
+                  setting->value.target.string[__len] = '\0';
                   break;
                }
-            }
 
-            free(setting_values_cpy);
+               tok = next ? next + 1 : NULL;
+               tok_idx++;
+            }
             break;
          }
          /* fallthrough */
@@ -7244,24 +7343,24 @@ static int action_ok_push_dropdown_item(const char *path,
 int action_cb_push_dropdown_item_resolution(const char *path,
       const char *label, unsigned type, size_t idx, size_t entry_idx)
 {
-   char *save           = NULL;
-   char *tok            = NULL;
+   char *end            = NULL;
    unsigned width       = 0;
    unsigned height      = 0;
    float refreshrate    = 0.0f;
-   char *str            = path ? strdup(path) : NULL;
 
-   if (!str)
+   if (!path)
       return -1;
 
-   if ((tok = strtok_r(str, "x", &save)))
-      width       = (unsigned)strtoul(tok, NULL, 0);
-   if ((tok = strtok_r(NULL, " ", &save)))
-      height      = (unsigned)strtoul(tok, NULL, 0);
-   if ((tok = strtok_r(NULL, "(", &save)))
-      refreshrate = (float)strtod(tok, NULL);
+   width = (unsigned)strtoul(path, &end, 0);
+   if (end == path || *end != 'x')
+      return -1;
 
-   free(str);
+   ++end;
+   height = (unsigned)strtoul(end, &end, 0);
+   if (*end == ' ')
+      ++end;
+
+   refreshrate = (float)strtod(end, NULL);
 
    if (video_display_server_set_resolution(width, height,
          floor(refreshrate), refreshrate, 0, 0, 0, 0))
@@ -7275,7 +7374,7 @@ int action_cb_push_dropdown_item_resolution(const char *path,
 #endif
       float refresh_exact  = refreshrate;
 
-      /* 59 Hz is an inaccurate representation of the real value (59.94).
+      /* 59Hz is an inaccurate representation of the real value (59.94Hz)
        * In case at this point we only have the integer to work with,
        * the exact float needs to be calculated for 'video_refresh_rate' */
       if (refreshrate == (60.0f * refresh_mod) - 1)
@@ -7490,7 +7589,7 @@ static int action_ok_push_dropdown_item_scan_method(
       const char *path,
       const char *label, unsigned type, size_t idx, size_t entry_idx)
 {
-   manual_content_scan_set_menu_scan_method(idx);
+   manual_content_scan_set_menu_scan_method((enum manual_content_scan_method)idx);
 
    return action_cancel_pop_default(NULL, NULL, 0, 0);
 }
@@ -7499,7 +7598,7 @@ static int action_ok_push_dropdown_item_scan_use_db(
       const char *path,
       const char *label, unsigned type, size_t idx, size_t entry_idx)
 {
-   manual_content_scan_set_menu_scan_use_db(idx);
+   manual_content_scan_set_menu_scan_use_db((enum manual_content_scan_db_usage)idx);
 
    return action_cancel_pop_default(NULL, NULL, 0, 0);
 }
@@ -7508,7 +7607,7 @@ static int action_ok_push_dropdown_item_scan_db_select(
       const char *path,
       const char *label, unsigned type, size_t idx, size_t entry_idx)
 {
-   manual_content_scan_set_menu_scan_db_select(idx, path);
+   manual_content_scan_set_menu_scan_db_select((enum manual_content_scan_db_selection)idx, path);
 
    return action_cancel_pop_default(NULL, NULL, 0, 0);
 }
@@ -9005,6 +9104,9 @@ static int action_ok_smb_browse(const char *path,
 {
    settings_t *settings = config_get_ptr();
    char smb_path[PATH_MAX_LENGTH];
+   char *ptr       = smb_path;
+   size_t remaining = sizeof(smb_path);
+   size_t len;
 
    if (!settings->bools.smb_client_enable)
    {
@@ -9026,21 +9128,41 @@ static int action_ok_smb_browse(const char *path,
       return -1;
    }
 
-   /* Build base SMB path */
-   snprintf(smb_path, sizeof(smb_path), "smb://%s",
-            settings->arrays.smb_client_server_address);
+   /* Build base SMB path: smb://<server> */
+   len = snprintf(ptr, remaining, "smb://%s",
+         settings->arrays.smb_client_server_address);
+   if (len >= remaining)
+      len = remaining - 1;
+   ptr       += len;
+   remaining -= len;
 
-   if (!string_is_empty(settings->arrays.smb_client_share))
+   /* Append /<share> if set */
+   if (remaining > 1
+         && !string_is_empty(settings->arrays.smb_client_share))
    {
-      strlcat(smb_path, "/", sizeof(smb_path));
-      strlcat(smb_path, settings->arrays.smb_client_share, sizeof(smb_path));
+      *ptr++ = '/';
+      remaining--;
+      len = strlcpy(ptr, settings->arrays.smb_client_share, remaining);
+      if (len >= remaining)
+         len = remaining - 1;
+      ptr       += len;
+      remaining -= len;
    }
 
-   if (!string_is_empty(settings->arrays.smb_client_subdir))
+   /* Append /<subdir> if set */
+   if (remaining > 1
+         && !string_is_empty(settings->arrays.smb_client_subdir))
    {
       if (settings->arrays.smb_client_subdir[0] != '/')
-         strlcat(smb_path, "/", sizeof(smb_path));
-      strlcat(smb_path, settings->arrays.smb_client_subdir, sizeof(smb_path));
+      {
+         *ptr++ = '/';
+         remaining--;
+      }
+      len = strlcpy(ptr, settings->arrays.smb_client_subdir, remaining);
+      if (len >= remaining)
+         len = remaining - 1;
+      ptr       += len;
+      remaining -= len;
    }
 
    return generic_action_ok_displaylist_push(
@@ -9843,6 +9965,12 @@ static int menu_cbs_init_bind_ok_compare_type(menu_file_list_cbs_t *cbs,
                BIND_ACTION_OK(cbs, action_ok_scan_file);
 #endif
             }
+#ifdef HAVE_COMPRESSION
+            else if (filebrowser_get_type() == FILEBROWSER_SELECT_OVERLAY)
+            {
+               BIND_ACTION_OK(cbs, action_ok_compressed_archive_push_overlay);
+            }
+#endif
             else
             {
                if (string_is_equal(menu_label, msg_hash_to_str(MENU_ENUM_LABEL_FAVORITES)))
@@ -9986,6 +10114,14 @@ static int menu_cbs_init_bind_ok_compare_type(menu_file_list_cbs_t *cbs,
             BIND_ACTION_OK(cbs, action_ok_set_path_audiofilter);
             break;
          case FILE_TYPE_IN_CARCHIVE:
+#ifdef HAVE_COMPRESSION
+            if (filebrowser_get_type() == FILEBROWSER_SELECT_OVERLAY)
+            {
+               BIND_ACTION_OK(cbs, action_ok_set_path_overlay_carchive);
+               break;
+            }
+#endif
+            /* fall through */
          case FILE_TYPE_PLAIN:
             if (filebrowser_get_type() == FILEBROWSER_SCAN_FILE)
             {
