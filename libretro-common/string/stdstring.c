@@ -141,17 +141,14 @@ char *string_trim_whitespace_left(char *const s)
    if (s && *s)
    {
       char *current  = s;
-
-      while (*current && ISSPACE((unsigned char)*current))
+      while (*current && (*current == ' ' || *current == '\t' || *current == '\n' || *current == '\r' || *current == '\v' || *current == '\f'))
          ++current;
-
       if (s != current)
       {
          size_t _len = strlen(current);
          memmove(s, current, _len + 1);
       }
    }
-
    return s;
 }
 
@@ -251,7 +248,7 @@ size_t word_wrap(
          if (src_end - src <= line_width)
          {
             _len = len - (size_t)(s - s_start);
-            return strlcpy(s, src, _len);
+            return (size_t)(s - s_start) + strlcpy(s, src, _len);
          }
       }
 
@@ -278,14 +275,14 @@ size_t word_wrap(
             if (src_end - src < line_width)
             {
                _len = len - (size_t)(s - s_start);
-               return strlcpy(s, src, _len);
+               return (size_t)(s - s_start) + strlcpy(s, src, _len);
             }
          }
       }
    }
 
    *s = '\0';
-   return 0;
+   return (size_t)(s - s_start);
 }
 
 /**
@@ -384,7 +381,7 @@ size_t word_wrap_wideglyph(char *s, size_t len,
          if (src_end - src <= line_width)
          {
             remaining = len - (size_t)(s - s_start);
-            return strlcpy(s, src, remaining);
+            return (size_t)(s - s_start) + strlcpy(s, src, remaining);
          }
       }
       else if (char_len >= 3)
@@ -420,7 +417,7 @@ size_t word_wrap_wideglyph(char *s, size_t len,
             if (src_end - src <= line_width)
             {
                remaining = len - (size_t)(s - s_start);
-               return strlcpy(s, src, remaining);
+               return (size_t)(s - s_start) + strlcpy(s, src, remaining);
             }
          }
          else if (lastspace)
@@ -438,14 +435,14 @@ size_t word_wrap_wideglyph(char *s, size_t len,
             if (src_end - src < line_width)
             {
                remaining = len - (size_t)(s - s_start);
-               return strlcpy(s, src, remaining);
+               return (size_t)(s - s_start) + strlcpy(s, src, remaining);
             }
          }
       }
    }
 
    *s = '\0';
-   return 0;
+   return (size_t)(s - s_start);
 }
 
 /**
@@ -478,10 +475,10 @@ char* string_tokenize(char **str, const char *delim)
    size_t delim_len = 0;
 
    /* Sanity checks */
-   if (!str || string_is_empty(delim))
+   if (!str || !delim || !*delim)
       return NULL;
 
-   /* Note: we don't check string_is_empty() here,
+   /* Note: we don't check if string is empty here,
     * empty strings are valid */
    if (!(str_ptr = *str))
       return NULL;
@@ -513,21 +510,22 @@ char* string_tokenize(char **str, const char *delim)
  * Leaf function.
  *
  * Removes every instance of character @c from @s
+ *
+ * Returns the length of the resulting string.
  **/
-void string_remove_all_chars(char *s, char c)
+size_t string_remove_all_chars(char *s, char c)
 {
-   char *read_ptr  = s;
-   char *write_ptr = s;
-
-   while (*read_ptr != '\0')
+   char *dst = s;
+   char *src = s;
+   while (*src)
    {
       /* Only write if the character is not the one to remove */
-      if (*read_ptr != c)
-         *write_ptr++ = *read_ptr;
-      read_ptr++;
+      if (*src != c)
+         *dst++ = *src;
+      src++;
    }
-
-   *write_ptr = '\0';
+   *dst = '\0';
+   return (size_t)(dst - s);
 }
 
 /**
@@ -558,7 +556,7 @@ unsigned string_to_unsigned(const char *str)
 {
    const char *ptr = NULL;
 
-   if (string_is_empty(str))
+   if (!str || !*str)
       return 0;
 
    for (ptr = str; *ptr != '\0'; ptr++)
@@ -584,7 +582,7 @@ unsigned string_hex_to_unsigned(const char *str)
    const char *hex_str = str;
    const char *ptr     = NULL;
 
-   if (string_is_empty(str))
+   if (!str || !*str)
       return 0;
 
    /* Remove leading '0x', if present */
@@ -592,7 +590,7 @@ unsigned string_hex_to_unsigned(const char *str)
        && (str[1] == 'x' || str[1] == 'X'))
    {
       hex_str = str + 2;
-      if (string_is_empty(hex_str))
+      if (!hex_str || !*hex_str)
          return 0;
    }
 

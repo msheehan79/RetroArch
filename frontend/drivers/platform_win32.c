@@ -53,6 +53,7 @@
 #include "../../paths.h"
 #include "../../msg_hash.h"
 #include "../../verbosity.h"
+#include "../../msg_hash_lbl_str.h"
 #include "../../ui/drivers/ui_win32.h"
 
 #include "platform_win32.h"
@@ -457,10 +458,8 @@ static size_t frontend_win32_get_os(char *s, size_t len, int *major, int *minor)
       /* The first Win10 release doesn't provide DisplayVersion/ReleaseId,
        * so use build number to insert version label */
       if (!server && vi.dwMajorVersion == 10 && vi.dwBuildNumber == 10240
-            && string_is_empty(display_version) && string_is_empty(release_id))
-      {
+            && !*display_version && !*release_id)
          strlcpy(release_id, "1507", sizeof(release_id));
-      }
    }
 
    /* Detect Windows version from build number, NT version, or platform ID.
@@ -610,13 +609,13 @@ static size_t frontend_win32_get_os(char *s, size_t len, int *major, int *minor)
 /* OS display formatting */
    if (vi.dwMajorVersion >= 10)
    {
-      if (!string_is_empty(display_version))
+      if (*display_version)
       {
          _len += strlcpy(s + _len, " (", len - _len);
          _len += strlcpy(s + _len, display_version, len - _len);
          _len += strlcpy(s + _len, ")", len - _len);
       }
-      else if (!string_is_empty(release_id))
+      else if (*release_id)
       {
          _len += strlcpy(s + _len, " (", len - _len);
          _len += strlcpy(s + _len, release_id, len - _len);
@@ -625,10 +624,10 @@ static size_t frontend_win32_get_os(char *s, size_t len, int *major, int *minor)
    }
    /* Hide x86/x64 for XP x64 ("x64" is already shown in the OS name) 
    * and OSes older than XP x86, since they are all x86 only */
-   if (!string_is_empty(arch) &&
-         (vi.dwMajorVersion > 5 ||
-         (vi.dwMajorVersion == 5 && vi.dwMinorVersion >= 1)) &&
-         !(vi.dwMajorVersion == 5 && vi.dwMinorVersion == 2))
+   if ((arch && *arch)
+         &&  (vi.dwMajorVersion > 5 ||
+             (vi.dwMajorVersion == 5 && vi.dwMinorVersion >= 1))
+         && !(vi.dwMajorVersion == 5 && vi.dwMinorVersion == 2))
    {
       _len += strlcpy(s + _len, " ",  len - _len);
       _len += strlcpy(s + _len, arch, len - _len);
@@ -637,7 +636,7 @@ static size_t frontend_win32_get_os(char *s, size_t len, int *major, int *minor)
    _len += strlcpy(s + _len, " - Build ", len - _len);
    _len += strlcpy(s + _len, build_str, len - _len);
 
-   if (!string_is_empty(vi.szCSDVersion))
+   if (*vi.szCSDVersion)
    {
       _len += strlcpy(s + _len, " ", len - _len);
       strlcpy(s + _len, vi.szCSDVersion, len - _len);
@@ -771,7 +770,7 @@ static int frontend_win32_parse_drive_list(void *data, bool load_content)
       if (drives & (1 << i))
          menu_entries_append(list,
                drive,
-               msg_hash_to_str(MENU_ENUM_LABEL_FILE_DETECT_CORE_LIST_PUSH_DIR),
+               MENU_ENUM_LABEL_FILE_DETECT_CORE_LIST_PUSH_DIR_STR,
                enum_idx,
                FILE_TYPE_DIRECTORY, 0, 0, NULL);
    }
@@ -792,13 +791,13 @@ static void frontend_win32_env_get(int *argc, char *argv[],
    const char* libretro_system_directory = getenv("LIBRETRO_SYSTEM_DIRECTORY");
    const char* libretro_video_filter_directory = getenv("LIBRETRO_VIDEO_FILTER_DIRECTORY");
    const char* libretro_video_shader_directory = getenv("LIBRETRO_VIDEO_SHADER_DIRECTORY");
-   if (!string_is_empty(tmp_dir))
+   if (tmp_dir && *tmp_dir)
       fill_pathname_expand_special(g_defaults.dirs[DEFAULT_DIR_CACHE],
          tmp_dir, sizeof(g_defaults.dirs[DEFAULT_DIR_CACHE]));
 
    gfx_set_dwm();
 
-   if (!string_is_empty(libretro_assets_directory))
+   if (libretro_assets_directory && *libretro_assets_directory)
       strlcpy(g_defaults.dirs[DEFAULT_DIR_ASSETS], libretro_assets_directory,
 	      sizeof(g_defaults.dirs[DEFAULT_DIR_ASSETS]));
    else
@@ -807,21 +806,21 @@ static void frontend_win32_env_get(int *argc, char *argv[],
 	   ":\\assets", sizeof(g_defaults.dirs[DEFAULT_DIR_ASSETS]));
    fill_pathname_expand_special(g_defaults.dirs[DEFAULT_DIR_AUDIO_FILTER],
       ":\\filters\\audio", sizeof(g_defaults.dirs[DEFAULT_DIR_AUDIO_FILTER]));
-   if (!string_is_empty(libretro_video_filter_directory))
+   if (libretro_video_filter_directory && *libretro_video_filter_directory)
        strlcpy(g_defaults.dirs[DEFAULT_DIR_VIDEO_FILTER],
 	       libretro_video_filter_directory,
 	       sizeof(g_defaults.dirs[DEFAULT_DIR_VIDEO_FILTER]));
    else
        fill_pathname_expand_special(g_defaults.dirs[DEFAULT_DIR_VIDEO_FILTER],
            ":\\filters\\video", sizeof(g_defaults.dirs[DEFAULT_DIR_VIDEO_FILTER]));
-   if (!string_is_empty(libretro_cheats_directory))
+   if (libretro_cheats_directory && *libretro_cheats_directory)
        strlcpy(g_defaults.dirs[DEFAULT_DIR_CHEATS],
 	       libretro_cheats_directory,
 	       sizeof(g_defaults.dirs[DEFAULT_DIR_CHEATS]));
    else
        fill_pathname_expand_special(g_defaults.dirs[DEFAULT_DIR_CHEATS],
            ":\\cheats", sizeof(g_defaults.dirs[DEFAULT_DIR_CHEATS]));
-   if (!string_is_empty(libretro_database_directory))
+   if (libretro_database_directory && *libretro_database_directory)
        strlcpy(g_defaults.dirs[DEFAULT_DIR_DATABASE],
 	       libretro_database_directory,
 	       sizeof(g_defaults.dirs[DEFAULT_DIR_DATABASE]));
@@ -846,26 +845,26 @@ static void frontend_win32_env_get(int *argc, char *argv[],
       ":\\overlays", sizeof(g_defaults.dirs[DEFAULT_DIR_OVERLAY]));
    fill_pathname_expand_special(g_defaults.dirs[DEFAULT_DIR_OSK_OVERLAY],
       ":\\overlays\\keyboards", sizeof(g_defaults.dirs[DEFAULT_DIR_OSK_OVERLAY]));
-   if (!string_is_empty(libretro_directory))
+   if (libretro_directory && *libretro_directory)
       strlcpy(g_defaults.dirs[DEFAULT_DIR_CORE], libretro_directory,
             sizeof(g_defaults.dirs[DEFAULT_DIR_CORE]));
    else
       fill_pathname_expand_special(g_defaults.dirs[DEFAULT_DIR_CORE],
             ":\\cores", sizeof(g_defaults.dirs[DEFAULT_DIR_CORE]));
-   if (!string_is_empty(libretro_directory))
+   if (libretro_directory && *libretro_directory)
       strlcpy(g_defaults.dirs[DEFAULT_DIR_CORE_INFO], libretro_directory,
             sizeof(g_defaults.dirs[DEFAULT_DIR_CORE_INFO]));
    else
        fill_pathname_expand_special(g_defaults.dirs[DEFAULT_DIR_CORE_INFO],
            ":\\info", sizeof(g_defaults.dirs[DEFAULT_DIR_CORE_INFO]));
-   if (!string_is_empty(libretro_autoconfig_directory))
+   if (libretro_autoconfig_directory && *libretro_autoconfig_directory)
       strlcpy(g_defaults.dirs[DEFAULT_DIR_AUTOCONFIG],
 	      libretro_autoconfig_directory,
 	      sizeof(g_defaults.dirs[DEFAULT_DIR_AUTOCONFIG]));
    else
        fill_pathname_expand_special(g_defaults.dirs[DEFAULT_DIR_AUTOCONFIG],
              ":\\autoconfig", sizeof(g_defaults.dirs[DEFAULT_DIR_AUTOCONFIG]));
-   if (!string_is_empty(libretro_video_filter_directory))
+   if (libretro_video_filter_directory && *libretro_video_filter_directory)
       strlcpy(g_defaults.dirs[DEFAULT_DIR_SHADER],
 	      libretro_video_shader_directory,
 	      sizeof(g_defaults.dirs[DEFAULT_DIR_SHADER]));
@@ -880,7 +879,7 @@ static void frontend_win32_env_get(int *argc, char *argv[],
       ":\\saves", sizeof(g_defaults.dirs[DEFAULT_DIR_SRAM]));
    fill_pathname_expand_special(g_defaults.dirs[DEFAULT_DIR_SAVESTATE],
       ":\\states", sizeof(g_defaults.dirs[DEFAULT_DIR_SAVESTATE]));
-   if (!string_is_empty(libretro_system_directory))
+   if (libretro_system_directory && *libretro_system_directory)
        strlcpy(g_defaults.dirs[DEFAULT_DIR_SYSTEM],
 	       libretro_system_directory,
 	       sizeof(g_defaults.dirs[DEFAULT_DIR_SYSTEM]));

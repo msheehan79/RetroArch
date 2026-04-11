@@ -378,6 +378,53 @@ GLuint gl3_compile_shader(GLenum stage, const char *source)
    return shader;
 }
 
+/**
+ * gl3_parse_version:
+ * @version : GL_VERSION string (e.g. "4.6", "OpenGL ES 3.0", "OpenGL 4.5 …")
+ * @major   : pointer receiving the major version number
+ * @minor   : pointer receiving the minor version number
+ *
+ * Returns true if both major and minor were parsed successfully.
+ */
+static bool gl3_parse_version(const char *version,
+      unsigned *major, unsigned *minor)
+{
+   const char *p = version;
+   unsigned val;
+
+   if (!p)
+      return false;
+
+   /* Skip any leading non-digit prefix
+    * ("OpenGL ES ", "OpenGL ", etc.) */
+   while (*p && (*p < '0' || *p > '9'))
+      p++;
+
+   if (*p < '0' || *p > '9')
+      return false;
+
+   /* Parse major */
+   val = 0;
+   while (*p >= '0' && *p <= '9')
+      val = val * 10 + (*p++ - '0');
+   *major = val;
+
+   if (*p != '.')
+      return false;
+   p++;
+
+   if (*p < '0' || *p > '9')
+      return false;
+
+   /* Parse minor */
+   val = 0;
+   while (*p >= '0' && *p <= '9')
+      val = val * 10 + (*p++ - '0');
+   *minor = val;
+
+   return true;
+}
+
 uint32_t gl3_get_cross_compiler_target_version(void)
 {
    const char *version = (const char*)glGetString(GL_VERSION);
@@ -385,13 +432,13 @@ uint32_t gl3_get_cross_compiler_target_version(void)
    unsigned minor      = 0;
 
 #ifdef HAVE_OPENGLES3
-   if (!version || sscanf(version, "OpenGL ES %u.%u", &major, &minor) != 2)
+   if (!gl3_parse_version(version, &major, &minor))
       return 300;
 
    if (major == 2 && minor == 0)
       return 100;
 #else
-   if (!version || sscanf(version, "%u.%u", &major, &minor) != 2)
+   if (!gl3_parse_version(version, &major, &minor))
       return 150;
 
    if (major == 3)
@@ -923,26 +970,29 @@ static void *gl3_raster_font_init(void *data,
 static int gl3_raster_font_get_message_width(void *data, const char *msg,
       size_t msg_len, float scale)
 {
+   void *font_data;
+   const struct font_glyph* (*get_glyph)(void*, uint32_t);
    const struct font_glyph* glyph_q = NULL;
    gl3_raster_t *font   = (gl3_raster_t*)data;
-   const char* msg_end = msg + msg_len;
-   int delta_x         = 0;
+   const char* msg_end  = msg + msg_len;
+   int delta_x          = 0;
 
    if (     !font
          || !font->font_driver
          || !font->font_data )
       return 0;
 
-   glyph_q = font->font_driver->get_glyph(font->font_data, '?');
+   get_glyph = font->font_driver->get_glyph;
+   font_data = font->font_data;
+   glyph_q   = get_glyph(font_data, '?');
 
    while (msg < msg_end)
    {
       const struct font_glyph *glyph;
-      unsigned code                  = utf8_walk(&msg);
+      unsigned code = utf8_walk(&msg);
 
       /* Do something smarter here ... */
-      if (!(glyph = font->font_driver->get_glyph(
-            font->font_data, code)))
+      if (!(glyph = get_glyph(font_data, code)))
          if (!(glyph = glyph_q))
             continue;
 
@@ -1041,15 +1091,32 @@ static void gl3_raster_font_render_line(gl3_t *gl,
    int y                = roundf(pos_y * gl->vp.height);
    int delta_x          = 0;
    int delta_y          = 0;
+   const struct font_glyph* (*get_glyph)(void*, uint32_t) = font->font_driver->get_glyph;
+   void *font_data      = font->font_data;
 
-   switch (text_align)
+   /* For right/center alignment, compute width with a lightweight pass
+    * that only accumulates advance_x — avoids the redundant glyph lookups
+    * and atlas dirty checks that gl3_raster_font_get_message_width 
+    * would repeat. */
+   if (text_align == TEXT_ALIGN_RIGHT || text_align == TEXT_ALIGN_CENTER)
    {
-      case TEXT_ALIGN_RIGHT:
-         x -= gl3_raster_font_get_message_width(font, msg, msg_len, scale);
-         break;
-      case TEXT_ALIGN_CENTER:
-         x -= gl3_raster_font_get_message_width(font, msg, msg_len, scale) / 2.0;
-         break;
+      int width_accum      = 0;
+      const char *scan     = msg;
+      const char *scan_end = msg_end;
+      while (scan < scan_end)
+      {
+         const struct font_glyph *glyph;
+         uint32_t code       = utf8_walk(&scan);
+         if (!(glyph = get_glyph(font_data, code)))
+            if (!(glyph = glyph_q))
+               continue;
+         width_accum += glyph->advance_x;
+      }
+
+      if (text_align == TEXT_ALIGN_RIGHT)
+         x -= (int)(width_accum * scale);
+      else
+         x -= (int)(width_accum * scale) / 2;
    }
 
    while (msg < msg_end)
@@ -1062,8 +1129,7 @@ static void gl3_raster_font_render_line(gl3_t *gl,
          unsigned code = utf8_walk(&msg);
 
          /* Do something smarter here ... */
-         if (!(glyph = font->font_driver->get_glyph(
-               font->font_data, code)))
+         if (!(glyph = get_glyph(font_data, code)))
             if (!(glyph = glyph_q))
                continue;
 
@@ -1189,7 +1255,7 @@ static void gl3_raster_font_render_msg(
    float video_msg_color_g          = settings->floats.video_msg_color_g;
    float video_msg_color_b          = settings->floats.video_msg_color_b;
 
-   if (!font || string_is_empty(msg) || !gl)
+   if (!font || !msg || !*msg || !gl)
       return;
 
    if (params)
@@ -1237,7 +1303,7 @@ static void gl3_raster_font_render_msg(
    else
       gl3_raster_font_setup_viewport(gl, width, height, font, full_screen);
 
-   if (!string_is_empty(msg)
+   if (  (msg && *msg)
          && font->font_data  && font->font_driver)
    {
       if (drop_x || drop_y)
@@ -1270,7 +1336,7 @@ static const struct font_glyph *gl3_raster_font_get_glyph(
 {
    gl3_raster_t *font = (gl3_raster_t*)data;
    if (font && font->font_driver)
-      return font->font_driver->get_glyph((void*)font->font_driver, code);
+      return font->font_driver->get_glyph((void*)font->font_data, code);
    return NULL;
 }
 
@@ -2556,7 +2622,7 @@ static bool gl3_init_filter_chain_with_path(gl3_t *gl, const char *shader_path)
 
    if (type != parse_type)
    {
-      if (!string_is_empty(shader_path))
+      if (shader_path && *shader_path)
          RARCH_WARN("[GLCore] Shader preset %s is using unsupported shader type %s, falling back to stock %s.\n",
             shader_path, video_shader_type_to_str(parse_type), video_shader_type_to_str(type));
 
@@ -2587,7 +2653,7 @@ static bool gl3_init_filter_chain_with_path(gl3_t *gl, const char *shader_path)
          return false;
       }
 
-      if (string_is_empty(shader_path))
+      if (!shader_path || !*shader_path)
       {
          RARCH_LOG("[GLCore] Loading stock shader.\n");
          return gl3_init_default_filter_chain(gl);
@@ -2895,15 +2961,8 @@ static void *gl3_init(const video_info_t *video,
    if (string_is_equal(ctx_driver->ident, "null"))
       goto error;
 
-   if (!string_is_empty(version))
-   {
-      if (string_starts_with(version, "OpenGL ES "))
-         sscanf(version, "OpenGL ES %u.%u", &gl->version_major, &gl->version_minor);
-      else if (string_starts_with(version, "OpenGL "))
-         sscanf(version, "OpenGL %u.%u", &gl->version_major, &gl->version_minor);
-      else
-         sscanf(version, "%u.%u", &gl->version_major, &gl->version_minor);
-   }
+   if (version && *version)
+      gl3_parse_version(version, &gl->version_major, &gl->version_minor);
 
    video_driver_set_gpu_api_version_string(version);
 
@@ -3905,15 +3964,6 @@ static bool gl3_frame(void *data, const void *frame,
    {
       if (!(gl->flags & GL3_FLAG_HW_RENDER_ENABLE))
          gl3_update_input_size(gl, frame_width, frame_height);
-
-      /* No point regenerating mipmaps
-       * if there are no new frames. */
-      if (gl->chain.mipmap_active)
-      {
-         glBindTexture(GL_TEXTURE_2D, texture.image);
-         glGenerateMipmap(GL_TEXTURE_2D);
-         glBindTexture(GL_TEXTURE_2D, 0);
-      }
    }
 
    texture.image            = 0;
@@ -3941,6 +3991,15 @@ static bool gl3_frame(void *data, const void *frame,
       texture.format        = gl->video_info.rgb32 ? GL_RGBA8 : GL_RGB565;
       texture.padded_width  = streamed->width;
       texture.padded_height = streamed->height;
+   }
+
+   /* No point regenerating mipmaps
+    * if there are no new frames. */
+   if (frame && gl->chain.active && gl->chain.mipmap_active)
+   {
+      glBindTexture(GL_TEXTURE_2D, texture.image);
+      glGenerateMipmap(GL_TEXTURE_2D);
+      glBindTexture(GL_TEXTURE_2D, 0);
    }
 
    if (gl->chain.active)
@@ -4162,7 +4221,7 @@ static bool gl3_frame(void *data, const void *frame,
       gfx_widgets_frame(video_info);
 #endif
 
-   if (!string_is_empty(msg))
+   if (msg && *msg)
    {
 #if 0
       if (msg_bgcolor_enable)

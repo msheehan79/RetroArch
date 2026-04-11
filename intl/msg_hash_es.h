@@ -4537,6 +4537,18 @@ MSG_HASH(
    "Guarda los cambios en el archivo de configuración en disco al salir. Ideal para cualquier cambio que hagas en el menú. Sobrescribirá el archivo de configuración existente sin preservar los #include y los comentarios."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CONFIG_SAVE_MINIMAL,
+   "Guardar configuración mínima"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CONFIG_SAVE_MINIMAL,
+   "Guarda únicamente aquellos ajustes que hayan cambiado respecto a los valores predeterminados."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_HELP_CONFIG_SAVE_MINIMAL,
+   "Al activar esta opción, se guardarán solo aquellos valores de los ajustes que hayan cambiado respecto a sus valores predeterminados. Producirá un archivo de configuración más pequeño y manejable."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_REMAP_SAVE_ON_EXIT,
    "Guardar archivos de reasignación al salir"
    )
@@ -7937,7 +7949,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_PLAYLIST_MANAGER_REFRESH_PLAYLIST,
-   "Añade contenidos nuevos y elimina los elementos no válidos repitiendo la última operación de búsqueda manual con la que se creó o modificó la lista de reproducción."
+   "Añade contenidos nuevos y elimina los elementos no válidos repitiendo la última búsqueda de contenidos con la que se creó o modificó la lista de reproducción."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DELETE_PLAYLIST,
@@ -8514,11 +8526,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_LIST,
-   "Búsqueda manual"
+   "Búsqueda de contenidos"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_MANUAL_CONTENT_SCAN_LIST,
-   "Búsqueda configurable basada en nombres de archivos de contenidos. Los contenidos no tienen por qué coincidir con los de la base de datos."
+   "Búsqueda configurable por nombres de archivos o coincidencias en las bases de datos."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SCAN_ENTRY,
@@ -8584,31 +8596,31 @@ MSG_HASH(
    "Agregar al mezclador y reproducir"
    )
 
-/* Import Content > Manual Scan */
+/* Import Content > Content Scan */
 
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_DIR,
-   "Directorio de contenidos"
+   "Ubicación de contenidos"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_MANUAL_CONTENT_SCAN_DIR,
-   "Selecciona un directorio donde buscar contenidos."
+   "Selecciona un directorio (o archivo) donde buscar contenidos."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_SYSTEM_NAME,
-   "Nombre del sistema"
+   "Lista de reproducción de destino"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_MANUAL_CONTENT_SCAN_SYSTEM_NAME,
-   "Indica un «nombre del sistema» a asociar a los contenidos buscados. Se utiliza para nombrar la lista de reproducción generada y para identificar sus miniaturas."
+   "El nombre de la lista de reproducción generada, que también servirá para identificar las miniaturas para la lista. El ajuste automático utilizará el nombre de la coincidencia en la base de datos o del directorio del contenido."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_SYSTEM_NAME_CUSTOM,
-   "Nombre de sistema personalizado"
+   "Nombre personalizado de la lista de reproducción"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_MANUAL_CONTENT_SCAN_SYSTEM_NAME_CUSTOM,
-   "Indica un «nombre del sistema» para los contenidos buscados. Solo se utilizará si la opción Nombre del sistema está configurada a Personalizado."
+   "Indica un nombre personalizado para la lista de reproducción donde irán los contenidos identificados."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_CORE_NAME,

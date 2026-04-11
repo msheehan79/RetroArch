@@ -53,6 +53,7 @@
 #endif
 #include "../../tasks/tasks_internal.h"
 
+#include "../../msg_hash_lbl_str.h"
 #include "../../playlist.h"
 #include "../../runtime_file.h"
 
@@ -181,7 +182,7 @@ static int menu_action_sublabel_contentless_core(file_list_t *list,
                tmp[_len + 1] = '\0';
                _len = strlcpy(tmp + _len + 1, entry->runtime.last_played_str, sizeof(tmp) - _len - 1);
             }
-            if (!string_is_empty(tmp))
+            if (*tmp)
             {
                size_t slen = strlen(s);
                strlcpy(s + slen, tmp, len - slen);
@@ -534,6 +535,7 @@ DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_video_hard_sync_frames,        MENU_
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_video_threaded,                MENU_ENUM_SUBLABEL_VIDEO_THREADED)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_settings,                      MENU_ENUM_SUBLABEL_SETTINGS)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_config_save_on_exit,           MENU_ENUM_SUBLABEL_CONFIG_SAVE_ON_EXIT)
+DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_config_save_minimal,           MENU_ENUM_SUBLABEL_CONFIG_SAVE_MINIMAL)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_remap_save_on_exit,            MENU_ENUM_SUBLABEL_REMAP_SAVE_ON_EXIT)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_configuration_settings_list,   MENU_ENUM_SUBLABEL_CONFIGURATION_SETTINGS)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_configurations_list_list,      MENU_ENUM_SUBLABEL_CONFIGURATIONS_LIST)
@@ -1504,7 +1506,7 @@ static int action_bind_sublabel_core_info_entry(
       const char *label, const char *path,
       char *s, size_t len)
 {
-   if (!list || string_is_empty(list->list[i].label))
+   if (!list || (!list->list[i].label || !*list->list[i].label))
       return 0;
    {
       int pos = string_find_index_substring_string(list->list[i].label, "(md5)");
@@ -1621,7 +1623,7 @@ static int action_bind_sublabel_subsystem_load(
       if (j != content_get_subsystem_rom_id() - 1)
          _len += strlcpy(buf + _len, "\n", sizeof(buf) - _len);
    }
-   if (!string_is_empty(buf))
+   if (*buf)
       strlcpy(s, buf, len);
    return 0;
 }
@@ -1697,7 +1699,7 @@ static int action_bind_sublabel_input_remap_port(
     * This is difficult to obtain here - the only
     * way to get it is to parse the entry label
     * (input_remap_port_p<port_index+1>) */
-   if (   string_is_empty(entry.label)
+   if (   !*entry.label
        || (sscanf(entry.label,
             msg_hash_to_str(MENU_ENUM_LABEL_INPUT_REMAP_PORT),
                   &display_port) != 1)
@@ -1741,7 +1743,7 @@ static int action_bind_sublabel_cheat_desc(
       {
          const char *code = cheat_manager_get_code(cheat_index);
          _len += strlcpy(s + _len,
-               !string_is_empty(code)
+               (code && *code)
                   ? code
                   : msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NOT_AVAILABLE),
                len - _len);
@@ -1773,22 +1775,22 @@ static int action_bind_sublabel_netplay_room(file_list_t *list,
       ": %s (%s)\n"
       "%s: %s (%s)\n"
       "%s: %s ",
-      !string_is_empty(room->retroarch_version)
+      (*room->retroarch_version)
       ? room->retroarch_version
       : msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NOT_AVAILABLE),
-      (!string_is_empty(room->frontend) &&
-         !string_is_equal_case_insensitive(room->frontend, "N/A"))
+      (*room->frontend
+      && !string_is_equal_case_insensitive(room->frontend, "N/A"))
             ? room->frontend
             : msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NOT_AVAILABLE),
       msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CONTENT_INFO_CORE_NAME),
       room->corename, room->coreversion,
       msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CONTENT),
-      (!string_is_empty(room->gamename) &&
-         !string_is_equal_case_insensitive(room->gamename, "N/A"))
+      (*room->gamename
+       && !string_is_equal_case_insensitive(room->gamename, "N/A"))
             ? room->gamename
             : msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NOT_AVAILABLE));
 
-   if (     string_is_empty(room->subsystem_name)
+   if (     !*room->subsystem_name
          || string_is_equal_case_insensitive(room->subsystem_name, "N/A"))
       _len += snprintf(s + _len, len - _len, "(%08lX)\n",
             (unsigned long)(unsigned)room->gamecrc);
@@ -1987,9 +1989,9 @@ static int action_bind_sublabel_playlist_entry(
 
    /* Only add sublabel if a core is currently assigned
     * > Both core name and core path must be valid */
-   if (     string_is_empty(entry->core_name)
+   if (     (!entry->core_name || !*entry->core_name)
          || string_is_equal(entry->core_name, "DETECT")
-         || string_is_empty(entry->core_path)
+         || (!entry->core_path || !*entry->core_path)
          || string_is_equal(entry->core_path, "DETECT"))
       return 0;
 
@@ -2010,7 +2012,7 @@ static int action_bind_sublabel_playlist_entry(
 
    /* Note: This looks heavy, but each string_is_equal() call will
     * return almost immediately */
-   if (   !string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_LOAD_CONTENT_HISTORY))
+   if (   !string_is_equal(label, MENU_ENUM_LABEL_LOAD_CONTENT_HISTORY_STR)
        && !string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_HISTORY_TAB))
        && !string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_DEFERRED_FAVORITES_LIST))
        && !string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_FAVORITES_TAB))
@@ -2047,7 +2049,7 @@ static int action_bind_sublabel_playlist_entry(
          strlcpy(tmp + n, entry->last_played_str, sizeof(tmp) - n);
       }
 
-      if (!string_is_empty(tmp))
+      if (*tmp)
          strlcpy(s + _len, tmp, len - _len);
    }
 
@@ -2065,7 +2067,7 @@ static int action_bind_sublabel_core_options(
 
    /* If this is an options subcategory, fetch
     * the category info string */
-   if (!string_is_empty(category))
+   if (category && *category)
    {
       core_option_manager_t *coreopts = NULL;
 
@@ -2077,10 +2079,10 @@ static int action_bind_sublabel_core_options(
    /* If this isn't a subcategory (or something
     * went wrong...), use top level core options
     * menu sublabel */
-   if (string_is_empty(info))
+   if (!info || !*info)
       info = msg_hash_to_str(MENU_ENUM_SUBLABEL_CORE_OPTIONS);
 
-   if (!string_is_empty(info))
+   if (info && *info)
    {
       strlcpy(s, info, len);
       return 1;
@@ -2100,7 +2102,7 @@ static int action_bind_sublabel_core_option(
    {
       const char *info = core_option_manager_get_info(opt,
             type - MENU_SETTINGS_CORE_OPTION_START, true);
-      if (!string_is_empty(info))
+      if (info && *info)
          strlcpy(s, info, len);
    }
    return 0;
@@ -2157,7 +2159,7 @@ static int action_bind_sublabel_core_backup_entry(
    size_t _len     = strlcpy(s, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CORE_BACKUP_CRC), len);
 
    /* Add CRC string */
-   if (string_is_empty(crc))
+   if (!crc || !*crc)
    {
       s[  _len] = '0';
       s[++_len] = '0';
@@ -4950,6 +4952,9 @@ int menu_cbs_init_bind_sublabel(menu_file_list_cbs_t *cbs,
             break;
          case MENU_ENUM_LABEL_CONFIG_SAVE_ON_EXIT:
             BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_config_save_on_exit);
+            break;
+         case MENU_ENUM_LABEL_CONFIG_SAVE_MINIMAL:
+            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_config_save_minimal);
             break;
          case MENU_ENUM_LABEL_REMAP_SAVE_ON_EXIT:
             BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_remap_save_on_exit);

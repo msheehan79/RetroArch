@@ -789,6 +789,7 @@ int detect_dc_game(intfstream_t *fd, char *s, size_t len,
    char raw_game_id[50];
    char lgame_id[20];
    char rgame_id[20];
+   char region_id;
 
    /* Load raw serial or quit */
    if (intfstream_seek(fd, 0x0050, SEEK_SET) < 0)
@@ -796,6 +797,12 @@ int detect_dc_game(intfstream_t *fd, char *s, size_t len,
 
    if (intfstream_read(fd, raw_game_id, 10) <= 0)
       return 0;
+
+   if (intfstream_seek(fd, 0x0042, SEEK_SET) < 0)
+      return false;
+
+   if (intfstream_read(fd, &region_id, 1) <= 0)
+      return false;
 
    raw_game_id[10] = '\0';
 
@@ -913,7 +920,21 @@ int detect_dc_game(intfstream_t *fd, char *s, size_t len,
           * Sega GT being the only exception (MK-51053), 
           * we have to check if it's not that game first */
          if (memcmp(raw_game_id, "MK-51053", STRLEN_CONST("MK-51053")) != 0)
-            strlcpy(s, raw_game_id + 3, 6);
+         {
+            /* Europe region serials need the MK- prefix and -50 postfix for database match. */
+            if (region_id == 'E')
+            {
+               strlcpy(s, raw_game_id, 9);
+               s[ 8] = '-';
+               s[ 9] = '5';
+               s[10] = '0';
+               s[11] = '\0';
+            }
+            else
+            {
+               strlcpy(s, raw_game_id + 3, 6);
+            }
+         }
          else
             strlcpy(s, raw_game_id, 9);
       }
@@ -1163,31 +1184,54 @@ int cue_find_track(const char *cue_path, bool first,
          task_database_cue_get_token(fd, tmp_token, sizeof(tmp_token));
          task_database_cue_get_token(fd, tmp_token, sizeof(tmp_token));
 
-         if (sscanf(tmp_token, "%02d:%02d:%02d", &_m, &_s, &_f) < 3)
          {
+            const char *ptr = tmp_token;
+            char *end       = NULL;
+
+            _m = (int)strtol(ptr, &end, 10);
+            if (!end || *end != ':')
+            {
 #ifdef DEBUG
-            RARCH_LOG("[Scanner] Error parsing time stamp \"%s\".\n", tmp_token);
+               RARCH_LOG("[Scanner] Error parsing time stamp \"%s\".\n", tmp_token);
 #endif
-            goto error;
+               goto error;
+            }
+
+            ptr = end + 1;
+            _s  = (int)strtol(ptr, &end, 10);
+            if (!end || *end != ':')
+            {
+#ifdef DEBUG
+               RARCH_LOG("[Scanner] Error parsing time stamp \"%s\".\n", tmp_token);
+#endif
+               goto error;
+            }
+
+            ptr = end + 1;
+            _f  = (int)strtol(ptr, &end, 10);
+            if (!end || (*end != '\0' && *end != ' ' && *end != '\t'))
+            {
+#ifdef DEBUG
+               RARCH_LOG("[Scanner] Error parsing time stamp \"%s\".\n", tmp_token);
+#endif
+               goto error;
+            }
          }
 
          last_index = (size_t)(((_m * 60 + _s) * 75) + _f) * 2352;
-
          /* If we've changed tracks since the candidate, update it */
          if (     (cand_track != -1)
                && (track != cand_track)
                && update_cand(&cand_index, &last_index, &largest,
-                last_file, offset,
-                size, s, len))
+                  last_file, offset,
+                  size, s, len))
          {
             rv = 0;
             if (first)
                goto clean;
          }
-
          if (!is_data)
             continue;
-
          if (cand_index == -1)
          {
             cand_index = last_index;
@@ -1684,7 +1728,7 @@ int task_database_gdi_get_crc_and_size(const char *name, uint32_t *crc,
 
    track_path[0] = '\0';
 
-   if (gdi_find_track(name, true,
+   if (gdi_find_track(name, false,
        track_path, sizeof(track_path)) < 0)
    {
 #ifdef DEBUG

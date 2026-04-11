@@ -638,7 +638,7 @@ static int rsx_font_get_message_width(void *data, const char *msg,
       size_t msg_len, float scale)
 {
    const struct font_glyph* glyph_q = NULL;
-   rsx_font_t *font   = (rsx_font_t*)data;
+   rsx_font_t *font    = (rsx_font_t*)data;
    const char* msg_end = msg + msg_len;
    int delta_x         = 0;
 
@@ -756,14 +756,28 @@ static void rsx_font_render_line(rsx_t *rsx,
    int delta_x          = 0;
    int delta_y          = 0;
 
-   switch (text_align)
+   /* For right/center alignment, compute width with a lightweight pass
+    * that only accumulates advance_x — avoids the redundant glyph lookups
+    * and atlas dirty checks that rsx_font_get_message_width would repeat. */
+   if (text_align == TEXT_ALIGN_RIGHT || text_align == TEXT_ALIGN_CENTER)
    {
-      case TEXT_ALIGN_RIGHT:
-         x             -= rsx_font_get_message_width(font, msg, msg_len, scale);
-         break;
-      case TEXT_ALIGN_CENTER:
-         x             -= rsx_font_get_message_width(font, msg, msg_len, scale) / 2.0;
-         break;
+      int width_accum     = 0;
+      const char *scan    = msg;
+      const char *scan_end = msg_end;
+      while (scan < scan_end)
+      {
+         const struct font_glyph *glyph;
+         uint32_t code       = utf8_walk(&scan);
+         if (!(glyph = font->font_driver->get_glyph(font->font_data, code)))
+            if (!(glyph = glyph_q))
+               continue;
+         width_accum += glyph->advance_x;
+      }
+
+      if (text_align == TEXT_ALIGN_RIGHT)
+         x -= (int)(width_accum * scale);
+      else
+         x -= (int)(width_accum * scale) / 2;
    }
 
    while (msg < msg_end)
@@ -893,7 +907,7 @@ static void rsx_font_render_msg(
    float video_msg_color_b          = settings->floats.video_msg_color_b;
    rsx_t *rsx                       = (rsx_t*)userdata;
 
-   if (!font || string_is_empty(msg) || !rsx)
+   if (!font || !msg || !*msg || !rsx)
       return;
 
    width                            = rsx->width;
@@ -944,7 +958,7 @@ static void rsx_font_render_msg(
    else
       rsx_font_setup_viewport(rsx, font, width, height, full_screen);
 
-   if (    !string_is_empty(msg)
+   if (     (msg && *msg)
          && font->font_data
          && font->font_driver)
    {
@@ -982,7 +996,7 @@ static const struct font_glyph *rsx_font_get_glyph(
 {
    rsx_font_t *font = (rsx_font_t*)data;
    if (font && font->font_driver)
-      return font->font_driver->get_glyph((void*)font->font_driver, code);
+      return font->font_driver->get_glyph((void*)font->font_data, code);
    return NULL;
 }
 

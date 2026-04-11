@@ -55,6 +55,52 @@
 #include "../../retroarch.h"
 #include "../../verbosity.h"
 
+/* Write 4 unique vertices per quad for use with indexed drawing.
+ * Vertex layout:  0(TL)---2(TR)
+ *                  |  / |
+ *                 1(BL)---3(BR)
+ * Index pattern:  0,1,2, 2,1,3  (provided by shared quad_ibo). */
+#define VULKAN_WRITE_QUAD_VBO(pv, _x, _y, _width, _height, _tex_x, _tex_y, _tex_width, _tex_height, vulkan_color) \
+{ \
+   float r        = (vulkan_color)->r; \
+   float g        = (vulkan_color)->g; \
+   float b        = (vulkan_color)->b; \
+   float a        = (vulkan_color)->a; \
+   pv[0].x        = (_x); \
+   pv[0].y        = (_y); \
+   pv[0].tex_x    = (_tex_x); \
+   pv[0].tex_y    = (_tex_y); \
+   pv[0].color.r  = r; \
+   pv[0].color.g  = g; \
+   pv[0].color.b  = b; \
+   pv[0].color.a  = a; \
+   pv[1].x        = (_x); \
+   pv[1].y        = (_y) + (_height); \
+   pv[1].tex_x    = (_tex_x); \
+   pv[1].tex_y    = (_tex_y) + (_tex_height); \
+   pv[1].color.r  = r; \
+   pv[1].color.g  = g; \
+   pv[1].color.b  = b; \
+   pv[1].color.a  = a; \
+   pv[2].x        = (_x) + (_width); \
+   pv[2].y        = (_y); \
+   pv[2].tex_x    = (_tex_x) + (_tex_width); \
+   pv[2].tex_y    = (_tex_y); \
+   pv[2].color.r  = r; \
+   pv[2].color.g  = g; \
+   pv[2].color.b  = b; \
+   pv[2].color.a  = a; \
+   pv[3].x        = (_x) + (_width); \
+   pv[3].y        = (_y) + (_height); \
+   pv[3].tex_x    = (_tex_x) + (_tex_width); \
+   pv[3].tex_y    = (_tex_y) + (_tex_height); \
+   pv[3].color.r  = r; \
+   pv[3].color.g  = g; \
+   pv[3].color.b  = b; \
+   pv[3].color.a  = a; \
+}
+
+
 #define VK_REMAP_TO_TEXFMT(fmt) ((fmt == VK_FORMAT_R5G6B5_UNORM_PACK16) ? VK_FORMAT_R8G8B8A8_UNORM : fmt)
 
 #ifdef VULKAN_HDR_SWAPCHAIN
@@ -166,6 +212,10 @@ struct vk_draw_triangles
    VkSampler sampler;            /* ptr alignment */
    size_t uniform_size;
    unsigned vertices;
+   /* When true, vertices are groups of 4 (quads) and will be
+    * drawn with the shared index buffer via vkCmdDrawIndexed.
+    * When false, vertices are drawn directly via vkCmdDraw. */
+   bool indexed_quads;
 };
 
 typedef struct vk
@@ -247,6 +297,17 @@ typedef struct vk
       struct vk_texture blank_texture;
    } display;
 
+   /* Shared index buffer for quad rendering (fix #8).
+    * Contains repeating [0,1,2,2,1,3] patterns so quads
+    * can be drawn with 4 vertices instead of 6, reducing
+    * VBO bandwidth by 33% for text-heavy frames. */
+   struct
+   {
+      VkBuffer buffer;               /* ptr alignment */
+      VkDeviceMemory memory;         /* ptr alignment */
+      unsigned num_quads;            /* max quads this IBO can index */
+   } quad_ibo;
+
 #ifdef VULKAN_HDR_SWAPCHAIN
    struct
    {
@@ -321,6 +382,13 @@ typedef struct
    struct vk_buffer_range range;
    unsigned vertices;
 
+   /* Dirty rectangle for partial atlas uploads.
+    * Tracks the bounding box of modified glyphs so that
+    * vulkan_font_render_msg only copies the changed region
+    * instead of the entire atlas texture. */
+   unsigned dirty_x_min, dirty_y_min;
+   unsigned dirty_x_max, dirty_y_max;
+
    bool needs_update;
 } vulkan_raster_t;
 
@@ -392,6 +460,122 @@ static unsigned vulkan_num_miplevels(unsigned width, unsigned height)
    return levels;
 }
 
+static struct vk_buffer vulkan_create_buffer(
+      const struct vulkan_context *context,
+      size_t len, VkBufferUsageFlags usage)
+{
+   struct vk_buffer buffer;
+   VkMemoryRequirements mem_reqs;
+   VkBufferCreateInfo info;
+   VkMemoryAllocateInfo alloc;
+
+   info.sType                 = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+   info.pNext                 = NULL;
+   info.flags                 = 0;
+   info.size                  = len;
+   info.usage                 = usage;
+   info.sharingMode           = VK_SHARING_MODE_EXCLUSIVE;
+   info.queueFamilyIndexCount = 0;
+   info.pQueueFamilyIndices   = NULL;
+   vkCreateBuffer(context->device, &info, NULL, &buffer.buffer);
+   vulkan_debug_mark_buffer(context->device, buffer.buffer);
+
+   vkGetBufferMemoryRequirements(context->device, buffer.buffer, &mem_reqs);
+
+   alloc.sType                = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+   alloc.pNext                = NULL;
+   alloc.allocationSize       = mem_reqs.size;
+   alloc.memoryTypeIndex      = vulkan_find_memory_type(
+         &context->memory_properties,
+         mem_reqs.memoryTypeBits,
+           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+         | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+   vkAllocateMemory(context->device, &alloc, NULL, &buffer.memory);
+   vulkan_debug_mark_memory(context->device, buffer.memory);
+   vkBindBufferMemory(context->device, buffer.buffer, buffer.memory, 0);
+
+   buffer.size                = len;
+
+   vkMapMemory(context->device,
+         buffer.memory, 0, buffer.size, 0, &buffer.mapped);
+   return buffer;
+}
+
+static struct vk_buffer_node *vulkan_buffer_chain_alloc_node(
+      const struct vulkan_context *context,
+      size_t len, VkBufferUsageFlags usage)
+{
+   struct vk_buffer_node *node = (struct vk_buffer_node*)
+      malloc(sizeof(*node));
+   if (!node)
+      return NULL;
+   node->buffer = vulkan_create_buffer(
+         context, len, usage);
+   node->next   = NULL;
+   return node;
+}
+
+static bool vulkan_buffer_chain_suballoc(struct vk_buffer_chain *chain,
+      size_t len, struct vk_buffer_range *range)
+{
+   VkDeviceSize next_offset = chain->offset + len;
+   if (next_offset <= chain->current->buffer.size)
+   {
+      range->data   = (uint8_t*)chain->current->buffer.mapped + chain->offset;
+      range->buffer = chain->current->buffer.buffer;
+      range->offset = chain->offset;
+      chain->offset = (next_offset + chain->alignment - 1)
+         & ~(chain->alignment - 1);
+      return true;
+   }
+   return false;
+}
+
+
+static bool vulkan_buffer_chain_alloc(const struct vulkan_context *context,
+      struct vk_buffer_chain *chain,
+      size_t len, struct vk_buffer_range *range)
+{
+   if (!chain->head)
+   {
+      if (!(chain->head = vulkan_buffer_chain_alloc_node(context,
+            chain->block_size, chain->usage)))
+         return false;
+
+      chain->current = chain->head;
+      chain->offset  = 0;
+   }
+
+   if (!vulkan_buffer_chain_suballoc(chain, len, range))
+   {
+      /* We've exhausted the current chain, traverse list until we
+       * can find a block we can use. Usually, we just step once. */
+      while (chain->current->next)
+      {
+         chain->current = chain->current->next;
+         chain->offset  = 0;
+         if (vulkan_buffer_chain_suballoc(chain, len, range))
+            return true;
+      }
+
+      /* We have to allocate a new node, might allocate larger
+       * buffer here than block_size in case we have
+       * a very large allocation. */
+      if (len < chain->block_size)
+         len = chain->block_size;
+
+      if (!(chain->current->next = vulkan_buffer_chain_alloc_node(
+                  context, len, chain->usage)))
+         return false;
+
+      chain->current = chain->current->next;
+      chain->offset  = 0;
+      /* This cannot possibly fail. */
+      retro_assert(vulkan_buffer_chain_suballoc(chain, len, range));
+   }
+   return true;
+}
+
 static void vulkan_write_quad_descriptors(
       VkDevice device,
       VkDescriptorSet set,
@@ -401,39 +585,152 @@ static void vulkan_write_quad_descriptors(
       const struct vk_texture *texture,
       VkSampler sampler)
 {
-   VkWriteDescriptorSet write;
+   VkWriteDescriptorSet writes[2];
    VkDescriptorBufferInfo buffer_info;
+   VkDescriptorImageInfo image_info;
+   uint32_t write_count                = 1;
 
-   buffer_info.buffer              = buffer;
-   buffer_info.offset              = offset;
-   buffer_info.range               = range;
+   buffer_info.buffer                  = buffer;
+   buffer_info.offset                  = offset;
+   buffer_info.range                   = range;
 
-   write.sType                     = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-   write.pNext                     = NULL;
-   write.dstSet                    = set;
-   write.dstBinding                = 0;
-   write.dstArrayElement           = 0;
-   write.descriptorCount           = 1;
-   write.descriptorType            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-   write.pImageInfo                = NULL;
-   write.pBufferInfo               = &buffer_info;
-   write.pTexelBufferView          = NULL;
-   vkUpdateDescriptorSets(device, 1, &write, 0, NULL);
+   writes[0].sType                     = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+   writes[0].pNext                     = NULL;
+   writes[0].dstSet                    = set;
+   writes[0].dstBinding                = 0;
+   writes[0].dstArrayElement           = 0;
+   writes[0].descriptorCount           = 1;
+   writes[0].descriptorType            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+   writes[0].pImageInfo                = NULL;
+   writes[0].pBufferInfo               = &buffer_info;
+   writes[0].pTexelBufferView          = NULL;
 
    if (texture)
    {
-      VkDescriptorImageInfo image_info;
+      image_info.sampler               = sampler;
+      image_info.imageView             = texture->view;
+      image_info.imageLayout           = texture->layout;
 
-      image_info.sampler              = sampler;
-      image_info.imageView            = texture->view;
-      image_info.imageLayout          = texture->layout;
+      writes[1].sType                  = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[1].pNext                  = NULL;
+      writes[1].dstSet                 = set;
+      writes[1].dstBinding             = 1;
+      writes[1].dstArrayElement        = 0;
+      writes[1].descriptorCount        = 1;
+      writes[1].descriptorType         = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      writes[1].pImageInfo             = &image_info;
+      writes[1].pBufferInfo            = NULL;
+      writes[1].pTexelBufferView       = NULL;
+      write_count                      = 2;
+   }
 
-      write.dstSet                    = set;
-      write.dstBinding                = 1;
-      write.descriptorCount           = 1;
-      write.descriptorType            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-      write.pImageInfo                = &image_info;
-      vkUpdateDescriptorSets(device, 1, &write, 0, NULL);
+   vkUpdateDescriptorSets(device, write_count, writes, 0, NULL);
+}
+
+/* Batched descriptor write infrastructure.
+ * Instead of calling vkUpdateDescriptorSets per draw, callers can
+ * stage writes into a batch and flush once. This reduces Vulkan
+ * driver overhead when issuing many draws with different descriptors
+ * (e.g. overlay rendering, menu display draws). */
+#define VK_DESC_BATCH_MAX_WRITES  64
+#define VK_DESC_BATCH_MAX_BUFFERS 32
+#define VK_DESC_BATCH_MAX_IMAGES  32
+
+struct vk_descriptor_batch
+{
+   VkWriteDescriptorSet    writes[VK_DESC_BATCH_MAX_WRITES];
+   VkDescriptorBufferInfo  buffer_infos[VK_DESC_BATCH_MAX_BUFFERS];
+   VkDescriptorImageInfo   image_infos[VK_DESC_BATCH_MAX_IMAGES];
+   unsigned write_count;
+   unsigned buffer_count;
+   unsigned image_count;
+};
+
+static INLINE void vulkan_descriptor_batch_init(
+      struct vk_descriptor_batch *batch)
+{
+   batch->write_count  = 0;
+   batch->buffer_count = 0;
+   batch->image_count  = 0;
+}
+
+/* Stage descriptor writes for one draw call into the batch.
+ * Returns false if the batch is full and needs flushing first. */
+static bool vulkan_descriptor_batch_add(
+      struct vk_descriptor_batch *batch,
+      VkDescriptorSet set,
+      VkBuffer buffer,
+      VkDeviceSize offset,
+      VkDeviceSize range,
+      const struct vk_texture *texture,
+      VkSampler sampler)
+{
+   unsigned writes_needed = texture ? 2 : 1;
+   unsigned bufs_needed   = 1;
+   unsigned imgs_needed   = texture ? 1 : 0;
+   VkDescriptorBufferInfo *buf_info;
+   VkDescriptorImageInfo  *img_info;
+
+   if (     batch->write_count  + writes_needed > VK_DESC_BATCH_MAX_WRITES
+         || batch->buffer_count + bufs_needed   > VK_DESC_BATCH_MAX_BUFFERS
+         || batch->image_count  + imgs_needed   > VK_DESC_BATCH_MAX_IMAGES)
+      return false;
+
+   buf_info                                 = &batch->buffer_infos[batch->buffer_count++];
+   buf_info->buffer                         = buffer;
+   buf_info->offset                         = offset;
+   buf_info->range                          = range;
+
+   {
+      VkWriteDescriptorSet *w               = &batch->writes[batch->write_count++];
+      w->sType                              = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      w->pNext                              = NULL;
+      w->dstSet                             = set;
+      w->dstBinding                         = 0;
+      w->dstArrayElement                    = 0;
+      w->descriptorCount                    = 1;
+      w->descriptorType                     = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+      w->pImageInfo                         = NULL;
+      w->pBufferInfo                        = buf_info;
+      w->pTexelBufferView                   = NULL;
+   }
+
+   if (texture)
+   {
+      img_info                              = &batch->image_infos[batch->image_count++];
+      img_info->sampler                     = sampler;
+      img_info->imageView                   = texture->view;
+      img_info->imageLayout                 = texture->layout;
+
+      {
+         VkWriteDescriptorSet *w            = &batch->writes[batch->write_count++];
+         w->sType                           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+         w->pNext                           = NULL;
+         w->dstSet                          = set;
+         w->dstBinding                      = 1;
+         w->dstArrayElement                 = 0;
+         w->descriptorCount                 = 1;
+         w->descriptorType                  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+         w->pImageInfo                      = img_info;
+         w->pBufferInfo                     = NULL;
+         w->pTexelBufferView                = NULL;
+      }
+   }
+
+   return true;
+}
+
+static INLINE void vulkan_descriptor_batch_flush(
+      VkDevice device,
+      struct vk_descriptor_batch *batch)
+{
+   if (batch->write_count > 0)
+   {
+      vkUpdateDescriptorSets(device, batch->write_count,
+            batch->writes, 0, NULL);
+      batch->write_count  = 0;
+      batch->buffer_count = 0;
+      batch->image_count  = 0;
    }
 }
 
@@ -465,6 +762,67 @@ static void vulkan_transition_texture(vk_t *vk, VkCommandBuffer cmd, struct vk_t
          break;
    }
    texture->layout = VK_IMAGE_LAYOUT_GENERAL;
+}
+
+static struct vk_descriptor_pool *vulkan_alloc_descriptor_pool(
+      VkDevice device,
+      const struct vk_descriptor_manager *manager)
+{
+   unsigned i;
+   VkDescriptorPoolCreateInfo pool_info;
+   VkDescriptorSetAllocateInfo alloc_info;
+   struct vk_descriptor_pool *pool =
+      (struct vk_descriptor_pool*)malloc(sizeof(*pool));
+   if (!pool)
+      return NULL;
+
+   pool_info.sType                 = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+   pool_info.pNext                 = NULL;
+   pool_info.flags                 = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+   pool_info.maxSets               = VULKAN_DESCRIPTOR_MANAGER_BLOCK_SETS;
+   pool_info.poolSizeCount         = manager->num_sizes;
+   pool_info.pPoolSizes            = manager->sizes;
+
+   pool->pool                      = VK_NULL_HANDLE;
+   for (i = 0; i < VULKAN_DESCRIPTOR_MANAGER_BLOCK_SETS; i++)
+      pool->sets[i]                = VK_NULL_HANDLE;
+   pool->next                      = NULL;
+
+   vkCreateDescriptorPool(device, &pool_info, NULL, &pool->pool);
+
+   /* Just allocate all descriptor sets up front. */
+   alloc_info.sType                = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+   alloc_info.pNext                = NULL;
+   alloc_info.descriptorPool       = pool->pool;
+   alloc_info.descriptorSetCount   = 1;
+   alloc_info.pSetLayouts          = &manager->set_layout;
+
+   for (i = 0; i < VULKAN_DESCRIPTOR_MANAGER_BLOCK_SETS; i++)
+      vkAllocateDescriptorSets(device, &alloc_info, &pool->sets[i]);
+
+   return pool;
+}
+
+
+static VkDescriptorSet vulkan_descriptor_manager_alloc(
+      VkDevice device, struct vk_descriptor_manager *manager)
+{
+   if (manager->count >= VULKAN_DESCRIPTOR_MANAGER_BLOCK_SETS)
+   {
+      while (manager->current->next)
+      {
+         manager->current = manager->current->next;
+         manager->count   = 0;
+         return manager->current->sets[manager->count++];
+      }
+
+      manager->current->next = vulkan_alloc_descriptor_pool(device, manager);
+      retro_assert(manager->current->next);
+
+      manager->current = manager->current->next;
+      manager->count   = 0;
+   }
+   return manager->current->sets[manager->count++];
 }
 
 /* The VBO needs to be written to before calling this.
@@ -525,7 +883,6 @@ static void vulkan_draw_triangles(vk_t *vk, const struct vk_draw_triangles *call
       VkDescriptorSet set;
       /* Upload UBO */
       struct vk_buffer_range range;
-      float *mvp_data_ptr          = NULL;
 
       if (!vulkan_buffer_chain_alloc(vk->context, &vk->chain->ubo,
                call->uniform_size, &range))
@@ -553,19 +910,28 @@ static void vulkan_draw_triangles(vk_t *vk, const struct vk_draw_triangles *call
 
       vk->tracker.view    = VK_NULL_HANDLE;
       vk->tracker.sampler = VK_NULL_HANDLE;
-      for (
-              mvp_data_ptr = &vk->tracker.mvp.data[0]
-            ; mvp_data_ptr < vk->tracker.mvp.data + 16
-            ; mvp_data_ptr++)
-         *mvp_data_ptr = 0.0f;
+      memset(vk->tracker.mvp.data, 0, sizeof(vk->tracker.mvp.data));
    }
 
    /* VBO is already uploaded. */
    vkCmdBindVertexBuffers(vk->cmd, 0, 1,
          &call->vbo->buffer, &call->vbo->offset);
 
-   /* Draw the quad */
-   vkCmdDraw(vk->cmd, call->vertices, 1, 0, 0);
+   /* Use indexed draw for quad-based geometry.
+    * Quads use 4 vertices each with the shared index buffer,
+    * saving 33% VBO bandwidth compared to 6 vertices per quad. */
+   if (call->indexed_quads && vk->quad_ibo.buffer != VK_NULL_HANDLE)
+   {
+      unsigned num_quads  = call->vertices / 4;
+      unsigned index_count = num_quads * 6;
+      vkCmdBindIndexBuffer(vk->cmd, vk->quad_ibo.buffer,
+            0, VK_INDEX_TYPE_UINT16);
+      vkCmdDrawIndexed(vk->cmd, index_count, 1, 0, 0, 0);
+   }
+   else
+   {
+      vkCmdDraw(vk->cmd, call->vertices, 1, 0, 0);
+   }
 }
 
 
@@ -950,7 +1316,15 @@ static struct vk_texture vulkan_create_texture(vk_t *vk,
 
                if (     (tex.flags & VK_TEX_FLAG_NEED_MANUAL_CACHE_MANAGEMENT)
                      && (tex.memory != VK_NULL_HANDLE))
-                  VULKAN_SYNC_TEXTURE_TO_GPU(vk->context->device, tex.memory);
+               {
+                  VkMappedMemoryRange range;
+                  range.sType  = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+                  range.pNext  = NULL;
+                  range.memory = tex.memory;
+                  range.offset = 0;
+                  range.size   = VK_WHOLE_SIZE;
+                  vkFlushMappedMemoryRanges(vk->context->device, 1, &range);
+               }
                vkUnmapMemory(device, tex.memory);
             }
             break;
@@ -1398,7 +1772,12 @@ static void gfx_display_vk_draw_pipeline(
          break;
    }
 
-   t += 0.01;
+   t += 0.01f;
+   /* Wrap to maintain float precision over long sessions.
+    * Period of 2*pi*100 ensures trig-based shader animations
+    * (sin(t), cos(t)) cycle seamlessly. */
+   if (t > 628.0f)
+      t = fmodf(t, 628.318530f);
 }
 #endif
 
@@ -1481,6 +1860,7 @@ static void gfx_display_vk_draw(gfx_display_ctx_draw_t *draw,
             call.uniform_size = draw->backend_data_size;
             call.vbo          = &range;
             call.vertices     = draw->coords->vertices;
+            call.indexed_quads = false;
 
             vulkan_draw_triangles(vk, &call);
          }
@@ -1506,6 +1886,7 @@ static void gfx_display_vk_draw(gfx_display_ctx_draw_t *draw,
             call.uniform_size = sizeof(math_matrix_4x4);
             call.vbo          = &range;
             call.vertices     = draw->coords->vertices;
+            call.indexed_quads = false;
 
             vulkan_draw_triangles(vk, &call);
          }
@@ -1583,12 +1964,23 @@ static INLINE void vulkan_font_update_glyph(
       vulkan_raster_t *font, const struct font_glyph *glyph)
 {
    unsigned row;
-   for (row = glyph->atlas_offset_y; row < (glyph->atlas_offset_y + glyph->height); row++)
+   unsigned gx_min = glyph->atlas_offset_x;
+   unsigned gy_min = glyph->atlas_offset_y;
+   unsigned gx_max = gx_min + glyph->width;
+   unsigned gy_max = gy_min + glyph->height;
+
+   for (row = gy_min; row < gy_max; row++)
    {
-      uint8_t *src = font->atlas->buffer + row * font->atlas->width + glyph->atlas_offset_x;
-      uint8_t *dst = (uint8_t*)font->texture.mapped + row * font->texture.stride + glyph->atlas_offset_x;
+      uint8_t *src = font->atlas->buffer + row * font->atlas->width + gx_min;
+      uint8_t *dst = (uint8_t*)font->texture.mapped + row * font->texture.stride + gx_min;
       memcpy(dst, src, glyph->width);
    }
+
+   /* Expand the dirty bounding box. */
+   if (gx_min < font->dirty_x_min) font->dirty_x_min = gx_min;
+   if (gy_min < font->dirty_y_min) font->dirty_y_min = gy_min;
+   if (gx_max > font->dirty_x_max) font->dirty_x_max = gx_max;
+   if (gy_max > font->dirty_y_max) font->dirty_y_max = gy_max;
 }
 
 static void vulkan_font_free(void *data, bool is_threaded)
@@ -1636,32 +2028,40 @@ static void *vulkan_font_init(void *data,
 
    {
       struct vk_texture *texture = &font->texture;
-      VK_MAP_PERSISTENT_TEXTURE(font->vk->context->device, texture);
+      vkMapMemory(font->vk->context->device, texture->memory, texture->offset, texture->size, 0, &texture->mapped);
    }
 
    font->texture_optimal = vulkan_create_texture(font->vk, NULL,
          font->atlas->width, font->atlas->height, VK_FORMAT_R8_UNORM, NULL,
          NULL, VULKAN_TEXTURE_DYNAMIC);
 
+   /* Initial upload is full atlas. */
+   font->dirty_x_min  = 0;
+   font->dirty_y_min  = 0;
+   font->dirty_x_max  = font->atlas->width;
+   font->dirty_y_max  = font->atlas->height;
    font->needs_update = true;
 
    return font;
 }
 
-static int vulkan_get_message_width(void *data, const char *msg,
+static int vulkan_font_get_message_width(void *data, const char *msg,
       size_t msg_len, float scale)
 {
    const struct font_glyph* glyph_q = NULL;
    vulkan_raster_t *font = (vulkan_raster_t*)data;
    const char* msg_end   = msg + msg_len;
    int delta_x           = 0;
+   const struct font_glyph* (*get_glyph)(void*, uint32_t)
+                         = font->font_driver->get_glyph;
+   void *font_data       = font->font_data;
 
    if (     !font
          || !font->font_driver
          || !font->font_data )
       return 0;
 
-   glyph_q = font->font_driver->get_glyph(font->font_data, '?');
+   glyph_q = get_glyph(font_data, '?');
 
    while (msg < msg_end)
    {
@@ -1669,8 +2069,7 @@ static int vulkan_get_message_width(void *data, const char *msg,
       uint32_t code                  = utf8_walk(&msg);
 
       /* Do something smarter here ... */
-      if (!(glyph = font->font_driver->get_glyph(
-                  font->font_data, code)))
+      if (!(glyph = get_glyph(font_data, code)))
          if (!(glyph = glyph_q))
             continue;
 
@@ -1686,221 +2085,26 @@ static int vulkan_get_message_width(void *data, const char *msg,
    return delta_x * scale;
 }
 
-static void vulkan_font_render_line(vk_t *vk,
-      vulkan_raster_t *font,
-      const struct font_glyph* glyph_q,
-      const char *msg, size_t msg_len,
-      float scale,
-      const float color[4],
-      float pos_x,
-      float pos_y,
-      int pre_x,
-      float inv_tex_size_x,
-      float inv_tex_size_y,
-      float inv_win_width,
-      float inv_win_height,
-      unsigned text_align)
-{
-   struct vk_color vk_color;
-   const char* msg_end              = msg + msg_len;
-   int x                            = pre_x;
-   int y                            = roundf((1.0f - pos_y) * vk->vp.height);
-   int delta_x                      = 0;
-   int delta_y                      = 0;
-
-   vk_color.r                       = color[0];
-   vk_color.g                       = color[1];
-   vk_color.b                       = color[2];
-   vk_color.a                       = color[3];
-
-   switch (text_align)
-   {
-      case TEXT_ALIGN_RIGHT:
-         x -= vulkan_get_message_width(font, msg, msg_len, scale);
-         break;
-      case TEXT_ALIGN_CENTER:
-         x -= vulkan_get_message_width(font, msg, msg_len, scale) / 2;
-         break;
-   }
-
-   while (msg < msg_end)
-   {
-      const struct font_glyph *glyph;
-      int off_x, off_y, tex_x, tex_y, width, height;
-      unsigned code = utf8_walk(&msg);
-
-      /* Do something smarter here ... */
-      if (!(glyph =
-               font->font_driver->get_glyph(font->font_data, code)))
-         if (!(glyph = glyph_q))
-            continue;
-
-      if (font->atlas->dirty)
-      {
-         vulkan_font_update_glyph(font, glyph);
-         font->atlas->dirty = false;
-         font->needs_update = true;
-      }
-
-      off_x  = glyph->draw_offset_x;
-      off_y  = glyph->draw_offset_y;
-      tex_x  = glyph->atlas_offset_x;
-      tex_y  = glyph->atlas_offset_y;
-      width  = glyph->width;
-      height = glyph->height;
-
-      {
-         struct vk_vertex *pv          = font->pv + font->vertices;
-         float _x                      = (x + (off_x + delta_x) * scale)
-            * inv_win_width;
-         float _y                      = (y + (off_y + delta_y) * scale)
-            * inv_win_height;
-         float _width                  = width  * scale * inv_win_width;
-         float _height                 = height * scale * inv_win_height;
-         float _tex_x                  = tex_x * inv_tex_size_x;
-         float _tex_y                  = tex_y * inv_tex_size_y;
-         float _tex_width              = width * inv_tex_size_x;
-         float _tex_height             = height * inv_tex_size_y;
-         const struct vk_color *_color = &vk_color;
-
-         VULKAN_WRITE_QUAD_VBO(pv, _x, _y, _width, _height,
-               _tex_x, _tex_y, _tex_width, _tex_height, _color);
-      }
-
-      font->vertices += 6;
-
-      delta_x        += glyph->advance_x;
-      delta_y        += glyph->advance_y;
-   }
-}
-
-static void vulkan_font_render_message(vk_t *vk,
-      vulkan_raster_t *font, const char *msg, float scale,
-      const float color[4], float pos_x, float pos_y,
-      unsigned text_align)
-{
-   float line_height;
-   struct font_line_metrics *line_metrics = NULL;
-   const struct font_glyph* glyph_q       = font->font_driver->get_glyph(font->font_data, '?');
-   int x                                  = roundf(pos_x * vk->vp.width);
-   int lines                              = 0;
-   float inv_tex_size_x                   = 1.0f / font->texture.width;
-   float inv_tex_size_y                   = 1.0f / font->texture.height;
-   float inv_win_width                    = 1.0f / vk->vp.width;
-   float inv_win_height                   = 1.0f / vk->vp.height;
-   font->font_driver->get_line_metrics(font->font_data, &line_metrics);
-   line_height = line_metrics->height * scale / vk->vp.height;
-   for (;;)
-   {
-      const char *delim = msg;
-      while (*delim != '\n' && *delim != '\0')
-         delim++;
-      /* Draw the line */
-      vulkan_font_render_line(vk, font, glyph_q, msg, (size_t)(delim - msg),
-            scale, color,
-            pos_x,
-            pos_y - (float)lines * line_height,
-            x,
-            inv_tex_size_x,
-            inv_tex_size_y,
-            inv_win_width,
-            inv_win_height,
-            text_align);
-      if (*delim == '\0')
-         break;
-      msg = delim + 1;
-      lines++;
-   }
-}
-
-static void vulkan_font_flush(vk_t *vk, vulkan_raster_t *font)
-{
-   struct vk_draw_triangles call;
-
-   call.pipeline     = vk->pipelines.font;
-   call.texture      = &font->texture_optimal;
-   call.sampler      = vk->samplers.mipmap_linear;
-   call.uniform      = &vk->mvp;
-   call.uniform_size = sizeof(vk->mvp);
-   call.vbo          = &font->range;
-   call.vertices     = font->vertices;
-
-   if (font->needs_update)
-   {
-      VkCommandBuffer staging;
-      VkSubmitInfo submit_info;
-      VkCommandBufferAllocateInfo cmd_info;
-      VkCommandBufferBeginInfo begin_info;
-      struct vk_texture *dynamic_tex  = NULL;
-      struct vk_texture *staging_tex  = NULL;
-
-      cmd_info.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-      cmd_info.pNext              = NULL;
-      cmd_info.commandPool        = vk->staging_pool;
-      cmd_info.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-      cmd_info.commandBufferCount = 1;
-      vkAllocateCommandBuffers(vk->context->device, &cmd_info, &staging);
-
-      begin_info.sType            = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-      begin_info.pNext            = NULL;
-      begin_info.flags            = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-      begin_info.pInheritanceInfo = NULL;
-      vkBeginCommandBuffer(staging, &begin_info);
-
-      VULKAN_SYNC_TEXTURE_TO_GPU_COND_OBJ(vk, font->texture);
-
-      dynamic_tex                 = &font->texture_optimal;
-      staging_tex                 = &font->texture;
-
-      vulkan_copy_staging_to_dynamic(vk, staging,
-            dynamic_tex, staging_tex);
-
-      vkEndCommandBuffer(staging);
-
-#ifdef HAVE_THREADS
-      slock_lock(vk->context->queue_lock);
-#endif
-
-      submit_info.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-      submit_info.pNext                = NULL;
-      submit_info.waitSemaphoreCount   = 0;
-      submit_info.pWaitSemaphores      = NULL;
-      submit_info.pWaitDstStageMask    = NULL;
-      submit_info.commandBufferCount   = 1;
-      submit_info.pCommandBuffers      = &staging;
-      submit_info.signalSemaphoreCount = 0;
-      submit_info.pSignalSemaphores    = NULL;
-      vkQueueSubmit(vk->context->queue,
-            1, &submit_info, VK_NULL_HANDLE);
-
-      vkQueueWaitIdle(vk->context->queue);
-
-#ifdef HAVE_THREADS
-      slock_unlock(vk->context->queue_lock);
-#endif
-
-      vkFreeCommandBuffers(vk->context->device,
-            vk->staging_pool, 1, &staging);
-
-      font->needs_update = false;
-   }
-
-   vulkan_draw_triangles(vk, &call);
-}
-
 static void vulkan_font_render_msg(
       void *userdata,
       void *data,
       const char *msg,
       const struct font_params *params)
 {
+   float line_height;
+   struct font_line_metrics *line_metrics = NULL;
    float color[4];
    int drop_x, drop_y;
    bool full_screen;
-   size_t max_glyphs;
    unsigned width, height;
    enum text_alignment text_align;
+   const struct font_glyph *glyph_q;
    float x, y, scale, drop_mod, drop_alpha;
+   float inv_tex_size_x, inv_tex_size_y, inv_win_width, inv_win_height;
+   float scale_iww, scale_iwh;           /* pre-multiplied scale * inv_win */
+   const struct font_glyph *(*get_glyph)(void*, uint32_t);
+   void *font_data;
+   int has_drop, needs_align;
    vulkan_raster_t *font            = (vulkan_raster_t*)data;
    settings_t *settings             = config_get_ptr();
    float video_msg_pos_x            = settings->floats.video_msg_pos_x;
@@ -1957,33 +2161,396 @@ static void vulkan_font_render_msg(
 
    vulkan_set_viewport(vk, width, height, full_screen, false);
 
-   max_glyphs = strlen(msg);
-   if (drop_x || drop_y)
-      max_glyphs *= 2;
+   /* Compute max glyphs for VBO allocation.
+    * Line scan below discovers actual length; this uses strlen
+    * only for the allocation upper bound. */
+   {
+      size_t max_glyphs = strlen(msg);
+      if (drop_x || drop_y)
+         max_glyphs *= 2;
 
-   if (!vulkan_buffer_chain_alloc(vk->context, &vk->chain->vbo,
-         6 * sizeof(struct vk_vertex) * max_glyphs, &font->range))
-      return;
+      if (!vulkan_buffer_chain_alloc(vk->context, &vk->chain->vbo,
+            4 * sizeof(struct vk_vertex) * max_glyphs, &font->range))
+         return;
+   }
 
    font->vertices   = 0;
    font->pv         = (struct vk_vertex*)font->range.data;
+   glyph_q          = (font->font_driver)
+      ? font->font_driver->get_glyph(font->font_data, '?') : NULL;
+   font->font_driver->get_line_metrics(font->font_data, &line_metrics);
+   line_height      = line_metrics->height * scale / vk->vp.height;
 
-   if (drop_x || drop_y)
+   /* Hoist reciprocals, function pointer, and pre-multiplied factors. */
+   inv_tex_size_x   = 1.0f / font->texture.width;
+   inv_tex_size_y   = 1.0f / font->texture.height;
+   inv_win_width    = 1.0f / vk->vp.width;
+   inv_win_height   = 1.0f / vk->vp.height;
+   scale_iww        = scale * inv_win_width;
+   scale_iwh        = scale * inv_win_height;
+   get_glyph        = font->font_driver->get_glyph;
+   font_data        = font->font_data;
+
+   has_drop         = (drop_x || drop_y);
+   needs_align      = (text_align != TEXT_ALIGN_LEFT);
+
+   /* Pre-compute per-pass constants: base X in NDC (pixel-snapped),
+    * shadow color, and shadow Y origin. */
    {
-      float color_dark[4];
-      color_dark[0] = color[0] * drop_mod;
-      color_dark[1] = color[1] * drop_mod;
-      color_dark[2] = color[2] * drop_mod;
-      color_dark[3] = color[3] * drop_alpha;
+      struct vk_color vk_color, vk_color_dark = {0.0f, 0.0f, 0.0f, 0.0f};
+      float fg_base_x, sh_base_x, sh_y_origin;
+      int line_num;
+      const char *m;
 
-      vulkan_font_render_message(vk, font, msg, scale, color_dark,
-            x + scale * drop_x / vk->vp.width, y +
-            scale * drop_y / vk->vp.height, text_align);
+      vk_color.r       = color[0];
+      vk_color.g       = color[1];
+      vk_color.b       = color[2];
+      vk_color.a       = color[3];
+
+      fg_base_x        = roundf(x * vk->vp.width) * inv_win_width;
+
+      sh_base_x        = 0.0f;
+      sh_y_origin      = 0.0f;
+      if (has_drop)
+      {
+         vk_color_dark.r = color[0] * drop_mod;
+         vk_color_dark.g = color[1] * drop_mod;
+         vk_color_dark.b = color[2] * drop_mod;
+         vk_color_dark.a = color[3] * drop_alpha;
+         sh_base_x       = roundf((x + scale * drop_x
+                              * inv_win_width) * vk->vp.width)
+                              * inv_win_width;
+         sh_y_origin     = y + scale * drop_y * inv_win_height;
+      }
+
+      /* Single pass over the string: for each line, emit interleaved
+       * shadow + foreground quads from one glyph lookup.  This halves
+       * cache/TLB pressure on the glyph table compared to two separate
+       * passes, and shares tex-coord and glyph-size computations. */
+      m        = msg;
+      line_num = 0;
+
+      for (;;)
+      {
+         const char *delim       = m;
+         const char *line_start;
+         size_t line_len;
+         float align_ndc, fg_y, fg_x, sh_y, sh_x;
+         int delta_x, delta_y;
+
+         while (*delim != '\n' && *delim != '\0')
+            delim++;
+         line_start = m;
+         line_len   = (size_t)(delim - m);
+
+         /* Alignment: skip the width pre-scan for TEXT_ALIGN_LEFT,
+          * which is the overwhelmingly common case (OSD, notifications). */
+         align_ndc = 0.0f;
+         if (needs_align)
+         {
+            int width_accum  = 0;
+            const char *scan = line_start;
+            const char *scan_end = scan + line_len;
+            while (scan < scan_end)
+            {
+               const struct font_glyph *glyph;
+               uint32_t code = utf8_walk(&scan);
+               if (!(glyph = get_glyph(font_data, code)))
+                  if (!(glyph = glyph_q))
+                     continue;
+               width_accum += glyph->advance_x;
+            }
+            {
+               float total = width_accum * scale_iww;
+               align_ndc   = (text_align == TEXT_ALIGN_RIGHT)
+                  ? total : total * 0.5f;
+            }
+         }
+
+         /* Per-line Y in NDC (pixel-snapped), X adjusted for alignment. */
+         {
+            float fg_pos_y = y - (float)line_num * line_height;
+            fg_y = roundf((1.0f - fg_pos_y) * vk->vp.height)
+               * inv_win_height;
+            fg_x = fg_base_x - align_ndc;
+         }
+
+         sh_y = 0.0f;
+         sh_x = 0.0f;
+         if (has_drop)
+         {
+            float sh_pos_y = sh_y_origin - (float)line_num * line_height;
+            sh_y = roundf((1.0f - sh_pos_y) * vk->vp.height)
+               * inv_win_height;
+            sh_x = sh_base_x - align_ndc;
+         }
+
+         /* Emit glyphs: 1 lookup → shadow quad + foreground quad.
+          * Tex coords and glyph dimensions are computed once and
+          * shared between both quads. */
+         delta_x = 0;
+         delta_y = 0;
+         {
+            const char *gm  = line_start;
+            const char *gme = gm + line_len;
+
+            while (gm < gme)
+            {
+               const struct font_glyph *glyph;
+               uint32_t code = utf8_walk(&gm);
+
+               if (!(glyph = get_glyph(font_data, code)))
+                  if (!(glyph = glyph_q))
+                     continue;
+
+               if (font->atlas->dirty)
+               {
+                  vulkan_font_update_glyph(font, glyph);
+                  font->atlas->dirty = false;
+                  font->needs_update = true;
+               }
+
+               {
+                  /* Texture coordinates — shared between shadow and fg. */
+                  float ftx = glyph->atlas_offset_x * inv_tex_size_x;
+                  float fty = glyph->atlas_offset_y * inv_tex_size_y;
+                  float ftw = glyph->width  * inv_tex_size_x;
+                  float fth = glyph->height * inv_tex_size_y;
+
+                  /* Pre-scaled glyph size and per-glyph offset. */
+                  float fw  = glyph->width  * scale_iww;
+                  float fh  = glyph->height * scale_iwh;
+                  float gox = (glyph->draw_offset_x + delta_x) * scale_iww;
+                  float goy = (glyph->draw_offset_y + delta_y) * scale_iwh;
+
+                  if (has_drop)
+                  {
+                     struct vk_vertex *pv = font->pv + font->vertices;
+                     VULKAN_WRITE_QUAD_VBO(pv,
+                           sh_x + gox, sh_y + goy,
+                           fw, fh, ftx, fty, ftw, fth,
+                           &vk_color_dark);
+                     font->vertices += 4;
+                  }
+
+                  {
+                     struct vk_vertex *pv = font->pv + font->vertices;
+                     VULKAN_WRITE_QUAD_VBO(pv,
+                           fg_x + gox, fg_y + goy,
+                           fw, fh, ftx, fty, ftw, fth,
+                           &vk_color);
+                     font->vertices += 4;
+                  }
+               }
+
+               delta_x += glyph->advance_x;
+               delta_y += glyph->advance_y;
+            }
+         }
+
+         if (*delim == '\0')
+            break;
+         m = delim + 1;
+         line_num++;
+      }
    }
 
-   vulkan_font_render_message(vk, font, msg, scale,
-         color, x, y, text_align);
-   vulkan_font_flush(vk, font);
+   /* ── Flush: atlas upload + draw ─────────────────────────────────
+    * Inlined from the former vulkan_font_flush().  By issuing the
+    * Vulkan commands directly we eliminate:
+    *   - packing/unpacking through struct vk_draw_triangles
+    *   - the generic vulkan_draw_triangles() indirection
+    *   - the runtime branch on indexed_quads (always true for fonts)
+    *   - the null-check on texture->image (always valid for fonts)
+    */
+
+   /* Upload dirty atlas region to the GPU before the draw. */
+   if (font->needs_update)
+   {
+      struct vk_texture *dynamic_tex = &font->texture_optimal;
+      struct vk_texture *staging_tex = &font->texture;
+
+      if (  (staging_tex->flags
+               & VK_TEX_FLAG_NEED_MANUAL_CACHE_MANAGEMENT)
+            && staging_tex->memory != VK_NULL_HANDLE)
+      {
+         VkMappedMemoryRange mem_range;
+         mem_range.sType  = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+         mem_range.pNext  = NULL;
+         mem_range.memory = staging_tex->memory;
+         mem_range.offset = 0;
+         mem_range.size   = VK_WHOLE_SIZE;
+         vkFlushMappedMemoryRanges(vk->context->device, 1, &mem_range);
+      }
+
+      {
+         unsigned dx = font->dirty_x_min;
+         unsigned dy = font->dirty_y_min;
+         unsigned dw = font->dirty_x_max - dx;
+         unsigned dh = font->dirty_y_max - dy;
+
+         if (dx + dw > staging_tex->width)
+            dw = staging_tex->width - dx;
+         if (dy + dh > staging_tex->height)
+            dh = staging_tex->height - dy;
+
+         if (dw > 0 && dh > 0)
+         {
+            VkBufferImageCopy region;
+
+            VULKAN_IMAGE_LAYOUT_TRANSITION(
+                  vk->cmd,
+                  dynamic_tex->image,
+                  VK_IMAGE_LAYOUT_UNDEFINED,
+                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  0,
+                  VK_ACCESS_TRANSFER_WRITE_BIT,
+                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT);
+
+            /* R8_UNORM ⇒ bpp = 1; stride is already in bytes. */
+            region.bufferOffset                    =
+               (VkDeviceSize)dy * staging_tex->stride + dx;
+            region.bufferRowLength                 =
+               (uint32_t)staging_tex->stride;
+            region.bufferImageHeight               = 0;
+            region.imageSubresource.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+            region.imageSubresource.mipLevel       = 0;
+            region.imageSubresource.baseArrayLayer = 0;
+            region.imageSubresource.layerCount     = 1;
+            region.imageOffset.x                   = (int32_t)dx;
+            region.imageOffset.y                   = (int32_t)dy;
+            region.imageOffset.z                   = 0;
+            region.imageExtent.width               = dw;
+            region.imageExtent.height              = dh;
+            region.imageExtent.depth               = 1;
+
+            vkCmdCopyBufferToImage(
+                  vk->cmd,
+                  staging_tex->buffer,
+                  dynamic_tex->image,
+                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  1,
+                  &region);
+
+            VULKAN_IMAGE_LAYOUT_TRANSITION(
+                  vk->cmd,
+                  dynamic_tex->image,
+                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_ACCESS_TRANSFER_WRITE_BIT,
+                  VK_ACCESS_SHADER_READ_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT,
+                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+
+            dynamic_tex->layout =
+               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+         }
+      }
+
+      font->dirty_x_min  = font->atlas->width;
+      font->dirty_y_min  = font->atlas->height;
+      font->dirty_x_max  = 0;
+      font->dirty_y_max  = 0;
+      font->needs_update = false;
+   }
+
+   /* Transition the font atlas texture for shader reads.
+    * The font texture_optimal is always a valid VkImage. */
+   if (font->texture_optimal.image)
+      vulkan_transition_texture(vk, vk->cmd, &font->texture_optimal);
+
+   /* Pipeline and dynamic state. */
+   if (vk->pipelines.font != vk->tracker.pipeline)
+   {
+      VkRect2D sci;
+      vkCmdBindPipeline(vk->cmd,
+            VK_PIPELINE_BIND_POINT_GRAPHICS, vk->pipelines.font);
+      vk->tracker.pipeline = vk->pipelines.font;
+      vk->tracker.dirty   |= VULKAN_DIRTY_DYNAMIC_BIT;
+
+      if (vk->flags & VK_FLAG_TRACKER_USE_SCISSOR)
+         sci               = vk->tracker.scissor;
+      else
+      {
+         sci.offset.x      = vk->vp.x;
+         sci.offset.y      = vk->vp.y;
+         sci.extent.width  = vk->vp.width;
+         sci.extent.height = vk->vp.height;
+      }
+
+      vkCmdSetViewport(vk->cmd, 0, 1, &vk->vk_vp);
+      vkCmdSetScissor (vk->cmd, 0, 1, &sci);
+      vk->tracker.dirty &= ~VULKAN_DIRTY_DYNAMIC_BIT;
+   }
+   else if (vk->tracker.dirty & VULKAN_DIRTY_DYNAMIC_BIT)
+   {
+      VkRect2D sci;
+      if (vk->flags & VK_FLAG_TRACKER_USE_SCISSOR)
+         sci               = vk->tracker.scissor;
+      else
+      {
+         sci.offset.x      = vk->vp.x;
+         sci.offset.y      = vk->vp.y;
+         sci.extent.width  = vk->vp.width;
+         sci.extent.height = vk->vp.height;
+      }
+
+      vkCmdSetViewport(vk->cmd, 0, 1, &vk->vk_vp);
+      vkCmdSetScissor (vk->cmd, 0, 1, &sci);
+      vk->tracker.dirty &= ~VULKAN_DIRTY_DYNAMIC_BIT;
+   }
+
+   /* Descriptor set: UBO (mvp) + combined image sampler (font atlas). */
+   {
+      VkDescriptorSet set;
+      struct vk_buffer_range ubo_range;
+
+      if (!vulkan_buffer_chain_alloc(vk->context, &vk->chain->ubo,
+               sizeof(vk->mvp), &ubo_range))
+         return;
+
+      memcpy(ubo_range.data, &vk->mvp, sizeof(vk->mvp));
+
+      set = vulkan_descriptor_manager_alloc(
+            vk->context->device,
+            &vk->chain->descriptor_manager);
+
+      vulkan_write_quad_descriptors(
+            vk->context->device,
+            set,
+            ubo_range.buffer,
+            ubo_range.offset,
+            sizeof(vk->mvp),
+            &font->texture_optimal,
+            vk->samplers.mipmap_linear);
+
+      vkCmdBindDescriptorSets(vk->cmd,
+            VK_PIPELINE_BIND_POINT_GRAPHICS,
+            vk->pipelines.layout, 0,
+            1, &set, 0, NULL);
+
+      vk->tracker.view    = VK_NULL_HANDLE;
+      vk->tracker.sampler = VK_NULL_HANDLE;
+      memset(vk->tracker.mvp.data, 0, sizeof(vk->tracker.mvp.data));
+   }
+
+   /* Bind VBO and issue indexed draw.
+    * Font glyphs are always quads (4 verts each) drawn via the
+    * shared index buffer — no need for the generic branch. */
+   vkCmdBindVertexBuffers(vk->cmd, 0, 1,
+         &font->range.buffer, &font->range.offset);
+
+   if (vk->quad_ibo.buffer != VK_NULL_HANDLE)
+   {
+      unsigned num_quads   = font->vertices / 4;
+      unsigned index_count = num_quads * 6;
+      vkCmdBindIndexBuffer(vk->cmd, vk->quad_ibo.buffer,
+            0, VK_INDEX_TYPE_UINT16);
+      vkCmdDrawIndexed(vk->cmd, index_count, 1, 0, 0, 0);
+   }
+   else
+      vkCmdDraw(vk->cmd, font->vertices, 1, 0, 0);
 }
 
 static const struct font_glyph *vulkan_font_get_glyph(
@@ -1995,7 +2562,7 @@ static const struct font_glyph *vulkan_font_get_glyph(
    if (!font || !font->font_driver)
       return NULL;
 
-   glyph = font->font_driver->get_glyph((void*)font->font_driver, code);
+   glyph = font->font_driver->get_glyph((void*)font->font_data, code);
 
    if (glyph && font->atlas->dirty)
    {
@@ -2006,7 +2573,7 @@ static const struct font_glyph *vulkan_font_get_glyph(
    return glyph;
 }
 
-static bool vulkan_get_line_metrics(void* data,
+static bool vulkan_font_get_line_metrics(void* data,
       struct font_line_metrics **metrics)
 {
    vulkan_raster_t *font = (vulkan_raster_t*)data;
@@ -2026,8 +2593,8 @@ font_renderer_t vulkan_raster_font = {
    vulkan_font_get_glyph,
    NULL,                            /* bind_block */
    NULL,                            /* flush_block */
-   vulkan_get_message_width,
-   vulkan_get_line_metrics
+   vulkan_font_get_message_width,
+   vulkan_font_get_line_metrics
 };
 
 /*
@@ -2874,6 +3441,16 @@ static void vulkan_init_samplers(vk_t *vk)
          &info, NULL, &vk->samplers.mipmap_linear);
 }
 
+static void vulkan_destroy_buffer(VkDevice device, struct vk_buffer *buffer)
+{
+   vkUnmapMemory(device, buffer->memory);
+   vkFreeMemory(device, buffer->memory, NULL);
+
+   vkDestroyBuffer(device, buffer->buffer, NULL);
+
+   memset(buffer, 0, sizeof(*buffer));
+}
+
 static void vulkan_buffer_chain_free(
       VkDevice device,
       struct vk_buffer_chain *chain)
@@ -2889,7 +3466,6 @@ static void vulkan_buffer_chain_free(
    }
    memset(chain, 0, sizeof(*chain));
 }
-
 
 static void vulkan_deinit_buffers(vk_t *vk)
 {
@@ -2927,7 +3503,7 @@ static void vulkan_init_textures(vk_t *vk)
 
          {
             struct vk_texture *texture = &vk->swapchain[i].texture;
-            VK_MAP_PERSISTENT_TEXTURE(vk->context->device, texture);
+            vkMapMemory(vk->context->device, texture->memory, texture->offset, texture->size, 0, &texture->mapped);
          }
 
          if (vk->swapchain[i].texture.type == VULKAN_TEXTURE_STAGING)
@@ -3374,7 +3950,7 @@ static bool vulkan_init_filter_chain(vk_t *vk)
    const char     *shader_path = video_shader_get_current_shader_preset();
    enum rarch_shader_type type = video_shader_parse_type(shader_path);
 
-   if (string_is_empty(shader_path))
+   if (!shader_path || !*shader_path)
    {
       RARCH_LOG("[Vulkan] Loading stock shader.\n");
 
@@ -3411,6 +3987,85 @@ static bool vulkan_init_filter_chain(vk_t *vk)
    return true;
 }
 
+/* Shared quad index buffer.
+ * Pre-generates a repeating [0,1,2,2,1,3] index pattern offset per quad
+ * so that quads can be drawn with 4 unique vertices + indexed draw
+ * instead of 6 duplicated vertices. This saves 33% VBO bandwidth
+ * for text-heavy frames (hundreds of glyphs). */
+#define VULKAN_QUAD_IBO_DEFAULT_QUADS 2048
+
+static void vulkan_init_quad_ibo(vk_t *vk, unsigned max_quads)
+{
+   unsigned i;
+   uint16_t *indices;
+   void *mapped                            = NULL;
+   VkDevice device                         = vk->context->device;
+   VkDeviceSize ibo_size                   = max_quads * 6 * sizeof(uint16_t);
+   VkBufferCreateInfo buffer_info;
+   VkMemoryRequirements mem_reqs;
+   VkMemoryAllocateInfo alloc;
+
+   buffer_info.sType                       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+   buffer_info.pNext                       = NULL;
+   buffer_info.flags                       = 0;
+   buffer_info.size                        = ibo_size;
+   buffer_info.usage                       = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+   buffer_info.sharingMode                 = VK_SHARING_MODE_EXCLUSIVE;
+   buffer_info.queueFamilyIndexCount       = 0;
+   buffer_info.pQueueFamilyIndices         = NULL;
+
+   vkCreateBuffer(device, &buffer_info, NULL, &vk->quad_ibo.buffer);
+   vkGetBufferMemoryRequirements(device, vk->quad_ibo.buffer, &mem_reqs);
+
+   alloc.sType                             = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+   alloc.pNext                             = NULL;
+   alloc.allocationSize                    = mem_reqs.size;
+   alloc.memoryTypeIndex                   = vulkan_find_memory_type_fallback(
+         &vk->context->memory_properties,
+         mem_reqs.memoryTypeBits,
+           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+         | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+
+   vkAllocateMemory(device, &alloc, NULL, &vk->quad_ibo.memory);
+   vkBindBufferMemory(device, vk->quad_ibo.buffer, vk->quad_ibo.memory, 0);
+
+   vkMapMemory(device, vk->quad_ibo.memory, 0, ibo_size, 0, &mapped);
+   indices = (uint16_t*)mapped;
+
+   /* Pattern per quad: 0,1,2, 2,1,3  (two triangles from 4 unique verts)
+    *   0---2          TL---TR
+    *   | / |    =>    |  /  |
+    *   1---3          BL---BR
+    */
+   for (i = 0; i < max_quads; i++)
+   {
+      unsigned base          = i * 4;
+      unsigned idx           = i * 6;
+      indices[idx + 0]       = (uint16_t)(base + 0);
+      indices[idx + 1]       = (uint16_t)(base + 1);
+      indices[idx + 2]       = (uint16_t)(base + 2);
+      indices[idx + 3]       = (uint16_t)(base + 2);
+      indices[idx + 4]       = (uint16_t)(base + 1);
+      indices[idx + 5]       = (uint16_t)(base + 3);
+   }
+
+   vkUnmapMemory(device, vk->quad_ibo.memory);
+   vk->quad_ibo.num_quads = max_quads;
+}
+
+static void vulkan_deinit_quad_ibo(vk_t *vk)
+{
+   VkDevice device = vk->context->device;
+   if (vk->quad_ibo.buffer != VK_NULL_HANDLE)
+      vkDestroyBuffer(device, vk->quad_ibo.buffer, NULL);
+   if (vk->quad_ibo.memory != VK_NULL_HANDLE)
+      vkFreeMemory(device, vk->quad_ibo.memory, NULL);
+   vk->quad_ibo.buffer     = VK_NULL_HANDLE;
+   vk->quad_ibo.memory     = VK_NULL_HANDLE;
+   vk->quad_ibo.num_quads  = 0;
+}
+
 static void vulkan_init_static_resources(vk_t *vk)
 {
    int i;
@@ -3442,6 +4097,9 @@ static void vulkan_init_static_resources(vk_t *vk)
    vk->display.blank_texture = vulkan_create_texture(vk, NULL,
          4, 4, VK_FORMAT_B8G8R8A8_UNORM,
          blank, NULL, VULKAN_TEXTURE_STATIC);
+
+   /* Create shared quad index buffer. */
+   vulkan_init_quad_ibo(vk, VULKAN_QUAD_IBO_DEFAULT_QUADS);
 }
 
 static void vulkan_deinit_static_resources(vk_t *vk)
@@ -3452,6 +4110,9 @@ static void vulkan_deinit_static_resources(vk_t *vk)
    vulkan_destroy_texture(
          vk->context->device,
          &vk->display.blank_texture);
+
+   /* Destroy shared quad index buffer. */
+   vulkan_deinit_quad_ibo(vk);
 
    vkDestroyCommandPool(vk->context->device,
          vk->staging_pool, NULL);
@@ -4160,8 +4821,14 @@ static bool vulkan_alive(void *data)
    bool quit            = false;
    bool resize          = false;
    vk_t *vk             = (vk_t*)data;
-   unsigned temp_width  = vk->video_width;
-   unsigned temp_height = vk->video_height;
+   unsigned temp_width;
+   unsigned temp_height;
+
+   if (!vk)
+      return false;
+
+   temp_width  = vk->video_width;
+   temp_height = vk->video_height;
 
    vk->ctx_driver->check_window(vk->ctx_data,
             &quit, &resize, &temp_width, &temp_height);
@@ -4204,13 +4871,13 @@ static bool vulkan_set_shader(void *data,
       vulkan_filter_chain_free((vulkan_filter_chain_t*)vk->filter_chain);
    vk->filter_chain = NULL;
 
-   if (!string_is_empty(path) && type != RARCH_SHADER_SLANG)
+   if (path && *path && type != RARCH_SHADER_SLANG)
    {
       RARCH_WARN("[Vulkan] Only Slang shaders are supported. Falling back to stock.\n");
       path = NULL;
    }
 
-   if (string_is_empty(path))
+   if (!path || !*path)
    {
       vulkan_init_default_filter_chain(vk);
       return true;
@@ -4531,20 +5198,16 @@ static void vulkan_draw_quad(vk_t *vk, const struct vk_draw_quad *quad)
 
    /* Upload descriptors */
    {
-      VkDescriptorSet set;
-      struct vk_buffer_range range;
-
-      if (!vulkan_buffer_chain_alloc(vk->context, &vk->chain->ubo,
-               sizeof(*quad->mvp), &range))
-         return;
-
+      /* Only allocate and update descriptors when state actually changed.
+       * Previously, a UBO was allocated unconditionally before this check,
+       * wasting buffer chain space every frame (fix #1). */
       if (
-               (memcmp(quad->mvp,
-                  &vk->tracker.mvp, sizeof(*quad->mvp)) == 0)
+               memcmp(quad->mvp,
+                  &vk->tracker.mvp, sizeof(*quad->mvp)) != 0
             || quad->texture->view != vk->tracker.view
             || quad->sampler != vk->tracker.sampler)
       {
-         /* Upload UBO */
+         VkDescriptorSet set;
          struct vk_buffer_range range;
 
          if (!vulkan_buffer_chain_alloc(vk->context, &vk->chain->ubo,
@@ -4576,11 +5239,11 @@ static void vulkan_draw_quad(vk_t *vk, const struct vk_draw_quad *quad)
       }
    }
 
-   /* Upload VBO */
+   /* Upload VBO — 4 unique vertices per quad, indexed draw. */
    {
       struct vk_buffer_range range;
       if (!vulkan_buffer_chain_alloc(vk->context, &vk->chain->vbo,
-               6 * sizeof(struct vk_vertex), &range))
+               4 * sizeof(struct vk_vertex), &range))
          return;
 
       {
@@ -4594,8 +5257,10 @@ static void vulkan_draw_quad(vk_t *vk, const struct vk_draw_quad *quad)
             &range.buffer, &range.offset);
    }
 
-   /* Draw the quad */
-   vkCmdDraw(vk->cmd, 6, 1, 0, 0);
+   /* Draw the quad using shared index buffer. */
+   vkCmdBindIndexBuffer(vk->cmd, vk->quad_ibo.buffer,
+         0, VK_INDEX_TYPE_UINT16);
+   vkCmdDrawIndexed(vk->cmd, 6, 1, 0, 0, 0);
 }
 #endif
 
@@ -4802,28 +5467,23 @@ static void vulkan_run_hdr_pipeline(VkPipeline pipeline, VkRenderPass render_pas
       vkCmdSetScissor(vk->cmd,  0, 1, &sci);
    }
 
-   /* Upload VBO */
+   /* Upload VBO — 4 unique vertices, indexed draw. */
    {
       struct vk_buffer_range range;
 
-      if (vulkan_buffer_chain_alloc(vk->context, &vk->chain->vbo, 6 * sizeof(struct vk_vertex), &range))
+      if (vulkan_buffer_chain_alloc(vk->context, &vk->chain->vbo, 4 * sizeof(struct vk_vertex), &range))
       {
          struct vk_vertex *pv = (struct vk_vertex*)range.data;
          int i;
 
-         /* Explicitly define the quad vertices to avoid macro issues.
-            Triangle 1: TL, BL, TR
-            Triangle 2: TR, BL, BR */
-            
+         /* 4 unique vertices:  0(TL), 1(BL), 2(TR), 3(BR)
+          * Index buffer provides: 0,1,2, 2,1,3 */
          pv[0].x = 0.0f; pv[0].y = 0.0f; pv[0].tex_x = 0.0f; pv[0].tex_y = 0.0f;
          pv[1].x = 0.0f; pv[1].y = 1.0f; pv[1].tex_x = 0.0f; pv[1].tex_y = 1.0f;
          pv[2].x = 1.0f; pv[2].y = 0.0f; pv[2].tex_x = 1.0f; pv[2].tex_y = 0.0f;
+         pv[3].x = 1.0f; pv[3].y = 1.0f; pv[3].tex_x = 1.0f; pv[3].tex_y = 1.0f;
 
-         pv[3].x = 1.0f; pv[3].y = 0.0f; pv[3].tex_x = 1.0f; pv[3].tex_y = 0.0f;
-         pv[4].x = 0.0f; pv[4].y = 1.0f; pv[4].tex_x = 0.0f; pv[4].tex_y = 1.0f;
-         pv[5].x = 1.0f; pv[5].y = 1.0f; pv[5].tex_x = 1.0f; pv[5].tex_y = 1.0f;
-
-         for (i = 0; i < 6; i++)
+         for (i = 0; i < 4; i++)
          {
             pv[i].color.r = 1.0f;
             pv[i].color.g = 1.0f;
@@ -4833,8 +5493,10 @@ static void vulkan_run_hdr_pipeline(VkPipeline pipeline, VkRenderPass render_pas
 
          vkCmdBindVertexBuffers(vk->cmd, 0, 1,
                &range.buffer, &range.offset);
-         
-         vkCmdDraw(vk->cmd, 6, 1, 0, 0);
+
+         vkCmdBindIndexBuffer(vk->cmd, vk->quad_ibo.buffer,
+               0, VK_INDEX_TYPE_UINT16);
+         vkCmdDrawIndexed(vk->cmd, 6, 1, 0, 0, 0);
       }
    }
 
@@ -4940,9 +5602,14 @@ static bool vulkan_frame(void *data, const void *frame,
    vk->chain                                     = chain;
    vk->backbuffer                                = backbuffer;
 
-   VK_DESCRIPTOR_MANAGER_RESTART(manager);
-   VK_BUFFER_CHAIN_DISCARD(buff_chain_vbo);
-   VK_BUFFER_CHAIN_DISCARD(buff_chain_ubo);
+   manager->current = manager->head;
+   manager->count = 0;
+
+   buff_chain_vbo->current = buff_chain_vbo->head;
+   buff_chain_vbo->offset  = 0;
+
+   buff_chain_ubo->current = buff_chain_ubo->head;
+   buff_chain_ubo->offset  = 0;
 
    /* Start recording the command buffer. */
    vk->cmd                                       = chain->cmd;
@@ -4967,8 +5634,7 @@ static bool vulkan_frame(void *data, const void *frame,
    vk->tracker.pipeline              = VK_NULL_HANDLE;
    vk->tracker.view                  = VK_NULL_HANDLE;
    vk->tracker.sampler               = VK_NULL_HANDLE;
-   for (i = 0; i < 16; i++)
-      vk->tracker.mvp.data[i]        = 0.0f;
+   memset(vk->tracker.mvp.data, 0, sizeof(vk->tracker.mvp.data));
 
    waits_for_semaphores              =
           (vk->flags & VK_FLAG_HW_ENABLE)
@@ -4981,9 +5647,12 @@ static bool vulkan_frame(void *data, const void *frame,
        && (vk->hw.src_queue_family != vk->context->graphics_queue_index))
    {
       /* Acquire ownership of image from other queue family. */
-      VULKAN_TRANSFER_IMAGE_OWNERSHIP(vk->cmd,
+      VULKAN_IMAGE_LAYOUT_TRANSITION_LEVELS(vk->cmd,
             vk->hw.image->create_info.image,
+            VK_REMAINING_MIP_LEVELS,
             vk->hw.image->image_layout,
+            vk->hw.image->image_layout,
+            0, 0,
             /* Create a dependency chain from semaphore wait. */
             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
@@ -5009,7 +5678,7 @@ static bool vulkan_frame(void *data, const void *frame,
 
          {
             struct vk_texture *texture = &chain->texture;
-            VK_MAP_PERSISTENT_TEXTURE(vk->context->device, texture);
+            vkMapMemory(vk->context->device, texture->memory, texture->offset, texture->size, 0, &texture->mapped);
          }
 
          if (chain->texture.type == VULKAN_TEXTURE_STAGING)
@@ -5024,16 +5693,32 @@ static bool vulkan_frame(void *data, const void *frame,
       if (frame != chain->texture.mapped)
       {
          dst = (uint8_t*)chain->texture.mapped;
-         if (     (chain->texture.stride == pitch )
-               && pitch == frame_width * bpp)
-            memcpy(dst, src, frame_width * frame_height * bpp);
+         if (chain->texture.stride == pitch)
+            /* Stride matches pitch — single contiguous copy regardless
+             * of whether pitch == frame_width * bpp (there may be
+             * trailing padding per row, but the layout is identical). */
+            memcpy(dst, src, (size_t)chain->texture.stride * frame_height);
          else
+         {
+            /* Stride and pitch differ — copy each row.
+             * Use the tight pixel width to avoid copying garbage. */
+            unsigned row_bytes = frame_width * bpp;
             for (y = 0; y < frame_height; y++,
                   dst += chain->texture.stride, src += pitch)
-               memcpy(dst, src, frame_width * bpp);
+               memcpy(dst, src, row_bytes);
+         }
       }
 
-      VULKAN_SYNC_TEXTURE_TO_GPU_COND_OBJ(vk, chain->texture);
+      if ((chain->texture.flags & VK_TEX_FLAG_NEED_MANUAL_CACHE_MANAGEMENT) && chain->texture.memory != VK_NULL_HANDLE)
+      {
+         VkMappedMemoryRange range;
+         range.sType  = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+         range.pNext  = NULL;
+         range.memory = chain->texture.memory;
+         range.offset = 0;
+         range.size   = VK_WHOLE_SIZE;
+         vkFlushMappedMemoryRanges(vk->context->device, 1, &range);
+      }
 
       /* If we have an optimal texture, copy to that now. */
       if (chain->texture_optimal.memory != VK_NULL_HANDLE)
@@ -5221,7 +5906,16 @@ static bool vulkan_frame(void *data, const void *frame,
                {
                   struct vk_texture *dynamic = optimal;
                   struct vk_texture *staging = texture;
-                  VULKAN_SYNC_TEXTURE_TO_GPU_COND_PTR(vk, staging);
+                  if ((staging->flags & VK_TEX_FLAG_NEED_MANUAL_CACHE_MANAGEMENT) && staging->memory != VK_NULL_HANDLE)
+                  {
+                     VkMappedMemoryRange range;
+                     range.sType  = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+                     range.pNext  = NULL;
+                     range.memory = staging->memory;
+                     range.offset = 0;
+                     range.size   = VK_WHOLE_SIZE;
+                     vkFlushMappedMemoryRanges(vk->context->device, 1, &range);
+                  }
                   vulkan_copy_staging_to_dynamic(vk, vk->cmd,
                         dynamic, staging);
                   vk->menu.dirty[vk->menu.last_index] = false;
@@ -5320,7 +6014,7 @@ static bool vulkan_frame(void *data, const void *frame,
          end_main_pass = false;
       }
 
-      const bool message_visible = !string_is_empty(msg);
+      const bool message_visible = msg && *msg;
 
 #ifdef HAVE_GFX_WIDGETS
       const bool widgets_visible = gfx_widgets_visible(video_info);
@@ -5555,9 +6249,12 @@ static bool vulkan_frame(void *data, const void *frame,
        && (vk->hw.src_queue_family != vk->context->graphics_queue_index))
    {
       /* Release ownership of image back to other queue family. */
-      VULKAN_TRANSFER_IMAGE_OWNERSHIP(vk->cmd,
+      VULKAN_IMAGE_LAYOUT_TRANSITION_LEVELS(vk->cmd,
             vk->hw.image->create_info.image,
+            VK_REMAINING_MIP_LEVELS,
             vk->hw.image->image_layout,
+            vk->hw.image->image_layout,
+            0, 0,
             VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT,
             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
             vk->context->graphics_queue_index, vk->hw.src_queue_family);
@@ -5883,7 +6580,7 @@ static bool vulkan_get_current_sw_framebuffer(void *data,
             NULL, NULL, VULKAN_TEXTURE_STREAMED);
       {
          struct vk_texture *texture = &chain->texture;
-         VK_MAP_PERSISTENT_TEXTURE(vk->context->device, texture);
+         vkMapMemory(vk->context->device, texture->memory, texture->offset, texture->size, 0, &texture->mapped);
       }
 
       if (chain->texture.type == VULKAN_TEXTURE_STAGING)
@@ -6034,7 +6731,16 @@ static void vulkan_set_texture_frame(void *data,
             VULKAN_TEXTURE_DYNAMIC);
    else
    {
-      VULKAN_SYNC_TEXTURE_TO_GPU_COND_PTR(vk, texture);
+      if ((texture->flags & VK_TEX_FLAG_NEED_MANUAL_CACHE_MANAGEMENT) && texture->memory != VK_NULL_HANDLE)
+      {
+         VkMappedMemoryRange range;
+         range.sType  = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+         range.pNext  = NULL;
+         range.memory = texture->memory;
+         range.offset = 0;
+         range.size   = VK_WHOLE_SIZE;
+         vkFlushMappedMemoryRanges(vk->context->device, 1, &range);
+      }
    }
 
    vkUnmapMemory(vk->context->device, texture->memory);
@@ -6241,6 +6947,7 @@ static void vulkan_viewport_info(void *data, struct video_viewport *vp)
 
 static bool vulkan_read_viewport(void *data, uint8_t *buffer, bool is_idle)
 {
+   VkFormat format;
    struct vk_texture *staging       = NULL;
    vk_t *vk                         = (vk_t*)data;
 
@@ -6263,14 +6970,11 @@ static bool vulkan_read_viewport(void *data, uint8_t *buffer, bool is_idle)
    }
 
    staging = &vk->readback.staging[vk->context->current_frame_index];
-
-   VkFormat format = vk->context->swapchain_format;
+   format  = vk->context->swapchain_format;
 #ifdef VULKAN_HDR_SWAPCHAIN
+   /* HDR readback is implemented through format conversion on the GPU */
    if (vk->context->flags & VK_CTX_FLAG_HDR_ENABLE)
-   {
-      /* Hdr readback is implemented through format conversion on the GPU */
       format = VK_FORMAT_B8G8R8A8_UNORM;
-   }
 #endif /* VULKAN_HDR_SWAPCHAIN */
    if (vk->flags & VK_FLAG_READBACK_STREAMED)
    {
@@ -6304,7 +7008,15 @@ static bool vulkan_read_viewport(void *data, uint8_t *buffer, bool is_idle)
 
          if (     (staging->flags & VK_TEX_FLAG_NEED_MANUAL_CACHE_MANAGEMENT)
                && (staging->memory != VK_NULL_HANDLE))
-            VULKAN_SYNC_TEXTURE_TO_CPU(vk->context->device, staging->memory);
+         {
+            VkMappedMemoryRange range;
+            range.sType  = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+            range.pNext  = NULL;
+            range.memory = staging->memory;
+            range.offset = 0;
+            range.size   = VK_WHOLE_SIZE;
+            vkInvalidateMappedMemoryRanges(vk->context->device, 1, &range);
+         }
 
          ctx->in_stride  =  (int)staging->stride;
          ctx->out_stride = -(int)vk->vp.width * 3;
@@ -6342,12 +7054,20 @@ static bool vulkan_read_viewport(void *data, uint8_t *buffer, bool is_idle)
 
       if (!staging->mapped)
       {
-         VK_MAP_PERSISTENT_TEXTURE(vk->context->device, staging);
+         vkMapMemory(vk->context->device, staging->memory, staging->offset, staging->size, 0, &staging->mapped);
       }
 
       if (     (staging->flags & VK_TEX_FLAG_NEED_MANUAL_CACHE_MANAGEMENT)
             && (staging->memory != VK_NULL_HANDLE))
-         VULKAN_SYNC_TEXTURE_TO_CPU(vk->context->device, staging->memory);
+      {
+         VkMappedMemoryRange range;
+         range.sType  = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+         range.pNext  = NULL;
+         range.memory = staging->memory;
+         range.offset = 0;
+         range.size   = VK_WHOLE_SIZE;
+         vkInvalidateMappedMemoryRanges(vk->context->device, 1, &range);
+      }
 
       {
          int y;
@@ -6479,27 +7199,154 @@ static void vulkan_render_overlay(vk_t *vk, unsigned width,
          ((vk->flags & VK_FLAG_OVERLAY_FULLSCREEN) > 0),
          false);
 
-   for (i = 0; i < (int) vk->overlay.count; i++)
+   /* Pre-allocate all UBOs and descriptor sets for overlays,
+    * then batch-write all descriptors in a single vkUpdateDescriptorSets
+    * call before issuing any draw commands. This eliminates N separate
+    * vkUpdateDescriptorSets calls when rendering N overlays.
+    *
+    * Process in batches of 16 to stay within stack-allocated arrays
+    * while still rendering all overlays (neoretropad can exceed 16). */
    {
-      struct vk_draw_triangles call;
-      struct vk_buffer_range range;
+      int total     = (int)vk->overlay.count;
+      int base      = 0;
 
-      if (!vulkan_buffer_chain_alloc(vk->context, &vk->chain->vbo,
-               4 * sizeof(struct vk_vertex), &range))
-         break;
+      while (base < total)
+      {
+         int batch_count = total - base;
+         /* Stack-allocate for typical overlay counts; these are small structs. */
+         struct vk_buffer_range  ubo_ranges[16];
+         struct vk_buffer_range  vbo_ranges[16];
+         VkDescriptorSet         sets[16];
+         struct vk_descriptor_batch batch;
 
-      memcpy(range.data, &vk->overlay.vertex[i * 4],
-            4 * sizeof(struct vk_vertex));
+         /* Clamp this batch to stack array size */
+         if (batch_count > 16)
+            batch_count = 16;
 
-      call.vertices     = 4;
-      call.uniform_size = sizeof(vk->mvp);
-      call.uniform      = &vk->mvp;
-      call.vbo          = &range;
-      call.texture      = &vk->overlay.images[i];
-      call.pipeline     = vk->display.pipelines[3]; /* Strip with blend */
-      call.sampler      = (call.texture->flags & VK_TEX_FLAG_MIPMAP)
-         ? vk->samplers.mipmap_linear : vk->samplers.linear;
-      vulkan_draw_triangles(vk, &call);
+         vulkan_descriptor_batch_init(&batch);
+
+         /* Phase 1: Allocate UBOs, descriptor sets, VBOs and stage writes. */
+         for (i = 0; i < batch_count; i++)
+         {
+            int idx = base + i;
+
+            if (!vulkan_buffer_chain_alloc(vk->context, &vk->chain->ubo,
+                     sizeof(vk->mvp), &ubo_ranges[i]))
+            {
+               batch_count = i;
+               break;
+            }
+
+            memcpy(ubo_ranges[i].data, &vk->mvp, sizeof(vk->mvp));
+
+            sets[i] = vulkan_descriptor_manager_alloc(
+                  vk->context->device,
+                  &vk->chain->descriptor_manager);
+
+            if (!vulkan_descriptor_batch_add(&batch, sets[i],
+                     ubo_ranges[i].buffer,
+                     ubo_ranges[i].offset,
+                     sizeof(vk->mvp),
+                     &vk->overlay.images[idx],
+                     (vk->overlay.images[idx].flags & VK_TEX_FLAG_MIPMAP)
+                        ? vk->samplers.mipmap_linear : vk->samplers.linear))
+            {
+               /* Batch full — flush what we have and add again. */
+               vulkan_descriptor_batch_flush(vk->context->device, &batch);
+               vulkan_descriptor_batch_add(&batch, sets[i],
+                     ubo_ranges[i].buffer,
+                     ubo_ranges[i].offset,
+                     sizeof(vk->mvp),
+                     &vk->overlay.images[idx],
+                     (vk->overlay.images[idx].flags & VK_TEX_FLAG_MIPMAP)
+                        ? vk->samplers.mipmap_linear : vk->samplers.linear);
+            }
+
+            if (!vulkan_buffer_chain_alloc(vk->context, &vk->chain->vbo,
+                     4 * sizeof(struct vk_vertex), &vbo_ranges[i]))
+            {
+               batch_count = i;
+               break;
+            }
+
+            memcpy(vbo_ranges[i].data, &vk->overlay.vertex[idx * 4],
+                  4 * sizeof(struct vk_vertex));
+         }
+
+         /* Single batched flush for this batch of overlay descriptors. */
+         vulkan_descriptor_batch_flush(vk->context->device, &batch);
+
+         /* Phase 2: Issue draw commands using pre-allocated resources. */
+         for (i = 0; i < batch_count; i++)
+         {
+            int idx                = base + i;
+            struct vk_texture *tex = &vk->overlay.images[idx];
+            VkPipeline pipeline    = vk->display.pipelines[3]; /* Strip with blend */
+
+            if (tex->image)
+               vulkan_transition_texture(vk, vk->cmd, tex);
+
+            if (pipeline != vk->tracker.pipeline)
+            {
+               VkRect2D sci;
+               vkCmdBindPipeline(vk->cmd,
+                     VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+               vk->tracker.pipeline = pipeline;
+               vk->tracker.dirty   |= VULKAN_DIRTY_DYNAMIC_BIT;
+
+               if (vk->flags & VK_FLAG_TRACKER_USE_SCISSOR)
+                  sci               = vk->tracker.scissor;
+               else
+               {
+                  sci.offset.x      = vk->vp.x;
+                  sci.offset.y      = vk->vp.y;
+                  sci.extent.width  = vk->vp.width;
+                  sci.extent.height = vk->vp.height;
+               }
+
+               vkCmdSetViewport(vk->cmd, 0, 1, &vk->vk_vp);
+               vkCmdSetScissor (vk->cmd, 0, 1, &sci);
+               vk->tracker.dirty &= ~VULKAN_DIRTY_DYNAMIC_BIT;
+            }
+            else if (vk->tracker.dirty & VULKAN_DIRTY_DYNAMIC_BIT)
+            {
+               VkRect2D sci;
+               if (vk->flags & VK_FLAG_TRACKER_USE_SCISSOR)
+                  sci               = vk->tracker.scissor;
+               else
+               {
+                  sci.offset.x      = vk->vp.x;
+                  sci.offset.y      = vk->vp.y;
+                  sci.extent.width  = vk->vp.width;
+                  sci.extent.height = vk->vp.height;
+               }
+
+               vkCmdSetViewport(vk->cmd, 0, 1, &vk->vk_vp);
+               vkCmdSetScissor (vk->cmd, 0, 1, &sci);
+               vk->tracker.dirty &= ~VULKAN_DIRTY_DYNAMIC_BIT;
+            }
+
+            vkCmdBindDescriptorSets(vk->cmd,
+                  VK_PIPELINE_BIND_POINT_GRAPHICS,
+                  vk->pipelines.layout, 0,
+                  1, &sets[i], 0, NULL);
+
+            vkCmdBindVertexBuffers(vk->cmd, 0, 1,
+                  &vbo_ranges[i].buffer, &vbo_ranges[i].offset);
+
+            vkCmdDraw(vk->cmd, 4, 1, 0, 0);
+         }
+
+         base += batch_count;
+
+         /* If allocation failed mid-batch, stop processing. */
+         if (batch_count == 0)
+            break;
+      }
+
+      vk->tracker.view    = VK_NULL_HANDLE;
+      vk->tracker.sampler = VK_NULL_HANDLE;
+      memset(vk->tracker.mvp.data, 0, sizeof(vk->tracker.mvp.data));
    }
 
    /* Restore the viewport so we don't mess with recording. */

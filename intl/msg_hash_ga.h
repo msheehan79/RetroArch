@@ -4541,6 +4541,18 @@ MSG_HASH(
    "Sábháil athruithe ar an gcomhad cumraíochta nuair a scoireann tú. Úsáideach le haghaidh athruithe a dhéantar sa roghchlár. Scríobhann sé seo an comhad cumraíochta thar an gceann, ní choimeádtar #includes agus tuairimí."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CONFIG_SAVE_MINIMAL,
+   "Sábháil Cumraíocht Íosta"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CONFIG_SAVE_MINIMAL,
+   "Ná sábháil ach socruithe atá difriúil ó na socruithe réamhshocraithe."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_HELP_CONFIG_SAVE_MINIMAL,
+   "Nuair a bhíonn sé cumasaithe, ní shábhálann sé ach luachanna cumraíochta atá athraithe óna luachanna réamhshocraithe. Mar thoradh air sin, bíonn comhad cumraíochta níos lú agus níos inbhainistithe."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_REMAP_SAVE_ON_EXIT,
    "Sábháil Athmhapáil Comhad ar Scoir"
    )
@@ -7945,7 +7957,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_PLAYLIST_MANAGER_REFRESH_PLAYLIST,
-   "Cuir ábhar nua leis agus bain iontrálacha neamhbhailí tríd an oibríocht 'Scanadh Láimhe' a úsáideadh go deireanach chun an seinmliosta a chruthú nó a chur in eagar a athdhéanamh."
+   "Cuir ábhar nua leis agus bain iontrálacha neamhbhailí tríd an oibríocht scanadh ábhair a úsáideadh go deireanach chun an seinmliosta a chruthú nó a chur in eagar a athdhéanamh."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DELETE_PLAYLIST,
@@ -8526,11 +8538,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_LIST,
-   "Scanadh Láimhe"
+   "Scanadh Ábhair"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_MANUAL_CONTENT_SCAN_LIST,
-   "Scanadh inchumraithe bunaithe ar ainmneacha comhad ábhair. Ní gá go mbeadh an t-ábhar ag teacht leis an mbunachar sonraí."
+   "Scanadh inchumraithe bunaithe ar ainmneacha comhad ábhair agus/nó meaitseáil bunachar sonraí."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SCAN_ENTRY,
@@ -8596,31 +8608,31 @@ MSG_HASH(
    "Cuir le Meascthóir agus Seinn"
    )
 
-/* Import Content > Manual Scan */
+/* Import Content > Content Scan */
 
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_DIR,
-   "Eolaire Ábhair"
+   "Suíomh an Ábhair"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_MANUAL_CONTENT_SCAN_DIR,
-   "Roghnaigh eolaire le scanadh le haghaidh ábhair."
+   "Roghnaigh eolaire (nó comhad) le scanadh le haghaidh ábhair."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_SYSTEM_NAME,
-   "Ainm an Chórais"
+   "Seinmliosta Sprioc"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_MANUAL_CONTENT_SCAN_SYSTEM_NAME,
-   "Sonraigh 'ainm córais' chun ábhar scanta a cheangal leis. Úsáidtear é chun ainm a thabhairt don chomhad seinmliosta a ghintear agus chun mionsamhlacha seinmliosta a aithint."
+   "Ainm an chomhaid seinmliosta a ghintear, a úsáidtear freisin chun mionsamhlacha seinmliosta a aithint. Úsáidfidh an socrú uathoibríoch an t-ainm céanna leis an mbunachar sonraí nó leis an eolaire ábhair a mheaitseálann."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_SYSTEM_NAME_CUSTOM,
-   "Ainm an Chórais Saincheaptha"
+   "Ainm Seinmliosta Saincheaptha"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_MANUAL_CONTENT_SCAN_SYSTEM_NAME_CUSTOM,
-   "Sonraigh 'ainm córais' de láimh le haghaidh ábhar scanta. Ní úsáidtear é ach amháin nuair a shocraítear 'Ainm an Chórais' go '<Saincheaptha>'."
+   "Ainm seinmliosta saincheaptha le haghaidh ábhar scanta."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_CORE_NAME,

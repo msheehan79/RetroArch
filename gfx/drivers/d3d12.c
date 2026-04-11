@@ -60,7 +60,6 @@
 #include "../../performance_counters.h"
 #include "../../menu/menu_driver.h"
 #include "../video_shader_parse.h"
-#include "../drivers_shader/slang_process.h"
 #ifdef HAVE_REWIND
 #include "../../state_manager.h"
 #endif
@@ -109,7 +108,8 @@ enum d3d12_video_flags
    D3D12_ST_FLAG_VSYNC                 = (1 << 12),
    D3D12_ST_FLAG_WAITABLE_SWAPCHAINS   = (1 << 13),
    D3D12_ST_FLAG_HW_IFACE_ENABLE       = (1 << 14),
-   D3D12_ST_FLAG_FRAME_DUPE_LOCK       = (1 << 15)
+   D3D12_ST_FLAG_FRAME_DUPE_LOCK       = (1 << 15),
+   D3D12_ST_FLAG_SW_FRAMEBUFFER_READY  = (1 << 16)
 };
 
 typedef enum
@@ -415,6 +415,15 @@ typedef struct
 #endif /* HAVE_DXGI_HDR */    
       D3D12_GPU_DESCRIPTOR_HANDLE     textures;
       D3D12_GPU_DESCRIPTOR_HANDLE     samplers;
+      /* Descriptor cache: avoids recreating SRVs and samplers every
+       * frame when the underlying resources have not changed. */
+      struct
+      {
+         D3D12Resource srv_resource[SLANG_NUM_BINDINGS];
+         DXGI_FORMAT   srv_format[SLANG_NUM_BINDINGS];
+         UINT          srv_mip_levels[SLANG_NUM_BINDINGS];
+         bool          samplers_valid;
+      } desc_cache;
    } pass[GFX_MAX_SHADERS];
 
    struct video_shader* shader_preset;
@@ -609,6 +618,7 @@ d3d12_create_buffer(D3D12Device device, UINT size_in_bytes, D3D12Resource* buffe
 {
    D3D12_RESOURCE_DESC   resource_desc;
    D3D12_HEAP_PROPERTIES heap_props;
+   HRESULT               hr;
 
    heap_props.Type                     = D3D12_HEAP_TYPE_UPLOAD;
    heap_props.CPUPageProperty          = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
@@ -628,9 +638,16 @@ d3d12_create_buffer(D3D12Device device, UINT size_in_bytes, D3D12Resource* buffe
    resource_desc.Layout                = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
    resource_desc.Flags                 = D3D12_RESOURCE_FLAG_NONE;
 
-   device->lpVtbl->CreateCommittedResource(
+   hr = device->lpVtbl->CreateCommittedResource(
          device, (D3D12_HEAP_PROPERTIES*)&heap_props, D3D12_HEAP_FLAG_NONE, &resource_desc,
          D3D12_RESOURCE_STATE_GENERIC_READ, NULL, uuidof(ID3D12Resource), (void**)buffer);
+
+   if (FAILED(hr) || !*buffer)
+   {
+      RARCH_ERR("[D3D12] Failed to create buffer of %u bytes (0x%08X).\n",
+            size_in_bytes, (unsigned)hr);
+      return 0;
+   }
 
    return D3D12GetGPUVirtualAddress(*buffer);
 }
@@ -745,6 +762,8 @@ static void d3d12_init_texture(D3D12Device device, d3d12_texture_t* texture)
    {
       D3D12_FEATURE_DATA_FORMAT_SUPPORT format_support;
       D3D12_HEAP_PROPERTIES heap_props;
+      D3D12_RESOURCE_STATES initial_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+      HRESULT               hr;
 
       format_support.Format          = texture->desc.Format;
       format_support.Support1        = D3D12_FORMAT_SUPPORT1_TEXTURE2D | D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE;
@@ -763,8 +782,6 @@ static void d3d12_init_texture(D3D12Device device, d3d12_texture_t* texture)
          format_support.Support2    |= D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE;
       }
 
-      D3D12_RESOURCE_STATES initial_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-
       if (texture->desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)
       {
          format_support.Support1    |= D3D12_FORMAT_SUPPORT1_RENDER_TARGET;
@@ -776,9 +793,18 @@ static void d3d12_init_texture(D3D12Device device, d3d12_texture_t* texture)
       texture->desc.SampleDesc.Count = 1;
       texture->desc.Format           = d3d12_get_closest_match(device, &format_support);
 
-      device->lpVtbl->CreateCommittedResource(
+      hr = device->lpVtbl->CreateCommittedResource(
             device, &heap_props, D3D12_HEAP_FLAG_NONE, &texture->desc,
             initial_state, NULL, uuidof(ID3D12Resource), (void**)&texture->handle);
+
+      if (FAILED(hr) || !texture->handle)
+      {
+         RARCH_ERR("[D3D12] Failed to create texture %ux%u (0x%08X).\n",
+               (unsigned)texture->desc.Width,
+               (unsigned)texture->desc.Height,
+               (unsigned)hr);
+         return;
+      }
    }
 
    {
@@ -945,6 +971,31 @@ static void d3d12_update_texture(
    uint8_t *dst;
    D3D12_RANGE read_range;
    ID3D12Resource *resource = (ID3D12Resource*)texture->upload_buffer;
+
+   if (!data || !resource)
+      return;
+
+   /* When pitch is 0, compute it from width and format bpp.
+    * Some cores pass pitch=0 expecting the driver to infer it. */
+   if (pitch == 0)
+   {
+      switch (format)
+      {
+         case DXGI_FORMAT_B8G8R8X8_UNORM:
+         case DXGI_FORMAT_B8G8R8A8_UNORM:
+         case DXGI_FORMAT_R8G8B8A8_UNORM:
+            pitch = width * 4;
+            break;
+         case DXGI_FORMAT_B5G6R5_UNORM:
+            pitch = width * 2;
+            break;
+         default:
+            /* A4R4G4B4 and other 16-bit formats */
+            pitch = width * 2;
+            break;
+      }
+   }
+
    read_range.Begin         = 0;
    read_range.End           = 0;
    resource->lpVtbl->Map(resource, 0, &read_range, (void**)&dst);
@@ -1337,11 +1388,15 @@ static int d3d12_font_get_message_width(void* data,
    int delta_x                      = 0;
    const struct font_glyph* glyph_q = NULL;
    d3d12_font_t* font               = (d3d12_font_t*)data;
+   const struct font_glyph* (*get_glyph)(void*, uint32_t);
+   void *font_data;
 
    if (!font)
       return 0;
 
-   glyph_q = font->font_driver->get_glyph(font->font_data, '?');
+   get_glyph = font->font_driver->get_glyph;
+   font_data = font->font_data;
+   glyph_q   = get_glyph(font_data, '?');
 
    for (i = 0; i < msg_len; i++)
    {
@@ -1354,7 +1409,7 @@ static int d3d12_font_get_message_width(void* data,
          i += skip - 1;
 
       /* Do something smarter here ... */
-      if (!(glyph = font->font_driver->get_glyph(font->font_data, code)))
+      if (!(glyph = get_glyph(font_data, code)))
          if (!(glyph = glyph_q))
             continue;
 
@@ -1364,188 +1419,46 @@ static int d3d12_font_get_message_width(void* data,
    return delta_x * scale;
 }
 
-static void d3d12_font_render_line(
-      d3d12_video_t *d3d12,
-      D3D12GraphicsCommandList cmd,
-      d3d12_font_t*       font,
-      const struct font_glyph* glyph_q,
-      const char*         msg,
-      size_t              msg_len,
-      float               scale,
-      const unsigned int  color,
-      float               pos_x,
-      float               pos_y,
-      int pre_x,
-      unsigned            width,
-      unsigned            height,
-      unsigned            text_align)
-{
-   size_t i;
-   D3D12_RANGE     range;
-   unsigned        count;
-   d3d12_sprite_t* v                = NULL;
-   d3d12_sprite_t* vbo_start        = NULL;
-   int x                            = pre_x;
-   int y                            = roundf((1.0 - pos_y) * height);
-
-   if (d3d12->sprites.offset + msg_len > (unsigned)d3d12->sprites.capacity)
-      d3d12->sprites.offset = 0;
-
-   switch (text_align)
-   {
-      case TEXT_ALIGN_RIGHT:
-         x -= d3d12_font_get_message_width(font, msg, msg_len, scale);
-         break;
-
-      case TEXT_ALIGN_CENTER:
-         x -= d3d12_font_get_message_width(font, msg, msg_len, scale) / 2;
-         break;
-   }
-
-   range.Begin = 0;
-   range.End   = 0;
-   D3D12Map(d3d12->sprites.vbo, 0, &range, (void**)&vbo_start);
-
-   v           = vbo_start + d3d12->sprites.offset;
-   range.Begin = (uintptr_t)v - (uintptr_t)vbo_start;
-
-   for (i = 0; i < msg_len; i++)
-   {
-      const struct font_glyph* glyph;
-      const char *msg_tmp= &msg[i];
-      unsigned   code    = utf8_walk(&msg_tmp);
-      unsigned   skip    = msg_tmp - &msg[i];
-
-      if (skip > 1)
-         i += skip - 1;
-
-      /* Do something smarter here ... */
-      if (!(glyph = font->font_driver->get_glyph(font->font_data, code)))
-         if (!(glyph = glyph_q))
-            continue;
-
-      v->pos.x           = (x + (glyph->draw_offset_x * scale)) / (float)d3d12->chain.viewport.Width;
-      v->pos.y           = (y + (glyph->draw_offset_y * scale)) / (float)d3d12->chain.viewport.Height;
-      v->pos.w           = glyph->width * scale  / (float)d3d12->chain.viewport.Width;
-      v->pos.h           = glyph->height * scale / (float)d3d12->chain.viewport.Height;
-
-      v->coords.u        = glyph->atlas_offset_x / (float)font->texture.desc.Width;
-      v->coords.v        = glyph->atlas_offset_y / (float)font->texture.desc.Height;
-      v->coords.w        = glyph->width          / (float)font->texture.desc.Width;
-      v->coords.h        = glyph->height         / (float)font->texture.desc.Height;
-
-      v->params.scaling  = 1;
-      v->params.rotation = 0;
-
-      v->colors[0]       = color;
-      v->colors[1]       = color;
-      v->colors[2]       = color;
-      v->colors[3]       = color;
-
-      v++;
-
-      x                 += glyph->advance_x * scale;
-      y                 += glyph->advance_y * scale;
-   }
-
-   range.End = (uintptr_t)v - (uintptr_t)vbo_start;
-   D3D12Unmap(d3d12->sprites.vbo, 0, &range);
-
-   count = v - vbo_start - d3d12->sprites.offset;
-
-   if (!count)
-      return;
-
-   if (font->atlas->dirty)
-   {
-      if (font->texture.upload_buffer)
-         d3d12_update_texture(
-               font->atlas->width, font->atlas->height,
-               font->atlas->width, DXGI_FORMAT_A8_UNORM,
-               font->atlas->buffer, &font->texture);
-      font->atlas->dirty = false;
-   }
-
-   if (font->texture.dirty)
-      d3d12_upload_texture(cmd, &font->texture, d3d12);
-
-#ifdef HAVE_DXGI_HDR      
-   if((d3d12->chain.current_rt_format == DXGI_FORMAT_R10G10B10A2_UNORM) || (d3d12->chain.current_rt_format == DXGI_FORMAT_R16G16B16A16_FLOAT))
-      cmd->lpVtbl->SetPipelineState(cmd, (D3D12PipelineState)d3d12->sprites.pipe_font_hdr);
-   else
-#endif       
-      cmd->lpVtbl->SetPipelineState(cmd, (D3D12PipelineState)d3d12->sprites.pipe_font);
-   cmd->lpVtbl->SetGraphicsRootDescriptorTable(cmd, ROOT_ID_TEXTURE_T,
-         font->texture.gpu_descriptor[0]);
-   cmd->lpVtbl->SetGraphicsRootDescriptorTable(cmd, ROOT_ID_SAMPLER_T,
-         font->texture.sampler);
-   cmd->lpVtbl->DrawInstanced(cmd, count, 1, d3d12->sprites.offset, 0);
-
-   cmd->lpVtbl->SetPipelineState(cmd, (D3D12PipelineState)d3d12->sprites.pipe);
-
-   d3d12->sprites.offset += count;
-}
-
-static void d3d12_font_render_message(
-      d3d12_video_t *d3d12,
-      d3d12_font_t*       font,
-      const char*         msg,
-      float               scale,
-      const unsigned int  color,
-      float               pos_x,
-      float               pos_y,
-      unsigned            width,
-      unsigned            height,
-      unsigned            text_align)
-{
-   float line_height;
-   D3D12GraphicsCommandList cmd           = d3d12->queue.cmd;
-   struct font_line_metrics *line_metrics = NULL;
-   int lines                              = 0;
-   int x                                  = roundf(pos_x * width);
-   const struct font_glyph* glyph_q       = font->font_driver->get_glyph(font->font_data, '?');
-   font->font_driver->get_line_metrics(font->font_data, &line_metrics);
-   line_height = line_metrics->height * scale / height;
-   for (;;)
-   {
-      const char *p;
-      size_t msg_len;
-      for (p = msg; *p && *p != '\n'; p++)
-         ;
-      msg_len = (size_t)(p - msg);
-      /* Draw the line */
-      if (msg_len <= (size_t)d3d12->sprites.capacity)
-         d3d12_font_render_line(d3d12, cmd,
-               font, glyph_q, msg, msg_len, scale, color, pos_x,
-               pos_y - (float)lines * line_height,
-               x,
-               width, height, text_align);
-      if (!*p)
-         break;
-      msg += msg_len + 1;
-      lines++;
-   }
-}
-
 static void d3d12_font_render_msg(
       void *userdata,
       void* data,
       const char* msg,
       const struct font_params *params)
 {
+   float line_height;
+   struct font_line_metrics *line_metrics = NULL;
    float                     x, y, scale, drop_mod, drop_alpha;
    int                       drop_x, drop_y;
    enum text_alignment       text_align;
+   const struct font_glyph  *glyph_q;
    unsigned                  color, r, g, b, alpha;
    d3d12_video_t           *d3d12   = (d3d12_video_t*)userdata;
    d3d12_font_t*             font   = (d3d12_font_t*)data;
-   unsigned                  width  = d3d12->vp.full_width;
-   unsigned                  height = d3d12->vp.full_height;
+   unsigned                  width;
+   unsigned                  height;
+   D3D12GraphicsCommandList  cmd;
+   D3D12_RANGE               range;
+   d3d12_sprite_t           *vbo_start = NULL;
+   d3d12_sprite_t           *v         = NULL;
+   d3d12_sprite_t           *v_batch_start;
+   unsigned                  total_count;
+   size_t                    total_len;
+   const struct font_glyph* (*get_glyph)(void*, uint32_t);
+   void                     *font_data;
+   float                     inv_vp_w, inv_vp_h;
+   float                     inv_tex_w, inv_tex_h;
+   int                       has_shadow;
+   unsigned                  color_dark;
+   float                     shadow_dx, shadow_dy;
 
    if (!font || !msg || !*msg)
       return;
    if (!d3d12 || (!(d3d12->flags & D3D12_ST_FLAG_SPRITES_ENABLE)))
       return;
+
+   width  = d3d12->vp.full_width;
+   height = d3d12->vp.full_height;
+   cmd    = d3d12->queue.cmd;
 
    if (params)
    {
@@ -1589,24 +1502,232 @@ static void d3d12_font_render_msg(
       drop_alpha                = 1.0f;
    }
 
-   if (drop_x || drop_y)
-   {
-      unsigned r_dark           = r * drop_mod;
-      unsigned g_dark           = g * drop_mod;
-      unsigned b_dark           = b * drop_mod;
-      unsigned alpha_dark       = alpha * drop_alpha;
-      unsigned color_dark       = DXGI_COLOR_RGBA(r_dark, g_dark, b_dark, alpha_dark);
+   glyph_q          = (font->font_driver)
+      ? font->font_driver->get_glyph(font->font_data, '?') : NULL;
+   font->font_driver->get_line_metrics(font->font_data, &line_metrics);
+   line_height = line_metrics->height * scale / height;
 
-      d3d12_font_render_message(d3d12,
-            font, msg, scale, color_dark,
-            x + scale * drop_x / width,
-            y + scale * drop_y / height,
-            width, height, text_align);
+   get_glyph  = font->font_driver->get_glyph;
+   font_data  = font->font_data;
+
+   inv_vp_w   = 1.0f / (float)d3d12->chain.viewport.Width;
+   inv_vp_h   = 1.0f / (float)d3d12->chain.viewport.Height;
+   inv_tex_w  = 1.0f / (float)font->texture.desc.Width;
+   inv_tex_h  = 1.0f / (float)font->texture.desc.Height;
+
+   /* Pre-compute drop shadow state.  When active, the shadow sprite
+    * is a constant pixel offset from the foreground sprite — we emit
+    * both in a single pass over the message instead of walking the
+    * string twice with separate UTF-8 decode + glyph lookups. */
+   has_shadow = (drop_x || drop_y);
+   if (has_shadow)
+   {
+      unsigned r_dark  = r * drop_mod;
+      unsigned g_dark  = g * drop_mod;
+      unsigned b_dark  = b * drop_mod;
+      unsigned a_dark  = alpha * drop_alpha;
+      color_dark       = DXGI_COLOR_RGBA(r_dark, g_dark, b_dark, a_dark);
+      shadow_dx        = scale * drop_x * inv_vp_w;
+      shadow_dy        = scale * drop_y * inv_vp_h;
+   }
+   else
+   {
+      color_dark       = 0;
+      shadow_dx        = 0.0f;
+      shadow_dy        = 0.0f;
    }
 
-   d3d12_font_render_message(d3d12, font,
-         msg, scale, color, x, y,
-         width, height, text_align);
+   if (font->atlas->dirty)
+   {
+      if (font->texture.upload_buffer)
+         d3d12_update_texture(
+               font->atlas->width, font->atlas->height,
+               font->atlas->width, DXGI_FORMAT_A8_UNORM,
+               font->atlas->buffer, &font->texture);
+      font->atlas->dirty = false;
+   }
+
+   total_len = strlen(msg);
+   if (has_shadow)
+      total_len *= 2;
+
+   if (d3d12->sprites.offset + total_len > (unsigned)d3d12->sprites.capacity)
+      d3d12->sprites.offset = 0;
+
+   range.Begin = 0;
+   range.End   = 0;
+   D3D12Map(d3d12->sprites.vbo, 0, &range, (void**)&vbo_start);
+
+   v              = vbo_start + d3d12->sprites.offset;
+   v_batch_start  = v;
+   range.Begin    = (uintptr_t)v - (uintptr_t)vbo_start;
+
+   /* ---- Single fused pass: shadow + foreground per glyph ----
+    *
+    * Walk the message once. For each glyph, emit the foreground sprite
+    * and (if active) its shadow sprite immediately after.  This halves
+    * UTF-8 decode + glyph lookup cost compared to separate passes.
+    *
+    * For right/center alignment the retroactive shift must adjust both
+    * shadow and foreground sprites.  We track per-line start pointers
+    * for both sets.
+    *
+    * Shadow sprites are emitted *before* the foreground sprite so that
+    * the GPU draws them first (painter's order within the same draw
+    * call). */
+   {
+      const char     *line_start = msg;
+      int             line_idx   = 0;
+      int             xi         = roundf(x * width);
+
+      while (*line_start)
+      {
+         const char        *p;
+         size_t             line_len;
+         size_t             i;
+         int                lx, ly;
+         d3d12_sprite_t    *line_v_first;
+
+         for (p = line_start; *p && *p != '\n'; p++)
+            ;
+         line_len = (size_t)(p - line_start);
+
+         if (line_len > (size_t)d3d12->sprites.capacity)
+            goto next_line;
+
+         lx          = xi;
+         ly          = roundf((1.0f - (y - (float)line_idx * line_height)) * height);
+         line_v_first = v;
+
+         for (i = 0; i < line_len; i++)
+         {
+            const struct font_glyph *glyph;
+            const char *msg_tmp = &line_start[i];
+            unsigned    code    = utf8_walk(&msg_tmp);
+            unsigned    skip    = msg_tmp - &line_start[i];
+
+            float       gx, gy, gw, gh;
+            float       gu, gv, gtw, gth;
+
+            if (skip > 1)
+               i += skip - 1;
+
+            if (!(glyph = get_glyph(font_data, code)))
+               if (!(glyph = glyph_q))
+                  continue;
+
+            /* Compute position and texcoord once, reuse for shadow. */
+            gx  = (lx + (glyph->draw_offset_x * scale)) * inv_vp_w;
+            gy  = (ly + (glyph->draw_offset_y * scale)) * inv_vp_h;
+            gw  = glyph->width  * scale * inv_vp_w;
+            gh  = glyph->height * scale * inv_vp_h;
+
+            gu  = glyph->atlas_offset_x * inv_tex_w;
+            gv  = glyph->atlas_offset_y * inv_tex_h;
+            gtw = glyph->width          * inv_tex_w;
+            gth = glyph->height         * inv_tex_h;
+
+            /* Shadow sprite (emitted first for correct draw order). */
+            if (has_shadow)
+            {
+               v->pos.x           = gx + shadow_dx;
+               v->pos.y           = gy + shadow_dy;
+               v->pos.w           = gw;
+               v->pos.h           = gh;
+
+               v->coords.u        = gu;
+               v->coords.v        = gv;
+               v->coords.w        = gtw;
+               v->coords.h        = gth;
+
+               v->params.scaling  = 1;
+               v->params.rotation = 0;
+
+               v->colors[0]       = color_dark;
+               v->colors[1]       = color_dark;
+               v->colors[2]       = color_dark;
+               v->colors[3]       = color_dark;
+
+               v++;
+            }
+
+            /* Foreground sprite. */
+            v->pos.x           = gx;
+            v->pos.y           = gy;
+            v->pos.w           = gw;
+            v->pos.h           = gh;
+
+            v->coords.u        = gu;
+            v->coords.v        = gv;
+            v->coords.w        = gtw;
+            v->coords.h        = gth;
+
+            v->params.scaling  = 1;
+            v->params.rotation = 0;
+
+            v->colors[0]       = color;
+            v->colors[1]       = color;
+            v->colors[2]       = color;
+            v->colors[3]       = color;
+
+            v++;
+
+            lx                += glyph->advance_x * scale;
+            ly                += glyph->advance_y * scale;
+         }
+
+         /* Retroactive alignment shift — adjusts both shadow and
+          * foreground sprites since they are interleaved. */
+         if (text_align != TEXT_ALIGN_LEFT)
+         {
+            int             total_advance = lx - xi;
+            float           shift;
+            d3d12_sprite_t *s;
+
+            if (text_align == TEXT_ALIGN_RIGHT)
+               shift = (float)total_advance * inv_vp_w;
+            else
+               shift = (float)(total_advance / 2) * inv_vp_w;
+
+            for (s = line_v_first; s < v; s++)
+               s->pos.x -= shift;
+         }
+
+next_line:
+         if (!*p)
+            break;
+         line_start = p + 1;
+         line_idx++;
+      }
+   }
+
+   range.End = (uintptr_t)v - (uintptr_t)vbo_start;
+   D3D12Unmap(d3d12->sprites.vbo, 0, &range);
+
+   total_count = v - v_batch_start;
+
+   if (!total_count)
+      return;
+
+   if (font->texture.dirty)
+      d3d12_upload_texture(cmd, &font->texture, d3d12);
+
+#ifdef HAVE_DXGI_HDR
+   if (   (d3d12->chain.current_rt_format == DXGI_FORMAT_R10G10B10A2_UNORM)
+       || (d3d12->chain.current_rt_format == DXGI_FORMAT_R16G16B16A16_FLOAT))
+      cmd->lpVtbl->SetPipelineState(cmd, (D3D12PipelineState)d3d12->sprites.pipe_font_hdr);
+   else
+#endif
+      cmd->lpVtbl->SetPipelineState(cmd, (D3D12PipelineState)d3d12->sprites.pipe_font);
+   cmd->lpVtbl->SetGraphicsRootDescriptorTable(cmd, ROOT_ID_TEXTURE_T,
+         font->texture.gpu_descriptor[0]);
+   cmd->lpVtbl->SetGraphicsRootDescriptorTable(cmd, ROOT_ID_SAMPLER_T,
+         font->texture.sampler);
+   cmd->lpVtbl->DrawInstanced(cmd, total_count, 1, d3d12->sprites.offset, 0);
+
+   cmd->lpVtbl->SetPipelineState(cmd, (D3D12PipelineState)d3d12->sprites.pipe);
+
+   d3d12->sprites.offset += total_count;
 }
 
 static const struct font_glyph* d3d12_font_get_glyph(
@@ -1614,7 +1735,7 @@ static const struct font_glyph* d3d12_font_get_glyph(
 {
    d3d12_font_t* font = (d3d12_font_t*)data;
    if (font && font->font_driver)
-      return font->font_driver->get_glyph((void*)font->font_driver, code);
+      return font->font_driver->get_glyph((void*)font->font_data, code);
    return NULL;
 }
 
@@ -1756,11 +1877,10 @@ static bool d3d12_overlay_load(void* data, const void* image_data, unsigned num_
    D3D12_GFX_SYNC();
 
    d3d12_free_overlays(d3d12);
-   d3d12->overlays.count    = num_images;
    d3d12->overlays.textures = (d3d12_texture_t*)calloc(num_images, sizeof(d3d12_texture_t));
 
    d3d12->overlays.count                   = num_images;
-   d3d12->overlays.vbo_view.SizeInBytes    = sizeof(d3d12_sprite_t) * d3d12->overlays.count;
+   d3d12->overlays.vbo_view.SizeInBytes    = sizeof(d3d12_sprite_t) * num_images;
    d3d12->overlays.vbo_view.StrideInBytes  = sizeof(d3d12_sprite_t);
    d3d12->overlays.vbo_view.BufferLocation = d3d12_create_buffer(
          d3d12->device, d3d12->overlays.vbo_view.SizeInBytes, &d3d12->overlays.vbo);
@@ -2035,7 +2155,7 @@ static void d3d12_update_viewport(d3d12_video_t *d3d12, bool force_full)
    d3d12->frame.viewport.TopLeftY = d3d12->vp.y;
    d3d12->frame.viewport.Width    = d3d12->vp.width;
    d3d12->frame.viewport.Height   = d3d12->vp.height;
-   d3d12->frame.viewport.MaxDepth = 0.0f;
+   d3d12->frame.viewport.MinDepth = 0.0f;
    d3d12->frame.viewport.MaxDepth = 1.0f;
 
    /* Needed for UWP to be happy */
@@ -2172,7 +2292,7 @@ static bool d3d12_gfx_set_shader(void* data, enum rarch_shader_type type, const 
    D3D12_GFX_SYNC();
    d3d12_free_shader_preset(d3d12);
 
-   if (string_is_empty(path))
+   if (!path || !*path)
    {
 #ifdef HAVE_DXGI_HDR
       if (d3d12->flags & D3D12_ST_FLAG_HDR_ENABLE)
@@ -2253,7 +2373,7 @@ static bool d3d12_gfx_set_shader(void* data, enum rarch_shader_type type, const 
             &d3d12->pass[i].current_subframe,/* CurrentSubFrame */
 #ifdef HAVE_DXGI_HDR
             &d3d12->pass[i].hdr_mode,       /* HDRMode */
-            &d3d12->pass[i].paper_white_nits,/* PaperWhiteNits */
+            &d3d12->pass[i].paper_white_nits,/* BrightnessNits */
             &d3d12->pass[i].scanlines,       /* Scanlines */
             &d3d12->pass[i].subpixel_layout, /* SubpixelLayout */
             &d3d12->pass[i].expand_gamut,    /* ExpandGamut */
@@ -3964,10 +4084,13 @@ static void dx12_inject_black_frame(d3d12_video_t* d3d12)
 
 static INLINE void d3d12_wait_for_vblank(d3d12_video_t* d3d12)
 {
-   IDXGIOutput *pOutput;
-   DXGIGetContainingOutput(d3d12->chain.handle, &pOutput);
-   DXGIWaitForVBlank(pOutput);
-   Release(pOutput);
+   IDXGIOutput *pOutput = NULL;
+   if (SUCCEEDED(DXGIGetContainingOutput(d3d12->chain.handle, &pOutput))
+         && pOutput)
+   {
+      DXGIWaitForVBlank(pOutput);
+      Release(pOutput);
+   }
 }
 
 static bool d3d12_gfx_frame(
@@ -3999,6 +4122,9 @@ static bool d3d12_gfx_frame(
    bool nonblock_state            = video_info->input_driver_nonblock_state;
    bool runloop_is_slowmotion     = video_info->runloop_is_slowmotion;
    bool runloop_is_paused         = video_info->runloop_is_paused;
+   /* Cache settings pointer once per frame to avoid repeated
+    * config_get_ptr() calls in the shader pass loop. */
+   settings_t *frame_settings     = config_get_ptr();
 #ifdef HAVE_GFX_WIDGETS
    bool widgets_active            = video_info->widgets_active;
 #endif
@@ -4280,6 +4406,14 @@ static bool d3d12_gfx_frame(
                   d3d12->frame.texture[k] = d3d12->frame.texture[k - 1];
                d3d12->frame.texture[0] = tmp;
             }
+
+            /* History rotation moved texture[0] to a history slot.
+             * If the core wrote directly into its upload buffer via
+             * get_current_software_framebuffer, that data now lives in
+             * frame.texture[1].  The recycled texture[0] has no valid
+             * data, so clear the flag and let the normal copy run. */
+            if (d3d12->flags & D3D12_ST_FLAG_SW_FRAMEBUFFER_READY)
+               d3d12->flags &= ~D3D12_ST_FLAG_SW_FRAMEBUFFER_READY;
          }
       }
 
@@ -4292,10 +4426,31 @@ static bool d3d12_gfx_frame(
          d3d12->frame.texture[0].srv_heap    = &d3d12->desc.srv_heap;
          d3d12_release_texture(&d3d12->frame.texture[0]);
          d3d12_init_texture(d3d12->device, &d3d12->frame.texture[0]);
+
+         /* Texture was recreated — upload buffer the core wrote to
+          * via get_current_software_framebuffer has been freed. */
+         d3d12->flags &= ~D3D12_ST_FLAG_SW_FRAMEBUFFER_READY;
       }
 
       if (d3d12->flags & D3D12_ST_FLAG_RESIZE_RTS)
+      {
          d3d12_init_render_targets(d3d12, width, height);
+
+         /* d3d12_init_texture creates render-target resources in
+          * D3D12_RESOURCE_STATE_RENDER_TARGET.  The shader pass loop
+          * expects them in PIXEL_SHADER_RESOURCE (their "resting"
+          * state) and will transition to RT before each use.
+          * Transition them now so the first frame is consistent. */
+         for (k = 0; k < d3d12->shader_preset->passes; k++)
+         {
+            if (d3d12->pass[k].rt.handle)
+               D3D12_RESOURCE_TRANSITION(
+                     cmd,
+                     d3d12->pass[k].rt.handle,
+                     D3D12_RESOURCE_STATE_RENDER_TARGET,
+                     D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+         }
+      }
 
       if (frame == RETRO_HW_FRAME_BUFFER_VALID)
       {
@@ -4336,7 +4491,16 @@ static bool d3d12_gfx_frame(
       }
       else
       {
-         if (d3d12->frame.texture[0].upload_buffer)
+         if (d3d12->flags & D3D12_ST_FLAG_SW_FRAMEBUFFER_READY)
+         {
+            /* Core wrote directly into the upload buffer via
+             * get_current_software_framebuffer — skip the
+             * redundant Map/dxgi_copy/Unmap in d3d12_update_texture
+             * and just mark dirty for the GPU copy. */
+            d3d12->frame.texture[0].dirty = true;
+            d3d12->flags &= ~D3D12_ST_FLAG_SW_FRAMEBUFFER_READY;
+         }
+         else if (d3d12->frame.texture[0].upload_buffer)
             d3d12_update_texture(width, height, pitch, d3d12->format,
                   frame, &d3d12->frame.texture[0]);
 
@@ -4362,6 +4526,33 @@ static bool d3d12_gfx_frame(
          }
       }
 
+      /* Hoist loop-invariant per-frame values so that function calls
+       * (retroarch_get_rotation, video_driver_get_core_aspect, etc.)
+       * and settings reads execute once instead of once per pass. */
+      {
+         uint32_t pass_frame_time_delta = (uint32_t)video_driver_get_frame_time_delta_usec();
+         float    pass_original_fps     = video_driver_get_original_fps();
+         uint32_t pass_rotation         = retroarch_get_rotation();
+         float    pass_core_aspect      = video_driver_get_core_aspect();
+         float    pass_core_aspect_rot  = pass_core_aspect;
+#ifdef HAVE_REWIND
+         int32_t  pass_frame_direction  = state_manager_frame_is_reversed() ? -1 : 1;
+#else
+         int32_t  pass_frame_direction  = 1;
+#endif
+#ifdef HAVE_DXGI_HDR
+         unsigned pass_hdr_mode           = video_info->hdr_mode;
+         float    pass_paper_white_nits   = frame_settings->floats.video_hdr_paper_white_nits;
+         float    pass_hdr_scanlines      = frame_settings->bools.video_hdr_scanlines ? 1.0f : 0.0f;
+         unsigned pass_subpixel_layout    = frame_settings->uints.video_hdr_subpixel_layout;
+         unsigned pass_expand_gamut       = frame_settings->uints.video_hdr_expand_gamut;
+#endif
+
+         /* OriginalAspectRotated: return 1 / aspect for 90 and 270 rotated content */
+         if (     pass_rotation == VIDEO_ROTATION_90_DEG
+               || pass_rotation == VIDEO_ROTATION_270_DEG)
+            pass_core_aspect_rot = 1.0f / pass_core_aspect_rot;
+
       for (i = 0; i < d3d12->shader_preset->passes; i++)
       {
          unsigned j;
@@ -4373,20 +4564,12 @@ static bool d3d12_gfx_frame(
          else
             d3d12->pass[i].frame_count = frame_count;
 
-#ifdef HAVE_REWIND
-         d3d12->pass[i].frame_direction  = state_manager_frame_is_reversed() ? -1 : 1;
-#else
-         d3d12->pass[i].frame_direction  = 1;
-#endif
-         d3d12->pass[i].frame_time_delta = (uint32_t)video_driver_get_frame_time_delta_usec();
-         d3d12->pass[i].original_fps     = video_driver_get_original_fps();
-         d3d12->pass[i].rotation         = retroarch_get_rotation();
-         d3d12->pass[i].core_aspect      = video_driver_get_core_aspect();
-         /* OriginalAspectRotated: return 1 / aspect for 90 and 270 rotated content */
-         d3d12->pass[i].core_aspect_rot  = d3d12->pass[i].core_aspect;
-         if (     d3d12->pass[i].rotation == VIDEO_ROTATION_90_DEG
-               || d3d12->pass[i].rotation == VIDEO_ROTATION_270_DEG)
-            d3d12->pass[i].core_aspect_rot = 1 / d3d12->pass[i].core_aspect_rot;
+         d3d12->pass[i].frame_direction  = pass_frame_direction;
+         d3d12->pass[i].frame_time_delta = pass_frame_time_delta;
+         d3d12->pass[i].original_fps     = pass_original_fps;
+         d3d12->pass[i].rotation         = pass_rotation;
+         d3d12->pass[i].core_aspect      = pass_core_aspect;
+         d3d12->pass[i].core_aspect_rot  = pass_core_aspect_rot;
 
          /* Sub-frame info for multiframe shaders (per real content frame).
             Should always be 1 for non-use of subframes */
@@ -4405,16 +4588,14 @@ static bool d3d12_gfx_frame(
          }
 
 #ifdef HAVE_DXGI_HDR   
-         settings_t*    settings = config_get_ptr();
-         
-         d3d12->pass[i].hdr_mode              = video_info->hdr_mode;
+         d3d12->pass[i].hdr_mode              = pass_hdr_mode;
 
          if(d3d12->flags & D3D12_ST_FLAG_HDR_ENABLE)
          {
-            d3d12->pass[i].paper_white_nits     = settings->floats.video_hdr_paper_white_nits;
-            d3d12->pass[i].scanlines            = settings->bools.video_hdr_scanlines ? 1.0f : 0.0f;
-            d3d12->pass[i].subpixel_layout      = settings->uints.video_hdr_subpixel_layout;
-            d3d12->pass[i].expand_gamut         = settings->uints.video_hdr_expand_gamut;
+            d3d12->pass[i].paper_white_nits     = pass_paper_white_nits;
+            d3d12->pass[i].scanlines            = pass_hdr_scanlines;
+            d3d12->pass[i].subpixel_layout      = pass_subpixel_layout;
+            d3d12->pass[i].expand_gamut         = pass_expand_gamut;
          }
 #endif /* HAVE_DXGI_HDR */ 
 
@@ -4457,27 +4638,44 @@ static bool d3d12_gfx_frame(
             texture_sem_t* texture_sem = d3d12->pass[i].semantics.textures;
             while (texture_sem->stage_mask)
             {
+               /* SRV: only recreate when the underlying resource,
+                * format, or mip count has changed. */
                {
-                  D3D12_CPU_DESCRIPTOR_HANDLE handle   = {
-                          d3d12->pass[i].textures.ptr
-                        - d3d12->desc.srv_heap.gpu.ptr
-                        + d3d12->desc.srv_heap.cpu.ptr
-                        + texture_sem->binding * d3d12->desc.srv_heap.stride
-                  };
-                  d3d12_texture_t*                tex  =
+                  d3d12_texture_t* tex =
                      (d3d12_texture_t*)texture_sem->texture_data;
-                  D3D12_SHADER_RESOURCE_VIEW_DESC desc = { tex->desc.Format };
+                  unsigned binding     = texture_sem->binding;
 
-                  desc.Shader4ComponentMapping         =
-                     D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-                  desc.ViewDimension                   =
-                     D3D12_SRV_DIMENSION_TEXTURE2D;
-                  desc.Texture2D.MipLevels             = tex->desc.MipLevels;
+                  if (   d3d12->pass[i].desc_cache.srv_resource[binding]   != tex->handle
+                      || d3d12->pass[i].desc_cache.srv_format[binding]     != tex->desc.Format
+                      || d3d12->pass[i].desc_cache.srv_mip_levels[binding] != tex->desc.MipLevels)
+                  {
+                     D3D12_CPU_DESCRIPTOR_HANDLE handle   = {
+                             d3d12->pass[i].textures.ptr
+                           - d3d12->desc.srv_heap.gpu.ptr
+                           + d3d12->desc.srv_heap.cpu.ptr
+                           + binding * d3d12->desc.srv_heap.stride
+                     };
+                     D3D12_SHADER_RESOURCE_VIEW_DESC desc = { tex->desc.Format };
 
-                  d3d12->device->lpVtbl->CreateShaderResourceView(d3d12->device,
-                        tex->handle, &desc, handle);
+                     desc.Shader4ComponentMapping         =
+                        D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                     desc.ViewDimension                   =
+                        D3D12_SRV_DIMENSION_TEXTURE2D;
+                     desc.Texture2D.MipLevels             = tex->desc.MipLevels;
+
+                     d3d12->device->lpVtbl->CreateShaderResourceView(d3d12->device,
+                           tex->handle, &desc, handle);
+
+                     d3d12->pass[i].desc_cache.srv_resource[binding]   = tex->handle;
+                     d3d12->pass[i].desc_cache.srv_format[binding]     = tex->desc.Format;
+                     d3d12->pass[i].desc_cache.srv_mip_levels[binding] = tex->desc.MipLevels;
+                  }
                }
 
+               /* Samplers: filter and wrap modes are static for the
+                * lifetime of a shader preset, so create them once and
+                * skip on subsequent frames. */
+               if (!d3d12->pass[i].desc_cache.samplers_valid)
                {
                   D3D12_SAMPLER_DESC desc;
                   D3D12_CPU_DESCRIPTOR_HANDLE handle = {
@@ -4531,6 +4729,11 @@ static bool d3d12_gfx_frame(
                texture_sem++;
             }
 
+            /* Mark samplers as cached after processing all bindings
+             * for this pass on the first frame. */
+            if (!d3d12->pass[i].desc_cache.samplers_valid)
+               d3d12->pass[i].desc_cache.samplers_valid = true;
+
             cmd->lpVtbl->SetGraphicsRootDescriptorTable(
                   cmd, ROOT_ID_TEXTURE_T,
                   d3d12->pass[i].textures);
@@ -4542,6 +4745,15 @@ static bool d3d12_gfx_frame(
          if (d3d12->pass[i].rt.handle)
          {
             UINT start_vertex_location = 4;
+
+            /* Transition RT to RENDER_TARGET — it was left in
+             * PIXEL_SHADER_RESOURCE at the end of the previous
+             * frame (or initialized in that state). */
+            D3D12_RESOURCE_TRANSITION(
+                  cmd,
+                  d3d12->pass[i].rt.handle,
+                  D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                  D3D12_RESOURCE_STATE_RENDER_TARGET);
 
             cmd->lpVtbl->OMSetRenderTargets(cmd, 1,
                   &d3d12->pass[i].rt.rt_view, FALSE, NULL);
@@ -4584,17 +4796,17 @@ static bool d3d12_gfx_frame(
                start_vertex_location = 0;
 
             cmd->lpVtbl->DrawInstanced(cmd, 4, 1, start_vertex_location, 0);
+
+            /* Transition RT to shader resource so subsequent passes can
+             * sample from it.  Do NOT transition back to RENDER_TARGET
+             * here — that was a redundant no-op barrier pair.  The RT
+             * will be transitioned back when it is next used as a render
+             * target (either in d3d12_init_render_targets or next frame). */
             D3D12_RESOURCE_TRANSITION(
                   cmd,
                   d3d12->pass[i].rt.handle,
                   D3D12_RESOURCE_STATE_RENDER_TARGET,
                   D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-
-            D3D12_RESOURCE_TRANSITION(
-                  cmd,
-                  d3d12->pass[i].rt.handle,
-                  D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                  D3D12_RESOURCE_STATE_RENDER_TARGET);
 
             texture = &d3d12->pass[i].rt;
          }
@@ -4604,6 +4816,7 @@ static bool d3d12_gfx_frame(
             break;
          }
       }
+      } /* end hoisted loop-invariant scope */
    }
 
    if (texture)
@@ -4624,8 +4837,7 @@ static bool d3d12_gfx_frame(
             d3d12->hdr.ubo_values.output_size.width   = d3d12->frame.output_size.x;
             d3d12->hdr.ubo_values.output_size.height  = d3d12->frame.output_size.y;
 
-            settings_t* settings                      = config_get_ptr();
-            d3d12->hdr.ubo_values.scanlines           = settings->bools.video_hdr_scanlines ? 1.0f : 0.0f;
+            d3d12->hdr.ubo_values.scanlines           = frame_settings->bools.video_hdr_scanlines ? 1.0f : 0.0f;
 
             if (video_info->hdr_mode == 2) /* scRGB */
             {
@@ -5415,6 +5627,75 @@ static void d3d12_get_video_output_next(void *data)
 }
 #endif
 
+static bool d3d12_get_current_software_framebuffer(
+      void* data, struct retro_framebuffer* fb)
+{
+   d3d12_video_t* d3d12 = (d3d12_video_t*)data;
+   D3D12_RANGE read_range;
+   uint8_t *mapped_ptr = NULL;
+
+   if (!d3d12 || !fb)
+      return false;
+
+   /* Ensure the frame texture is large enough for the requested size */
+   if (     d3d12->frame.texture[0].desc.Width  != fb->width
+         || d3d12->frame.texture[0].desc.Height != fb->height)
+   {
+      d3d12->frame.texture[0].desc.Width  = fb->width;
+      d3d12->frame.texture[0].desc.Height = fb->height;
+      d3d12->frame.texture[0].desc.Format = d3d12->format;
+      d3d12->frame.texture[0].srv_heap    = &d3d12->desc.srv_heap;
+      d3d12_release_texture(&d3d12->frame.texture[0]);
+      d3d12_init_texture(d3d12->device, &d3d12->frame.texture[0]);
+   }
+
+   if (!d3d12->frame.texture[0].upload_buffer)
+      return false;
+
+   /* The SW framebuffer optimisation only works when the core's
+    * natural pitch (width * bytes-per-pixel) equals the upload
+    * buffer's RowPitch.  D3D12 aligns RowPitch to 256 bytes, so
+    * for many resolutions there is padding at the end of each row.
+    * Most cores render with width*bpp stride regardless of what
+    * fb.pitch reports, which silently corrupts the layout.
+    * When the pitches don't match, return false so the core falls
+    * back to its own buffer and d3d12_update_texture handles the
+    * pitch conversion efficiently via dxgi_copy. */
+   {
+      int bpp        = (d3d12->format == DXGI_FORMAT_B8G8R8X8_UNORM) ? 4 : 2;
+      int tight_pitch = (int)fb->width * bpp;
+      if (tight_pitch != (int)d3d12->frame.texture[0].layout.Footprint.RowPitch)
+         return false;
+   }
+
+   /* Map the upload buffer so the core can write directly into it.
+    * D3D12 upload heaps are persistently mappable — the pointer
+    * remains valid after Unmap, so the core can safely use it. */
+   read_range.Begin = 0;
+   read_range.End   = 0;
+
+   if (FAILED(d3d12->frame.texture[0].upload_buffer->lpVtbl->Map(
+               d3d12->frame.texture[0].upload_buffer,
+               0, &read_range, (void**)&mapped_ptr)))
+      return false;
+
+   d3d12->frame.texture[0].upload_buffer->lpVtbl->Unmap(
+         d3d12->frame.texture[0].upload_buffer, 0, NULL);
+
+   fb->data         = mapped_ptr + d3d12->frame.texture[0].layout.Offset;
+   fb->pitch        = d3d12->frame.texture[0].layout.Footprint.RowPitch;
+   fb->format       = (d3d12->format == DXGI_FORMAT_B8G8R8X8_UNORM)
+                    ? RETRO_PIXEL_FORMAT_XRGB8888
+                    : RETRO_PIXEL_FORMAT_RGB565;
+   fb->memory_flags = RETRO_MEMORY_ACCESS_WRITE;
+
+   /* Signal d3d12_gfx_frame that the core will write directly
+    * into the upload buffer, so dxgi_copy can be skipped. */
+   d3d12->flags    |= D3D12_ST_FLAG_SW_FRAMEBUFFER_READY;
+
+   return true;
+}
+
 static const video_poke_interface_t d3d12_poke_interface = {
    d3d12_get_flags,
    d3d12_gfx_load_texture,
@@ -5446,7 +5727,7 @@ static const video_poke_interface_t d3d12_poke_interface = {
    win32_show_cursor,
    NULL, /* grab_mouse_toggle */
    d3d12_gfx_get_current_shader,
-   NULL, /* get_current_software_framebuffer */
+   d3d12_get_current_software_framebuffer,
    d3d12_get_hw_render_interface,
 #ifdef HAVE_DXGI_HDR
    d3d12_set_hdr_menu_nits,

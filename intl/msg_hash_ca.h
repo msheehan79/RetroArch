@@ -4545,6 +4545,18 @@ MSG_HASH(
    "Desa els canvis al fitxer de configuració en sortir. Això és útil pels canvis fets en el menú. Sobreescriu el fitxer de configuració, #include's i comentaris no es desen."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CONFIG_SAVE_MINIMAL,
+   "Desa la configuració mínima"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CONFIG_SAVE_MINIMAL,
+   "Desa només la configuració que difereix de la predeterminada."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_HELP_CONFIG_SAVE_MINIMAL,
+   "Quan s'activa, només desa els valors de configuració que han canviat respecte els valors predeterminats. S'aconsegueix un fitxer de configuració més petit i manipulable."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_REMAP_SAVE_ON_EXIT,
    "Desa els fitxers d'assignació en sortir"
    )
@@ -7937,7 +7949,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_PLAYLIST_MANAGER_REFRESH_PLAYLIST,
-   "Afegeix nou contingut i elimina entrades invàlides amb l'opció 'Escaneig manual'."
+   "Afegeix nou contingut i elimina entrades no vàlides repetint l'última cerca per crear o editar la llista de reproducció."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DELETE_PLAYLIST,
@@ -8518,11 +8530,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_LIST,
-   "Cerca manual"
+   "Cerca de continguts"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_MANUAL_CONTENT_SCAN_LIST,
-   "Cerca configurable basada en noms de fitxer de contingut. No cal que el contingut coincideixi amb la base de dades."
+   "Configura la cerca en funció del contingut del nom del fitxer i/o de les coincidències a la base de dades."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SCAN_ENTRY,
@@ -8588,31 +8600,31 @@ MSG_HASH(
    "Afegir a la mescla i reproduir"
    )
 
-/* Import Content > Manual Scan */
+/* Import Content > Content Scan */
 
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_DIR,
-   "Directori de contingut"
+   "Ubicació del contingut"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_MANUAL_CONTENT_SCAN_DIR,
-   "Selecciona un directori on cercar continguts."
+   "Selecciona una carpeta (o fitxer) per escanejar-ne el contingut."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_SYSTEM_NAME,
-   "Nom del sistema"
+   "Llista de reprodució objectiu"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_MANUAL_CONTENT_SCAN_SYSTEM_NAME,
-   "Especifica un «nom de sistema» amb el qual associar els continguts trobats. Es fa servir per donar nom a la llista de reproducció generada i per identificar-ne les miniatures."
+   "Nom de la llista de reproducció generada, també es fa servir per identificar les miniatures de la llista de reproducció. La configuració automàtica farà servir el mateix nom que la coincidència a la base dades o el nom de la carpeta."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_SYSTEM_NAME_CUSTOM,
-   "Nom de sistema personalitzat"
+   "Nom de la llista de reproducció predeterminada"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_MANUAL_CONTENT_SCAN_SYSTEM_NAME_CUSTOM,
-   "Especifica manualment un «nom de sistema» pels continguts trobats. Només es fa servir quan el «Nom de sistema» és «<Personalitzat>»."
+   "Nom de la llista de reproducció predeterminada pel contingut analitzat."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_CORE_NAME,

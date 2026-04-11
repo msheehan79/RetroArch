@@ -228,7 +228,7 @@ void gfx_widgets_msg_queue_push(
             msg_widget->msg_new                 = strdup(msg_title);
             msg_widget->msg_len                 = len;
 
-            if (!string_is_empty(task->error))
+            if (task->error && *task->error)
                msg_widget->flags               |= DISPWIDG_FLAG_TASK_ERROR;
             if ((task->flags & RETRO_TASK_FLG_CANCELLED) != 0)
                msg_widget->flags               |= DISPWIDG_FLAG_TASK_CANCELLED;
@@ -287,7 +287,7 @@ void gfx_widgets_msg_queue_push(
                if ((text_width - (text_width >> 2)) < rect_width)
                   rect_width = text_width - (text_width >> 2);
 
-               word_wrap(msg_new, msg_len, msg_title, len,
+               msg_widget->msg_len      = word_wrap(msg_new, msg_len, msg_title, len,
                      (int)((len * rect_width) / text_width),
                      100, 2);
 
@@ -308,7 +308,6 @@ void gfx_widgets_msg_queue_push(
                }
 
                msg_widget->text_height *= 2;
-               msg_widget->msg_len      = strlen(msg_new);
             }
             else
             {
@@ -390,7 +389,7 @@ void gfx_widgets_msg_queue_push(
             msg_widget->width = new_width;
          }
 
-         if (!string_is_empty(task->error))
+         if (task->error && *task->error)
             msg_widget->flags               |= DISPWIDG_FLAG_TASK_ERROR;
          if ((task->flags & RETRO_TASK_FLG_CANCELLED) != 0)
             msg_widget->flags               |= DISPWIDG_FLAG_TASK_CANCELLED;
@@ -638,7 +637,7 @@ void gfx_widgets_draw_text(
       enum text_alignment text_align,
       bool draw_outside)
 {
-   if (!font_data || string_is_empty(text))
+   if (!font_data || !text || !*text)
       return;
 
    gfx_display_draw_text(
@@ -785,7 +784,7 @@ static void gfx_widgets_layout(
    size_t i;
 
    /* Initialise fonts */
-   if (string_is_empty(font_path))
+   if (!font_path || !*font_path)
    {
       char font_file[PATH_MAX_LENGTH];
       /* Create regular font */
