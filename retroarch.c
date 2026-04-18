@@ -194,6 +194,9 @@
 
 #include "gfx/video_driver.h"
 #include "gfx/video_display_server.h"
+#ifdef HAVE_THREADS
+#include "gfx/video_thread_wrapper.h"
+#endif
 #ifdef HAVE_BLUETOOTH
 #include "bluetooth/bluetooth_driver.h"
 #endif
@@ -1173,81 +1176,81 @@ size_t midi_driver_get_event_size(uint8_t status)
 static size_t find_driver_nonempty(
       const char *label, int i, char *s, size_t len)
 {
-   if (!memcmp(label, "camera_driver", STRLEN_CONST("camera_driver")))
+   if (!strcmp(label, "camera_driver"))
    {
       if (camera_drivers[i])
          return strlcpy(s, camera_drivers[i]->ident, len);
    }
-   else if (!memcmp(label, "location_driver", STRLEN_CONST("location_driver")))
+   else if (!strcmp(label, "location_driver"))
    {
       if (location_drivers[i])
          return strlcpy(s, location_drivers[i]->ident, len);
    }
 #ifdef HAVE_MENU
-   else if (!memcmp(label, "menu_driver", STRLEN_CONST("menu_driver")))
+   else if (!strcmp(label, "menu_driver"))
    {
       if (menu_ctx_drivers[i])
          return strlcpy(s, menu_ctx_drivers[i]->ident, len);
    }
 #endif
-   else if (!memcmp(label, "input_driver", STRLEN_CONST("input_driver")))
+   else if (!strcmp(label, "input_driver"))
    {
       if (input_drivers[i])
          return strlcpy(s, input_drivers[i]->ident, len);
    }
-   else if (!memcmp(label, "input_joypad_driver", STRLEN_CONST("input_joypad_driver")))
+   else if (!strcmp(label, "input_joypad_driver"))
    {
       if (joypad_drivers[i])
          return strlcpy(s, joypad_drivers[i]->ident, len);
    }
-   else if (!memcmp(label, "video_driver", STRLEN_CONST("video_driver")))
+   else if (!strcmp(label, "video_driver"))
    {
       if (video_drivers[i])
          return strlcpy(s, video_drivers[i]->ident, len);
    }
-   else if (!memcmp(label, "audio_driver", STRLEN_CONST("audio_driver")))
+   else if (!strcmp(label, "audio_driver"))
    {
       if (audio_drivers[i])
          return strlcpy(s, audio_drivers[i]->ident, len);
    }
 #ifdef HAVE_MICROPHONE
-   else if (!memcmp(label, "microphone_driver", STRLEN_CONST("microphone_driver")))
+   else if (!strcmp(label, "microphone_driver"))
    {
       if (microphone_drivers[i])
          return strlcpy(s, microphone_drivers[i]->ident, len);
    }
 #endif
-   else if (!memcmp(label, "record_driver", STRLEN_CONST("record_driver")))
+   else if (!strcmp(label, "record_driver"))
    {
       if (record_drivers[i])
          return strlcpy(s, record_drivers[i]->ident, len);
    }
-   else if (!memcmp(label, "midi_driver", STRLEN_CONST("midi_driver")))
+   else if (!strcmp(label, "midi_driver"))
    {
       if (midi_driver_find_handle(i))
          return strlcpy(s, midi_drivers[i]->ident, len);
    }
-   else if (!memcmp(label, "audio_resampler_driver", STRLEN_CONST("audio_resampler_driver")))
+   else if (!strcmp(label, "audio_resampler_driver"))
    {
       if (audio_resampler_driver_find_handle(i))
          return strlcpy(s, audio_resampler_driver_find_ident(i), len);
    }
 #ifdef HAVE_BLUETOOTH
-   else if (!memcmp(label, "bluetooth_driver", STRLEN_CONST("bluetooth_driver")))
+   else if (!strcmp(label, "bluetooth_driver"))
    {
       if (bluetooth_drivers[i])
          return strlcpy(s, bluetooth_drivers[i]->ident, len);
    }
 #endif
 #ifdef HAVE_WIFI
-   else if (!memcmp(label, "wifi_driver", STRLEN_CONST("wifi_driver")))
+   else if (!strcmp(label, "wifi_driver"))
    {
       if (wifi_drivers[i])
          return strlcpy(s, wifi_drivers[i]->ident, len);
    }
 #endif
 #ifdef HAVE_CLOUDSYNC
-   else if (!memcmp(label, "cloud_sync_driver", STRLEN_CONST("cloud_sync_driver")))
+   else if (!strcmp(label, "cloud_sync_driver"))
    {
       if (cloud_sync_drivers[i])
          return strlcpy(s, cloud_sync_drivers[i]->ident, len);
@@ -1465,7 +1468,7 @@ static void driver_adjust_system_rates(
          runloop_st->flags |= RUNLOOP_FLAG_FORCE_NONBLOCK;
          RARCH_LOG("[Video] Game FPS > Monitor FPS. Cannot rely on VSync.\n");
 
-         if (VIDEO_DRIVER_GET_PTR_INTERNAL(video_st))
+         if (video_st->data)
          {
             if (video_st->current_video->set_nonblock_state)
                video_st->current_video->set_nonblock_state(
@@ -1478,7 +1481,7 @@ static void driver_adjust_system_rates(
       }
    }
 
-   if (VIDEO_DRIVER_GET_PTR_INTERNAL(video_st))
+   if (video_st->data)
       driver_set_nonblock_state();
 }
 
@@ -1512,7 +1515,7 @@ void driver_set_nonblock_state(void)
    bool runloop_force_nonblock = (runloop_st->flags & RUNLOOP_FLAG_FORCE_NONBLOCK) ? true : false;
 
    /* Only apply non-block-state for video if we're using vsync. */
-   if (video_driver_active && VIDEO_DRIVER_GET_PTR_INTERNAL(video_st))
+   if (video_driver_active && video_st->data)
    {
       if (video_st->current_video->set_nonblock_state)
       {
@@ -1818,6 +1821,21 @@ void driver_uninit(int flags, enum driver_lifetime_flags lifetime_flags)
    core_info_deinit_list();
    core_info_free_current_core();
 
+#ifdef HAVE_THREADS
+   /* Wait for the video thread to finish any pending frame before
+    * freeing GPU resources owned by the menu driver and widgets.
+    * Without this barrier, the video thread can be mid-render on
+    * frame N-1 while the main thread frees textures/fonts that
+    * the in-flight frame still references, producing
+    * use-after-free crashes on D3D12/Vulkan under threaded video.
+    *
+    * No-op when threaded video is not active. */
+   if (     (flags & DRIVERS_VIDEO_INPUT)
+         && VIDEO_DRIVER_IS_THREADED_INTERNAL(video_st)
+         && (video_st->flags & VIDEO_FLAG_THREAD_WRAPPER_ACTIVE))
+      video_thread_wait_idle();
+#endif
+
 #if defined(HAVE_GFX_WIDGETS)
    /* This absolutely has to be done before video_driver_free_internal()
     * is called/completes, otherwise certain menu drivers
@@ -1877,7 +1895,12 @@ void driver_uninit(int flags, enum driver_lifetime_flags lifetime_flags)
    if (flags & DRIVERS_VIDEO_INPUT)
    {
       video_driver_free_internal();
-      VIDEO_DRIVER_LOCK_FREE(video_st);
+#ifdef HAVE_THREADS
+      slock_free(video_st->display_lock);
+      slock_free(video_st->context_lock);
+      video_st->display_lock      = NULL;
+      video_st->context_lock      = NULL;
+#endif
       video_st->data              = NULL;
       video_st->frame_cache_data  = NULL;
    }
@@ -4530,7 +4553,9 @@ bool command_event(enum event_command cmd, void *data)
       case CMD_EVENT_AUDIO_REINIT:
          driver_uninit(DRIVER_AUDIO_MASK, DRIVER_LIFETIME_RESET);
          drivers_init(settings, DRIVER_AUDIO_MASK, DRIVER_LIFETIME_RESET, verbosity_is_enabled());
+#ifdef HAVE_MENU
          menu_st->flags |= MENU_ST_FLAG_ENTRIES_NEED_REFRESH;
+#endif
 #if defined(HAVE_AUDIOMIXER)
          audio_driver_load_system_sounds();
 #endif
@@ -4539,7 +4564,9 @@ bool command_event(enum event_command cmd, void *data)
       case CMD_EVENT_MICROPHONE_REINIT:
          driver_uninit(DRIVER_MICROPHONE_MASK, DRIVER_LIFETIME_RESET);
          drivers_init(settings, DRIVER_MICROPHONE_MASK, DRIVER_LIFETIME_RESET, verbosity_is_enabled());
+#ifdef HAVE_MENU
          menu_st->flags |= MENU_ST_FLAG_ENTRIES_NEED_REFRESH;
+#endif
          break;
 #endif
       case CMD_EVENT_SHUTDOWN:
@@ -6114,6 +6141,14 @@ int rarch_main(int argc, char *argv[], void *data)
                         );
 #endif
 #if defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)
+   /* Mark the process DPI-aware BEFORE anything creates a window.
+    * CoInitialize below can create a hidden OLE message window on
+    * some STA configurations; once any HWND exists, the DPI setting
+    * is locked and GetDeviceCaps will report a fixed 96 DPI. */
+   {
+      extern void win32_apply_dpi_awareness(void);
+      win32_apply_dpi_awareness();
+   }
    if (FAILED(CoInitialize(NULL)))
    {
       RARCH_ERR("FATAL: Failed to initialize the COM interface.\n");
@@ -6179,6 +6214,22 @@ int rarch_main(int argc, char *argv[], void *data)
    global_free(p_rarch);
 
    frontend_driver_init_first(data);
+
+   /* Early display server init — allows querying display metrics
+    * (resolution, DPI, refresh rate) before the video driver creates
+    * a window.  The frontend provides get_display_type() to determine
+    * the platform's display type without needing a window. */
+   {
+      frontend_state_t *frontend_st = frontend_state_get_ptr();
+      if (     frontend_st
+            && frontend_st->current_frontend_ctx
+            && frontend_st->current_frontend_ctx->get_display_type)
+      {
+         enum rarch_display_type dtype =
+            frontend_st->current_frontend_ctx->get_display_type();
+         video_display_server_init(dtype);
+      }
+   }
 
    if (runloop_st->flags & RUNLOOP_FLAG_IS_INITED)
       driver_uninit(DRIVERS_CMD_ALL, (enum driver_lifetime_flags)0);
@@ -8732,6 +8783,8 @@ size_t retroarch_get_capabilities(enum rarch_capabilities type,
                _len += strlcpy(s + _len, "AVX ", len - _len);
             if (cpu & RETRO_SIMD_AVX2)
                _len += strlcpy(s + _len, "AVX2 ", len - _len);
+            if (cpu & RETRO_SIMD_AVX512)
+               _len += strlcpy(s + _len, "AVX512 ", len - _len);
             if (cpu & RETRO_SIMD_NEON)
                _len += strlcpy(s + _len, "NEON ", len - _len);
             if (cpu & RETRO_SIMD_VFPV3)
@@ -8851,9 +8904,7 @@ bool retroarch_main_quit(void)
       if (discord_st->ready)
       {
          Discord_ClearPresence();
-#ifdef DISCORD_DISABLE_IO_THREAD
          Discord_UpdateConnection();
-#endif
          Discord_Shutdown();
          discord_st->ready       = false;
       }

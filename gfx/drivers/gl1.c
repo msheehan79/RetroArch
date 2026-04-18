@@ -2040,30 +2040,6 @@ static void gl1_set_texture_frame(void *data,
    }
 }
 
-static void gl1_get_video_output_size(void *data,
-      unsigned *width, unsigned *height, char *desc, size_t desc_len)
-{
-   gl1_t *gl         = (gl1_t*)data;
-   if (gl && gl->ctx_driver && gl->ctx_driver->get_video_output_size)
-      gl->ctx_driver->get_video_output_size(
-            gl->ctx_data,
-            width, height, desc, desc_len);
-}
-
-static void gl1_get_video_output_prev(void *data)
-{
-   gl1_t *gl         = (gl1_t*)data;
-   if (gl && gl->ctx_driver && gl->ctx_driver->get_video_output_prev)
-      gl->ctx_driver->get_video_output_prev(gl->ctx_data);
-}
-
-static void gl1_get_video_output_next(void *data)
-{
-   gl1_t *gl         = (gl1_t*)data;
-   if (gl && gl->ctx_driver && gl->ctx_driver->get_video_output_next)
-      gl->ctx_driver->get_video_output_next(gl->ctx_data);
-}
-
 static void gl1_set_video_mode(void *data, unsigned width, unsigned height,
       bool fullscreen)
 {
@@ -2090,7 +2066,7 @@ static void gl1_load_texture_data(
       const void *frame, unsigned base_size)
 {
    GLint filter;
-   bool use_rgba    = video_driver_supports_rgba();
+   bool use_rgba    = (video_driver_get_disp_flags() & VIDEO_FLAG_USE_RGBA);
    bool rgb32       = (base_size == (sizeof(uint32_t)));
    GLenum wrap      = gl1_wrap_type_to_enum(wrap_type);
 
@@ -2174,25 +2150,34 @@ static void video_texture_load_gl1(
 }
 
 #ifdef HAVE_THREADS
-static int video_texture_load_wrap_gl1(void *data)
+typedef struct
 {
-   uintptr_t id = 0;
-   gl1_t   *gl1 = (gl1_t*)video_driver_get_ptr();
+   gl1_t     *gl;
+   void      *payload;
+} gl1_texture_cmd_t;
 
-   if (gl1->ctx_driver->make_current)
+static uintptr_t video_texture_load_wrap_gl1(void *data)
+{
+   uintptr_t id             = 0;
+   gl1_texture_cmd_t *cmd   = (gl1_texture_cmd_t*)data;
+   gl1_t             *gl1   = cmd->gl;
+   void              *image = cmd->payload;
+
+   if (gl1 && gl1->ctx_driver->make_current)
       gl1->ctx_driver->make_current(false);
 
-   if (data)
-      video_texture_load_gl1((struct texture_image*)data,
+   if (image)
+      video_texture_load_gl1((struct texture_image*)image,
             TEXTURE_FILTER_NEAREST, &id);
    return (int)id;
 }
 
-static int video_texture_unload_wrap_gl1(void *data)
+static uintptr_t video_texture_unload_wrap_gl1(void *data)
 {
    GLuint  glid;
-   uintptr_t id = (uintptr_t)data;
-   gl1_t   *gl1 = (gl1_t*)video_driver_get_ptr();
+   gl1_texture_cmd_t *cmd = (gl1_texture_cmd_t*)data;
+   gl1_t             *gl1 = cmd->gl;
+   uintptr_t          id  = (uintptr_t)cmd->payload;
 
    if (gl1 && gl1->ctx_driver->make_current)
       gl1->ctx_driver->make_current(false);
@@ -2211,9 +2196,13 @@ static uintptr_t gl1_load_texture(void *video_data, void *data,
 #ifdef HAVE_THREADS
    if (threaded)
    {
+      gl1_texture_cmd_t cmd;
       custom_command_method_t func = video_texture_load_wrap_gl1;
 
-      return video_thread_texture_handle(data, func);
+      cmd.gl      = (gl1_t*)video_data;
+      cmd.payload = data;
+
+      return video_thread_texture_handle(&cmd, func);
    }
 #endif
 
@@ -2238,22 +2227,19 @@ static void gl1_unload_texture(void *data,
 #ifdef HAVE_THREADS
    if (threaded)
    {
+      gl1_texture_cmd_t cmd;
       custom_command_method_t func = video_texture_unload_wrap_gl1;
-      video_thread_texture_handle((void *)id, func);
+
+      cmd.gl      = (gl1_t*)data;
+      cmd.payload = (void*)id;
+
+      video_thread_texture_handle(&cmd, func);
       return;
    }
 #endif
 
    glid = (GLuint)id;
    glDeleteTextures(1, &glid);
-}
-
-static float gl1_get_refresh_rate(void *data)
-{
-   float refresh_rate = 0.0f;
-   if (video_context_driver_get_refresh_rate(&refresh_rate))
-      return refresh_rate;
-   return 0.0f;
 }
 
 static void gl1_set_texture_enable(void *data, bool state, bool full_screen)
@@ -2290,11 +2276,11 @@ static const video_poke_interface_t gl1_poke_interface = {
    gl1_load_texture,
    gl1_unload_texture,
    gl1_set_video_mode,
-   gl1_get_refresh_rate,
+   NULL, /* refresh_rate - handled by display server */
    NULL, /* set_filtering */
-   gl1_get_video_output_size,
-   gl1_get_video_output_prev,
-   gl1_get_video_output_next,
+   NULL, /* video_output_size - handled by display server */
+   NULL, /* video_output_prev - handled by display server */
+   NULL, /* video_output_next - handled by display server */
    NULL, /* get_current_framebuffer */
    NULL, /* get_proc_address */
    gl1_set_aspect_ratio,
@@ -2485,6 +2471,8 @@ video_driver_t video_gl1 = {
 #endif
    gl1_get_poke_interface,
    gl1_wrap_type_to_enum,
+   NULL, /* shader_load_begin */
+   NULL, /* shader_load_step */
 #ifdef HAVE_GFX_WIDGETS
    gl1_widgets_enabled
 #endif

@@ -3010,7 +3010,7 @@ bool runloop_environment_cb(unsigned cmd, void *data)
 
       case RETRO_ENVIRONMENT_GET_VFS_INTERFACE:
       {
-         const uint32_t supported_vfs_version = 3;
+         const uint32_t supported_vfs_version = 4;
          static struct retro_vfs_interface vfs_iface =
          {
             /* VFS API v1 */
@@ -3034,7 +3034,9 @@ bool runloop_environment_cb(unsigned cmd, void *data)
             retro_vfs_readdir_impl,
             retro_vfs_dirent_get_name_impl,
             retro_vfs_dirent_is_dir_impl,
-            retro_vfs_closedir_impl
+            retro_vfs_closedir_impl,
+             /* VFS API v4 */
+            retro_vfs_stat_64_impl,
          };
 
          struct retro_vfs_interface_info *vfs_iface_info = (struct retro_vfs_interface_info *) data;
@@ -7164,7 +7166,9 @@ static enum runloop_state_enum runloop_check_state(
    }
 #endif
 
+#ifdef HAVE_MENU
 end:
+#endif
    if (runloop_paused)
    {
       cbs->poll_cb();
@@ -7228,15 +7232,16 @@ int runloop_iterate(void)
    if (discord_st->inited)
    {
       Discord_RunCallbacks();
-#ifdef DISCORD_DISABLE_IO_THREAD
       Discord_UpdateConnection();
-#endif
    }
 #endif
 
 #ifdef HAVE_BSV_MOVIE
    bsv_movie_dequeue_next(input_st);
 #endif
+
+   /* Tick deferred shader compilation (one pass per frame) */
+   video_driver_shader_deferred_tick();
 
    if (runloop_st->frame_time.callback)
    {

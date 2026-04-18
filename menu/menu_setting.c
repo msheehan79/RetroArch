@@ -5069,6 +5069,15 @@ static size_t setting_get_string_representation_uint_custom_vp_height(
    return _len;
 }
 
+#ifdef HAVE_ASIO
+static int setting_action_asio_control_panel(
+      rarch_setting_t *setting, size_t idx, bool wraparound)
+{
+   audio_asio_open_control_panel();
+   return 0;
+}
+#endif
+
 #ifdef HAVE_WASAPI
 static size_t setting_get_string_representation_uint_audio_wasapi_sh_buffer_length(
       rarch_setting_t *setting, char *s, size_t len)
@@ -9538,6 +9547,20 @@ static void record_driver_write_handler(rarch_setting_t *setting)
                     | MENU_ST_FLAG_ENTRIES_NEED_REFRESH;
 }
 
+static void audio_driver_write_handler(rarch_setting_t *setting)
+{
+   /* Delegate to the generic write handler, then force the audio
+    * output settings page to rebuild so that driver-specific items
+    * (e.g. WASAPI options) are shown/hidden immediately when the
+    * audio driver changes. This fires for every write path
+    * (left/right scroll and dropdown OK selection) because they
+    * both invoke setting->change_handler. */
+   struct menu_state *menu_st = menu_state_get_ptr();
+   general_write_handler(setting);
+   menu_st->flags |= MENU_ST_FLAG_PREVENT_POPULATE
+                    | MENU_ST_FLAG_ENTRIES_NEED_REFRESH;
+}
+
 static int setting_record_driver_action_left(
       rarch_setting_t *setting, size_t idx, bool wraparound)
 {
@@ -11410,6 +11433,18 @@ static bool setting_append_list(
                   (*list)[list_info->index - 1].action_right
                         = setting_record_driver_action_right;
                }
+
+               /* Audio driver needs a refresh-aware write handler so that
+                * the audio output settings page rebuilds when the driver
+                * changes, hiding/showing driver-specific items such as
+                * the WASAPI options. Using change_handler (rather than
+                * action_left/right wrappers) covers both the left/right
+                * scroll and the dropdown OK selection paths, since each
+                * invokes setting->change_handler after writing. */
+               if (string_options_entries[i].name_enum_idx
+                     == MENU_ENUM_LABEL_AUDIO_DRIVER)
+                  (*list)[list_info->index - 1].change_handler
+                        = audio_driver_write_handler;
             }
 
             END_SUB_GROUP(list, list_info, parent_group);
@@ -14116,7 +14151,7 @@ static bool setting_append_list(
 
             END_SUB_GROUP(list, list_info, parent_group);
 
-            if (video_driver_supports_hdr())
+            if ((video_driver_get_disp_flags() & VIDEO_FLAG_HDR_SUPPORT))
             {
                START_SUB_GROUP(list, list_info, "HDR", &group_info, &subgroup_info, parent_group);
 
@@ -15392,6 +15427,20 @@ static bool setting_append_list(
                   &setting_get_string_representation_uint_audio_wasapi_sh_buffer_length;
             menu_settings_list_current_add_range(list, list_info, 0, 32.0f * 200, 32.0f, true, true);
             SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
+         }
+#endif
+
+#ifdef HAVE_ASIO
+         if (string_is_equal(audio_driver_get_ident(), "asio"))
+         {
+            CONFIG_ACTION(
+                  list, list_info,
+                  MENU_ENUM_LABEL_AUDIO_ASIO_CONTROL_PANEL,
+                  MENU_ENUM_LABEL_VALUE_AUDIO_ASIO_CONTROL_PANEL,
+                  &group_info,
+                  &subgroup_info,
+                  parent_group);
+            (*list)[list_info->index - 1].action_ok = &setting_action_asio_control_panel;
          }
 #endif
 

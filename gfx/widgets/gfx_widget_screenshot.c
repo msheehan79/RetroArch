@@ -231,7 +231,7 @@ static void gfx_widget_screenshot_context_destroy(void)
 
 static void gfx_widget_screenshot_frame(void* data, void *user_data)
 {
-   static float pure_white[16]          = {
+   float pure_white[16]          = {
       1.00, 1.00, 1.00, 1.00,
       1.00, 1.00, 1.00, 1.00,
       1.00, 1.00, 1.00, 1.00,
@@ -388,7 +388,7 @@ static void gfx_widget_screenshot_iterate(
       state->y       = 0.0f;
 
       gfx_display_reset_textures_list(state->filename,
-            "", &state->texture, TEXTURE_FILTER_MIPMAP_LINEAR,
+            "", &state->texture, TEXTURE_FILTER_LINEAR,
             &state->texture_width, &state->texture_height);
 
       state->height = font_regular->line_height * 4;

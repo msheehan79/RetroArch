@@ -194,14 +194,21 @@ static void drm_surface_free(void *data, struct drm_surface **sp)
 {
    int i;
    struct drm_video *_drmvars = data;
-   struct drm_surface *surface = *sp;
+   struct drm_surface *surface;
 
-   for (i = 0; i < surface->numpages; i++)
-      surface->pages[i].used = false;
+   if (sp)
+      surface = *sp;
+   else
+      return;
 
-   free(surface->pages);
+   if (surface)
+   {
+      for (i = 0; surface && (i < surface->numpages); i++)
+         surface->pages[i].used = false;
 
-   free(surface);
+      free(surface->pages);
+      free(surface);
+   }
    *sp = NULL;
 }
 
@@ -912,7 +919,7 @@ static const video_poke_interface_t drm_poke_interface = {
    NULL, /* load_texture */
    NULL, /* unload_texture */
    NULL, /* set_video_mode */
-   drm_get_refresh_rate,
+   NULL, /* refresh_rate - handled by display server */
    NULL, /* set_filtering */
    NULL, /* get_video_output_size */
    NULL, /* get_video_output_prev */
@@ -985,6 +992,8 @@ video_driver_t video_drm = {
 #endif
    drm_get_poke_interface,
    NULL, /* wrap_type_to_enum */
+   NULL, /* shader_load_begin */
+   NULL, /* shader_load_step */
 #ifdef HAVE_GFX_WIDGETS
    NULL  /* gfx_widgets_enabled */
 #endif

@@ -49,6 +49,9 @@
 
 #include "../font_driver.h"
 #include "../video_driver.h"
+#ifdef HAVE_THREADS
+#include "../video_thread_wrapper.h"
+#endif
 
 #include "../common/metal_common.h"
 
@@ -2331,52 +2334,6 @@ static void metal_ctx_swap_buffers(void *data)
       [md.context swapBuffers];
 }
 
-static void metal_ctx_swap_interval(void *data, int interval)
-{
-   /* No-op: displaySyncEnabled is already set by metal_set_nonblock_state,
-    * and swap_interval is stored in metal_swap_interval for frame duplication. */
-   (void)data;
-   (void)interval;
-}
-
-static gfx_ctx_driver_t metal_fake_context = {
-       NULL,                    /* init */
-       NULL,                    /* destroy */
-       NULL,                    /* get_api */
-       NULL,                    /* bind_api */
-       metal_ctx_swap_interval, /* swap_interval */
-       NULL,                    /* set_video_mode */
-       NULL,                    /* get_video_size */
-       NULL,                    /* get_refresh_rate */
-       NULL,                    /* get_video_output_size */
-       NULL,                    /* get_video_output_prev */
-       NULL,                    /* get_video_output_next */
-#ifdef HAVE_COCOATOUCH
-       metal_ctx_get_metrics,
-#else
-       NULL,
-#endif
-       NULL,                    /* translate_aspect */
-       NULL,                    /* update_title */
-       NULL,                    /* check_window */
-       NULL,                    /* set_resize */
-       NULL,                    /* has_focus */
-       NULL,                    /* suppress_screensaver */
-       false,                   /* has_windowed */
-       metal_ctx_swap_buffers,  /* swap_buffers */
-       NULL,                    /* input_driver */
-       NULL,                    /* get_proc_address */
-       NULL,                    /* image_buffer_init */
-       NULL,                    /* image_buffer_write */
-       NULL,                    /* show_mouse */
-       "metal",
-       NULL,                    /* get_flags */
-       NULL,                    /* set_flags */
-       NULL,
-       NULL,                    /* get_context_data */
-       NULL                     /* make_current */
-};
-
 static bool metal_set_shader(void *data,
       enum rarch_shader_type type, const char *path);
 
@@ -2385,7 +2342,6 @@ static void *metal_init(
       input_driver_t **input,
       void **input_data)
 {
-   const char *shader_path;
    MetalDriver *md = nil;
 
    [apple_platform setViewType:APPLE_VIEW_TYPE_METAL];
@@ -2396,13 +2352,6 @@ static void *metal_init(
 
    /* Store reference for context swap_buffers calls */
    metal_ctx_data = (__bridge void *)md;
-
-   metal_fake_context.get_flags = metal_get_flags;
-   video_context_driver_set(&metal_fake_context);
-
-   shader_path = video_shader_get_current_shader_preset();
-   metal_set_shader((__bridge void *)md,
-         video_shader_parse_type(shader_path), shader_path);
 
    return (__bridge_retained void *)md;
 }
@@ -2436,8 +2385,7 @@ static bool metal_frame(void *data, const void *frame,
    /* Call swap_buffers to acquire next drawable. This moves the blocking
     * acquisition to AFTER presenting (like Vulkan), instead of BEFORE
     * rendering. This is critical for proper 120Hz on ProMotion displays. */
-   if (metal_fake_context.swap_buffers)
-      metal_fake_context.swap_buffers(NULL);
+   metal_ctx_swap_buffers(NULL);
 
    /* Frame duping for shader_subframes - present multiple times per core frame
     * to match high refresh rate displays (e.g., 60fps core on 120Hz display).
@@ -2568,8 +2516,31 @@ static bool metal_read_viewport(void *data, uint8_t *buffer, bool is_idle)
    return [md.frameView readViewport:buffer isIdle:is_idle];
 }
 
-static uintptr_t metal_load_texture(void *video_data, void *data,
-      bool threaded, enum texture_filter_type filter_type)
+#ifdef HAVE_THREADS
+typedef struct
+{
+   void                         *video_data;  /* unretained MetalDriver * */
+   struct texture_image         *image;
+   enum texture_filter_type      filter_type;
+   uintptr_t                     handle;
+} metal_texture_cmd_t;
+#endif
+
+/* Inner load function -- performs the actual texture creation.
+ * Must run on the same thread that owns the Metal context's
+ * blit command buffer (the video thread when threaded video is
+ * active, otherwise the main thread).
+ *
+ * Metal's blit command buffer is lazily created on first use
+ * and committed during frame end.  It is stored on the shared
+ * Context instance, not thread-local.  Mipmapped texture loads
+ * encode mipmap-generation commands into this buffer via a
+ * BlitCommandEncoder -- and MTLCommandBuffer / MTLCommandEncoder
+ * are explicitly documented as single-thread-only.  Concurrent
+ * access from the main thread (mid-load) and the video thread
+ * (mid-frame-end commit) is undefined behaviour. */
+static uintptr_t metal_load_texture_internal(void *video_data, void *data,
+      enum texture_filter_type filter_type)
 {
    MetalDriver           *md  = (__bridge MetalDriver *)video_data;
    struct texture_image *img  = (struct texture_image *)data;
@@ -2581,11 +2552,56 @@ static uintptr_t metal_load_texture(void *video_data, void *data,
    return (uintptr_t)(__bridge_retained void *)(t);
 }
 
+#ifdef HAVE_THREADS
+/* Wrap function invoked on the video thread via
+ * CMD_CUSTOM_COMMAND.  Writes the handle to cmd->handle rather
+ * than the int return channel to avoid truncation on 64-bit
+ * Apple platforms where uintptr_t is 64 bits. */
+static uintptr_t metal_texture_load_wrap(void *data)
+{
+   metal_texture_cmd_t *cmd = (metal_texture_cmd_t*)data;
+   cmd->handle = metal_load_texture_internal(
+         cmd->video_data, cmd->image, cmd->filter_type);
+   return 0;
+}
+#endif
+
+static uintptr_t metal_load_texture(void *video_data, void *data,
+      bool threaded, enum texture_filter_type filter_type)
+{
+#ifdef HAVE_THREADS
+   /* When threaded video is active, dispatch to the video
+    * thread so Context.blitCommandBuffer access is serialised
+    * with the video thread's frame-end commit.  This is only
+    * required for mipmapped filters (which encode into the
+    * blit buffer), but we dispatch unconditionally for
+    * consistency and simplicity. */
+   if (threaded)
+   {
+      metal_texture_cmd_t cmd;
+      cmd.video_data  = video_data;
+      cmd.image       = (struct texture_image *)data;
+      cmd.filter_type = filter_type;
+      cmd.handle      = 0;
+      video_thread_texture_handle(&cmd, metal_texture_load_wrap);
+      return cmd.handle;
+   }
+#endif
+
+   return metal_load_texture_internal(video_data, data, filter_type);
+}
+
 static void metal_unload_texture(void *data,
       bool threaded, uintptr_t handle)
 {
    if (!handle)
       return;
+   /* Metal command buffers retain their referenced resources,
+    * so ARC-releasing the handle here does not free the
+    * underlying MTLTexture if the video thread's command
+    * buffer is still using it -- the Metal runtime refcounts
+    * resources across CPU and GPU.  No cross-thread
+    * serialisation needed for unload. */
    Texture *t = (__bridge_transfer Texture *)(void *)handle;
    t = nil;
 }
@@ -2867,6 +2883,8 @@ video_driver_t video_metal = {
 #endif
    metal_get_poke_interface,
    NULL, /* wrap_type_to_enum */
+   NULL, /* shader_load_begin */
+   NULL, /* shader_load_step */
 #ifdef HAVE_GFX_WIDGETS
    metal_widgets_enabled
 #endif

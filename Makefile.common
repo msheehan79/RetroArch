@@ -341,14 +341,11 @@ OBJ += \
        gfx/video_driver.o \
        gfx/gfx_display.o \
        gfx/gfx_animation.o \
+       gfx/gfx_thumbnail.o \
        configuration.o \
        $(LIBRETRO_COMM_DIR)/dynamic/dylib.o \
        cores/dynamic_dummy.o \
        $(LIBRETRO_COMM_DIR)/queues/message_queue.o
-
-ifeq ($(HAVE_MENU), 1)
-   OBJ += gfx/gfx_thumbnail.o
-endif
 
 ifeq ($(HAVE_MICROPHONE), 1)
    DEFINES += -DHAVE_MICROPHONE
@@ -525,34 +522,21 @@ endif
 
 ifeq ($(HAVE_QT), 1)
    OBJ += ui/drivers/ui_qt.o \
-          ui/drivers/qt/gridview.o \
-          ui/drivers/qt/qt_dialogs.o \
-          ui/drivers/qt/qt_widgets.o \
-          ui/drivers/qt/qt_playlist.o \
-          ui/drivers/qt/qt_downloads.o
-    ifeq ($(HAVE_MENU), 1)
-       OBJ += ui/drivers/qt/qt_options.o
-    endif
+          ui/drivers/ui_qt_widgets.o
 
    MOC_HEADERS += ui/drivers/ui_qt.h \
-                  ui/drivers/qt/ui_qt_load_core_window.h \
-                  ui/drivers/qt/gridview.h \
-                  ui/drivers/qt/qt_dialogs.h \
-                  ui/drivers/qt/qt_widgets.h
-   ifeq ($(HAVE_MENU), 1)
-      MOC_HEADERS += ui/drivers/qt/qt_options.h
-   endif
+                  ui/drivers/ui_qt_widgets.h
 
    DEFINES += -DHAVE_MAIN
 ifeq ($(HAVE_QT6), 1)
-   CXXFLAGS += -DQT_DISABLE_DEPRECATED_BEFORE=0x060000 $(QT6CORE_CFLAGS) $(QT6GUI_CFLAGS) $(QT6WIDGETS_CFLAGS) $(QT6CONCURRENT_CFLAGS) $(QT6NETWORK_CFLAGS)
+   CXXFLAGS += -DQT_DISABLE_DEPRECATED_BEFORE=0x060000 $(QT6CORE_CFLAGS) $(QT6GUI_CFLAGS) $(QT6WIDGETS_CFLAGS)
    #DEF_FLAGS += $(QT6WEBENGINE_CFLAGS)
-   LIBS += $(QT6CORE_LIBS) $(QT6GUI_LIBS) $(QT6WIDGETS_LIBS) $(QT6CONCURRENT_LIBS) $(QT6NETWORK_LIBS)
+   LIBS += $(QT6CORE_LIBS) $(QT6GUI_LIBS) $(QT6WIDGETS_LIBS)
    #LIBS += $(QT6WEBENGINE_LIBS)
 else
-   DEF_FLAGS += $(QT5CORE_CFLAGS) $(QT5GUI_CFLAGS) $(QT5WIDGETS_CFLAGS) $(QT5CONCURRENT_CFLAGS) $(QT5NETWORK_CFLAGS)
+   DEF_FLAGS += $(QT5CORE_CFLAGS) $(QT5GUI_CFLAGS) $(QT5WIDGETS_CFLAGS)
    #DEF_FLAGS += $(QT5WEBENGINE_CFLAGS)
-   LIBS += $(QT5CORE_LIBS) $(QT5GUI_LIBS) $(QT5WIDGETS_LIBS) $(QT5CONCURRENT_LIBS) $(QT5NETWORK_LIBS)
+   LIBS += $(QT5CORE_LIBS) $(QT5GUI_LIBS) $(QT5WIDGETS_LIBS)
    #LIBS += $(QT5WEBENGINE_LIBS)
 endif
 
@@ -947,7 +931,6 @@ endif
 ifeq ($(HAVE_DSOUND), 1)
    OBJ += audio/drivers/dsound.o
    DEFINES += -DHAVE_DSOUND
-   HAVE_DX_COMMON  = 1
    LIBS += -ldsound
 endif
 
@@ -956,6 +939,12 @@ ifeq ($(HAVE_WASAPI), 1)
    OBJ += audio/drivers/wasapi.o
    DEFINES += -DHAVE_WASAPI
    LIBS += -lole32 -lksuser
+endif
+
+ifeq ($(HAVE_ASIO), 1)
+   OBJ += audio/drivers/asio.o
+   DEFINES += -DHAVE_ASIO
+   LIBS += -lole32
 endif
 
 ifeq ($(HAVE_XAUDIO), 1)
@@ -1292,6 +1281,7 @@ endif
 
 ifeq ($(HAVE_WAYLAND), 1)
  OBJ += gfx/drivers_context/wayland_ctx.o \
+        gfx/display_servers/dispserv_wl.o \
         input/common/wayland_common.o \
         input/drivers/wayland_input.o \
         gfx/common/wayland_common.o \
@@ -1345,7 +1335,6 @@ OBJ += \
 #Input
 
 ifeq ($(HAVE_DINPUT), 1)
-   HAVE_DX_COMMON  = 1
    LIBS += -ldinput8 -lole32
    DEFINES += -DHAVE_DINPUT
    OBJ += input/drivers/dinput.o
@@ -1783,17 +1772,9 @@ endif
 ifeq ($(HAVE_D3D9), 1)
    HAVE_D3D_COMMON = 1
    DEFINES += -DHAVE_D3D9
-   ifeq ($(HAVE_D3DX9), 1)
-      HAVE_D3DX_COMMON = 1
-   endif
    ifneq ($(HAVE_DYLIB), 1)
       LIBS += $(D3D9_LIBS)
-      ifeq ($(HAVE_D3DX9), 1)
-         LIBS += $(D3DX9_LIBS)
-      endif
    endif
-   HAVE_DX_COMMON  = 1
-   OBJ  += gfx/drivers_font/d3d9x_w32_font.o
    ifeq ($(HAVE_CG), 1)
       LIBS += -lcgD3D9
       OBJ  += gfx/drivers/d3d9cg.o
@@ -1827,25 +1808,10 @@ endif
 
 ifeq ($(HAVE_D3D8), 1)
    HAVE_D3D_COMMON = 1
-   HAVE_DX_COMMON  = 1
    DEFINES += -DHAVE_D3D8
-   ifeq ($(HAVE_D3DX8), 1)
-      HAVE_D3DX_COMMON = 1
-   endif
    ifneq ($(HAVE_DYLIB), 1)
       LIBS += $(D3D8_LIBS)
-      ifeq ($(HAVE_D3DX8), 1)
-         LIBS += $(D3DX8_LIBS)
-      endif
    endif
-endif
-
-ifeq ($(HAVE_D3DX_COMMON), 1)
-   DEFINES += -DHAVE_D3DX
-endif
-
-ifeq ($(HAVE_DX_COMMON), 1)
-   LIBS += -ldxguid
 endif
 
 ifeq ($(HAVE_D3D8), 1)
@@ -2338,16 +2304,13 @@ ifeq ($(HAVE_NETWORKING), 1)
           network/natt.o \
           tasks/task_netplay_lan_scan.o \
           tasks/task_netplay_nat_traversal.o \
+	  tasks/task_pl_thumbnail_download.o \
           tasks/task_netplay_find_content.o
 
    ifeq ($(HAVE_EMSCRIPTEN), 1)
      OBJ += tasks/task_http_emscripten.o
    else
      OBJ += tasks/task_http.o
-   endif
-
-   ifeq ($(HAVE_MENU), 1)
-      OBJ += tasks/task_pl_thumbnail_download.o
    endif
 
    ifeq ($(HAVE_MENU_COMMON), 1)
@@ -2498,34 +2461,10 @@ ifeq ($(HAVE_NETWORKING), 1)
    endif
 
    ifeq ($(HAVE_DISCORD), 1)
-      NEED_CXX_LINKER = 1
       HAVE_PRESENCE = 1
       DEFINES += -DHAVE_DISCORD
-      INCLUDE_DIRS += -Ideps/discord-rpc/include
-
-      ifneq ($(HAVE_THREADS), 1)
-         DEFINES += -DDISCORD_DISABLE_IO_THREAD
-      endif
-
-      OBJ     += deps/discord-rpc/src/discord_rpc.o \
-                 deps/discord-rpc/src/rpc_connection.o \
-                 deps/discord-rpc/src/serialization.o
 
       OBJ     += network/discord.o
-
-      ifneq ($(findstring Win32,$(OS)),)
-         OBJ  += deps/discord-rpc/src/discord_register_win.o \
-                 deps/discord-rpc/src/connection_win.o
-         LIBS += -lpsapi -ladvapi32
-      endif
-      ifneq ($(findstring Linux,$(OS)),)
-         OBJ  += deps/discord-rpc/src/discord_register_linux.o \
-                 deps/discord-rpc/src/connection_unix.o
-      endif
-      ifneq ($(findstring Darwin,$(OS)),)
-         OBJ  += deps/discord-rpc/src/discord_register_osx.o \
-                 deps/discord-rpc/src/connection_unix.o
-      endif
    endif
 
    ifeq ($(HAVE_TRANSLATE), 1)
@@ -2545,7 +2484,8 @@ ifneq ($(findstring Win32,$(OS)),)
    OBJ += media/rarch.o \
           gfx/common/win32_common.o \
           frontend/drivers/platform_win32.o \
-          gfx/display_servers/dispserv_win32.o
+          gfx/display_servers/dispserv_win32.o \
+          gfx/common/dx_guids.o
 
    ifeq ($(HAVE_GDI), 1)
       OBJ += gfx/drivers/gdi_gfx.o

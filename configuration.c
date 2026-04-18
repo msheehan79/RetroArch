@@ -446,17 +446,14 @@ static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_METAL;
 #elif defined(HAVE_D3D11) || defined(__WINRT__) || (defined(WINAPI_FAMILY) && WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP)
 /* Default to D3D11 in UWP, even when its compiled with ANGLE, since ANGLE is just calling D3D anyway.*/
 static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_D3D11;
-#elif defined(HAVE_OPENGL1) && defined(_MSC_VER) && (_MSC_VER <= 1600)
-/* On Windows XP and earlier, use gl1 by default
- * (regular opengl has compatibility issues with
- * obsolete hardware drivers...) */
-static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_GL1;
 #elif defined(HAVE_VITA2D)
 static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_VITA2D;
 #elif defined(HAVE_OPENGL) || defined(HAVE_OPENGLES) || defined(HAVE_PSGL)
 static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_GL;
 #elif defined(HAVE_OPENGL_CORE) && !defined(__HAIKU__)
 static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_GL_CORE;
+#elif defined(HAVE_D3D9) && defined(HAVE_HLSL)
+#define GFX_VIDEO_DRIVER_DEFAULT "d3d9_hlsl"
 #elif defined(HAVE_OPENGL1)
 static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_GL1;
 #elif defined(HAVE_VULKAN)
@@ -1932,6 +1929,7 @@ static struct config_bool_setting *populate_settings_bool(
    SETTING_BOOL("crt_switch_resolution_use_custom_refresh_rate", &settings->bools.crt_switch_custom_refresh_enable, true, false, false);
    SETTING_BOOL("crt_switch_hires_menu",         &settings->bools.crt_switch_hires_menu, true, false, true);
    SETTING_BOOL("video_shader_enable",           &settings->bools.video_shader_enable, true, DEFAULT_SHADER_ENABLE, false);
+   SETTING_BOOL("video_shader_deferred_loading", &settings->bools.video_shader_deferred_loading, true, DEFAULT_SHADER_DEFERRED_LOADING, false);
    SETTING_BOOL("video_shader_watch_files",      &settings->bools.video_shader_watch_files, true, DEFAULT_VIDEO_SHADER_WATCH_FILES, false);
    SETTING_BOOL("video_shader_remember_last_dir", &settings->bools.video_shader_remember_last_dir, true, DEFAULT_VIDEO_SHADER_REMEMBER_LAST_DIR, false);
    SETTING_BOOL("video_shader_preset_save_reference_enable", &settings->bools.video_shader_preset_save_reference_enable, true, DEFAULT_VIDEO_SHADER_PRESET_SAVE_REFERENCE_ENABLE, false);
@@ -5864,6 +5862,9 @@ bool config_save_file(const char *path)
             input_driver_state_t *input_st = input_state_get_ptr();
             input_device_info_t saved_device_info[MAX_INPUT_DEVICES];
             retro_keybind_set *saved_autoconf_binds;
+#ifdef HAVE_LANGEXTRA
+            unsigned saved_user_language = *msg_hash_get_uint(MSG_HASH_USER_LANGUAGE);
+#endif
 
             /* Save current input_config_binds */
             retro_keybind_set saved_binds[MAX_USERS];
@@ -5916,6 +5917,11 @@ bool config_save_file(const char *path)
             /* Restore input_device_info */
             memcpy(input_st->input_device_info, saved_device_info,
                    sizeof(saved_device_info));
+
+#ifdef HAVE_LANGEXTRA
+            /* Restore user_language global, clobbered by config_set_defaults. */
+            msg_hash_set_uint(MSG_HASH_USER_LANGUAGE, saved_user_language);
+#endif
 
             /* Restore input_autoconf_binds (free strings allocated by input_config_reset, then restore) */
             if (saved_autoconf_binds)
@@ -6123,9 +6129,30 @@ bool config_save_file(const char *path)
          if (   !uint_settings[i].override
              || !retroarch_override_setting_is_set(uint_settings[i].override, NULL))
          {
+            unsigned default_val = 0;
+            bool has_default     = false;
+
+            if (minimal)
+            {
+               if (uint_settings[i].ptr == uint_defaults[i].ptr)
+               {
+                  if (uint_settings[i].flags & CFG_BOOL_FLG_DEF_ENABLE)
+                  {
+                     default_val = uint_settings[i].def;
+                     has_default = true;
+                  }
+               }
+               else
+               {
+                  default_val = *uint_defaults[i].ptr;
+                  has_default = true;
+               }
+            }
+
             /* In minimal mode, only save if value differs from default */
             if (   !minimal
-                || *uint_settings[i].ptr != *uint_defaults[i].ptr)
+                || !has_default
+                || *uint_settings[i].ptr != default_val)
             {
                config_set_int(conf,
                      uint_settings[i].ident,

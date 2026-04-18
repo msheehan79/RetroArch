@@ -139,6 +139,7 @@ typedef struct gl3
       GLuint snow_simple;
       GLuint snow;
       GLuint bokeh;
+      GLuint snowflake;
 #endif /* HAVE_SHADERPIPELINE */
       struct gl3_buffer_locations alpha_blend_loc;
       struct gl3_buffer_locations font_loc;
@@ -148,6 +149,7 @@ typedef struct gl3
       struct gl3_buffer_locations snow_simple_loc;
       struct gl3_buffer_locations snow_loc;
       struct gl3_buffer_locations bokeh_loc;
+      struct gl3_buffer_locations snowflake_loc;
 #endif /* HAVE_SHADERPIPELINE */
    } pipelines;
 #endif /* HAVE_SLANG */
@@ -604,7 +606,7 @@ static void gfx_display_gl3_draw_pipeline(
             draw->backend_data_size          = 2 * sizeof(float);
 
             /* Match UBO layout in shader. */
-            yflip = -1.0f;
+            yflip = 1.0f;
             memcpy(ubo_scratch_data, &t, sizeof(t));
             memcpy(ubo_scratch_data + sizeof(float), &yflip, sizeof(yflip));
             break;
@@ -613,6 +615,7 @@ static void gfx_display_gl3_draw_pipeline(
          case VIDEO_SHADER_MENU_3:
          case VIDEO_SHADER_MENU_4:
          case VIDEO_SHADER_MENU_5:
+         case VIDEO_SHADER_MENU_6:
             draw->backend_data               = ubo_scratch_data;
             draw->backend_data_size          = sizeof(math_matrix_4x4)
                + 4 * sizeof(float);
@@ -625,7 +628,8 @@ static void gfx_display_gl3_draw_pipeline(
                   output_size,
                   sizeof(output_size));
 
-            if (draw->pipeline_id == VIDEO_SHADER_MENU_5)
+            if (   draw->pipeline_id == VIDEO_SHADER_MENU_5
+                || draw->pipeline_id == VIDEO_SHADER_MENU_6)
                yflip = 1.0f;
 
             memcpy(ubo_scratch_data + sizeof(math_matrix_4x4)
@@ -738,6 +742,11 @@ static void gfx_display_gl3_draw(gfx_display_ctx_draw_t *draw,
          case VIDEO_SHADER_MENU_5:
             glUseProgram(gl->pipelines.bokeh);
             loc = &gl->pipelines.bokeh_loc;
+            break;
+
+         case VIDEO_SHADER_MENU_6:
+            glUseProgram(gl->pipelines.snowflake);
+            loc = &gl->pipelines.snowflake_loc;
             break;
 #endif /* HAVE_SHADERPIPELINE */
 
@@ -1755,6 +1764,11 @@ static void gl3_destroy_resources(gl3_t *gl)
       glDeleteProgram(gl->pipelines.bokeh);
       gl->pipelines.bokeh = 0;
    }
+   if (gl->pipelines.snowflake)
+   {
+      glDeleteProgram(gl->pipelines.snowflake);
+      gl->pipelines.snowflake = 0;
+   }
 #endif /* HAVE_SHADERPIPELINE */
 #endif /* HAVE_SLANG */
 
@@ -2055,6 +2069,10 @@ static bool gl3_init_pipelines(gl3_t *gl)
    static const uint32_t pipeline_bokeh_frag[] =
 #include "vulkan_shaders/pipeline_bokeh.frag.inc"
       ;
+
+   static const uint32_t pipeline_snowflake_frag[] =
+#include "vulkan_shaders/pipeline_snowflake.frag.inc"
+      ;
 #endif /* HAVE_SHADERPIPELINE */
 
    if (!gl->pipelines.alpha_blend)
@@ -2091,6 +2109,13 @@ static bool gl3_init_pipelines(gl3_t *gl)
                                                        pipeline_bokeh_frag, sizeof(pipeline_bokeh_frag),
                                                        &gl->pipelines.bokeh_loc, true);
    if (!gl->pipelines.bokeh)
+      return false;
+
+   if (!gl->pipelines.snowflake)
+      gl->pipelines.snowflake = gl3_cross_compile_program(alpha_blend_vert, sizeof(alpha_blend_vert),
+                                                           pipeline_snowflake_frag, sizeof(pipeline_snowflake_frag),
+                                                           &gl->pipelines.snowflake_loc, true);
+   if (!gl->pipelines.snowflake)
       return false;
 
    if (!gl->pipelines.snow_simple)
@@ -3341,6 +3366,144 @@ static bool gl3_suppress_screensaver(void *data, bool enable)
    return false;
 }
 
+#ifdef HAVE_SLANG
+/* ---- Deferred (per-frame) shader loading for GL Core ---- */
+
+typedef struct gl3_deferred_state
+{
+   gl3_filter_chain_t *new_chain;   /* chain being built          */
+   gl3_filter_chain_t *old_chain;   /* previous, kept as fallback */
+   enum glslang_filter_chain_filter filter;
+} gl3_deferred_state_t;
+
+static bool gl3_shader_load_begin(void *data,
+      shader_load_deferred_t *deferred)
+{
+   gl3_t *gl = (gl3_t *)data;
+   gl3_deferred_state_t *ds;
+
+   if (!gl)
+      return false;
+
+   ds = (gl3_deferred_state_t*)calloc(1, sizeof(*ds));
+   if (!ds)
+      return false;
+
+   if (gl->flags & GL3_FLAG_USE_SHARED_CONTEXT)
+      gl->ctx_driver->bind_hw_render(gl->ctx_data, false);
+
+   /* Keep old chain alive — it continues rendering
+    * while the new one is being compiled. */
+   ds->old_chain = gl->filter_chain;
+   ds->filter    = gl->video_info.smooth
+      ? GLSLANG_FILTER_CHAIN_LINEAR
+      : GLSLANG_FILTER_CHAIN_NEAREST;
+
+   ds->new_chain = gl3_filter_chain_create_deferred(
+         deferred->preset_path,
+         ds->filter,
+         &deferred->total_passes);
+
+   if (gl->flags & GL3_FLAG_USE_SHARED_CONTEXT)
+      gl->ctx_driver->bind_hw_render(gl->ctx_data, true);
+
+   if (!ds->new_chain)
+   {
+      RARCH_ERR("[GLCore] Deferred: failed to create chain for \"%s\".\n",
+            deferred->preset_path);
+      free(ds);
+      return false;
+   }
+
+   RARCH_LOG("[GLCore] Deferred: prepared %u passes for \"%s\".\n",
+         deferred->total_passes, deferred->preset_path);
+
+   deferred->driver_data = ds;
+   return true;
+}
+
+static bool gl3_shader_load_step(void *data,
+      shader_load_deferred_t *deferred)
+{
+   gl3_t *gl                = (gl3_t *)data;
+   gl3_deferred_state_t *ds = (gl3_deferred_state_t*)deferred->driver_data;
+   unsigned pass            = deferred->current_pass;
+
+   if (!gl || !ds)
+   {
+      deferred->state = SHADER_LOAD_FAILED;
+      return false;
+   }
+
+   if (gl->flags & GL3_FLAG_USE_SHARED_CONTEXT)
+      gl->ctx_driver->bind_hw_render(gl->ctx_data, false);
+
+   if (pass < deferred->total_passes)
+   {
+      RARCH_LOG("[GLCore] Deferred: compiling pass %u/%u...\n",
+            pass + 1, deferred->total_passes);
+
+      if (!gl3_filter_chain_compile_pass(ds->new_chain, pass, ds->filter))
+      {
+         RARCH_ERR("[GLCore] Deferred: failed to compile pass %u.\n", pass);
+         gl3_filter_chain_free(ds->new_chain);
+         /* Restore old chain */
+         gl->filter_chain = ds->old_chain;
+         deferred->state  = SHADER_LOAD_FAILED;
+         goto cleanup;
+      }
+
+      deferred->current_pass++;
+
+      if (gl->flags & GL3_FLAG_USE_SHARED_CONTEXT)
+         gl->ctx_driver->bind_hw_render(gl->ctx_data, true);
+
+      return true; /* more work remains */
+   }
+
+   /* Check if this is a cancellation (state was changed externally).
+    * Don't try to finalize a partially compiled chain — just clean up. */
+   if (deferred->state != SHADER_LOAD_COMPILING)
+   {
+      RARCH_LOG("[GLCore] Deferred: cancelled, cleaning up.\n");
+      gl3_filter_chain_free(ds->new_chain);
+      gl->filter_chain = ds->old_chain;
+      deferred->state  = SHADER_LOAD_FAILED;
+      goto cleanup;
+   }
+
+   /* All passes compiled — finalize the chain */
+   RARCH_LOG("[GLCore] Deferred: finalizing chain...\n");
+
+   if (gl3_filter_chain_finalize(ds->new_chain))
+   {
+      /* Tear down old chain */
+      if (ds->old_chain)
+         gl3_filter_chain_free(ds->old_chain);
+
+      /* Swap in the new chain */
+      gl->filter_chain = ds->new_chain;
+      deferred->state  = SHADER_LOAD_DONE;
+
+      RARCH_LOG("[GLCore] Deferred: shader loaded successfully.\n");
+   }
+   else
+   {
+      RARCH_ERR("[GLCore] Deferred: finalize failed.\n");
+      gl3_filter_chain_free(ds->new_chain);
+      gl->filter_chain = ds->old_chain;
+      deferred->state  = SHADER_LOAD_FAILED;
+   }
+
+cleanup:
+   if (gl->flags & GL3_FLAG_USE_SHARED_CONTEXT)
+      gl->ctx_driver->bind_hw_render(gl->ctx_data, true);
+   free(ds);
+   deferred->driver_data = NULL;
+   return false; /* no more work */
+}
+#endif /* HAVE_SLANG */
+
 static bool gl3_set_shader(void *data,
       enum rarch_shader_type type, const char *path)
 {
@@ -4382,14 +4545,6 @@ static uint32_t gl3_get_flags(void *data)
    return flags;
 }
 
-static float gl3_get_refresh_rate(void *data)
-{
-   float refresh_rate;
-   if (video_context_driver_get_refresh_rate(&refresh_rate))
-       return refresh_rate;
-   return 0.0f;
-}
-
 static void gl3_set_aspect_ratio(void *data, unsigned aspect_ratio_idx)
 {
    gl3_t *gl     = (gl3_t*)data;
@@ -4422,39 +4577,50 @@ static struct video_shader *gl3_get_current_shader(void *data)
 }
 
 #ifdef HAVE_THREADS
-static int video_texture_load_wrap_gl3_mipmap(void *data)
+typedef struct
 {
-   GLuint id = 0;
-   gl3_t *gl = (gl3_t*)video_driver_get_ptr();
+   gl3_t     *gl;
+   void      *payload;
+} gl3_texture_cmd_t;
+
+static uintptr_t video_texture_load_wrap_gl3_mipmap(void *data)
+{
+   GLuint id               = 0;
+   gl3_texture_cmd_t *cmd  = (gl3_texture_cmd_t*)data;
+   gl3_t             *gl   = cmd->gl;
+   void              *image = cmd->payload;
 
    if (gl && gl->ctx_driver->make_current)
       gl->ctx_driver->make_current(false);
 
-   if (data)
-      video_texture_load_gl3((struct texture_image*)data,
+   if (image)
+      video_texture_load_gl3((struct texture_image*)image,
             TEXTURE_FILTER_MIPMAP_LINEAR, &id);
    return (int)id;
 }
 
-static int video_texture_load_wrap_gl3(void *data)
+static uintptr_t video_texture_load_wrap_gl3(void *data)
 {
-   GLuint id = 0;
-   gl3_t *gl = (gl3_t*)video_driver_get_ptr();
+   GLuint id               = 0;
+   gl3_texture_cmd_t *cmd  = (gl3_texture_cmd_t*)data;
+   gl3_t             *gl   = cmd->gl;
+   void              *image = cmd->payload;
 
    if (gl && gl->ctx_driver->make_current)
       gl->ctx_driver->make_current(false);
 
-   if (data)
-      video_texture_load_gl3((struct texture_image*)data,
+   if (image)
+      video_texture_load_gl3((struct texture_image*)image,
             TEXTURE_FILTER_LINEAR, &id);
    return (int)id;
 }
 
-static int video_texture_unload_wrap_gl3(void *data)
+static uintptr_t video_texture_unload_wrap_gl3(void *data)
 {
    GLuint  glid;
-   uintptr_t id = (uintptr_t)data;
-   gl3_t    *gl = (gl3_t*)video_driver_get_ptr();
+   gl3_texture_cmd_t *cmd = (gl3_texture_cmd_t*)data;
+   gl3_t             *gl  = cmd->gl;
+   uintptr_t          id  = (uintptr_t)cmd->payload;
 
    if (gl && gl->ctx_driver->make_current)
       gl->ctx_driver->make_current(false);
@@ -4473,7 +4639,12 @@ static uintptr_t gl3_load_texture(void *video_data, void *data,
 #ifdef HAVE_THREADS
    if (threaded)
    {
+      gl3_texture_cmd_t cmd;
       custom_command_method_t func = video_texture_load_wrap_gl3;
+
+      cmd.gl      = (gl3_t*)video_data;
+      cmd.payload = data;
+
       switch (filter_type)
       {
          case TEXTURE_FILTER_MIPMAP_LINEAR:
@@ -4483,7 +4654,7 @@ static uintptr_t gl3_load_texture(void *video_data, void *data,
          default:
             break;
       }
-      return video_thread_texture_handle(data, func);
+      return video_thread_texture_handle(&cmd, func);
    }
 #endif
 
@@ -4501,8 +4672,13 @@ static void gl3_unload_texture(void *data, bool threaded,
 #ifdef HAVE_THREADS
    if (threaded)
    {
+      gl3_texture_cmd_t cmd;
       custom_command_method_t func = video_texture_unload_wrap_gl3;
-      video_thread_texture_handle((void *)id, func);
+
+      cmd.gl      = (gl3_t*)data;
+      cmd.payload = (void*)id;
+
+      video_thread_texture_handle(&cmd, func);
       return;
    }
 #endif
@@ -4590,30 +4766,6 @@ static void gl3_set_texture_enable(void *data, bool state, bool fullscreen)
       gl->flags &= ~GL3_FLAG_MENU_TEXTURE_FULLSCREEN;
 }
 
-static void gl3_get_video_output_size(void *data,
-      unsigned *width, unsigned *height, char *desc, size_t desc_len)
-{
-   gl3_t   *gl = (gl3_t*)data;
-   if (gl && gl->ctx_driver && gl->ctx_driver->get_video_output_size)
-      gl->ctx_driver->get_video_output_size(
-            gl->ctx_data,
-            width, height, desc, desc_len);
-}
-
-static void gl3_get_video_output_prev(void *data)
-{
-   gl3_t   *gl = (gl3_t*)data;
-   if (gl && gl->ctx_driver && gl->ctx_driver->get_video_output_prev)
-      gl->ctx_driver->get_video_output_prev(gl->ctx_data);
-}
-
-static void gl3_get_video_output_next(void *data)
-{
-   gl3_t   *gl = (gl3_t*)data;
-   if (gl && gl->ctx_driver && gl->ctx_driver->get_video_output_next)
-      gl->ctx_driver->get_video_output_next(gl->ctx_data);
-}
-
 static uintptr_t gl3_get_current_framebuffer(void *data)
 {
    gl3_t *gl = (gl3_t*)data;
@@ -4636,11 +4788,11 @@ static const video_poke_interface_t gl3_poke_interface = {
    gl3_load_texture,
    gl3_unload_texture,
    gl3_set_video_mode,
-   gl3_get_refresh_rate,
+   NULL, /* refresh_rate - handled by display server */
    NULL, /* set_filtering */
-   gl3_get_video_output_size,
-   gl3_get_video_output_prev,
-   gl3_get_video_output_next,
+   NULL, /* video_output_size - handled by display server */
+   NULL, /* video_output_prev - handled by display server */
+   NULL, /* video_output_next - handled by display server */
    gl3_get_current_framebuffer,
    gl3_get_proc_address,
    gl3_set_aspect_ratio,
@@ -4737,6 +4889,13 @@ video_driver_t video_gl3 = {
 #endif
    gl3_get_poke_interface,
    gl3_wrap_type_to_enum,
+#ifdef HAVE_SLANG
+   gl3_shader_load_begin,
+   gl3_shader_load_step,
+#else
+   NULL, /* shader_load_begin */
+   NULL, /* shader_load_step */
+#endif
 #ifdef HAVE_GFX_WIDGETS
    gl3_gfx_widgets_enabled
 #endif

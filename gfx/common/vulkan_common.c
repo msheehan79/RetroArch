@@ -2121,31 +2121,36 @@ bool vulkan_create_swapchain(gfx_ctx_vulkan_data_t *vk,
           * The colorspace extension alone is not enough — some
           * drivers expose the extension without any HDR surface
           * formats. */
-         video_driver_unset_hdr_support();
-         video_driver_unset_hdr10_support();
-         video_driver_unset_scrgb_support();
-         for (i = 0; i < format_count; i++)
          {
-            if (  vulkan_is_hdr10_format(formats[i].format)
-               && formats[i].colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT)
-               video_driver_set_hdr10_support();
-            if (  formats[i].format     == VK_FORMAT_R16G16B16A16_SFLOAT
-               && formats[i].colorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT)
-               video_driver_set_scrgb_support();
+            uint32_t disp_flags = video_driver_get_disp_flags();
+            disp_flags &= ~(VIDEO_FLAG_HDR_SUPPORT | VIDEO_FLAG_HDR10_SUPPORT | VIDEO_FLAG_SCRGB_SUPPORT);
+            for (i = 0; i < format_count; i++)
+            {
+               if (  vulkan_is_hdr10_format(formats[i].format)
+                  && formats[i].colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT)
+                  disp_flags |= VIDEO_FLAG_HDR10_SUPPORT;
+               if (  formats[i].format     == VK_FORMAT_R16G16B16A16_SFLOAT
+                  && formats[i].colorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT)
+                  disp_flags |= VIDEO_FLAG_SCRGB_SUPPORT;
+            }
+            if (disp_flags & (VIDEO_FLAG_HDR10_SUPPORT | VIDEO_FLAG_SCRGB_SUPPORT))
+               disp_flags |= VIDEO_FLAG_HDR_SUPPORT;
+            video_driver_set_disp_flags(disp_flags);
          }
-         if (video_driver_supports_hdr10() || video_driver_supports_scrgb())
-            video_driver_set_hdr_support();
 
          /* Clamp the selected mode if the surface doesn't support it */
-         if (video_hdr_mode == 2 && !video_driver_supports_scrgb())
          {
-            RARCH_WARN("[Vulkan] scRGB not available on this surface, falling back.\n");
-            video_hdr_mode = video_driver_supports_hdr10() ? 1 : 0;
-         }
-         if (video_hdr_mode == 1 && !video_driver_supports_hdr10())
-         {
-            RARCH_WARN("[Vulkan] HDR10 not available on this surface, falling back.\n");
-            video_hdr_mode = 0;
+            uint32_t disp_flags = video_driver_get_disp_flags();
+            if (video_hdr_mode == 2 && !(disp_flags & VIDEO_FLAG_SCRGB_SUPPORT))
+            {
+               RARCH_WARN("[Vulkan] scRGB not available on this surface, falling back.\n");
+               video_hdr_mode = (disp_flags & VIDEO_FLAG_HDR10_SUPPORT) ? 1 : 0;
+            }
+            if (video_hdr_mode == 1 && !(disp_flags & VIDEO_FLAG_HDR10_SUPPORT))
+            {
+               RARCH_WARN("[Vulkan] HDR10 not available on this surface, falling back.\n");
+               video_hdr_mode = 0;
+            }
          }
 
          if (video_hdr_mode > 0)
@@ -2321,11 +2326,19 @@ bool vulkan_create_swapchain(gfx_ctx_vulkan_data_t *vk,
    info.compositeAlpha         = composite;
    info.presentMode            = swapchain_present_mode;
    info.clipped                = VK_TRUE;
-   info.oldSwapchain           = old_swapchain;
 
-   info.oldSwapchain = VK_NULL_HANDLE;
+   /* TODO/FIXME:
+    * Weird shenanigans necessary for Apple otherwise the following happens:
+    * The menu sometimes refuses to display, but still responds to input. 
+    * This happens about 1/5 times on macOS but 100% in the quick menu on iOS
+    */
+#ifdef __APPLE__
+   info.oldSwapchain           = NULL;
    if (old_swapchain != VK_NULL_HANDLE)
       vkDestroySwapchainKHR(vk->context.device, old_swapchain, NULL);
+#else
+   info.oldSwapchain           = old_swapchain;
+#endif
 
 #ifdef VK_USE_PLATFORM_WIN32_KHR
    if (vk->fse_supported)
@@ -2347,6 +2360,12 @@ bool vulkan_create_swapchain(gfx_ctx_vulkan_data_t *vk,
          return false;
       }
    }
+
+   /* See TODO/FIXME note above - part of the same rubber bandaid hack 'fix' */
+#ifndef __APPLE__
+   if (old_swapchain != VK_NULL_HANDLE)
+      vkDestroySwapchainKHR(vk->context.device, old_swapchain, NULL);
+#endif
 
    vk->context.swapchain_width        = swapchain_size.width;
    vk->context.swapchain_height       = swapchain_size.height;

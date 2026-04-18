@@ -14,6 +14,20 @@
 * You should have received a copy of the GNU General Public License along with RetroArch.
 * If not, see <http://www.gnu.org/licenses/>.
 */
+
+/* Emit DirectX COM GUID storage inline rather than requiring
+ * dxguid.lib from the legacy June 2010 DirectX SDK. The Windows 7.x
+ * Platform SDK (shipped with MSVC 2010 and earlier) does not ship
+ * that library. Including <initguid.h> before any DX header causes
+ * DEFINE_GUID() to emit storage rather than extern references.
+ *
+ * Skipped on UWP/WinRT and Xbox, where dxguid.lib ships with the
+ * modern Windows SDK or GUIDs come from a console SDK. */
+#if defined(_WIN32) && !defined(_XBOX) \
+ && (!defined(WINAPI_FAMILY) || (WINAPI_FAMILY == WINAPI_FAMILY_DESKTOP_APP))
+#include <initguid.h>
+#endif
+
 #define VFS_FRONTEND
 #include <retro_environment.h>
 
@@ -284,6 +298,8 @@ VIDEO CONTEXT
 
 #if !defined(__WINRT__)
 #include "../gfx/display_servers/dispserv_win32.c"
+#else
+#include "../gfx/display_servers/dispserv_uwp.c"
 #endif
 
 #endif
@@ -312,6 +328,7 @@ VIDEO CONTEXT
 
 #ifdef HAVE_WAYLAND
 #include "../gfx/drivers_context/wayland_ctx.c"
+#include "../gfx/display_servers/dispserv_wl.c"
 #ifdef HAVE_VULKAN
 #include "../gfx/drivers_context/wayland_vk_ctx.c"
 #endif
@@ -463,8 +480,12 @@ VIDEO DRIVER
 #include "../gfx/drivers/d3d10.c"
 #endif
 
-#if defined(HAVE_D3D10) || defined(HAVE_D3D11) || defined(HAVE_D3D12)
+#if defined(HAVE_D3D10) || defined(HAVE_D3D11) || defined(HAVE_D3D12) \
+ || (defined(HAVE_D3D9) && defined(HAVE_HLSL))
 #include "../gfx/common/d3dcompiler_common.c"
+#endif
+
+#if defined(HAVE_D3D10) || defined(HAVE_D3D11) || defined(HAVE_D3D12)
 #include "../gfx/common/dxgi_common.c"
 #endif
 
@@ -583,10 +604,6 @@ FONTS
 #endif
 
 #include "../gfx/font_driver.c"
-
-#if defined(HAVE_D3D9) && defined(HAVE_D3DX)
-#include "../gfx/drivers_font/d3d9x_w32_font.c"
-#endif
 
 #if defined(HAVE_STB_FONT)
 #include "../gfx/drivers_font_renderer/stb_unicode.c"
@@ -1570,12 +1587,6 @@ HTTP SERVER
 ============================================================ */
 #if defined(HAVE_DISCORD)
 #include "../network/discord.c"
-#if defined(_WIN32)
-#include "../deps/discord-rpc/src/discord_register_win.c"
-#endif
-#if defined(__linux__)
-#include "../deps/discord-rpc/src/discord_register_linux.c"
-#endif
 #endif
 
 /*============================================================

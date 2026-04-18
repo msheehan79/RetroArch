@@ -15,7 +15,6 @@
 
 #include <stdint.h>
 #include <stdlib.h>
-#include <stdbool.h>
 #include <math.h>
 #include <malloc.h>
 
@@ -27,6 +26,7 @@
 
 #include <encodings/utf.h>
 #include <libretro_gskit_ps2.h>
+#include <boolean.h>
 
 #include "../video_defines.h"
 #include "../../driver.h"
@@ -1179,6 +1179,8 @@ video_driver_t video_ps2 = {
 #endif
    ps2_get_poke_interface,
    NULL, /* wrap_type_to_enum */
+   NULL, /* shader_load_begin */
+   NULL, /* shader_load_step */
 #ifdef HAVE_GFX_WIDGETS
    NULL  /* gfx_widgets_enabled */
 #endif

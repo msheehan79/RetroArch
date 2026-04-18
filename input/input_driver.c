@@ -828,13 +828,50 @@ static int32_t input_state_wrap(
          if (sec_joypad)
             ret |= sec_joypad->state(joypad_info, binds[_port], _port);
       }
+      else if (id < RARCH_FIRST_CUSTOM_BIND)
+      {
+         /* Standard joypad buttons (0-15): serve from a per-port
+          * bitmask cache when available.  The cache is populated
+          * either by an earlier JOYPAD_MASK query for this port
+          * (common in modern cores) or lazily on the first
+          * individual button query (old-style cores).
+          * This avoids up to 32 indirect joypad->button()/axis()
+          * calls per port per frame. */
+         input_driver_state_t *input_st = &input_driver_st;
+
+         if (_port < MAX_USERS
+               && !input_st->joypad_state_cache_valid[_port])
+         {
+            int32_t cached = 0;
+            if (joypad)
+               cached |= joypad->state(joypad_info, binds[_port], _port);
+            if (sec_joypad)
+               cached |= sec_joypad->state(joypad_info, binds[_port], _port);
+            if (input && input->input_state)
+               cached |= input->input_state(
+                     data, joypad, sec_joypad, joypad_info, binds,
+                     keyboard_mapping_blocked,
+                     _port, RETRO_DEVICE_JOYPAD, 0,
+                     RETRO_DEVICE_ID_JOYPAD_MASK);
+            input_st->joypad_state_cache[_port]       = cached;
+            input_st->joypad_state_cache_valid[_port]  = true;
+         }
+
+         if (    _port < MAX_USERS
+              && (input_st->joypad_state_cache[_port] & (1 << id)))
+            return 1;
+
+         /* Cache says not pressed; skip input->input_state() below
+          * since the cache already incorporates it. */
+         return 0;
+      }
       else
       {
-         /* Do a bitwise OR to combine both input
-          * states together */
+         /* Extended bind IDs (turbo, hold, meta keys) are not
+          * covered by joypad->state(), so use the original
+          * per-button dispatch path. */
          if (binds[_port][id].valid)
          {
-            /* Auto-binds are per joypad, not per user. */
             const uint64_t bind_joykey     = binds[_port][id].joykey;
             const uint64_t bind_joyaxis    = binds[_port][id].joyaxis;
             const uint64_t autobind_joykey = joypad_info->auto_binds[id].joykey;
@@ -889,6 +926,23 @@ static int32_t input_state_wrap(
             device,
             idx,
             id);
+
+   /* Populate the per-port joypad cache from the MASK result so that
+    * subsequent individual button queries (from hybrid or old-style
+    * cores) can be served from cache without a second joypad->state()
+    * call.  This is a no-op when the cache is already valid (i.e.
+    * individual queries ran before the first MASK query). */
+   if (    device == RETRO_DEVICE_JOYPAD
+        && id     == RETRO_DEVICE_ID_JOYPAD_MASK
+        && _port  <  MAX_USERS)
+   {
+      input_driver_state_t *input_st = &input_driver_st;
+      if (!input_st->joypad_state_cache_valid[_port])
+      {
+         input_st->joypad_state_cache[_port]       = ret;
+         input_st->joypad_state_cache_valid[_port]  = true;
+      }
+   }
 
    return ret;
 }
@@ -968,8 +1022,25 @@ static int16_t input_joypad_analog_button(
       ? joypad_info->auto_binds[ident].joyaxis
       : bind->joyaxis;
 
+   /* Early exit for digital-only buttons: if neither the user bind
+    * nor the autoconfig bind has an analog axis, this button has no
+    * analog capability. Skip the input_joypad_axis() call and
+    * deadzone magnitude computation entirely — go straight to the
+    * digital button fallback. Saves one drv->axis() indirect call
+    * plus float math per pressed digital button in the remap loop. */
+   if (axis == AXIS_NONE)
+   {
+      uint16_t key = (bind->joykey == NO_BTN)
+         ? joypad_info->auto_binds[ident].joykey
+         : bind->joykey;
+
+      if (drv->button(joy_idx, key))
+         return 0x7fff;
+      return 0;
+   }
+
    /* Analog button - call drv->axis at most once */
-   if (input_analog_deadzone && axis != AXIS_NONE)
+   if (input_analog_deadzone)
    {
       int16_t mult = drv->axis(joy_idx, axis);
       if (mult != 0)
@@ -1190,6 +1261,249 @@ static int16_t input_joypad_analog_axis(
    }
 
    return res;
+}
+
+/**
+ * input_joypad_analog_stick:
+ *
+ * Processes both X and Y axes of a single analog stick together,
+ * computing the radial deadzone magnitude only once. This avoids
+ * the redundant drv->axis() calls and sqrtf() that occur when
+ * input_joypad_analog_axis() is called separately for X and Y.
+ *
+ * @param input_analog_dpad_mode Analog-to-dpad mode for this port
+ * @param input_analog_deadzone  Deadzone threshold (0.0 = disabled)
+ * @param input_analog_sensitivity Sensitivity multiplier
+ * @param drv                    Joypad driver
+ * @param joypad_info            Joypad info (joy_idx, auto_binds, threshold)
+ * @param idx                    Stick index (ANALOG_LEFT or ANALOG_RIGHT)
+ * @param binds                  Keybinds for this port
+ * @param out_x                  Output: X axis value
+ * @param out_y                  Output: Y axis value
+ *
+ * @return true if the stick was processed, false if skipped (dpad mode)
+ */
+static bool input_joypad_analog_stick(
+      unsigned input_analog_dpad_mode,
+      float input_analog_deadzone,
+      float input_analog_sensitivity,
+      const input_device_driver_t *drv,
+      rarch_joypad_info_t *joypad_info,
+      unsigned idx,
+      const struct retro_keybind *binds,
+      int16_t *out_x, int16_t *out_y)
+{
+   unsigned ident_x_minus          = 0;
+   unsigned ident_x_plus           = 0;
+   unsigned ident_y_minus          = 0;
+   unsigned ident_y_plus           = 0;
+   const struct retro_keybind *bind_x_minus = NULL;
+   const struct retro_keybind *bind_x_plus  = NULL;
+   const struct retro_keybind *bind_y_minus = NULL;
+   const struct retro_keybind *bind_y_plus  = NULL;
+   float normal_mag                = 0.0f;
+
+   *out_x = 0;
+   *out_y = 0;
+
+   /* Skip analog input with analog_dpad_mode */
+   switch (input_analog_dpad_mode)
+   {
+      case ANALOG_DPAD_LSTICK:
+         if (idx == RETRO_DEVICE_INDEX_ANALOG_LEFT)
+            return false;
+         break;
+      case ANALOG_DPAD_RSTICK:
+         if (idx == RETRO_DEVICE_INDEX_ANALOG_RIGHT)
+            return false;
+         break;
+      case ANALOG_DPAD_LRSTICK:
+      case ANALOG_DPAD_TWINSTICK:
+         if (     idx == RETRO_DEVICE_INDEX_ANALOG_LEFT
+               || idx == RETRO_DEVICE_INDEX_ANALOG_RIGHT)
+            return false;
+         break;
+      default:
+         break;
+   }
+
+   /* Resolve all 4 bind IDs for this stick at once */
+   input_conv_analog_id_to_bind_id(idx,
+         RETRO_DEVICE_ID_ANALOG_X, ident_x_minus, ident_x_plus);
+   input_conv_analog_id_to_bind_id(idx,
+         RETRO_DEVICE_ID_ANALOG_Y, ident_y_minus, ident_y_plus);
+
+   bind_x_minus = &binds[ident_x_minus];
+   bind_x_plus  = &binds[ident_x_plus];
+   bind_y_minus = &binds[ident_y_minus];
+   bind_y_plus  = &binds[ident_y_plus];
+
+   if (   !bind_x_minus->valid || !bind_x_plus->valid
+       || !bind_y_minus->valid || !bind_y_plus->valid)
+      return false;
+
+   /* Keyboard bind priority — check X */
+   if (     bind_x_plus->key  != RETROK_UNKNOWN
+         || bind_x_minus->key != RETROK_UNKNOWN)
+   {
+      input_driver_state_t *input_st = &input_driver_st;
+      bool kb_blocked = !!(input_st->flags & INP_FLAG_KB_MAPPING_BLOCKED);
+
+      if (bind_x_plus->key && input_state_wrap(
+            input_st->current_driver,
+            input_st->current_data,
+            input_st->primary_joypad,
+            NULL, joypad_info,
+            (*input_st->libretro_input_binds),
+            kb_blocked,
+            0, RETRO_DEVICE_KEYBOARD, 0,
+            bind_x_plus->key))
+         *out_x  = 0x7fff;
+      if (bind_x_minus->key && input_state_wrap(
+            input_st->current_driver,
+            input_st->current_data,
+            input_st->primary_joypad,
+            NULL, joypad_info,
+            (*input_st->libretro_input_binds),
+            kb_blocked,
+            0, RETRO_DEVICE_KEYBOARD, 0,
+            bind_x_minus->key))
+         *out_x += -0x7fff;
+   }
+
+   /* Keyboard bind priority — check Y */
+   if (     bind_y_plus->key  != RETROK_UNKNOWN
+         || bind_y_minus->key != RETROK_UNKNOWN)
+   {
+      input_driver_state_t *input_st = &input_driver_st;
+      bool kb_blocked = !!(input_st->flags & INP_FLAG_KB_MAPPING_BLOCKED);
+
+      if (bind_y_plus->key && input_state_wrap(
+            input_st->current_driver,
+            input_st->current_data,
+            input_st->primary_joypad,
+            NULL, joypad_info,
+            (*input_st->libretro_input_binds),
+            kb_blocked,
+            0, RETRO_DEVICE_KEYBOARD, 0,
+            bind_y_plus->key))
+         *out_y  = 0x7fff;
+      if (bind_y_minus->key && input_state_wrap(
+            input_st->current_driver,
+            input_st->current_data,
+            input_st->primary_joypad,
+            NULL, joypad_info,
+            (*input_st->libretro_input_binds),
+            kb_blocked,
+            0, RETRO_DEVICE_KEYBOARD, 0,
+            bind_y_minus->key))
+         *out_y += -0x7fff;
+   }
+
+   /* If keyboard produced results for both axes, we're done */
+   if (*out_x && *out_y)
+      return true;
+
+   {
+      uint32_t x_axis_minus = (bind_x_minus->joyaxis == AXIS_NONE)
+         ? joypad_info->auto_binds[ident_x_minus].joyaxis
+         : bind_x_minus->joyaxis;
+      uint32_t x_axis_plus  = (bind_x_plus->joyaxis  == AXIS_NONE)
+         ? joypad_info->auto_binds[ident_x_plus].joyaxis
+         : bind_x_plus->joyaxis;
+      uint32_t y_axis_minus = (bind_y_minus->joyaxis == AXIS_NONE)
+         ? joypad_info->auto_binds[ident_y_minus].joyaxis
+         : bind_y_minus->joyaxis;
+      uint32_t y_axis_plus  = (bind_y_plus->joyaxis  == AXIS_NONE)
+         ? joypad_info->auto_binds[ident_y_plus].joyaxis
+         : bind_y_plus->joyaxis;
+
+      /* Compute radial magnitude ONCE for this stick */
+      if (input_analog_deadzone)
+      {
+         float x    = 0.0f;
+         float y    = 0.0f;
+         float mag_sq;
+         if (x_axis_plus != AXIS_NONE && drv->axis)
+            x  = drv->axis(joypad_info->joy_idx, x_axis_plus);
+         if (x_axis_minus != AXIS_NONE && drv->axis)
+            x += drv->axis(joypad_info->joy_idx, x_axis_minus);
+         if (y_axis_plus != AXIS_NONE && drv->axis)
+            y  = drv->axis(joypad_info->joy_idx, y_axis_plus);
+         if (y_axis_minus != AXIS_NONE && drv->axis)
+            y += drv->axis(joypad_info->joy_idx, y_axis_minus);
+
+         mag_sq = x * x + y * y;
+         {
+            float dz_raw = input_analog_deadzone * 0x7fff;
+            float dz_sq  = dz_raw * dz_raw;
+            if (mag_sq <= dz_sq)
+               normal_mag = 0.0f;
+            else
+               normal_mag = INV_0x7fff * sqrtf(mag_sq);
+         }
+      }
+
+      /* X axis — reuse cached normal_mag */
+      if (!*out_x)
+      {
+         int16_t x_val;
+         x_val  = abs(input_joypad_axis(
+               input_analog_deadzone, input_analog_sensitivity,
+               drv, joypad_info->joy_idx,
+               x_axis_plus, normal_mag));
+         x_val -= abs(input_joypad_axis(
+               input_analog_deadzone, input_analog_sensitivity,
+               drv, joypad_info->joy_idx,
+               x_axis_minus, normal_mag));
+
+         if (x_val == 0)
+         {
+            uint16_t key_minus = (bind_x_minus->joykey == NO_BTN)
+               ? joypad_info->auto_binds[ident_x_minus].joykey
+               : bind_x_minus->joykey;
+            uint16_t key_plus  = (bind_x_plus->joykey  == NO_BTN)
+               ? joypad_info->auto_binds[ident_x_plus].joykey
+               : bind_x_plus->joykey;
+            if (drv->button && drv->button(joypad_info->joy_idx, key_plus))
+               x_val  = 0x7fff;
+            if (drv->button && drv->button(joypad_info->joy_idx, key_minus))
+               x_val += -0x7fff;
+         }
+         *out_x = x_val;
+      }
+
+      /* Y axis — reuse same cached normal_mag */
+      if (!*out_y)
+      {
+         int16_t y_val;
+         y_val  = abs(input_joypad_axis(
+               input_analog_deadzone, input_analog_sensitivity,
+               drv, joypad_info->joy_idx,
+               y_axis_plus, normal_mag));
+         y_val -= abs(input_joypad_axis(
+               input_analog_deadzone, input_analog_sensitivity,
+               drv, joypad_info->joy_idx,
+               y_axis_minus, normal_mag));
+
+         if (y_val == 0)
+         {
+            uint16_t key_minus = (bind_y_minus->joykey == NO_BTN)
+               ? joypad_info->auto_binds[ident_y_minus].joykey
+               : bind_y_minus->joykey;
+            uint16_t key_plus  = (bind_y_plus->joykey  == NO_BTN)
+               ? joypad_info->auto_binds[ident_y_plus].joykey
+               : bind_y_plus->joykey;
+            if (drv->button && drv->button(joypad_info->joy_idx, key_plus))
+               y_val  = 0x7fff;
+            if (drv->button && drv->button(joypad_info->joy_idx, key_minus))
+               y_val += -0x7fff;
+         }
+         *out_y = y_val;
+      }
+   }
+
+   return true;
 }
 
 void input_keyboard_line_append(struct input_keyboard_line *kb_line,
@@ -6612,6 +6926,10 @@ void input_driver_poll(void)
    if (input && input->poll)
       input->poll(input_st->current_data);
 
+   /* Invalidate joypad state bitmask cache for the new frame */
+   memset(input_st->joypad_state_cache_valid, 0,
+         sizeof(input_st->joypad_state_cache_valid));
+
    /* Enable/disable sensors at the driver level based on demand
     * from shaders and/or core. Setting gates everything. */
    if (settings->bools.input_sensors_enable)
@@ -6718,27 +7036,44 @@ void input_driver_poll(void)
       return;
    }
 
-   /* This rarch_joypad_info_t struct contains the device index + autoconfig binds for the
-    * controller to be queried, and also (for unknown reasons) the analog axis threshold
-    * when mapping analog stick to dpad input.
+   /* Fused turbo/hold + remap loop.
     *
-    * Poll turbo and hold modifier state in a single pass per user
-    * to avoid iterating max_users twice with separate input_state_wrap calls. */
+    * Previously these were two separate max_users iterations:
+    *   1) turbo/hold: init joypad_info[i], call input_state_wrap ×2
+    *   2) remap:      reuse joypad_info[i], do remap work
+    * Now fused into a single pass to improve cache locality —
+    * joypad_info[i], bind arrays, and joypad driver state stay hot
+    * in L1 across all per-user work, and the loop overhead is halved. */
    {
-      bool turbo_enable      = settings->bools.input_turbo_enable;
-      uint16_t turbo_btn_id  = RARCH_TURBO_ENABLE;
-      bool kb_blocked        = !!(input_st->flags & INP_FLAG_KB_MAPPING_BLOCKED);
+      bool turbo_enable              = settings->bools.input_turbo_enable;
+      uint16_t turbo_btn_id          = RARCH_TURBO_ENABLE;
+      bool kb_blocked                = !!(input_st->flags & INP_FLAG_KB_MAPPING_BLOCKED);
+#ifdef HAVE_MENU
+      bool do_remap                  = input_remap_binds_enable
+         && !(menu_state_get_ptr()->flags & MENU_ST_FLAG_ALIVE);
+#else
+      bool do_remap                  = input_remap_binds_enable;
+#endif
+#ifdef HAVE_OVERLAY
+      input_overlay_t *overlay_pointer = (input_overlay_t*)input_st->overlay_ptr;
+      bool poll_overlay              = (overlay_pointer &&
+            (overlay_pointer->flags & INPUT_OVERLAY_ALIVE));
+#endif
+      input_mapper_t *handle         = &input_st->mapper;
+      float input_analog_deadzone    = settings->floats.input_analog_deadzone;
+      float input_analog_sensitivity = settings->floats.input_analog_sensitivity;
 
       if (settings->ints.input_turbo_bind != -1)
          turbo_btn_id = settings->ints.input_turbo_bind;
 
       for (i = 0; i < max_users; i++)
       {
+         /* --- joypad_info init (shared by turbo/hold and remap) --- */
          joypad_info[i].axis_threshold        = input_axis_threshold;
          joypad_info[i].joy_idx               = settings->uints.input_joypad_index[i];
          joypad_info[i].auto_binds            = input_autoconf_binds[joypad_info[i].joy_idx];
 
-         /* Turbo button state */
+         /* --- Turbo button state --- */
          input_st->turbo_btns.frame_enable[i] =
                   (*input_st->libretro_input_binds[i])[turbo_btn_id].valid
                && turbo_enable ?
@@ -6753,13 +7088,13 @@ void input_driver_poll(void)
 #ifdef HAVE_OVERLAY
          if (     (i == 0)
                && turbo_enable
-               && input_st->overlay_ptr
-               && (input_st->overlay_ptr->flags & INPUT_OVERLAY_ALIVE)
-               && BIT256_GET(input_st->overlay_ptr->overlay_state.buttons, turbo_btn_id))
+               && overlay_pointer
+               && (overlay_pointer->flags & INPUT_OVERLAY_ALIVE)
+               && BIT256_GET(overlay_pointer->overlay_state.buttons, turbo_btn_id))
             input_st->turbo_btns.frame_enable[i] = true;
 #endif
 
-         /* Hold button modifier state */
+         /* --- Hold button modifier state --- */
          input_st->hold_btns.frame_enable[i] =
                   (*input_st->libretro_input_binds[i])[RARCH_HOLD_ENABLE].valid ?
             input_state_wrap(input_st->current_driver,
@@ -6772,31 +7107,15 @@ void input_driver_poll(void)
 
 #ifdef HAVE_OVERLAY
          if (     (i == 0)
-               && input_st->overlay_ptr
-               && (input_st->overlay_ptr->flags & INPUT_OVERLAY_ALIVE)
-               && BIT256_GET(input_st->overlay_ptr->overlay_state.buttons, RARCH_HOLD_ENABLE))
+               && overlay_pointer
+               && (overlay_pointer->flags & INPUT_OVERLAY_ALIVE)
+               && BIT256_GET(overlay_pointer->overlay_state.buttons, RARCH_HOLD_ENABLE))
             input_st->hold_btns.frame_enable[i] = true;
 #endif
-      }
-   }
 
-#ifdef HAVE_MENU
-   if (!(menu_state_get_ptr()->flags & MENU_ST_FLAG_ALIVE))
-#endif
-   if (input_remap_binds_enable)
-   {
-#ifdef HAVE_OVERLAY
-      input_overlay_t *overlay_pointer   = (input_overlay_t*)input_st->overlay_ptr;
-      bool poll_overlay                  = (overlay_pointer &&
-            (overlay_pointer->flags & INPUT_OVERLAY_ALIVE));
-#endif
-      input_mapper_t *handle             = &input_st->mapper;
-      float input_analog_deadzone        = settings->floats.input_analog_deadzone;
-      float input_analog_sensitivity     = settings->floats.input_analog_sensitivity;
-      bool remap_kb_blocked              = !!(input_st->flags & INP_FLAG_KB_MAPPING_BLOCKED);
-
-      for (i = 0; i < max_users; i++)
-      {
+         /* --- Remap work (conditional) --- */
+         if (do_remap)
+         {
          input_bits_t current_inputs;
          unsigned mapped_port            = settings->uints.input_remap_ports[i];
          unsigned device                 = settings->uints.input_libretro_device[mapped_port]
@@ -6837,7 +7156,7 @@ void input_driver_poll(void)
                BIT256_CLEAR_ALL_PTR(&current_inputs);
                if (joypad)
                {
-                  unsigned k, j;
+                  unsigned k;
                   int32_t ret = input_state_wrap(
                         input_st->current_driver,
                         input_st->current_data,
@@ -6845,7 +7164,7 @@ void input_driver_poll(void)
                         sec_joypad,
                         &joypad_info[i],
                         (*input_st->libretro_input_binds),
-                        remap_kb_blocked,
+                        kb_blocked,
                         (unsigned)i, RETRO_DEVICE_JOYPAD,
                         0, RETRO_DEVICE_ID_JOYPAD_MASK);
 
@@ -6875,25 +7194,31 @@ void input_driver_poll(void)
                      }
                   }
 
-                  /* This is the analog joypad index -
-                   * handles only the two analog axes */
+                  /* Process both axes of each analog stick together,
+                   * computing radial deadzone magnitude only once
+                   * per stick instead of once per axis. */
                   for (k = 0; k < 2; k++)
                   {
-                     /* This is the analog joypad ident */
-                     for (j = 0; j < 2; j++)
-                     {
-                        unsigned offset = 0 + (k * 4) + (j * 2);
-                        int16_t     val = input_joypad_analog_axis(
+                     int16_t stick_x = 0;
+                     int16_t stick_y = 0;
+                     if (input_joypad_analog_stick(
                               input_analog_dpad_mode,
                               input_analog_deadzone,
                               input_analog_sensitivity,
                               joypad, &joypad_info[i],
-                              k, j, (*input_st->libretro_input_binds[i]));
-
-                        if (val >= 0)
-                           p_new_state->analogs[offset]   = val;
+                              k, (*input_st->libretro_input_binds[i]),
+                              &stick_x, &stick_y))
+                     {
+                        unsigned off_x = 0 + (k * 4);
+                        unsigned off_y = 0 + (k * 4) + 2;
+                        if (stick_x >= 0)
+                           p_new_state->analogs[off_x]     = stick_x;
                         else
-                           p_new_state->analogs[offset+1] = val;
+                           p_new_state->analogs[off_x + 1] = stick_x;
+                        if (stick_y >= 0)
+                           p_new_state->analogs[off_y]     = stick_y;
+                        else
+                           p_new_state->analogs[off_y + 1] = stick_y;
                      }
                   }
                }
@@ -7075,7 +7400,8 @@ void input_driver_poll(void)
             default:
                break;
          }
-      }
+         } /* if (do_remap) */
+      } /* for (i = 0; i < max_users; i++) */
    }
 
 #ifdef HAVE_COMMAND

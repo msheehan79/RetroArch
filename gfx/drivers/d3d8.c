@@ -39,11 +39,13 @@
 #include <file/file_path.h>
 #include <string/stdstring.h>
 #include <retro_math.h>
+#include <gfx/math/matrix_4x4.h>
 
 #include <d3d8.h>
 
 #include <defines/d3d_defines.h>
 #include "../common/d3d_common.h"
+
 #include "../../configuration.h"
 #include "../../retroarch.h"
 #include "../../dynamic.h"
@@ -95,6 +97,7 @@ typedef struct d3d8_video
    WNDCLASSEX windowClass;
 #endif
    LPDIRECT3DDEVICE8 dev;
+   LPDIRECT3D8 d3d8;
    D3DVIEWPORT8 out_vp;
 
    char *shader_path;
@@ -162,8 +165,6 @@ static const float d3d8_tex_coords[8] = {
    0, 0,
    1, 0
 };
-
-static LPDIRECT3D8 g_pD3D8;
 
 void *dinput;
 
@@ -337,16 +338,16 @@ static void *d3d8_texture_new(LPDIRECT3DDEVICE8 dev,
 
 static void d3d8_set_mvp(void *data, const void *mat_data)
 {
-   struct d3d_matrix matrix;
+   math_matrix_4x4 matrix;
    LPDIRECT3DDEVICE8 d3dr     = (LPDIRECT3DDEVICE8)data;
 
-   d3d_matrix_identity(&matrix);
+   matrix_4x4_identity(matrix);
 
    IDirect3DDevice8_SetTransform(d3dr,
          D3DTS_PROJECTION, (D3DMATRIX*)&matrix);
    IDirect3DDevice8_SetTransform(d3dr,
          D3DTS_VIEW, (D3DMATRIX*)&matrix);
-   d3d_matrix_transpose(&matrix, mat_data);
+   matrix_4x4_transpose(matrix, (*(const math_matrix_4x4*)mat_data));
    IDirect3DDevice8_SetTransform(d3dr, D3DTS_WORLD, (D3DMATRIX*)&matrix);
 }
 
@@ -613,7 +614,7 @@ static INT32 gfx_display_prim_to_d3d8_enum(
    {
       case GFX_DISPLAY_PRIM_TRIANGLES:
       case GFX_DISPLAY_PRIM_TRIANGLESTRIP:
-         return D3DPT_COMM_TRIANGLESTRIP;
+         return D3DPT_TRIANGLESTRIP;
       case GFX_DISPLAY_PRIM_NONE:
       default:
          break;
@@ -746,7 +747,7 @@ static void gfx_display_d3d8_draw(gfx_display_ctx_draw_t *draw,
          0);
    matrix_4x4_multiply(m1, mop, m2);
    matrix_4x4_multiply(m2, d3d->mvp_transposed, m1);
-   d3d_matrix_transpose(&m1, &m2);
+   matrix_4x4_transpose(m1, m2);
 
    d3d8_set_mvp(dev, &m1);
 
@@ -755,13 +756,13 @@ static void gfx_display_d3d8_draw(gfx_display_ctx_draw_t *draw,
       IDirect3DDevice8_SetTexture(dev, 0,
             (IDirect3DBaseTexture8*)draw->texture);
       IDirect3DDevice8_SetTextureStageState(dev, 0,
-            (D3DTEXTURESTAGESTATETYPE)D3DTSS_ADDRESSU, D3DTADDRESS_COMM_CLAMP);
+            (D3DTEXTURESTAGESTATETYPE)D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
       IDirect3DDevice8_SetTextureStageState(dev, 0,
-            (D3DTEXTURESTAGESTATETYPE)D3DTSS_ADDRESSV, D3DTADDRESS_COMM_CLAMP);
+            (D3DTEXTURESTAGESTATETYPE)D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
       IDirect3DDevice8_SetTextureStageState(dev, 0,
-            (D3DTEXTURESTAGESTATETYPE)D3DTSS_MINFILTER, D3DTEXF_COMM_LINEAR);
+            (D3DTEXTURESTAGESTATETYPE)D3DTSS_MINFILTER, D3DTEXF_LINEAR);
       IDirect3DDevice8_SetTextureStageState(dev, 0,
-            (D3DTEXTURESTAGESTATETYPE)D3DTSS_MAGFILTER, D3DTEXF_COMM_LINEAR);
+            (D3DTEXTURESTAGESTATETYPE)D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
    }
 
    type  = gfx_display_prim_to_d3d8_enum(draw->prim_type);
@@ -976,7 +977,8 @@ static INLINE bool d3d8_get_adapter_display_mode(
    return false;
 }
 
-static D3DFORMAT d3d8_get_color_format_backbuffer(bool rgb32, bool windowed)
+static D3DFORMAT d3d8_get_color_format_backbuffer(
+      LPDIRECT3D8 d3d8, bool rgb32, bool windowed)
 {
    D3DFORMAT fmt = D3DFMT_X8R8G8B8;
 #ifdef _XBOX
@@ -986,7 +988,7 @@ static D3DFORMAT d3d8_get_color_format_backbuffer(bool rgb32, bool windowed)
    if (windowed)
    {
       D3DDISPLAYMODE display_mode;
-      if (d3d8_get_adapter_display_mode(g_pD3D8, 0, &display_mode))
+      if (d3d8_get_adapter_display_mode(d3d8, 0, &display_mode))
          fmt = display_mode.Format;
    }
 #endif
@@ -1113,7 +1115,7 @@ static void d3d8_make_d3dpp(void *data,
    d3dpp->SwapEffect              = D3DSWAPEFFECT_DISCARD;
    d3dpp->BackBufferCount         = 2;
    d3dpp->BackBufferFormat        = d3d8_get_color_format_backbuffer(
-         info->rgb32, windowed_enable);
+         d3d->d3d8, info->rgb32, windowed_enable);
 #ifndef _XBOX
    d3dpp->hDeviceWindow           = win32_get_window();
 #endif
@@ -1182,18 +1184,18 @@ static bool d3d8_init_base(void *data, const video_info_t *info)
    d3d8_video_t *d3d = (d3d8_video_t*)data;
 
 #ifdef _XBOX
-   g_pD3D8           = (LPDIRECT3D8)D3DCreate(0);
+   d3d->d3d8           = (LPDIRECT3D8)D3DCreate(0);
 #else
-   g_pD3D8           = (LPDIRECT3D8)D3DCreate(220);
+   d3d->d3d8           = (LPDIRECT3D8)D3DCreate(220);
 #endif
 
    /* this needs g_pD3D created first */
    d3d8_make_d3dpp(d3d, info, &d3dpp);
 
-   if (!g_pD3D8)
+   if (!d3d->d3d8)
       return false;
    if (!d3d8_create_device(&d3d->dev, &d3dpp,
-            g_pD3D8,
+            d3d->d3d8,
             focus_window,
             d3d->cur_mon_id)
       )
@@ -1227,10 +1229,14 @@ static void d3d8_set_viewport(void *data,
       bool force_full,
       bool allow_rotate)
 {
-   struct d3d_matrix proj, ortho, rot, matrix;
    int x               = 0;
    int y               = 0;
    d3d8_video_t *d3d = (d3d8_video_t*)data;
+
+   /* Pre-computed transpose(ortho(0,1,0,1,0,1)) — constant */
+   static const math_matrix_4x4 k_ortho_mvp = {{
+      2, 0, 0,-1,   0, 2, 0,-1,   0, 0, 1, 0,   0, 0, 0, 1
+   }};
 
    d3d8_calculate_rect(data, &width, &height, &x, &y,
          force_full, allow_rotate);
@@ -1248,13 +1254,24 @@ static void d3d8_set_viewport(void *data,
    d3d->out_vp.MinZ   = 0.0f;
    d3d->out_vp.MaxZ   = 0.0f;
 
-   d3d_matrix_identity(&ortho);
-   d3d_matrix_ortho_off_center_lh(&ortho, 0, 1, 0, 1, 0.0f, 1.0f);
-   d3d_matrix_identity(&rot);
-   d3d_matrix_rotation_z(&rot, d3d->dev_rotation * (M_PI / 2.0));
-   d3d_matrix_multiply(&proj, &ortho, &rot);
-   d3d_matrix_transpose(&d3d->mvp, &ortho);
-   d3d_matrix_transpose(&d3d->mvp_rotate, &matrix);
+   d3d->mvp = k_ortho_mvp;
+
+   /* Compute rotated MVP: transpose(ortho(0,1,0,1,0,1) * rot_z(angle))
+    * Folded into a single analytical formula. */
+   {
+      float angle = d3d->dev_rotation * (M_PI / 2.0);
+      float c     = cosf(angle);
+      float s     = sinf(angle);
+      memset(&d3d->mvp_rotate, 0, sizeof(d3d->mvp_rotate));
+      MAT_ELEM_4X4(d3d->mvp_rotate, 0, 0) =  2.0f * c;
+      MAT_ELEM_4X4(d3d->mvp_rotate, 1, 0) = -2.0f * s;
+      MAT_ELEM_4X4(d3d->mvp_rotate, 3, 0) = -c + s;
+      MAT_ELEM_4X4(d3d->mvp_rotate, 0, 1) =  2.0f * s;
+      MAT_ELEM_4X4(d3d->mvp_rotate, 1, 1) =  2.0f * c;
+      MAT_ELEM_4X4(d3d->mvp_rotate, 3, 1) = -s - c;
+      MAT_ELEM_4X4(d3d->mvp_rotate, 2, 2) =  1.0f;
+      MAT_ELEM_4X4(d3d->mvp_rotate, 3, 3) =  1.0f;
+   }
 }
 
 static bool d3d8_initialize(d3d8_video_t *d3d, const video_info_t *info)
@@ -1268,27 +1285,17 @@ static bool d3d8_initialize(d3d8_video_t *d3d, const video_info_t *info)
    if (!d3d)
       return false;
 
-   if (!g_pD3D8)
+   if (!d3d->d3d8)
       ret = d3d8_init_base(d3d, info);
    else if (d3d->needs_restore)
    {
       D3DPRESENT_PARAMETERS d3dpp;
-
       d3d8_make_d3dpp(d3d, info, &d3dpp);
-
-      /* the D3DX font driver uses POOL_DEFAULT resources
-       * and will prevent a clean reset here
-       * another approach would be to keep track of all created D3D
-       * font objects and free/realloc them around the d3d_reset call  */
-#ifdef HAVE_MENU
-      menu_driver_ctl(RARCH_MENU_CTL_DEINIT, NULL);
-#endif
-
       if (!d3d8_reset(d3d->dev, &d3dpp))
       {
          d3d8_deinitialize(d3d);
-         IDirect3D8_Release(g_pD3D8);
-         g_pD3D8 = NULL;
+         IDirect3D8_Release(d3d->d3d8);
+         d3d->d3d8 = NULL;
 
          if ((ret = d3d8_init_base(d3d, info)))
             RARCH_LOG("[D3D8] Recovered from dead state.\n");
@@ -1339,9 +1346,17 @@ static bool d3d8_initialize(d3d8_video_t *d3d, const video_info_t *info)
    if (!d3d->menu_display.buffer)
       return false;
 
-   d3d_matrix_identity(&d3d->mvp_transposed);
-   d3d_matrix_ortho_off_center_lh(&d3d->mvp_transposed, 0, 1, 0, 1, 0, 1);
-   d3d_matrix_transpose(&d3d->mvp, &d3d->mvp_transposed);
+   /* Pre-computed D3D left-handed orthographic projection (0,1,0,1,0,1) */
+   {
+      static const math_matrix_4x4 k_ortho_transposed = {{
+         2, 0, 0, 0,   0, 2, 0, 0,   0, 0, 1, 0,   -1, -1, 0, 1
+      }};
+      static const math_matrix_4x4 k_ortho = {{
+         2, 0, 0,-1,   0, 2, 0,-1,   0, 0, 1, 0,   0, 0, 0, 1
+      }};
+      d3d->mvp_transposed = k_ortho_transposed;
+      d3d->mvp            = k_ortho;
+   }
 
    IDirect3DDevice8_SetRenderState(d3d->dev, D3DRS_CULLMODE, D3DCULL_NONE);
 
@@ -1483,10 +1498,8 @@ static bool d3d8_init_internal(d3d8_video_t *d3d,
 #endif
    struct video_shader_pass *pass = NULL;
 #ifdef HAVE_WINDOW
-   DWORD style;
    unsigned win_width        = 0;
    unsigned win_height       = 0;
-   RECT rect                 = {0};
 #endif
    unsigned full_x           = 0;
    unsigned full_y           = 0;
@@ -1546,14 +1559,12 @@ static bool d3d8_init_internal(d3d8_video_t *d3d,
 #ifdef HAVE_WINDOW
    video_driver_get_size(&win_width, &win_height);
 
-   win32_set_style(&current_mon, &hm_to_use, &win_width, &win_height,
-         info->fullscreen, windowed_full, &rect, &mon_rect, &style);
-
-   win32_window_create(d3d, style, &mon_rect, win_width,
-         win_height, info->fullscreen);
-
-   win32_set_window(&win_width, &win_height, info->fullscreen,
-	   windowed_full, &rect);
+   if (!win32_set_video_mode(d3d, win_width, win_height,
+         info->fullscreen))
+   {
+      RARCH_ERR("[D3D8] win32_set_video_mode failed.\n");
+      return false;
+   }
 #endif
 
    memset(&d3d->shader, 0, sizeof(d3d->shader));
@@ -1675,10 +1686,10 @@ static void d3d8_free(void *data)
       free(d3d->shader_path);
 
    IDirect3DDevice8_Release(d3d->dev);
-   IDirect3D8_Release(g_pD3D8);
+   IDirect3D8_Release(d3d->d3d8);
    d3d->shader_path = NULL;
    d3d->dev         = NULL;
-   g_pD3D8          = NULL;
+   d3d->d3d8          = NULL;
 
 #ifdef HAVE_DYNAMIC_D3D
    d3d8_deinitialize_symbols();
@@ -2087,7 +2098,7 @@ static void d3d8_video_texture_load_d3d(
    *id = (uintptr_t)tex;
 }
 
-static int d3d8_video_texture_load_wrap_d3d(void *data)
+static uintptr_t d3d8_video_texture_load_wrap_d3d(void *data)
 {
    uintptr_t id = 0;
    struct d3d8_texture_info *info = (struct d3d8_texture_info*)data;
@@ -2115,12 +2126,35 @@ static uintptr_t d3d8_load_texture(void *video_data, void *data,
    return id;
 }
 
+static uintptr_t d3d8_video_texture_unload_wrap_d3d(void *data)
+{
+   uintptr_t id = (uintptr_t)data;
+   if (id)
+   {
+      LPDIRECT3DTEXTURE8 texid = (LPDIRECT3DTEXTURE8)id;
+      IDirect3DTexture8_Release(texid);
+   }
+   return 0;
+}
+
 static void d3d8_unload_texture(void *data, bool threaded,
       uintptr_t id)
 {
    LPDIRECT3DTEXTURE8 texid;
    if (!id)
 	   return;
+
+   /* Dispatch Release to the video thread when threaded video is
+    * active, so it is serialised with any pending draw calls
+    * that may still reference this texture.  Matches the
+    * threading pattern already used by d3d8_load_texture
+    * above. */
+   if (threaded)
+   {
+      video_thread_texture_handle((void*)id,
+            d3d8_video_texture_unload_wrap_d3d);
+      return;
+   }
 
    texid = (LPDIRECT3DTEXTURE8)id;
    IDirect3DTexture8_Release(texid);
@@ -2154,7 +2188,7 @@ static const video_poke_interface_t d3d_poke_interface = {
    NULL, /* get_refresh_rate */
 #else
    /* UWP does not expose this information easily */
-   win32_get_refresh_rate,
+   NULL, /* refresh_rate - handled by display server */
 #endif
    NULL, /* set_filtering */
    NULL, /* get_video_output_size */
@@ -2216,6 +2250,8 @@ video_driver_t video_d3d8 = {
 #endif
    d3d8_get_poke_interface,
    NULL, /* wrap_type_to_enum */
+   NULL, /* shader_load_begin */
+   NULL, /* shader_load_step */
 #ifdef HAVE_GFX_WIDGETS
    NULL  /* gfx_widgets_enabled */
 #endif

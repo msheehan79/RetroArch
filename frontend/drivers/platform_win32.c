@@ -55,6 +55,7 @@
 #include "../../verbosity.h"
 #include "../../msg_hash_lbl_str.h"
 #include "../../ui/drivers/ui_win32.h"
+#include "../../gfx/common/win32_common.h"
 
 #include "platform_win32.h"
 
@@ -647,24 +648,9 @@ static size_t frontend_win32_get_os(char *s, size_t len, int *major, int *minor)
 
 static void frontend_win32_init(void *data)
 {
-   typedef BOOL (WINAPI *isProcessDPIAwareProc)();
-   typedef BOOL (WINAPI *setProcessDPIAwareProc)();
-#ifdef HAVE_DYLIB
-   HMODULE handle                         =
-      GetModuleHandle("User32.dll");
-   isProcessDPIAwareProc  isDPIAwareProc  =
-      (isProcessDPIAwareProc)dylib_proc(handle, "IsProcessDPIAware");
-   setProcessDPIAwareProc setDPIAwareProc =
-      (setProcessDPIAwareProc)dylib_proc(handle, "SetProcessDPIAware");
-#else
-   isProcessDPIAwareProc  isDPIAwareProc  = IsProcessDPIAware;
-   setProcessDPIAwareProc setDPIAwareProc = SetProcessDPIAware;
-#endif
-
-   if (isDPIAwareProc)
-      if (!isDPIAwareProc())
-         if (setDPIAwareProc)
-            setDPIAwareProc();
+   /* Initializes DPI awareness, accelerator table, and
+    * prepares programmatic resources (replaces .rc file). */
+   win32_resources_init();
 }
 
 
@@ -1325,6 +1311,11 @@ static bool accessibility_speak_windows(int speed,
 }
 #endif
 
+static enum rarch_display_type frontend_win32_get_display_type(void)
+{
+   return RARCH_DISPLAY_WIN32;
+}
+
 frontend_ctx_driver_t frontend_ctx_win32 = {
    frontend_win32_env_get,         /* env_get   */
    frontend_win32_init,            /* init      */
@@ -1371,6 +1362,7 @@ frontend_ctx_driver_t frontend_ctx_win32 = {
    NULL,                            /* accessibility_speak */
 #endif
    NULL,                            /* set_gamemode        */
+   frontend_win32_get_display_type,
    "win32",                         /* ident               */
    NULL                             /* get_video_driver    */
 };
