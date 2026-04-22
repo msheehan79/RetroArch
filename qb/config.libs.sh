@@ -244,11 +244,95 @@ check_platform Linux RPILED 'The RPI led driver is' true
 check_platform Darwin METAL 'Metal is' true
 
 if [ "$OS" = 'Darwin' ]; then
+   # Detect whether we're building against a pre-10.7 (Lion) macOS target.
+   # Many modern Apple APIs used by RetroArch require 10.7 or later
+   # (Metal, Vulkan/MoltenVK, GCD, NSWindowDelegate protocol, C11
+   # <stdatomic.h>, AVFoundation, @available).  On Tiger/Leopard /
+   # PowerPC / Xcode 3.1 those APIs are absent and builds fail.
+   #
+   # We also compute macos_target_pre_10_11 for code that requires
+   # Xcode 7-era Obj-C features (nullability macros, lightweight
+   # generics) - those need SDK 10.11 / Xcode 7 or newer.
+   #
+   # MACOSX_DEPLOYMENT_TARGET (set by the invoker or the toolchain)
+   # takes priority over sw_vers, because on a cross-build the host
+   # OS version may be newer than the target.
+   macos_target_pre_10_7=no
+   macos_target_pre_10_11=no
+   macos_target_ver="${MACOSX_DEPLOYMENT_TARGET:-}"
+   if [ -z "$macos_target_ver" ] && command -v sw_vers >/dev/null 2>&1; then
+      macos_target_ver="$(sw_vers -productVersion 2>/dev/null)"
+   fi
+   if [ -n "$macos_target_ver" ]; then
+      mt_major=$(printf %s "$macos_target_ver" | cut -d. -f1)
+      mt_minor=$(printf %s "$macos_target_ver" | cut -d. -f2)
+      [ -z "$mt_major" ] && mt_major=0
+      [ -z "$mt_minor" ] && mt_minor=0
+      if [ "$mt_major" -lt 10 ] || \
+         { [ "$mt_major" -eq 10 ] && [ "$mt_minor" -lt 7 ]; }; then
+         macos_target_pre_10_7=yes
+      fi
+      if [ "$mt_major" -lt 10 ] || \
+         { [ "$mt_major" -eq 10 ] && [ "$mt_minor" -lt 11 ]; }; then
+         macos_target_pre_10_11=yes
+      fi
+      unset mt_major mt_minor
+   fi
+
+   # macOS: the Metal and Vulkan (MoltenVK) defaults differ from what the
+   # generic qb logic produces.
+   #   * HAVE_METAL defaults to 'no' in config.params.sh so check_platform
+   #     early-outs. Force it on here so the Metal video driver is built,
+   #     unless the user explicitly passed --disable-metal.
+   #   * HAVE_VULKAN must be set to 'yes' before the COCOA_METAL check
+   #     below, which decides which AppKit glue to compile based on
+   #     whether Metal/Vulkan is in play. Link-time libvulkan is not
+   #     required on Darwin; MoltenVK is loaded dynamically at runtime
+   #     by gfx/common/vulkan_common.c.
+   # Skip the force-on on pre-10.7 targets — Metal is 10.11+ and
+   # MoltenVK is 10.11+, so neither is buildable on Tiger/Leopard.
+   # That also keeps HAVE_COCOA_METAL off, which in turn avoids code
+   # paths that use the 10.6+ NSWindowDelegate protocol.
+   if [ "$macos_target_pre_10_7" = 'no' ]; then
+      [ "${USER_METAL:-}"  != 'no' ] && HAVE_METAL=yes
+      [ "${USER_VULKAN:-}" != 'no' ] && HAVE_VULKAN=yes
+   else
+      die : "Notice: macOS target $macos_target_ver is pre-10.7; Metal/Vulkan not forced on (neither is available before 10.11)."
+   fi
+
+   check_platform Darwin COCOA 'Cocoa is' true
    check_lib '' COREAUDIO "-framework AudioUnit" AudioUnitInitialize
    check_lib '' CORETEXT "-framework CoreText" CTFontCreateWithName
    add_opt CRTSWITCHRES no
 
-   if [ "$HAVE_METAL" = yes ]; then
+   # The microphone driver (audio/drivers/coreaudio_mic_macos.m) uses
+   # C11 <stdatomic.h>, which requires a 10.6/10.7-era SDK or newer.
+   # On Xcode 3.1 / 10.4-10.5 / PowerPC the header doesn't exist and
+   # the driver cannot be compiled.  Auto-disable microphone support
+   # on pre-10.7 targets unless the user passed --enable-microphone.
+   if [ "$macos_target_pre_10_7" = 'yes' ] && \
+      [ "${USER_MICROPHONE:-}" != 'yes' ] && \
+      [ "$HAVE_MICROPHONE" != 'no' ]; then
+      HAVE_MICROPHONE=no
+      die : "Notice: macOS target $macos_target_ver is pre-10.7; disabling microphone (requires C11 <stdatomic.h>).  Override with --enable-microphone."
+   fi
+
+   # RetroArchPlaylistManager.m/.h uses Obj-C nullability macros
+   # (NS_ASSUME_NONNULL_BEGIN/END, nullable, _Nonnull) and
+   # lightweight generics (NSArray<...>) - all Xcode 7+ (2015)
+   # features requiring SDK 10.11 / iOS 9.0 or newer.  Enable on
+   # iOS/tvOS (any HAVE_COCOATOUCH build is modern enough in
+   # practice) and on macOS 10.11+ targets.  Disable on pre-10.11
+   # macOS where GCC/old-clang can't parse the syntax.
+   if [ "$HAVE_COCOATOUCH" = 'yes' ] || \
+      [ "$macos_target_pre_10_11" = 'no' ]; then
+      HAVE_RETROARCH_PLAYLIST_MANAGER=yes
+   else
+      HAVE_RETROARCH_PLAYLIST_MANAGER=no
+   fi
+   unset macos_target_ver macos_target_pre_10_7 macos_target_pre_10_11
+
+   if [ "$HAVE_METAL" = yes ] || [ "$HAVE_VULKAN" = yes ]; then
       check_lib '' COCOA_METAL "-framework AppKit" NSApplicationMain
    else
       check_lib '' COCOA "-framework AppKit" NSApplicationMain
@@ -258,6 +342,10 @@ if [ "$OS" = 'Darwin' ]; then
    check_lib '' CORELOCATION "-framework CoreLocation"
    check_lib '' IOHIDMANAGER "-framework IOKit" IOHIDManagerCreate
    check_lib '' AL "-framework OpenAL" alcOpenDevice
+   # MFi (Made For iPhone) / GameController.framework joypad support.
+   # Used for any modern gamepad on macOS (Xbox, DualShock, DualSense, MFi).
+   # Matches the -DHAVE_MFI default in pkg/apple/BaseConfig.xcconfig.
+   check_lib '' MFI "-framework GameController"
    HAVE_X11=no # X11 breaks on recent OSXes even if present.
    HAVE_SDL=no
    HAVE_SW2=no
@@ -583,6 +671,12 @@ check_enabled CXX OPENGL_CORE 'OpenGL core' 'The C++ compiler is' false
 check_enabled THREADS VULKAN vulkan 'Threads are' false
 
 if [ "$HAVE_VULKAN" != "no" ] && [ "$OS" = 'Win32' ]; then
+   HAVE_VULKAN=yes
+elif [ "$HAVE_VULKAN" != "no" ] && [ "$OS" = 'Darwin' ]; then
+   # macOS: Vulkan is provided by MoltenVK and is loaded dynamically at
+   # runtime via gfx/common/vulkan_common.c (see vksym.h). Link-time
+   # presence of libvulkan is not required, mirroring the Win32 path above
+   # and matching what pkg/apple/Metal.xcconfig does for the Xcode build.
    HAVE_VULKAN=yes
 else
    check_lib '' VULKAN -lvulkan vkCreateInstance

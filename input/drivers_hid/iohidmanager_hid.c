@@ -49,7 +49,12 @@ typedef struct apple_hid
 
 struct iohidmanager_hid_adapter
 {
-   uint32_t slot;
+   /* pad_connection_pad_init() returns int32_t and can return -1 on
+    * allocation failure.  Storing the return in uint32_t compiles
+    * but makes the `slot == -1` check at the call site a signed/
+    * unsigned comparison GCC warns about.  Matches wiiusb_hid.c's
+    * adapter struct which got this right. */
+   int32_t slot;
    IOHIDDeviceRef handle;
    uint32_t locationId;
    char name[NAME_MAX_LENGTH];
@@ -691,7 +696,7 @@ static void iohidmanager_hid_device_add(IOHIDDeviceRef device, iohidmanager_hid_
    if (adapter->slot == -1)
       goto error;
 
-   if (!adapter->name || !*adapter->name)
+   if (!*adapter->name)
       strcpy(adapter->name, "Unknown Controller With No Name");
 
    if (pad_connection_has_interface(hid->slots, adapter->slot))

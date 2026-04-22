@@ -133,26 +133,26 @@ ifneq ($(findstring Darwin,$(OS)),)
    ARCHFLAGS=
    MINVERFLAGS=
    ifeq ($(shell uname -p),arm)
-      MINVERFLAGS = -mmacosx-version-min=10.15 -stdlib=libc++ # macOS  (Metal, ARM 64bit)
+      MINVERFLAGS = -mmacosx-version-min=10.15 # macOS  (Metal, ARM 64bit)
    else ifeq ($(HAVE_METAL),1)
-      MINVERFLAGS = -mmacosx-version-min=10.13 -stdlib=libc++  # macOS  (Metal, x86 64bit)
+      MINVERFLAGS = -mmacosx-version-min=10.13 # macOS  (Metal, x86 64bit)
    else ifeq ($(shell uname -p),powerpc)
       MINVERFLAGS = -mmacosx-version-min=10.5  # macOSX (PowerPC 32-bit)
    else ifeq ($(shell uname -m),i386)
       MINVERFLAGS = -mmacosx-version-min=10.6  # macOSX (OpenGL, x86 32bit)
    else
-      MINVERFLAGS = -mmacosx-version-min=10.7 -stdlib=libc++ # macOSX (OpenGL, x86 64bit)
+      MINVERFLAGS = -mmacosx-version-min=10.7 # macOSX (OpenGL, x86 64bit)
    endif
 
 	# Build for a specific architecture when ARCH is defined as a switch
    ifeq ($(ARCH),arm64)
-      MINVERFLAGS  = -mmacosx-version-min=10.15 -stdlib=libc++ # macOS  (Metal, ARM 64bit)
+      MINVERFLAGS  = -mmacosx-version-min=10.15 # macOS  (Metal, ARM 64bit)
       ARCHFLAGS    = -arch arm64
    else ifeq ($(ARCH),x86_64)
       ifeq ($(HAVE_METAL),1)
-         MINVERFLAGS  = -mmacosx-version-min=10.13 -stdlib=libc++
+         MINVERFLAGS  = -mmacosx-version-min=10.13
       else
-         MINVERFLAGS  = -mmacosx-version-min=10.7  -stdlib=libc++
+         MINVERFLAGS  = -mmacosx-version-min=10.7
       endif
       ARCHFLAGS       = -arch x86_64
    else ifeq ($(ARCH),x86)
@@ -812,18 +812,33 @@ endif
 ifeq ($(HAVE_COREAUDIO), 1)
    DEFINES += -DHAVE_COREAUDIO
    OBJ += audio/drivers/coreaudio.o
+ifeq ($(HAVE_MICROPHONE), 1)
+   OBJ += audio/drivers/coreaudio_mic_macos.o
+   # AVFoundation is 10.7+ and only needed by the microphone driver.
+   # The base coreaudio.c path doesn't use it, so keep it out of the
+   # link line on targets without microphone support (e.g. pre-10.7
+   # / Tiger / Leopard / PowerPC).
+   LIBS += -framework AVFoundation
+endif
    HAVE_COREAUDIO_LIBS = 1
+   LIBS += -framework AudioToolbox -framework Accelerate
 endif
 
 ifeq ($(HAVE_COREAUDIO3), 1)
    DEFINES += -DHAVE_COREAUDIO3
    OBJ += audio/drivers/coreaudio3.o
    HAVE_COREAUDIO_LIBS = 1
-   LIBS += -framework AudioToolBox -framework AVFoundation
+   LIBS += -framework AudioToolbox -framework AVFoundation
 endif
 
 ifeq ($(HAVE_COREAUDIO_LIBS), 1)
    LIBS += -framework CoreServices -framework CoreAudio -framework AudioUnit
+endif
+
+ifeq ($(HAVE_CORELOCATION), 1)
+   DEFINES += -DHAVE_CORELOCATION
+   OBJ     += location/drivers/corelocation.o
+   LIBS    += -framework CoreLocation
 endif
 
 ifeq ($(HAVE_CORETEXT), 1)
@@ -1354,6 +1369,10 @@ ifeq ($(HAVE_OPENDINGUX_FBDEV), 1)
    OBJ += gfx/drivers_context/opendingux_fbdev_ctx.o
 endif
 
+ifneq ($(findstring Darwin,$(OS)),)
+   OBJ += gfx/display_servers/dispserv_apple.o
+endif
+
 ifeq ($(HAVE_X11), 1)
    OBJ += input/common/input_x11_common.o \
           input/drivers/x11_input.o \
@@ -1629,12 +1648,19 @@ endif
 
 ifeq ($(HAVE_METAL), 1)
    DEFINES += -DHAVE_METAL
-   LIBS += -framework Metal -framework MetalKit
-   # Metal code relies on ARC (Automatic Reference Counting), enable it
-   DEF_FLAGS += -fobjc-arc
-   OBJ += \
-	  gfx/common/metal/metal_renderer.o \
-	  gfx/drivers/metal.o
+   LIBS += -framework Metal -framework MetalKit -framework QuartzCore
+   # Metal code (metal.m) relies on ARC. Enabled per-file via an override
+   # in the top-level Makefile, since applying -fobjc-arc globally would
+   # break the MRC-written Cocoa code (ui_cocoa.m et al.).
+   OBJ += gfx/drivers/metal.o
+endif
+
+ifeq ($(HAVE_MFI), 1)
+   DEFINES += -DHAVE_MFI
+   LIBS    += -framework GameController -framework CoreHaptics
+   # mfi_joypad.m uses __weak references, which require ARC. Enabled
+   # per-file in the top-level Makefile (see comment above).
+   OBJ     += input/drivers_joypad/mfi_joypad.o
 endif
 
 ifeq ($(HAVE_EGL), 1)
@@ -1718,6 +1744,18 @@ ifeq ($(HAVE_VULKAN), 1)
    NEED_CXX_LINKER = 1
    DEFINES += -DHAVE_VULKAN
    INCLUDE_DIRS += -Igfx/include
+
+   # On macOS, the Vulkan loader at gfx/common/vulkan_common.c dlopens
+   # "MoltenVK" by bare name. Embed rpath entries pointing at the Frameworks
+   # dir inside an .app bundle, so that `make bundle` (which copies
+   # pkg/apple/Frameworks/MoltenVK.xcframework/macos-arm64_x86_64/MoltenVK.framework
+   # into Contents/Frameworks) produces a self-contained bundle with no
+   # external MoltenVK dependency. Matches what Xcode's
+   # LD_RUNPATH_SEARCH_PATHS does for the .xcodeproj build.
+   ifneq ($(findstring Darwin,$(OS)),)
+      LDFLAGS += -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
+                 -Xlinker -rpath -Xlinker @executable_path/../Frameworks/MoltenVK.framework
+   endif
 endif
 
 ifeq ($(HAVE_OPENGL_CORE), 1)
@@ -1849,6 +1887,7 @@ ifeq ($(HAVE_SLANG),1)
    DEFINES += -DHAVE_SLANG
    OBJ += gfx/drivers_shader/slang_process.o
    OBJ += gfx/drivers_shader/glslang_util.o
+   OBJ += gfx/drivers_shader/slang_cache.o
 endif
 
 ifeq ($(HAVE_SHADERS_COMMON), 1)
@@ -2200,6 +2239,11 @@ endif
 ifeq ($(HAVE_RBMP), 1)
    DEFINES += -DHAVE_RBMP
    OBJ += $(LIBRETRO_COMM_DIR)/formats/bmp/rbmp.o
+endif
+
+ifeq ($(HAVE_RWEBP), 1)
+   DEFINES += -DHAVE_RWEBP
+   OBJ += $(LIBRETRO_COMM_DIR)/formats/webp/rwebp.o
 endif
 
 OBJ += $(LIBRETRO_COMM_DIR)/formats/bmp/rbmp_encode.o \
@@ -2556,13 +2600,24 @@ ifeq ($(HAVE_COCOA), 1)
 endif
 ifeq ($(HAVE_COCOA_METAL), 1)
    HAVE_COCOA_COMMON = 1
+   DEFINES += -DHAVE_COCOA_METAL
 endif
 
 ifeq ($(HAVE_COCOA_COMMON),1)
-   DEFINES += -DHAVE_MAIN -DOSX
+   DEFINES += -DHAVE_MAIN -DOSX -DHAVE_COCOA
    OBJ += input/drivers/cocoa_input.o \
           ui/drivers/ui_cocoa.o \
           ui/drivers/cocoa/cocoa_common.o
+   # RetroArchPlaylistManager uses Obj-C lightweight generics and
+   # nullability macros (Xcode 7+, 2015).  It's fine on iOS/tvOS and
+   # modern macOS (10.11+), but GCC 4.0 / old clang on pre-10.11
+   # macOS SDKs can't parse the syntax.  HAVE_RETROARCH_PLAYLIST_MANAGER
+   # is set by qb/config.libs.sh based on the macOS target version
+   # (or HAVE_COCOATOUCH on iOS/tvOS).
+   ifeq ($(HAVE_RETROARCH_PLAYLIST_MANAGER), 1)
+      OBJ += ui/drivers/cocoa/RetroArchPlaylistManager.o
+   endif
+   LIBS += -framework Cocoa -framework AppKit -framework Foundation
 
    ifeq ($(HAVE_OPENGL), 1)
            DEFINES += -DGL_SILENCE_DEPRECATION

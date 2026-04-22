@@ -24,11 +24,15 @@
 #include <sys/utsname.h>
 
 #include <mach/mach.h>
+#ifdef HAVE_GCD
 #include <dispatch/dispatch.h>
+#endif
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreFoundation/CFArray.h>
+#if !defined(OSX) || (MAC_OS_X_VERSION_MAX_ALLOWED >= 101400)
 #import <AVFoundation/AVFoundation.h>
+#endif
 
 #ifdef HAVE_CONFIG_H
 #include "../../config.h"
@@ -121,12 +125,13 @@ typedef enum
    CFAllDomainsMask     = 0x0ffff  /* All domains: all of the above and future items */
 } CFDomainMask;
 
-#if (defined(OSX) && (MAC_OS_X_VERSION_MAX_ALLOWED >= 101200))
+#if defined(OSX)
 static int speak_pid                            = 0;
 #endif
 
 static char darwin_cpu_model_name[64] = {0};
 
+#ifdef HAVE_GCD
 /* Directory watching implementation using GCD dispatch sources */
 typedef struct darwin_watch_entry
 {
@@ -143,6 +148,7 @@ typedef struct darwin_watch_data
    volatile int32_t has_changes; /* Atomic flag indicating changes occurred */
    int flags;                    /* Event flags to monitor */
 } darwin_watch_data_t;
+#endif
 
 static void CFSearchPathForDirectoriesInDomains(
       char *s, size_t len)
@@ -438,14 +444,36 @@ static void frontend_darwin_get_env(int *argc, char *argv[],
 #endif
    fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_DATABASE], application_data, "database/rdb", sizeof(g_defaults.dirs[DEFAULT_DIR_DATABASE]));
    fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_CORE_ASSETS], application_data, "downloads", sizeof(g_defaults.dirs[DEFAULT_DIR_CORE_ASSETS]));
-   NSURL *url = [[NSBundle mainBundle] URLForResource:nil withExtension:@"dsp" subdirectory:@"filters/audio"];
+   /* -[NSBundle URLForResource:withExtension:subdirectory:] is 10.6+
+    * (NS_AVAILABLE(10_6, 4_0)).  On 10.5 Leopard the selector doesn't
+    * exist and the runtime throws "unrecognized selector".  Guard
+    * with respondsToSelector: and fall through to the existing
+    * fill_pathname_join fallback on older systems, which simply
+    * won't do bundle-shipped filter auto-discovery. */
+   NSURL *url = nil;
+   SEL url_for_resource_sel = @selector(URLForResource:withExtension:subdirectory:);
+   if ([[NSBundle mainBundle] respondsToSelector:url_for_resource_sel])
+      url = [[NSBundle mainBundle] URLForResource:nil withExtension:@"dsp" subdirectory:@"filters/audio"];
    if (url)
-       strlcpy(g_defaults.dirs[DEFAULT_DIR_AUDIO_FILTER], [[url baseURL] fileSystemRepresentation],  sizeof(g_defaults.dirs[DEFAULT_DIR_AUDIO_FILTER]));
+       /* URLForResource: with a nil name returns a URL pointing at
+        * the first matching .dsp file.  What we want is the directory
+        * it lives in, so strip the last path component.
+        *
+        * The previous code used [[url baseURL] fileSystemRepresentation],
+        * which was wrong on two counts: -baseURL returns nil for URLs
+        * constructed absolutely (which is what URLForResource: returns),
+        * so the result was a NULL source pointer into strlcpy; and on
+        * pre-10.9 SDKs NSURL doesn't declare -fileSystemRepresentation,
+        * so GCC resolved the selector against NSString's version with
+        * an incompatible-receiver warning. */
+       strlcpy(g_defaults.dirs[DEFAULT_DIR_AUDIO_FILTER], [[[url path] stringByDeletingLastPathComponent] UTF8String], sizeof(g_defaults.dirs[DEFAULT_DIR_AUDIO_FILTER]));
    else
        fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_AUDIO_FILTER], application_data, "filters/audio", sizeof(g_defaults.dirs[DEFAULT_DIR_AUDIO_FILTER]));
-   url = [[NSBundle mainBundle] URLForResource:nil withExtension:@"filt" subdirectory:@"filters/video"];
+   url = nil;
+   if ([[NSBundle mainBundle] respondsToSelector:url_for_resource_sel])
+      url = [[NSBundle mainBundle] URLForResource:nil withExtension:@"filt" subdirectory:@"filters/video"];
    if (url)
-       strlcpy(g_defaults.dirs[DEFAULT_DIR_VIDEO_FILTER], [[url baseURL] fileSystemRepresentation],  sizeof(g_defaults.dirs[DEFAULT_DIR_VIDEO_FILTER]));
+       strlcpy(g_defaults.dirs[DEFAULT_DIR_VIDEO_FILTER], [[[url path] stringByDeletingLastPathComponent] UTF8String], sizeof(g_defaults.dirs[DEFAULT_DIR_VIDEO_FILTER]));
    else
        fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_VIDEO_FILTER], application_data, "filters/video", sizeof(g_defaults.dirs[DEFAULT_DIR_VIDEO_FILTER]));
    fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_CORE_INFO], application_data, "info", sizeof(g_defaults.dirs[DEFAULT_DIR_CORE_INFO]));
@@ -853,6 +881,7 @@ static bool accessibility_speak_macos(int speed,
 
 #endif
 
+#ifdef HAVE_GCD
 static void frontend_darwin_watch_path_for_changes(
       struct string_list *list, int flags,
       path_change_data_t **change_data)
@@ -1002,11 +1031,14 @@ static bool frontend_darwin_check_for_path_changes(
    /* Atomically read and clear the flag */
    return OSAtomicCompareAndSwap32(1, 0, &watch_data->has_changes);
 }
+#endif
 
 static bool frontend_darwin_is_narrator_running(void)
 {
+#if !defined(OSX) || (MAC_OS_X_VERSION_MAX_ALLOWED >= 101400)
    if (@available(macOS 10.14, iOS 7, tvOS 9, *))
       return true;
+#endif
 #if OSX
    return is_narrator_running_macos();
 #else
@@ -1022,6 +1054,7 @@ static bool frontend_darwin_accessibility_speak(int speed,
    else if (speed > 10)
       speed               = 10;
 
+#if !defined(OSX) || (MAC_OS_X_VERSION_MAX_ALLOWED >= 101400)
    if (@available(macOS 10.14, iOS 7, tvOS 9, *))
    {
       static dispatch_once_t once;
@@ -1046,6 +1079,7 @@ static bool frontend_darwin_accessibility_speak(int speed,
       [synth speakUtterance:utterance];
       return true;
    }
+#endif
 
 #if defined(OSX)
    return accessibility_speak_macos(speed, speak_text, priority);
@@ -1093,8 +1127,13 @@ frontend_ctx_driver_t frontend_ctx_darwin = {
    NULL,                            /* detach_console */
    NULL,                            /* get_lakka_version */
    NULL,                            /* set_screen_brightness */
+#ifdef HAVE_GCD
    frontend_darwin_watch_path_for_changes, /* watch_path_for_changes */
    frontend_darwin_check_for_path_changes, /* check_for_path_changes */
+#else
+   NULL,                            /* watch_path_for_changes */
+   NULL,                            /* check_for_path_changes */
+#endif
    NULL,                            /* set_sustained_performance_mode */
    frontend_darwin_get_cpu_model_name, /* get_cpu_model_name */
    frontend_darwin_get_user_language, /* get_user_language   */

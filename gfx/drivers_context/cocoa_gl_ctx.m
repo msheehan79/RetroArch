@@ -18,6 +18,8 @@
 #include "../../config.h"
 #endif
 
+#include <TargetConditionals.h>
+
 #if TARGET_OS_IPHONE
 #include <CoreGraphics/CoreGraphics.h>
 #else
@@ -42,9 +44,6 @@
 #include "../../configuration.h"
 #include "../../retroarch.h"
 #include "../../verbosity.h"
-#ifdef HAVE_METAL
-#include "../common/metal_common.h"
-#endif
 
 #if defined(HAVE_COCOATOUCH)
 #define GLContextClass  EAGLContext
@@ -145,6 +144,11 @@ void *glkitview_init(void)
     * glPushGroupMarkerEXT with no current context and crashes. */
    if (glk_view)
       [glk_view deleteDrawable];
+   /* RELEASE the old view (+1 from the previous [GLKView new]) before
+    * overwriting the static.  Under ARC the strong static would retain/
+    * release on store, but under MRR the raw assignment below would drop
+    * the +1 and leak one GLKView per re-init. */
+   RELEASE(glk_view);
 
    glk_view                      = [GLKView new];
 #if TARGET_OS_IOS
@@ -173,10 +177,8 @@ static void cocoa_gl_gfx_ctx_destroy(void *data)
 #ifdef OSX
    [GLContextClass clearCurrentContext];
    [g_ctx clearDrawable];
-   RELEASE(g_ctx);
    if (g_hw_ctx)
       [g_hw_ctx clearDrawable];
-   RELEASE(g_hw_ctx);
    [GLContextClass clearCurrentContext];
 #else
    /* Clean up GLKView's framebuffer resources while context is still valid.
@@ -186,8 +188,18 @@ static void cocoa_gl_gfx_ctx_destroy(void *data)
       [glk_view deleteDrawable];
    [EAGLContext setCurrentContext:nil];
 #endif
-   g_hw_ctx = nil;
-   g_ctx = nil;
+   /* RELEASE -releases + nils under MRR, just nils under ARC (see
+    * cocoa_common.h).  Doing this unconditionally matches the OSX
+    * path's previous behaviour and fixes a latent iOS-MRR leak where
+    * the +1 from [[EAGLContext alloc] initWithAPI:...] in set_video_mode
+    * was dropped with a raw 'g_ctx = nil'. */
+   RELEASE(g_ctx);
+   RELEASE(g_hw_ctx);
+#if defined(HAVE_COCOATOUCH)
+   /* glk_view was created with +new (+1) in glkitview_init.  Release
+    * it on destroy so it does not leak across init/destroy cycles. */
+   RELEASE(glk_view);
+#endif
 
    free(cocoa_ctx);
 }
@@ -248,11 +260,19 @@ static void cocoa_gl_gfx_ctx_get_video_size(void *data,
 static float cocoa_gl_gfx_ctx_get_refresh_rate(void *data)
 {
 #ifdef OSX
+#ifdef MAC_OS_X_VERSION_10_6
+    /* CGDisplayModeRef and CGDisplayCopyDisplayMode are 10.6+.
+     * On the 10.5 Leopard SDK only the older CFDictionaryRef-based
+     * CGDisplayCurrentMode API exists; not worth wiring up for a
+     * refresh-rate readout, so fall back to 60. */
     CGDirectDisplayID mainDisplayID = CGMainDisplayID();
     CGDisplayModeRef currentMode = CGDisplayCopyDisplayMode(mainDisplayID);
     float currentRate = CGDisplayModeGetRefreshRate(currentMode);
     CFRelease(currentMode);
     return currentRate;
+#else
+    return 60.0f;
+#endif
 #else
     if (@available(iOS 10.3, tvOS 10.2, *))
        return [UIScreen mainScreen].maximumFramesPerSecond;
@@ -409,29 +429,56 @@ static bool cocoa_gl_gfx_ctx_set_video_mode(void *data,
 
       fmt = [[NSOpenGLPixelFormat alloc] initWithAttributes:attributes];
 
-#if MAC_OS_X_VERSION_MIN_REQUIRED < 1050
+      /* If pixel-format creation failed with NSOpenGLPFAAllowOfflineRenderers
+       * (added in 10.5 - some drivers on early 10.5 builds could reject it
+       * even though the SDK exposed the constant), retry without it.  The
+       * previous guard here was #if MAC_OS_X_VERSION_MIN_REQUIRED < 1050,
+       * which meant "compile this fallback only when targeting pre-10.5" -
+       * the opposite of what was intended and unreachable in practice since
+       * the static `attributes` array above already references
+       * NSOpenGLPFAAllowOfflineRenderers unconditionally, so the file
+       * demands a 10.5+ SDK (MAC_OS_X_VERSION_MAX_ALLOWED >= 1050) just
+       * to compile.  The fallback is now always available at runtime and
+       * only exercised when the first -initWithAttributes: returns nil. */
       if (fmt == nil)
       {
-         /* NSOpenGLFPAAllowOfflineRenderers is
-            not supported on this OS version. */
          attributes[3]  = (NSOpenGLPixelFormatAttribute)0;
          fmt            = [[NSOpenGLPixelFormat alloc] initWithAttributes:attributes];
       }
-#endif
 
       if (cocoa_ctx->flags & COCOA_CTX_FLAG_USE_HW_CTX)
       {
+         /* In the normal reinit flow -destroy runs before -set_video_mode
+          * and both statics are already nil here; guard defensively so an
+          * MRR build does not leak the previous +1 if that invariant ever
+          * breaks (e.g. a future caller that re-inits without tearing
+          * down first).  Safe when already nil under both ARC and MRR. */
+         RELEASE(g_ctx);
+         RELEASE(g_hw_ctx);
          g_hw_ctx       = [[NSOpenGLContext alloc] initWithFormat:fmt shareContext:nil];
          g_ctx          = [[NSOpenGLContext alloc] initWithFormat:fmt shareContext:g_hw_ctx];
       }
       else
+      {
+         RELEASE(g_ctx);
          g_ctx          = [[NSOpenGLContext alloc] initWithFormat:fmt shareContext:nil];
+      }
 
       RELEASE(fmt);
    }
 
    [g_ctx setView:g_view];
-   [[g_view window] setColorSpace:[NSColorSpace sRGBColorSpace]];
+   {
+      /* -[NSWindow setColorSpace:] is NS_AVAILABLE_MAC(10_6).  On 10.5
+       * Leopard the selector doesn't exist and the runtime throws
+       * "unrecognized selector".  Without this call the window simply
+       * uses the default colour space (which is what 10.5 always did
+       * anyway), so skip it on systems that lack the method.
+       * +[NSColorSpace sRGBColorSpace] itself is 10.5+ and is safe. */
+      NSWindow *win = [g_view window];
+      if ([win respondsToSelector:@selector(setColorSpace:)])
+         [win setColorSpace:[NSColorSpace sRGBColorSpace]];
+   }
 #ifdef OSX
    [g_ctx makeCurrentContext];
 #else
@@ -445,21 +492,119 @@ static bool cocoa_gl_gfx_ctx_set_video_mode(void *data,
    [apple_platform setVideoMode:mode];
    cocoa_show_mouse(data, !fullscreen);
 #else
-   /* TODO/FIXME: Screen mode support. */
+   /* Hand-rolled fullscreen for the non-Metal path.
+    *
+    * The previous implementation called -[NSView enterFullScreenMode:
+    * withOptions:], which internally captures all displays and moves
+    * the view into an AppKit-manufactured NSWindow.  That replacement
+    * window is a plain NSWindow, not RAWindow, so -[RAWindow sendEvent:]
+    * (the event-pump override that feeds cocoa_input, added in commit
+    * 23a945639) stops firing while fullscreen, and keystrokes / mouse
+    * clicks get dropped.
+    *
+    * Instead, create our own borderless RAWindow covering the chosen
+    * screen, move the CocoaView into it, and show it above the menu
+    * bar.  Because the fullscreen window is itself an RAWindow, our
+    * sendEvent: override keeps firing.  SDL, GLFW, and similar
+    * libraries use this same pattern for pre-Lion fullscreen on macOS.
+    *
+    * Extra constraint: on 10.5 Leopard, -[NSWindow setStyleMask:]
+    * doesn't exist, so we can't toggle the existing window's style
+    * between titled and borderless - the new-window approach is the
+    * only option that works on every macOS version we target.
+    *
+    * HAVE_COCOA_METAL is unaffected: that path goes through
+    * -[apple_platform setVideoMode:] above, which drives the native
+    * -[NSWindow toggleFullScreen:] API on 10.7+. */
+   static NSWindow *saved_windowed_window = NULL;
+   static NSWindow *fullscreen_window     = NULL;
+   static NSRect    saved_view_frame;
+
    if (fullscreen)
    {
       if (!has_went_fullscreen)
       {
-         [g_view enterFullScreenMode:(BRIDGE NSScreen *)cocoa_screen_get_chosen() withOptions:nil];
+         NSScreen *screen        = (BRIDGE NSScreen *)cocoa_screen_get_chosen();
+         NSRect    screen_frame  = [screen frame];
+         /* Look up RAWindow at runtime rather than pulling its
+          * @interface out of ui_cocoa.m into a shared header. */
+         Class     ra_window_cls = NSClassFromString(@"RAWindow");
+
+         /* Remember where the view lived so we can put it back on exit. */
+         saved_windowed_window   = [[g_view window] retain];
+         saved_view_frame        = [g_view frame];
+
+         /* Build the fullscreen host window.  NSBorderlessWindowMask is
+          * 0 on every macOS version, identical 10.5 through modern.
+          * Raising above NSMainMenuWindowLevel is belt-and-braces once
+          * the menu bar is hidden below. */
+         fullscreen_window = [[ra_window_cls alloc]
+               initWithContentRect:screen_frame
+                         styleMask:NSBorderlessWindowMask
+                           backing:NSBackingStoreBuffered
+                             defer:NO];
+         [fullscreen_window setLevel:NSMainMenuWindowLevel + 1];
+         [fullscreen_window setOpaque:YES];
+         [fullscreen_window setHidesOnDeactivate:YES];
+
+         /* Hide menu bar + Dock.  Only valid when fullscreening onto
+          * screen 0 (the screen that owns the menu bar); on a
+          * secondary screen the menu bar stays put and hiding it would
+          * mangle the primary screen. */
+         if ([[NSScreen screens] count] > 0
+               && [screen isEqual:[[NSScreen screens] objectAtIndex:0]])
+            [NSMenu setMenuBarVisible:NO];
+
+         /* Move the CocoaView from the windowed window into the
+          * fullscreen window.  Retain across the move so the view
+          * isn't released by removeFromSuperview... if it happened
+          * to hold the last reference. */
+         [g_view retain];
+         [g_view removeFromSuperviewWithoutNeedingDisplay];
+         [[fullscreen_window contentView] addSubview:g_view];
+         /* -[NSWindow contentView] returns id on the 10.5-10.9 SDKs,
+          * which means GCC can resolve -bounds either to -[NSView
+          * bounds] (NSRect) or -[CALayer bounds] (CGRect).  On 32-bit
+          * Darwin those are distinct incompatible structs, so the
+          * implicit CGRect -> NSRect (setFrame:'s parameter) coercion
+          * fails to compile.  Cast the receiver to NSView* so the
+          * right -bounds wins.  Same fix class as 8e428f4e67. */
+         [g_view setFrame:[(NSView*)[fullscreen_window contentView] bounds]];
+         [g_view release];
+
+         /* Order the windowed window out, bring the fullscreen window
+          * up, and route keystrokes to the view. */
+         [saved_windowed_window orderOut:nil];
+         [fullscreen_window makeKeyAndOrderFront:nil];
+         [fullscreen_window makeFirstResponder:g_view];
+
          cocoa_show_mouse(data, false);
       }
    }
    else
    {
-      if (has_went_fullscreen)
+      if (has_went_fullscreen && fullscreen_window)
       {
-         [g_view exitFullScreenModeWithOptions:nil];
-         [[g_view window] makeFirstResponder:g_view];
+         /* Put the view back in the windowed window. */
+         [g_view retain];
+         [g_view removeFromSuperviewWithoutNeedingDisplay];
+         [[saved_windowed_window contentView] addSubview:g_view];
+         [g_view setFrame:saved_view_frame];
+         [g_view release];
+
+         /* Restore the menu bar, tear down the fullscreen window,
+          * bring the windowed window back. */
+         [NSMenu setMenuBarVisible:YES];
+
+         [fullscreen_window orderOut:nil];
+         [fullscreen_window release];
+         fullscreen_window = NULL;
+
+         [saved_windowed_window makeKeyAndOrderFront:nil];
+         [saved_windowed_window makeFirstResponder:g_view];
+         [saved_windowed_window release];
+         saved_windowed_window = NULL;
+
          cocoa_show_mouse(data, true);
       }
 
@@ -495,6 +640,13 @@ static bool cocoa_gl_gfx_ctx_set_video_mode(void *data,
       unsigned width, unsigned height, bool fullscreen)
 {
    cocoa_ctx_data_t *cocoa_ctx = (cocoa_ctx_data_t*)data;
+
+   /* In the normal reinit flow -destroy runs before -set_video_mode and
+    * both statics are already nil here; guard defensively so an iOS-MRR
+    * build does not leak the previous +1 if that invariant ever breaks
+    * (e.g. a future caller that re-inits without tearing down first). */
+   RELEASE(g_ctx);
+   RELEASE(g_hw_ctx);
 
 #if defined(HAVE_OPENGLES3)
    if (cocoa_ctx->flags & COCOA_CTX_FLAG_USE_HW_CTX)

@@ -20,6 +20,11 @@
 
 #include <boolean.h>
 #include <audio/audio_resampler.h>
+
+#ifdef __MACH__
+#include <TargetConditionals.h>
+#endif
+
 #include "configuration.h"
 #include "gfx/video_defines.h"
 #include "input/input_defines.h"
@@ -493,8 +498,10 @@
 /* Choose if the screen will be able to write around the notch or not */
 #define DEFAULT_NOTCH_WRITE_OVER_ENABLE false
 
-#ifdef __APPLE__
+#if defined(__APPLE__) && defined(HAVE_VULKAN)
 #define DEFAULT_USE_METAL_ARG_BUFFERS (!!__builtin_available(macOS 12, iOS 13, tvOS 12, *))
+#else
+#define DEFAULT_USE_METAL_ARG_BUFFERS false
 #endif
 
 /* Enable use of shaders */
@@ -1787,7 +1794,7 @@
 #if defined(HAKCHI)
 #define DEFAULT_BUILDBOT_SERVER_URL "http://hakchicloud.com/Libretro_Cores/"
 #elif defined(WEBOS)
-#define DEFAULT_BUILDBOT_SERVER_URL "http://retroarch-cores.webosbrew.org/armv7a/"
+#define DEFAULT_BUILDBOT_SERVER_URL "http://buildbot.libretro.com/nightly/webos/armv7a/latest/"
 #elif defined(ANDROID)
 #if defined(ANDROID_ARM_V7)
 #define DEFAULT_BUILDBOT_SERVER_URL "http://buildbot.libretro.com/nightly/android/latest/armeabi-v7a/"

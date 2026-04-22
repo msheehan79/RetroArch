@@ -17,16 +17,19 @@
 #import <AvailabilityMacros.h>
 #include <sys/stat.h>
 
+#include <compat/apple_compat.h>
 #include <string/stdstring.h>
+#include <defines/cocoa_defines.h>
 
 #include "cocoa_common.h"
 #include "apple_platform.h"
 #include "../ui_cocoa.h"
-#include <compat/apple_compat.h>
+#ifdef HAVE_RETROARCH_PLAYLIST_MANAGER
 #include "RetroArchPlaylistManager.h"
+#endif
 
 #ifdef HAVE_COCOATOUCH
-#import "../../../pkg/apple/WebServer/GCDWebUploader/GCDWebUploader.h"
+#import "../../pkg/apple/WebServer/GCDWebUploader/GCDWebUploader.h"
 #import "WebServer.h"
 #if TARGET_OS_TV
 #import <TVServices/TVServices.h>
@@ -34,31 +37,32 @@
 #endif
 #if TARGET_OS_IOS
 #import <MobileCoreServices/MobileCoreServices.h>
-#import "../../../menu/menu_cbs.h"
 #endif
 #endif
 
-#include "../../../configuration.h"
-#include "../../../content.h"
-#include "../../../core_info.h"
-#include "../../../defaults.h"
-#include "../../../frontend/frontend.h"
-#include "../../../file_path_special.h"
-#include "../../../menu/menu_cbs.h"
-#include "../../../paths.h"
-#include "../../../retroarch.h"
-#include "../../../tasks/task_content.h"
-#include "../../../verbosity.h"
+#include "../../configuration.h"
+#include "../../content.h"
+#include "../../core_info.h"
+#include "../../defaults.h"
+#include "../../frontend/frontend.h"
+#include "../../file_path_special.h"
+
+#ifdef HAVE_MENU
+#include "../../menu/menu_driver.h"
+#include "../../menu/menu_cbs.h"
+#include "../../menu/menu_displaylist.h"
+#endif
+
+#include "../../paths.h"
+#include "../../retroarch.h"
+#include "../../tasks/task_content.h"
+#include "../../verbosity.h"
 
 #include "../../input/drivers/cocoa_input.h"
 #include "../../input/drivers_keyboard/keyboard_event_apple.h"
 
-#ifdef HAVE_MENU
-#include "../../menu/menu_driver.h"
-#endif
-
 #ifdef HAVE_MIST
-#include "steam/steam.h"
+#include "../../steam/steam.h"
 #endif
 
 #if IOS
@@ -71,8 +75,14 @@ extern bool RAIsVoiceOverRunning(void)
 #import <AppKit/AppKit.h>
 extern bool RAIsVoiceOverRunning(void)
 {
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 101300
+   /* @available is clang-only (Xcode 7+).  GCC 4.0 rejects the
+    * '@' as a stray token.  isVoiceOverEnabled on NSWorkspace is
+    * 10.13+ anyway, so on older SDKs we skip this block entirely
+    * and fall through to the return below. */
    if (@available(macOS 10.13, *))
       return [[NSWorkspace sharedWorkspace] isVoiceOverEnabled];
+#endif
    return false;
 }
 #endif
@@ -102,8 +112,7 @@ static CFRunLoopObserverRef iterate_observer;
 static void rarch_draw_observer(CFRunLoopObserverRef observer,
     CFRunLoopActivity activity, void *info)
 {
-   uint32_t runloop_flags;
-   int          ret   = runloop_iterate();
+   int ret = runloop_iterate();
 
    if (ret == -1)
    {
@@ -121,9 +130,8 @@ static void rarch_draw_observer(CFRunLoopObserverRef observer,
    steam_poll();
 #endif
 
-   runloop_flags = runloop_get_flags();
 #if !TARGET_OS_TV && !defined(OSX)
-   if (runloop_flags & RUNLOOP_FLAG_FASTMOTION)
+   if (runloop_get_flags() & RUNLOOP_FLAG_FASTMOTION)
 #endif
       CFRunLoopWakeUp(CFRunLoopGetMain());
 #if TARGET_OS_IOS
@@ -183,8 +191,7 @@ void rarch_stop_draw_observer(void)
    }
 
 #if !TARGET_OS_TV
-   uint32_t runloop_flags = runloop_get_flags();
-   if (runloop_flags & RUNLOOP_FLAG_FASTMOTION)
+   if (runloop_get_flags() & RUNLOOP_FLAG_FASTMOTION)
    {
       /* Fast-forward: observer handles all iterations */
       rarch_start_draw_observer();
@@ -200,7 +207,24 @@ void rarch_stop_draw_observer(void)
    CocoaView *view = (BRIDGE CocoaView*)nsview_get_ptr();
    if (!view)
    {
+      /* +new returns +1 owned by the caller.  Autorelease before
+       * handing to nsview_set_ptr, which takes its own retain for
+       * the process-lifetime g_instance slot.  Net result: the
+       * returned pointer obeys the Cocoa +0 "get" convention on
+       * both the first call (where we allocate) and every
+       * subsequent call (where we just read g_instance) - so
+       * callers do not have to guess the retain count.
+       *
+       * RARCH_AUTORELEASE is a statement-only macro (expands to
+       * ((void)0) under ARC and [x autorelease] under MRR), so it
+       * must be called on its own line after the assignment rather
+       * than wrapping the rvalue.  Under ARC the ((void)0) is a
+       * no-op and the strong local's end-of-scope release balances
+       * +new's +1 after g_instance's storeStrong has taken its
+       * own retain; under MRR the explicit autorelease does the
+       * same balancing once the pool drains. */
       view = [CocoaView new];
+      RARCH_AUTORELEASE(view);
       nsview_set_ptr(view);
 #if defined(IOS)
       view.displayLink = [CADisplayLink displayLinkWithTarget:view selector:@selector(step:)];
@@ -243,17 +267,10 @@ void rarch_stop_draw_observer(void)
    [self setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
    NSArray *array = [NSArray arrayWithObjects:NSColorPboardType, NSFilenamesPboardType, nil];
    [self registerForDraggedTypes:array];
-#endif
 
-#if defined(HAVE_COCOA)
-   ui_window_cocoa_t cocoa_view;
-   cocoa_view.data = (CocoaView*)self;
-#endif
-
-#if defined(OSX)
-    video_driver_display_type_set(RARCH_DISPLAY_OSX);
-    video_driver_display_set(0);
-    video_driver_display_userdata_set((uintptr_t)self);
+   video_driver_display_type_set(RARCH_DISPLAY_OSX);
+   video_driver_display_set(0);
+   video_driver_display_userdata_set((uintptr_t)self);
 #endif
 
 #if TARGET_OS_TV
@@ -836,7 +853,7 @@ void *cocoa_screen_get_chosen(void)
 
     monitor_index        = settings->uints.video_monitor_index;
 
-    if (monitor_index >= screens.count)
+    if (monitor_index >= [screens count])
         return (BRIDGE void*)screens;
     return ((BRIDGE void*)[screens objectAtIndex:monitor_index]);
 }
@@ -937,7 +954,30 @@ void *nsview_get_ptr(void)
     return (BRIDGE void *)g_instance;
 }
 
-void nsview_set_ptr(CocoaView *p) { g_instance = p; }
+void nsview_set_ptr(CocoaView *p)
+{
+   /* g_instance is the process-lifetime strong reference to the
+    * CocoaView singleton.  Under MRR we must explicitly retain the
+    * new value and release the old one so g_instance owns a
+    * balanced +1 across reassignments.  In practice there is only
+    * one caller (+[CocoaView get] on its first-time path), but the
+    * invariant matters: callers treat [CocoaView get] as a +0 "get"
+    * accessor, and that only holds if g_instance is the one keeping
+    * the view alive.  Under ARC RARCH_RETAIN and RARCH_RELEASE are
+    * no-ops; the static __strong pointer does retain/release via
+    * objc_storeStrong when assigned.
+    *
+    * The (void) cast on RARCH_RETAIN silences -Wunused-value under
+    * ARC, where the macro expands to the bare expression (p); under
+    * MRR it expands to [p retain], where the discarded return value
+    * is conventional and warning-free. */
+   if (g_instance != p)
+   {
+      (void)RARCH_RETAIN(p);
+      RARCH_RELEASE(g_instance);
+      g_instance = p;
+   }
+}
 
 CocoaView *cocoaview_get(void)
 {
@@ -1050,11 +1090,20 @@ bool cocoa_get_metrics(
 config_file_t *open_userdefaults_config_file(void)
 {
    config_file_t *conf = NULL;
-   NSString *backup = [NSUserDefaults.standardUserDefaults stringForKey:@FILE_PATH_MAIN_CONFIG];
+   NSString *backup = [[NSUserDefaults standardUserDefaults] stringForKey:@FILE_PATH_MAIN_CONFIG];
    if ([backup length] > 0)
    {
-      conf = config_file_new_from_string(backup.UTF8String, path_get(RARCH_PATH_CONFIG));
-      config_set_int(conf, "bundle_assets_extract_last_version", 0);
+      /* config_file_new_from_string() takes (char*) and mutates it in
+       * place.  -[NSString UTF8String] returns an Apple-owned buffer
+       * that is not writable, so we must strdup() first and free
+       * after. */
+      char *backup_copy = strdup([backup UTF8String]);
+      if (backup_copy)
+      {
+         conf = config_file_new_from_string(backup_copy, path_get(RARCH_PATH_CONFIG));
+         config_set_int(conf, "bundle_assets_extract_last_version", 0);
+         free(backup_copy);
+      }
    }
    return conf;
 }
@@ -1065,7 +1114,7 @@ void write_userdefaults_config_file(void)
                                               encoding:NSUTF8StringEncoding
                                                  error:nil];
    if (conf)
-      [NSUserDefaults.standardUserDefaults setObject:conf forKey:@FILE_PATH_MAIN_CONFIG];
+      [[NSUserDefaults standardUserDefaults] setObject:conf forKey:@FILE_PATH_MAIN_CONFIG];
 }
 
 #if TARGET_OS_TV
@@ -1182,6 +1231,7 @@ void cocoa_file_load_with_detect_core(const char *filename)
    }
 }
 
+#ifdef HAVE_RETROARCH_PLAYLIST_MANAGER
 bool cocoa_launch_game_by_filename(NSString *filename)
 {
    core_info_list_t *core_info_list = NULL;
@@ -1278,3 +1328,4 @@ bool cocoa_launch_game_by_filename(NSString *filename)
    return task_push_load_content_with_new_core_from_companion_ui(
       info->path, full_path, NULL, NULL, NULL, &content_info, NULL, NULL);
 }
+#endif /* HAVE_RETROARCH_PLAYLIST_MANAGER */

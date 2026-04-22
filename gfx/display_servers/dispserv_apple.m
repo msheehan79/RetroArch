@@ -25,10 +25,34 @@
 #include "../../ui/drivers/cocoa/apple_platform.h"
 #include "../../ui/drivers/cocoa/cocoa_common.h"
 #include "../../configuration.h"
+/* For NSWindowStyleMaskTitled polyfill on pre-10.12 SDKs */
+#include <defines/cocoa_defines.h>
 
 #ifdef OSX
 #import <AppKit/AppKit.h>
+/* <CoreGraphics/CoreGraphics.h> is a 10.8+ umbrella header.
+ * On earlier SDKs (including the 10.5 Leopard SDK used by Xcode 3.1
+ * on PowerPC), the same types are reachable through the
+ * ApplicationServices umbrella. */
+#include <AvailabilityMacros.h>
+#if defined(MAC_OS_X_VERSION_10_8) && \
+    (!defined(MAC_OS_X_VERSION_MIN_REQUIRED) || \
+     MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_10_8)
 #import <CoreGraphics/CoreGraphics.h>
+#else
+#import <ApplicationServices/ApplicationServices.h>
+#endif
+/* The CGDisplayModeRef family (CGDisplayCopyAllDisplayModes,
+ * CGDisplayModeGetWidth, CGDisplaySetDisplayMode, ...) arrived in
+ * 10.6 Snow Leopard.  The 10.5 SDK only offers the older
+ * CGDisplayAvailableModes / CFDictionaryRef path, which is a
+ * different enough API that we just stub the resolution list on
+ * pre-10.6 targets rather than port to both. */
+#if defined(MAC_OS_X_VERSION_10_6) && \
+    (!defined(MAC_OS_X_VERSION_MIN_REQUIRED) || \
+     MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_10_6)
+#define RARCH_HAS_CGDISPLAYMODE_API 1
+#endif
 #endif
 
 #ifdef OSX
@@ -36,13 +60,15 @@ static bool apple_display_server_set_window_opacity(void *data, unsigned opacity
 {
    settings_t *settings      = config_get_ptr();
    bool windowed_full        = settings->bools.video_windowed_fullscreen;
-   NSWindow *window          = ((RetroArch_OSX*)[[NSApplication sharedApplication] delegate]).window;
-   if (windowed_full || !window.keyWindow)
+   NSWindow *window          = [((RetroArch_OSX*)[[NSApplication sharedApplication] delegate]) window];
+   if (windowed_full || ![window isKeyWindow])
       return false;
-   window.alphaValue = (CGFloat)opacity / (CGFloat)100.0f;
+   [window setAlphaValue:(CGFloat)opacity / (CGFloat)100.0f];
    return true;
 }
 
+#ifdef RARCH_HAS_CGDISPLAYMODE_API
+/* Uses GCD (dispatch_once) and Obj-C blocks, both 10.6+. */
 static bool apple_display_server_set_window_progress(void *data, int progress, bool finished)
 {
    static NSProgressIndicator *indicator;
@@ -53,35 +79,36 @@ static bool apple_display_server_set_window_progress(void *data, int progress, b
       [iv setImage:[[NSApplication sharedApplication] applicationIconImage]];
       [dockTile setContentView:iv];
 
-      indicator = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(0, 0, dockTile.size.width, 20)];
-      indicator.indeterminate = NO;
-      indicator.minValue = 0;
-      indicator.maxValue = 100;
-      indicator.doubleValue = 0;
+      indicator = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(0, 0, [dockTile size].width, 20)];
+      [indicator setIndeterminate:NO];
+      [indicator setMinValue:0];
+      [indicator setMaxValue:100];
+      [indicator setDoubleValue:0];
 
       // Create a custom view for the dock tile
       [iv addSubview:indicator];
    });
    if (finished)
-      indicator.doubleValue = (double)-1;
+      [indicator setDoubleValue:(double)-1];
    else
-      indicator.doubleValue = (double)progress;
-   indicator.hidden = finished;
+      [indicator setDoubleValue:(double)progress];
+   [indicator setHidden:finished];
    [[NSApp dockTile] display];
    return true;
 }
+#endif /* RARCH_HAS_CGDISPLAYMODE_API */
 
 static bool apple_display_server_set_window_decorations(void *data, bool on)
 {
    settings_t *settings      = config_get_ptr();
    bool windowed_full        = settings->bools.video_windowed_fullscreen;
-   NSWindow *window          = ((RetroArch_OSX*)[[NSApplication sharedApplication] delegate]).window;
+   NSWindow *window          = [((RetroArch_OSX*)[[NSApplication sharedApplication] delegate]) window];
    if (windowed_full)
       return false;
    if (on)
-      window.styleMask |= NSWindowStyleMaskTitled;
+      [window setStyleMask:([window styleMask] | NSWindowStyleMaskTitled)];
    else
-      window.styleMask &= ~NSWindowStyleMaskTitled;
+      [window setStyleMask:([window styleMask] & ~NSWindowStyleMaskTitled)];
    return true;
 }
 #endif
@@ -222,6 +249,7 @@ static void *apple_display_server_get_resolution_list(
    double currentRate;
 
 #ifdef OSX
+#ifdef RARCH_HAS_CGDISPLAYMODE_API
    CGDirectDisplayID mainDisplayID = CGMainDisplayID();
    CGDisplayModeRef currentMode = CGDisplayCopyDisplayMode(mainDisplayID);
    currentRate = CGDisplayModeGetRefreshRate(currentMode);
@@ -316,6 +344,33 @@ static void *apple_display_server_get_resolution_list(
    CFRelease(currentMode);
    RARCH_LOG("Found %u display modes on macOS\n", *len);
    return conf;
+#else
+   /* pre-10.6 Leopard/Tiger fallback: CGDisplayModeRef doesn't exist
+    * here and the older CGDisplayAvailableModes API is a different
+    * shape.  Just report the current resolution as a single entry
+    * and skip mode enumeration; resolution-switching isn't supported
+    * on these targets anyway. */
+   CGDirectDisplayID mainDisplayID = CGMainDisplayID();
+   size_t currentWidth             = CGDisplayPixelsWide(mainDisplayID);
+   size_t currentHeight            = CGDisplayPixelsHigh(mainDisplayID);
+
+   *len = 1;
+   if (!(conf = (struct video_display_config*)calloc(1, sizeof(*conf))))
+      return NULL;
+   conf[0].width            = (unsigned)currentWidth;
+   conf[0].height           = (unsigned)currentHeight;
+   conf[0].bpp              = 32;
+   conf[0].refreshrate      = 60;
+   conf[0].refreshrate_float = 60.0f;
+   conf[0].interlaced       = false;
+   conf[0].dblscan          = false;
+   conf[0].idx              = 0;
+   conf[0].current          = true;
+   (void)currentRate;
+   RARCH_LOG("[Video] Legacy macOS: reporting current mode %ux%u only\n",
+         conf[0].width, conf[0].height);
+   return conf;
+#endif /* RARCH_HAS_CGDISPLAYMODE_API */
 #else
    /* iOS/tvOS: Only enumerate refresh rates for current resolution */
    unsigned width, height;
@@ -438,7 +493,7 @@ static enum rotation apple_display_server_get_screen_orientation(void *data)
 
 typedef struct
 {
-#ifdef OSX
+#if defined(OSX) && defined(RARCH_HAS_CGDISPLAYMODE_API)
    CGDisplayModeRef original_mode;
    CGDirectDisplayID display_id;
 #endif
@@ -450,7 +505,7 @@ static void *apple_display_server_init(void)
    if (!apple)
       return NULL;
 
-#ifdef OSX
+#if defined(OSX) && defined(RARCH_HAS_CGDISPLAYMODE_API)
    /* Store original display mode for restoration */
    apple->display_id = CGMainDisplayID();
    apple->original_mode = CGDisplayCopyDisplayMode(apple->display_id);
@@ -503,7 +558,7 @@ static void apple_display_server_destroy(void *data)
    if (!apple)
       return;
 
-#ifdef OSX
+#if defined(OSX) && defined(RARCH_HAS_CGDISPLAYMODE_API)
    /* Restore original display mode */
    if (apple->original_mode)
    {
@@ -528,7 +583,11 @@ const video_display_server_t dispserv_apple = {
    apple_display_server_destroy,
 #ifdef OSX
    apple_display_server_set_window_opacity,
+#ifdef RARCH_HAS_CGDISPLAYMODE_API
    apple_display_server_set_window_progress,
+#else
+   NULL, /* set_window_progress (needs 10.6+ GCD/blocks) */
+#endif
    apple_display_server_set_window_decorations,
 #else
    NULL, /* set_window_opacity */

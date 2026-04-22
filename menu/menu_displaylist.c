@@ -35,6 +35,10 @@
 #include "../config.h"
 #endif
 
+#ifdef __APPLE__
+#include <CoreFoundation/CoreFoundation.h>
+#endif
+
 #ifdef HAVE_LIBRETRODB
 #include "../database_info.h"
 #endif
@@ -618,11 +622,11 @@ static int menu_displaylist_parse_core_info(
          {
             core_path = entry->core_path;
 
-            if (memcmp(entry->core_path, FILE_PATH_DETECT, sizeof(FILE_PATH_DETECT)) == 0)
+            if (!strcmp(entry->core_path, FILE_PATH_DETECT))
             {
                const char* default_core_path = playlist_get_default_core_path(playlist);
                if (     default_core_path
-                     && memcmp(default_core_path, FILE_PATH_DETECT, sizeof(FILE_PATH_DETECT)) != 0)
+                     && strcmp(default_core_path, FILE_PATH_DETECT) != 0)
                   core_path = default_core_path;
             }
          }
@@ -2098,7 +2102,7 @@ static unsigned menu_displaylist_parse_system_info(file_list_t *list)
                count++;
 
 #ifdef HAVE_RGUI
-            if (memcmp(menu_driver, "rgui", 5) == 0)
+            if (!strcmp(menu_driver, "rgui"))
             {
                /* Device Display Name */
                snprintf(entry, sizeof(entry), /* TODO/FIXME: localize */
@@ -2390,6 +2394,9 @@ static unsigned menu_displaylist_parse_system_info(file_list_t *list)
 #ifdef HAVE_RTGA
          {SUPPORTS_RTGA, "TGA (RTGA)"},
 #endif
+#ifdef HAVE_RWEBP
+         {SUPPORTS_RWEBP, "WebP (RWEBP)"},
+#endif
 #ifdef HAVE_SDL
          {SUPPORTS_SDL, "SDL 1.2"},
 #endif
@@ -2607,8 +2614,8 @@ static int menu_displaylist_parse_playlist(
        * 'download thumbnails' option, we must also extend
        * this to music_history and video_history */
       if (
-               memcmp(path_playlist, "history", sizeof("history")) == 0
-            || memcmp(path_playlist, "favorites", sizeof("favorites")) == 0
+               !strcmp(path_playlist, "history")
+            || !strcmp(path_playlist, "favorites")
             || string_ends_with_size(path_playlist, "_history",
                path_playlist_size, STRLEN_CONST("_history")))
          gfx_thumbnail_set_system(menu_st->thumbnail_path_data,
@@ -2685,9 +2692,9 @@ static int menu_displaylist_parse_playlist(
          {
             /* Both core name and core path must be valid */
             if (     entry->core_name
-                  && memcmp(entry->core_name, FILE_PATH_DETECT, STRLEN_CONST(FILE_PATH_DETECT) + 1)
+                  && strcmp(entry->core_name, FILE_PATH_DETECT)
                   && entry->core_path
-                  && memcmp(entry->core_path, FILE_PATH_DETECT, STRLEN_CONST(FILE_PATH_DETECT) + 1))
+                  && strcmp(entry->core_path, FILE_PATH_DETECT))
             {
                _len += strlcpy(
                      menu_entry_lbl           + _len,
@@ -3603,8 +3610,8 @@ static int menu_displaylist_parse_load_content_settings(
                }
 
                if (     settings->bools.quick_menu_show_start_streaming
-                     && memcmp(settings->arrays.record_driver,
-                        "ffmpeg", STRLEN_CONST("ffmpeg")) == 0)
+                     && !strcmp(settings->arrays.record_driver,
+                        "ffmpeg"))
                {
                   if (menu_entries_append(list,
                            msg_hash_to_str(MENU_ENUM_LABEL_VALUE_QUICK_MENU_START_STREAMING),
@@ -3686,7 +3693,7 @@ static int menu_displaylist_parse_load_content_settings(
                playlist_file = path_basename_nocompression(playlist_path);
 
             if (  playlist_file
-                && memcmp(playlist_file, FILE_PATH_CONTENT_FAVORITES, STRLEN_CONST(FILE_PATH_CONTENT_FAVORITES)) == 0)
+                && !strcmp(playlist_file, FILE_PATH_CONTENT_FAVORITES))
                add_to_favorites_enabled = false;
          }
 
@@ -3932,8 +3939,8 @@ static int menu_displaylist_parse_horizontal_content_actions(
                {
                   if (*menu_st->thumbnail_path_data->system)
                      remove_entry_enabled =
-                        memcmp(menu_st->thumbnail_path_data->system, "history", sizeof("history")) == 0
-                        || memcmp(menu_st->thumbnail_path_data->system, "favorites", sizeof("favorites")) == 0
+                        !strcmp(menu_st->thumbnail_path_data->system, "history")
+                        || !strcmp(menu_st->thumbnail_path_data->system, "favorites")
                         || string_ends_with_size(menu_st->thumbnail_path_data->system, "_history",
                               menu_st->thumbnail_path_data->system_len, STRLEN_CONST("_history"));
 
@@ -4204,8 +4211,8 @@ static unsigned menu_displaylist_parse_playlists(
       const char *menu_ident = menu_driver_ident();
       bool show_add_content  = (settings->uints.menu_content_show_add_entry ==
             MENU_ADD_CONTENT_ENTRY_DISPLAY_PLAYLISTS_TAB);
-      bool show_history = !(memcmp(menu_ident, "rgui", 4) == 0)
-                       && !(memcmp(menu_ident, "glui", 4) == 0
+      bool show_history = strcmp(menu_ident, "rgui") != 0
+                       && !((!strcmp(menu_ident, "glui"))
                        && !settings->bools.menu_materialui_show_nav_bar);
 
       if (show_history)
@@ -4622,7 +4629,7 @@ static unsigned menu_displaylist_parse_add_to_playlist_list(file_list_t *list,
           * > content_history + favorites are handled separately
           * > music/video/image_history are ignored */
          if (     string_ends_with_size(path, "_history.lpl", strlen(path), STRLEN_CONST("_history.lpl"))
-               || memcmp(playlist_file, FILE_PATH_CONTENT_FAVORITES, STRLEN_CONST(FILE_PATH_CONTENT_FAVORITES)) == 0)
+               || !strcmp(playlist_file, FILE_PATH_CONTENT_FAVORITES))
             continue;
 
          fill_pathname(playlist_display_name, playlist_file, "",
@@ -4686,9 +4693,8 @@ static unsigned menu_displaylist_parse_playlist_manager_list(
          if (
                   string_ends_with_size(path, "_history.lpl",
                   strlen(path), STRLEN_CONST("_history.lpl"))
-               || memcmp(playlist_file,
-                  FILE_PATH_CONTENT_FAVORITES,
-                  strlen(FILE_PATH_CONTENT_FAVORITES)) == 0)
+               || !strcmp(playlist_file,
+                  FILE_PATH_CONTENT_FAVORITES))
             continue;
 
          menu_entries_append(list, path, "",
@@ -4815,21 +4821,21 @@ static bool menu_displaylist_parse_playlist_manager_settings(
 
    /* > Get label values */
 #ifdef HAVE_RGUI
-   if (memcmp(menu_driver, "rgui", 4) == 0 && menu_driver[4] == '\0')
+   if (!strcmp(menu_driver, "rgui"))
    {
       right_thumbnail_label_value = MENU_ENUM_LABEL_VALUE_THUMBNAILS_RGUI;
       left_thumbnail_label_value  = MENU_ENUM_LABEL_VALUE_LEFT_THUMBNAILS_RGUI;
    }
 #endif
 #ifdef HAVE_OZONE
-   if (memcmp(menu_driver, "ozone", 6) == 0)
+   if (!strcmp(menu_driver, "ozone"))
    {
       right_thumbnail_label_value = MENU_ENUM_LABEL_VALUE_THUMBNAILS;
       left_thumbnail_label_value  = MENU_ENUM_LABEL_VALUE_LEFT_THUMBNAILS_OZONE;
    }
 #endif
 #ifdef HAVE_MATERIALUI
-   if (memcmp(menu_driver, "glui", 5) == 0)
+   if (!strcmp(menu_driver, "glui"))
    {
       right_thumbnail_label_value = MENU_ENUM_LABEL_VALUE_THUMBNAILS_MATERIALUI;
       left_thumbnail_label_value  = MENU_ENUM_LABEL_VALUE_LEFT_THUMBNAILS_MATERIALUI;
@@ -5852,7 +5858,7 @@ static int menu_displaylist_parse_input_select_physical_keyboard_list(
     bool keyboard_added           = false;
     input_driver_state_t *st      = input_state_get_ptr();
     input_driver_t *current_input = st->current_driver;
-    bool is_android_driver        = (memcmp(current_input->ident, "android", 8) == 0);
+    bool is_android_driver        = !strcmp(current_input->ident, "android");
 
     device_lbl[0]                 = '\0';
 
@@ -6757,7 +6763,7 @@ static unsigned menu_displaylist_populate_subsystem(
    int  i       = 0;
 #if defined(HAVE_RGUI)
    const char *menu_driver  = menu_driver_ident();
-   bool is_rgui             = (memcmp(menu_driver, "rgui", 4) == 0);
+   bool is_rgui             = !strcmp(menu_driver, "rgui");
 
    /* Select appropriate 'star' marker for subsystem menu entries
     * (i.e. RGUI does not support unicode, so use a 'standard'
@@ -7378,9 +7384,9 @@ unsigned menu_displaylist_build_list(
                   count++;
 
             /* TODO/FIXME - should we dehardcode this? */
-            if (         memcmp(current_input->ident, "android", 8) == 0
-                  ||    (memcmp(current_input->ident, "cocoa", 6)   == 0
-                     &&  memcmp(os_ver, "iOS", 4) == 0))
+            if (         !strcmp(current_input->ident, "android")
+                  ||    (!strcmp(current_input->ident, "cocoa")
+                     &&  !strcmp(os_ver, "iOS")))
                if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
                         MENU_ENUM_LABEL_ENABLE_DEVICE_VIBRATION,
                         PARSE_ONLY_BOOL, false) == 0)
@@ -8189,8 +8195,7 @@ unsigned menu_displaylist_build_list(
                switch (build_list[i].enum_idx)
                {
                   case MENU_ENUM_LABEL_MENU_ALLOW_TABS_BACK:
-                     if (memcmp(menu_driver, "rgui", 5) == 0)
-                        build_list[i].checked = false;
+                     build_list[i].checked = (!strcmp(menu_driver, "rgui"));
                      break;
                   default:
                      break;
@@ -9552,11 +9557,11 @@ unsigned menu_displaylist_build_list(
       case DISPLAYLIST_RECORDING_SETTINGS_LIST:
          {
             unsigned streaming_mode = settings->uints.streaming_mode;
-            bool is_ffmpeg          = (memcmp(
-                     settings->arrays.record_driver, "ffmpeg", 6) == 0);
+            bool is_ffmpeg          = !strcmp(
+                     settings->arrays.record_driver, "ffmpeg");
             bool has_video          = is_ffmpeg
-               || memcmp(
-                     settings->arrays.record_driver, "avfoundation", 13) == 0;
+               || !strcmp(
+                     settings->arrays.record_driver, "avfoundation");
             static menu_displaylist_build_info_selective_t build_list[] = {
                {MENU_ENUM_LABEL_RECORD_DRIVER,                                         PARSE_ONLY_STRING_OPTIONS, true},
                {MENU_ENUM_LABEL_VIDEO_RECORD_QUALITY,                                  PARSE_ONLY_UINT,           false},
@@ -9684,17 +9689,22 @@ unsigned menu_displaylist_build_list(
 #if defined(HAVE_CHEEVOS) && defined(HAVE_GFX_WIDGETS)
             for (i = 0; i < ARRAY_SIZE(build_list); i++)
             {
-               if (!gfx_widgets)
-                  build_list[i].checked = false;
-               else if (!cheevos_autopad)
+               switch (build_list[i].enum_idx)
                {
-                  if (build_list[i].enum_idx == MENU_ENUM_LABEL_CHEEVOS_APPEARANCE_PADDING_V)
-                     build_list[i].checked = true;
-
-                  if (build_list[i].enum_idx == MENU_ENUM_LABEL_CHEEVOS_APPEARANCE_PADDING_H &&
-                      !(cheevos_anchor == CHEEVOS_APPEARANCE_ANCHOR_TOPCENTER ||
-                        cheevos_anchor == CHEEVOS_APPEARANCE_ANCHOR_BOTTOMCENTER))
-                     build_list[i].checked = true;
+                  case MENU_ENUM_LABEL_CHEEVOS_APPEARANCE_ANCHOR:
+                  case MENU_ENUM_LABEL_CHEEVOS_APPEARANCE_PADDING_AUTO:
+                     build_list[i].checked = gfx_widgets;
+                     break;
+                  case MENU_ENUM_LABEL_CHEEVOS_APPEARANCE_PADDING_V:
+                     build_list[i].checked = (gfx_widgets && !cheevos_autopad);
+                     break;
+                  case MENU_ENUM_LABEL_CHEEVOS_APPEARANCE_PADDING_H:
+                     build_list[i].checked = ((gfx_widgets && !cheevos_autopad) && 
+                     !(cheevos_anchor == CHEEVOS_APPEARANCE_ANCHOR_TOPCENTER || 
+                        cheevos_anchor == CHEEVOS_APPEARANCE_ANCHOR_BOTTOMCENTER));
+                     break;
+                  default:
+                     break;
                }
             }
 #endif
@@ -11182,18 +11192,6 @@ unsigned menu_displaylist_build_list(
             for (i = 0; i < ARRAY_SIZE(build_list); i++)
                switch(build_list[i].enum_idx)
                   {
-                  case MENU_ENUM_LABEL_CLOUD_SYNC_ENABLE:
-                  case MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_MODE:
-                  case MENU_ENUM_LABEL_CLOUD_SYNC_DESTRUCTIVE:
-                  case MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_SAVES:
-                  case MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_CONFIGS:
-                  case MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_THUMBS:
-                  case MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_SYSTEM:
-                  case MENU_ENUM_LABEL_CLOUD_SYNC_DRIVER:
-                     build_list[i].checked =
-                           (  string_is_equal(settings->arrays.cloud_sync_driver, "webdav")
-                           || string_is_equal(settings->arrays.cloud_sync_driver, "s3"));
-                     break;
                   case MENU_ENUM_LABEL_CLOUD_SYNC_USERNAME:
                   case MENU_ENUM_LABEL_CLOUD_SYNC_URL:
                   case MENU_ENUM_LABEL_CLOUD_SYNC_PASSWORD:
@@ -12608,7 +12606,7 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
                unsigned max_users          = settings->uints.input_max_users;
                const char *menu_driver     = menu_driver_ident();
 #ifdef HAVE_RGUI
-               bool is_rgui                = memcmp(menu_driver, "rgui", STRLEN_CONST("rgui")) == 0 && menu_driver[STRLEN_CONST("rgui")] == '\0';
+               bool is_rgui                = !strcmp(menu_driver, "rgui");
 #endif
                file_list_t *list           = info->list;
                unsigned port               = string_to_unsigned(info->path);
@@ -13778,14 +13776,14 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
             if (     string_starts_with_size(info->path, "content_", STRLEN_CONST("content_"))
                   && string_ends_with_size  (info->path, ".lpl", strlen(info->path), STRLEN_CONST(".lpl")))
             {
-               if (memcmp(info->path, FILE_PATH_CONTENT_HISTORY, sizeof(FILE_PATH_CONTENT_HISTORY)) == 0)
+               if (!strcmp(info->path, FILE_PATH_CONTENT_HISTORY))
                {
                   if (menu_displaylist_ctl(DISPLAYLIST_HISTORY, info, settings))
                      return menu_displaylist_process(info);
                   return false;
                }
 
-               if (memcmp(info->path, FILE_PATH_CONTENT_FAVORITES, sizeof(FILE_PATH_CONTENT_FAVORITES)) == 0)
+               if (!strcmp(info->path, FILE_PATH_CONTENT_FAVORITES))
                {
                   if (menu_displaylist_ctl(DISPLAYLIST_FAVORITES, info, settings))
                      return menu_displaylist_process(info);
@@ -15254,11 +15252,11 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
                   && !settings->bools.kiosk_mode_enable;
                bool show_settings = settings->bools.menu_content_show_settings
                   && !settings->bools.kiosk_mode_enable
-                  && (        memcmp(menu_ident, "rgui", 4) == 0
-                        || (  memcmp(menu_ident, "glui", 4) == 0
+                  && (        !strcmp(menu_ident, "rgui")
+                        || (  !strcmp(menu_ident, "glui")
                            && !settings->bools.menu_materialui_show_nav_bar));
 
-               if (     memcmp(menu_ident, "glui", 4) == 0 && menu_ident[4] == '\0'
+               if (     !strcmp(menu_ident, "glui")
                      && settings->bools.menu_materialui_show_nav_bar
                      && settings->bools.menu_content_show_playlist_tabs)
                   show_playlists = false;
@@ -15323,8 +15321,8 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
                }
 
                /* Show History and Favorites in menus without sidebar/tabs */
-               if (         (memcmp(menu_ident, "rgui", 4) == 0)
-                        || ((memcmp(menu_ident, "glui", 4) == 0)
+               if (         !strcmp(menu_ident, "rgui")
+                        || (!strcmp(menu_ident, "glui")
                        && !settings->bools.menu_materialui_show_nav_bar))
                {
                   if (settings->bools.menu_content_show_favorites_first)
@@ -15454,7 +15452,7 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
                {
                   if (     !settings->bools.menu_content_show_settings
                         && !settings->bools.kiosk_mode_enable
-                        && !( memcmp(menu_ident, "glui", 4) == 0
+                        && !( !strcmp(menu_ident, "glui")
                            && settings->bools.menu_materialui_show_nav_bar)
                         && settings->paths.menu_content_show_settings_password[0] != '\0')
                      if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(
@@ -15751,6 +15749,11 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
                if (_len > 0)
                   _len += strlcpy(new_exts + _len, "|",   sizeof(new_exts) - _len);
                strlcpy(new_exts + _len, "tga", sizeof(new_exts) - _len);
+#endif
+#ifdef HAVE_RWEBP
+               if (_len > 0)
+                  _len += strlcpy(new_exts + _len, "|",    sizeof(new_exts) - _len);
+               _len    += strlcpy(new_exts + _len, "webp", sizeof(new_exts) - _len);
 #endif
                if (info->exts && *info->exts)
                   free(info->exts);
