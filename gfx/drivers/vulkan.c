@@ -5247,7 +5247,7 @@ static void vulkan_set_nonblock_state(void *data, bool state,
    if (vk->ctx_driver->swap_interval)
    {
       int interval             = 0;
-      if (!state)
+      if (!state && swap_interval)
          interval = swap_interval;
       if (adaptive_vsync_enabled && interval == 1)
          interval = -1;
@@ -6901,6 +6901,15 @@ static bool vulkan_frame(void *data, const void *frame,
          struct vk_image* readback_source = backbuffer;
          if((vk->context->flags & VK_CTX_FLAG_HDR_ENABLE))
          {
+            /* Select the inverse conversion the shader should apply.
+             * The backbuffer is in one of two HDR encodings:
+             *   - scRGB (FP16 linear, 1.0 = 80 nits)    -> pass mode 2
+             *   - HDR10 (RGB10A2 PQ, BT.2020)           -> pass mode 1
+             * The readback target is B8G8R8A8_UNORM, so the shader
+             * converts back to SDR and writes sRGB-encoded bytes.
+             * Modes here mirror the forward pipeline naming. */
+            unsigned readback_hdr_mode =
+                  (vk->context->flags & VK_CTX_FLAG_HDR_SCRGB) ? 2 : 1;
             {
                /* Prepare backbuffer for reading */
                backbuffer_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -6910,7 +6919,26 @@ static bool vulkan_frame(void *data, const void *frame,
                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
             }
-            vulkan_run_hdr_pipeline(vk->pipelines.hdr_to_sdr, vk->readback_render_pass, readback_source, &vk->readback_image, vk, &vk->hdr.ubo, 0, false);
+            vulkan_run_hdr_pipeline(vk->pipelines.hdr_to_sdr, vk->readback_render_pass, readback_source, &vk->readback_image, vk, &vk->hdr.ubo, readback_hdr_mode, false);
+
+            /* The readback render pass declares its finalLayout as
+             * TRANSFER_SRC_OPTIMAL, but with no subpass dependency it
+             * does not provide a memory availability guarantee against
+             * the subsequent vkCmdCopyImageToBuffer in vulkan_readback().
+             * Insert an explicit barrier so color writes from the
+             * tonemap pass are visible to the transfer read. */
+            {
+               VkMemoryBarrier mem_barrier;
+               mem_barrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+               mem_barrier.pNext         = NULL;
+               mem_barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+               mem_barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+               vkCmdPipelineBarrier(vk->cmd,
+                     VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                     VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                     1, &mem_barrier, 0, NULL, 0, NULL);
+            }
+
             readback_source = &vk->readback_image;
          }
 #endif /* VULKAN_HDR_SWAPCHAIN */
@@ -7310,6 +7338,26 @@ static bool vulkan_get_current_sw_framebuffer(void *data,
                chain->texture.format, /* Ensure we use the non-remapped format. */
                NULL, NULL, VULKAN_TEXTURE_DYNAMIC);
       }
+   }
+
+   /* If the driver picked a row pitch wider than width*bpp for this linear
+    * image (i.e. the image has trailing per-row padding), decline the
+    * direct-write SW framebuffer and let the core fall back to its own
+    * tightly packed buffer. vulkan_frame() will then upload it row-by-row
+    * via the slow path. We hit this on MoltenVK / Apple GPUs, where
+    * buffer-backed MTLTextures require bytesPerRow to be aligned to 64 (or
+    * 256 in the simulator), so vkGetImageSubresourceLayout reports a
+    * padded rowPitch for "awkward" widths. Spec-correct host writes at the
+    * reported rowPitch *should* be readable by the GPU sampler at the same
+    * stride on any conformant driver, but in practice this is fragile on
+    * Apple platforms and produces sheared output. The check is a pure
+    * runtime test, so non-Apple drivers that report rowPitch == width*bpp
+    * (the overwhelming majority for retro-friendly widths) keep the
+    * direct-write fast path unchanged. */
+   {
+      unsigned bpp = vulkan_format_to_bpp(chain->texture.format);
+      if (chain->texture.stride != (size_t)framebuffer->width * bpp)
+         return false;
    }
 
    framebuffer->data         = chain->texture.mapped;

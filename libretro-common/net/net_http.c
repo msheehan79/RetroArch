@@ -837,10 +837,20 @@ struct http_t *net_http_new(struct http_connection_t *conn)
    state->request.contentlength = conn->contentlength;
    if (conn->postdata && conn->contentlength)
    {
-      state->request.postdata   = malloc(conn->contentlength);
-      if (state->request.postdata)
-         memcpy(state->request.postdata, conn->postdata, conn->contentlength);
-      /* If malloc failed, the OOM guard further below catches it. */
+      /* Move ownership of postdata from conn to state->request rather
+       * than malloc+memcpy.  conn is freed by the caller shortly after
+       * this function returns (see task_http.c and the sample in
+       * libretro-common/samples/net/net_http_test.c; both use conn
+       * once with net_http_new then call net_http_connection_free),
+       * and conn->postdata is only read by net_http_new and freed by
+       * net_http_connection_free - no other code paths observe it.
+       * Null the conn fields so net_http_connection_free does not
+       * double-free.  Eliminates an O(body size) copy that materially
+       * matters for multi-MB POST payloads (file uploads, netplay,
+       * translation service requests). */
+      state->request.postdata   = conn->postdata;
+      conn->postdata            = NULL;
+      conn->contentlength       = 0;
    }
    state->request.useragent= conn->useragent ? strdup(conn->useragent) : NULL;
    state->request.headers  = conn->headers ? strdup(conn->headers) : NULL;
@@ -870,10 +880,15 @@ struct http_t *net_http_new(struct http_connection_t *conn)
        || !state->request.path
        || !state->request.method
        || (conn->contenttype && !state->request.contenttype)
-       || (conn->postdata && conn->contentlength && !state->request.postdata)
        || (conn->useragent && !state->request.useragent)
        || (conn->headers   && !state->request.headers))
    {
+      /* Note: no postdata OOM check here.  Ownership of postdata is
+       * moved from conn (above), not copied, so the transfer cannot
+       * fail.  Both conn->postdata and state->request.postdata are
+       * correctly set (NULL on conn, the original pointer on
+       * state->request) regardless of any OOM elsewhere in this
+       * function. */
       if (state->response.data)
          free(state->response.data);
       if (state->response.headers)
@@ -1414,7 +1429,19 @@ static bool net_http_receive_body(struct http_t *state, ssize_t newlen)
          return false;
       response->part      = P_DONE;
       if (response->buflen != response->len)
-         response->data   = (char*)realloc(response->data, response->len);
+      {
+         /* Shrink response->data from buflen bytes to len bytes.
+          * Use a tmp pointer so a realloc() failure (rare on shrink
+          * but not impossible) does not overwrite response->data
+          * with NULL and leak the original buffer.  Sibling shrink
+          * path at ~line 1528 already uses this pattern; this was
+          * the lone holdout.  On failure we keep the oversized-
+          * but-valid buffer - this is a terminal state (P_DONE)
+          * and the caller tears down shortly afterwards. */
+         char *tmp = (char*)realloc(response->data, response->len);
+         if (tmp)
+            response->data = tmp;
+      }
       return true;
    }
 

@@ -41,6 +41,10 @@
 #include <ApplicationServices/ApplicationServices.h>
 #endif
 
+/* For NX_DEVICE*KEYMASK - the device-specific L/R modifier-key bits that
+ * ride in NSEvent.modifierFlags alongside the coalesced high-order bits. */
+#include <IOKit/hidsystem/IOLLEvent.h>
+
 #if defined(HAVE_COCOA_METAL)
 #include "../../gfx/common/metal_common.h"
 #endif
@@ -168,8 +172,17 @@ static bool ui_browser_window_cocoa_open(ui_browser_window_state_t *state)
 #ifdef HAVE_COCOA_METAL
       [panel setAllowedFileTypes:@[BOXSTRING(state->filters), BOXSTRING(state->filters_title)]];
 #else
+      /* Under MRC (ui_cocoa.m is built without -fobjc-arc per the
+       * top-level Makefile; see Makefile.common ~line 1654), the
+       * local 'filetypes' is +1 from alloc+initWithObjects.
+       * setAllowedFileTypes: retains its own reference, so after
+       * the call returns we must release the local +1 or it leaks
+       * every time the file picker opens with a filter.  The
+       * HAVE_COCOA_METAL branch above uses @[...] literal syntax
+       * which is already autoreleased. */
       NSArray *filetypes = [[NSArray alloc] initWithObjects:BOXSTRING(state->filters), BOXSTRING(state->filters_title), nil];
       [panel setAllowedFileTypes:filetypes];
+      RARCH_RELEASE(filetypes);
 #endif
    }
 
@@ -456,9 +469,26 @@ static ui_application_t ui_application_cocoa = {
          break;
       case NSEventTypeFlagsChanged:
          {
+            /* Bits we treat as modifier-key transitions: the eight device-
+             * specific L/R masks from IOKit plus CapsLock (which has no
+             * device-specific bit).  Everything else in modifierFlags is
+             * metadata - notably kCGEventFlagMaskNonCoalesced (0x100) - and
+             * must not be interpreted as a key press, or we end up
+             * synthesising phantom events (a toggle of 0x100 with kc=0 used
+             * to translate to MAC_NATIVE_TO_HID[0]==KEY_A, stuck forever). */
+            static const NSUInteger mod_mask =
+                    NX_DEVICELCTLKEYMASK
+                  | NX_DEVICELSHIFTKEYMASK
+                  | NX_DEVICERSHIFTKEYMASK
+                  | NX_DEVICELCMDKEYMASK
+                  | NX_DEVICERCMDKEYMASK
+                  | NX_DEVICELALTKEYMASK
+                  | NX_DEVICERALTKEYMASK
+                  | NX_DEVICERCTLKEYMASK
+                  | NSEventModifierFlagCapsLock;
             static NSUInteger old_flags           = 0;
             NSUInteger new_flags                  = [event modifierFlags];
-            NSUInteger changed_flags              = new_flags ^ old_flags;
+            NSUInteger changed_flags              = (new_flags ^ old_flags) & mod_mask;
             uint16_t keycode                      = [event keyCode];
             bool down                             = false;
 
