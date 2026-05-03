@@ -162,9 +162,6 @@ typedef struct android_input
    char device_model[256];
 } android_input_t;
 
-static void frontend_android_get_version_sdk(int32_t *sdk);
-static void frontend_android_get_name(char *s, size_t len);
-
 bool (*engine_lookup_name)(char *buf,
       int *vendorId, int *productId, size_t len, int id);
 void (*engine_handle_dpad)(struct android_app *, AInputEvent*, int, int);
@@ -757,7 +754,7 @@ static INLINE void android_mouse_calculate_deltas(android_input_t *android,
       AInputEvent *event,size_t motion_ptr,int source)
 {
    unsigned video_width, video_height;
-   video_driver_get_size(&video_width, &video_height);
+   video_driver_get_output_size(&video_width, &video_height);
 
    float x       = 0;
    float x_delta = 0;

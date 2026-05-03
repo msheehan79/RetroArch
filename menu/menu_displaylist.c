@@ -2764,14 +2764,16 @@ static int create_string_list_rdb_entry_string(
 {
    char tmp[128];
    char out_lbl[NAME_MAX_LENGTH];
-   size_t _len     = strlcpy(out_lbl, label, sizeof(out_lbl));
-   _len           += strlcpy(out_lbl + _len, "|", sizeof(out_lbl) - _len);
-   _len           += strlcpy(out_lbl + _len, actual_string, sizeof(out_lbl) - _len);
-   _len           += strlcpy(out_lbl + _len, "|", sizeof(out_lbl) - _len);
-   strlcpy(out_lbl + _len, path, sizeof(out_lbl) - _len);
-   _len           = strlcpy(tmp, desc, sizeof(tmp));
-   _len          += strlcpy(tmp + _len, ": ", sizeof(tmp) - _len);
-   strlcpy(tmp + _len, actual_string, sizeof(tmp) - _len);
+   size_t _len = 0;
+   strlcpy_append(out_lbl, sizeof(out_lbl), &_len, label);
+   strlcpy_append(out_lbl, sizeof(out_lbl), &_len, "|");
+   strlcpy_append(out_lbl, sizeof(out_lbl), &_len, actual_string);
+   strlcpy_append(out_lbl, sizeof(out_lbl), &_len, "|");
+   strlcpy_append(out_lbl, sizeof(out_lbl), &_len, path);
+   _len = 0;
+   strlcpy_append(tmp, sizeof(tmp), &_len, desc);
+   strlcpy_append(tmp, sizeof(tmp), &_len, ": ");
+   strlcpy_append(tmp, sizeof(tmp), &_len, actual_string);
    menu_entries_append(list, tmp, out_lbl,
          enum_idx,
          0, 0, 0, NULL);
@@ -3886,6 +3888,7 @@ static int menu_displaylist_parse_horizontal_content_actions(
    }
    else
    {
+      bool savestates_enabled   = core_info_current_supports_savestate();
       const char *playlist_path = NULL;
       const char *playlist_file = NULL;
 #ifdef HAVE_AUDIOMIXER
@@ -3917,7 +3920,18 @@ static int menu_displaylist_parse_horizontal_content_actions(
       menu_entries_append(list,
             msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RUN),
             MENU_ENUM_LABEL_RUN_STR,
-            MENU_ENUM_LABEL_RUN, FILE_TYPE_PLAYLIST_ENTRY, 0, idx, NULL);
+            MENU_ENUM_LABEL_RUN,
+            FILE_TYPE_PLAYLIST_ENTRY, 0, idx, NULL);
+
+      if (     savestates_enabled
+            && settings->bools.quick_menu_show_save_load_state)
+      {
+         menu_entries_append(list,
+               msg_hash_to_str(MENU_ENUM_LABEL_VALUE_LOAD_STATE),
+               MENU_ENUM_LABEL_STATE_SLOT_RUN_STR,
+               MENU_ENUM_LABEL_STATE_SLOT_RUN,
+               MENU_SETTING_ACTION, 0, idx, NULL);
+      }
 
       if (!settings->bools.kiosk_mode_enable)
       {
@@ -4227,7 +4241,7 @@ static unsigned menu_displaylist_parse_playlists(
                         MENU_SETTING_ACTION, 0, 0, NULL))
                   count++;
 
-            if (settings->bools.menu_content_show_history)
+            if (settings->bools.menu_content_show_history && g_defaults.content_history)
                if (menu_entries_append(info_list,
                         playlist_get_conf_path(g_defaults.content_history),
                         MENU_ENUM_LABEL_LOAD_CONTENT_HISTORY_STR,
@@ -4237,7 +4251,7 @@ static unsigned menu_displaylist_parse_playlists(
          }
          else
          {
-            if (settings->bools.menu_content_show_history)
+            if (settings->bools.menu_content_show_history && g_defaults.content_history)
                if (menu_entries_append(info_list,
                         playlist_get_conf_path(g_defaults.content_history),
                         MENU_ENUM_LABEL_LOAD_CONTENT_HISTORY_STR,
@@ -4256,7 +4270,7 @@ static unsigned menu_displaylist_parse_playlists(
       }
 
 #ifdef HAVE_IMAGEVIEWER
-      if (settings->bools.menu_content_show_images)
+      if (settings->bools.menu_content_show_images && g_defaults.image_history)
          if (menu_entries_append(info_list,
                   playlist_get_conf_path(g_defaults.image_history),
                   MENU_ENUM_LABEL_GOTO_IMAGES_STR,
@@ -4265,7 +4279,7 @@ static unsigned menu_displaylist_parse_playlists(
             count++;
 #endif
 
-      if (settings->bools.menu_content_show_music)
+      if (settings->bools.menu_content_show_music && g_defaults.music_history)
          if (menu_entries_append(info_list,
                   playlist_get_conf_path(g_defaults.music_history),
                   MENU_ENUM_LABEL_GOTO_MUSIC_STR,
@@ -4274,7 +4288,7 @@ static unsigned menu_displaylist_parse_playlists(
             count++;
 
 #if defined(HAVE_FFMPEG) || defined(HAVE_MPV)
-      if (settings->bools.menu_content_show_video)
+      if (settings->bools.menu_content_show_video && g_defaults.video_history)
          if (menu_entries_append(info_list,
                   playlist_get_conf_path(g_defaults.video_history),
                   MENU_ENUM_LABEL_GOTO_VIDEO_STR,
@@ -6788,28 +6802,43 @@ static unsigned menu_displaylist_populate_subsystem(
          {
             if (content_get_subsystem_rom_id() < subsystem->num_roms)
             {
+               /* Bound-checked piece-by-piece append.  Pre-fix this
+                * was a naive `_len += strlcpy(s + _len, src,
+                * sizeof(s) - _len)` chain that overshoots and
+                * underflows on a long subsystem->desc -- core-
+                * controlled via RETRO_ENVIRONMENT_SET_SUBSYSTEM_INFO
+                * with no length limit imposed by RetroArch -- driving
+                * the next strlcpy into an OOB write on the stack
+                * buffer s[PATH_MAX_LENGTH].  See 78c52ab for the
+                * helper rationale and the database_info_build_
+                * query_enum precedent. */
+               size_t pos = 0;
+               int    rv  = 0;
                /* TODO/FIXME - Localize string */
-               size_t _len = strlcpy(s, "Load", sizeof(s));
-               _len       += strlcpy(s + _len, " ", sizeof(s) - _len);
-               _len       += strlcpy(s + _len, subsystem->desc, sizeof(s) - _len);
-               _len       += strlcpy(s + _len, " ", sizeof(s) - _len);
-               _len       += strlcpy(s + _len, star_char, sizeof(s) - _len);
+               rv |= strlcpy_append(s, sizeof(s), &pos, "Load");
+               rv |= strlcpy_append(s, sizeof(s), &pos, " ");
+               rv |= strlcpy_append(s, sizeof(s), &pos, subsystem->desc);
+               rv |= strlcpy_append(s, sizeof(s), &pos, " ");
+               rv |= strlcpy_append(s, sizeof(s), &pos, star_char);
 
 #ifdef HAVE_RGUI
                /* If using RGUI with sublabels disabled, add the
                 * appropriate text to the menu entry itself... */
                if (is_rgui && !menu_show_sublabels)
                {
-                  _len       += strlcpy(s + _len, " [", sizeof(s) - _len);
+                  rv |= strlcpy_append(s, sizeof(s), &pos, " [");
                   /* TODO/FIXME - Localize */
-                  _len       += strlcpy(s + _len, "Current Content:", sizeof(s) - _len);
-                  _len       += strlcpy(s + _len, " ", sizeof(s) - _len);
-                  _len       += strlcpy(s + _len,
-                        subsystem->roms[content_get_subsystem_rom_id()].desc,
-                        sizeof(s)         - _len);
-                  strlcpy(s + _len, "]", sizeof(s) - _len);
+                  rv |= strlcpy_append(s, sizeof(s), &pos,
+                        "Current Content:");
+                  rv |= strlcpy_append(s, sizeof(s), &pos, " ");
+                  rv |= strlcpy_append(s, sizeof(s), &pos,
+                        subsystem->roms[content_get_subsystem_rom_id()].desc);
+                  rv |= strlcpy_append(s, sizeof(s), &pos, "]");
                }
 #endif
+               (void)rv;  /* truncation leaves s NUL-terminated at
+                           * sizeof(s) - 1; the menu entry is just
+                           * shorter than ideal, no further action. */
 
                if (menu_entries_append(list,
                   s,
@@ -6820,39 +6849,48 @@ static unsigned menu_displaylist_populate_subsystem(
             }
             else
             {
+               /* Same chain pattern as the "Load" branch above; same
+                * unbounded subsystem->desc surface. */
+               size_t pos = 0;
+               int    rv  = 0;
                /* TODO/FIXME - Localize string */
-               size_t _len = strlcpy(s, "Start", sizeof(s));
-               _len       += strlcpy(s + _len, " ", sizeof(s) - _len);
-               _len       += strlcpy(s + _len, subsystem->desc, sizeof(s) - _len);
-               _len       += strlcpy(s + _len, " ", sizeof(s) - _len);
-               _len       += strlcpy(s + _len, star_char,       sizeof(s) - _len);
+               rv |= strlcpy_append(s, sizeof(s), &pos, "Start");
+               rv |= strlcpy_append(s, sizeof(s), &pos, " ");
+               rv |= strlcpy_append(s, sizeof(s), &pos, subsystem->desc);
+               rv |= strlcpy_append(s, sizeof(s), &pos, " ");
+               rv |= strlcpy_append(s, sizeof(s), &pos, star_char);
 
 #ifdef HAVE_RGUI
                /* If using RGUI with sublabels disabled, add the
                 * appropriate text to the menu entry itself... */
                if (is_rgui && !menu_show_sublabels)
                {
-                  size_t _len2 = 0;
+                  size_t pos2  = 0;
+                  int    rv2   = 0;
                   unsigned j   = 0;
                   char rom_buff[PATH_MAX_LENGTH];
+                  rom_buff[0]  = '\0';
 
                   for (j = 0; j < content_get_subsystem_rom_id(); j++)
                   {
-                     _len2    += strlcpy(rom_buff + _len2,
-                           path_basename(content_get_subsystem_rom(j)),
-                                 sizeof(rom_buff) - _len2);
+                     rv2 |= strlcpy_append(rom_buff, sizeof(rom_buff),
+                           &pos2,
+                           path_basename(content_get_subsystem_rom(j)));
                      if (j != content_get_subsystem_rom_id() - 1)
-                        _len2 += strlcpy(rom_buff + _len2, "|", sizeof(rom_buff) - _len2);
+                        rv2 |= strlcpy_append(rom_buff, sizeof(rom_buff),
+                              &pos2, "|");
                   }
+                  (void)rv2;
 
                   if (*rom_buff)
                   {
-                     _len += strlcpy(s + _len, " [",     sizeof(s) - _len);
-                     _len += strlcpy(s + _len, rom_buff, sizeof(s) - _len);
-                     strlcpy(s + _len, "]", sizeof(s) - _len);
+                     rv |= strlcpy_append(s, sizeof(s), &pos, " [");
+                     rv |= strlcpy_append(s, sizeof(s), &pos, rom_buff);
+                     rv |= strlcpy_append(s, sizeof(s), &pos, "]");
                   }
                }
 #endif
+               (void)rv;
 
                if (menu_entries_append(list,
                   s,
@@ -6864,10 +6902,13 @@ static unsigned menu_displaylist_populate_subsystem(
          }
          else
          {
+            /* Same chain pattern as the two branches above. */
+            size_t pos = 0;
+            int    rv  = 0;
             /* TODO/FIXME - Localize */
-            size_t _len = strlcpy(s, "Load", sizeof(s));
-            _len       += strlcpy(s + _len, " ", sizeof(s) - _len);
-            _len       += strlcpy(s + _len, subsystem->desc, sizeof(s) - _len);
+            rv |= strlcpy_append(s, sizeof(s), &pos, "Load");
+            rv |= strlcpy_append(s, sizeof(s), &pos, " ");
+            rv |= strlcpy_append(s, sizeof(s), &pos, subsystem->desc);
 
 #ifdef HAVE_RGUI
             /* If using RGUI with sublabels disabled, add the
@@ -6879,16 +6920,18 @@ static unsigned menu_displaylist_populate_subsystem(
                 * anyway), but no harm in being safe... */
                if (subsystem->num_roms > 0)
                {
-                  _len += strlcpy(s + _len, " [",               sizeof(s) - _len);
+                  rv |= strlcpy_append(s, sizeof(s), &pos, " [");
                   /* TODO/FIXME - Localize */
-                  _len += strlcpy(s + _len, "Current Content:", sizeof(s) - _len);
-                  _len += strlcpy(s + _len, " ",                sizeof(s) - _len);
-                  _len += strlcpy(s + _len, subsystem->roms[0].desc,
-                                                                sizeof(s) - _len);
-                  strlcpy(s + _len, "]", sizeof(s) - _len);
+                  rv |= strlcpy_append(s, sizeof(s), &pos,
+                        "Current Content:");
+                  rv |= strlcpy_append(s, sizeof(s), &pos, " ");
+                  rv |= strlcpy_append(s, sizeof(s), &pos,
+                        subsystem->roms[0].desc);
+                  rv |= strlcpy_append(s, sizeof(s), &pos, "]");
                }
             }
 #endif
+            (void)rv;
 
             if (menu_entries_append(list,
                s,
@@ -14343,6 +14386,89 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
                info->flags    |=  MD_FLAG_NEED_PUSH;
             }
             break;
+         case DISPLAYLIST_STATE_SLOT_RUN:
+            {
+               bool savestates_enabled     = true;
+               playlist_t *playlist        = playlist_get_cached();
+               runloop_state_t *runloop_st = runloop_state_get_ptr();
+
+               /* Core must be initialized at least partly to set
+                * savestate sorting paths accordingly. */
+               if (playlist && !(runloop_st->flags & RUNLOOP_FLAG_CORE_RUNNING))
+               {
+                  struct menu_state *menu_st         = menu_state_get_ptr();
+                  const struct playlist_entry *entry = NULL;
+
+                  if (menu_st && menu_st->driver_data)
+                     playlist_get_index(playlist, menu_st->driver_data->rpl_entry_selection_ptr, &entry);
+
+                  if (*entry->path)
+                  {
+                     path_set(RARCH_PATH_CORE, entry->core_path);
+                     command_event(CMD_EVENT_LOAD_CORE, NULL);
+                     runloop_set_current_core_type(CORE_TYPE_PLAIN, true);
+
+                     savestates_enabled = core_info_current_supports_savestate();
+
+                     menu_st->flags |= MENU_ST_FLAG_PRETEND_CORE_INIT;
+
+                     if (runloop_st->flags & RUNLOOP_FLAG_HAS_SET_CORE)
+                     {
+                        runloop_st->flags &= ~RUNLOOP_FLAG_HAS_SET_CORE;
+
+                        if (savestates_enabled)
+                           command_event(CMD_EVENT_CORE_INIT,
+                                 &runloop_st->explicit_current_core_type);
+
+                        menu_st->flags &= ~MENU_ST_FLAG_PRETEND_CORE_INIT;
+
+                        /* Reinit runtime log and read current state slot */
+                        runtime_update_playlist(playlist,
+                              menu_st->driver_data->rpl_entry_selection_ptr);
+                     }
+                  }
+               }
+
+               menu_entries_clear(info->list);
+
+               /* Build the dropdown selector */
+               if (     savestates_enabled
+                     && settings->bools.quick_menu_show_save_load_state)
+               {
+                  int i;
+                  int i_max = count = 1000;
+
+                  for (i = -1; i < i_max; i++)
+                  {
+                     char val[8];
+
+                     if (i < 0)
+                        strlcpy(val, "Auto", sizeof(val));
+                     else
+                        snprintf(val, sizeof(val), "%u", i);
+
+                     menu_entries_append(info->list,
+                           val,
+                           MENU_ENUM_LABEL_STATE_SLOT_RUN_STR,
+                           MSG_UNKNOWN,
+                           MENU_SETTING_ACTION_STATE_SLOT_RUN,
+                           0, 0, NULL);
+                  }
+
+                  /* Pre-select last slot from the runtime log */
+                  menu_st->selection_ptr = runloop_st->entry_state_slot + 1;
+               }
+
+               if (count == 0)
+                  menu_entries_append(info->list,
+                        msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NO_ENTRIES_TO_DISPLAY),
+                        MENU_ENUM_LABEL_NO_ENTRIES_TO_DISPLAY_STR,
+                        MENU_ENUM_LABEL_NO_ENTRIES_TO_DISPLAY,
+                        FILE_TYPE_NONE, 0, 0, NULL);
+
+               info->flags    |=  MD_FLAG_NEED_PUSH;
+            }
+            break;
          case DISPLAYLIST_CORE_OPTIONS:
             {
                /* Number of displayed options is dynamic. If user opens
@@ -15366,7 +15492,7 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
                                  MENU_SETTING_ACTION, 0, 0, NULL))
                            count++;
 
-                     if (settings->bools.menu_content_show_history)
+                     if (settings->bools.menu_content_show_history && g_defaults.content_history)
                         if (menu_entries_append(info->list,
                                  playlist_get_conf_path(g_defaults.content_history),
                                  MENU_ENUM_LABEL_LOAD_CONTENT_HISTORY_STR,
@@ -15376,7 +15502,7 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
                   }
                   else
                   {
-                     if (settings->bools.menu_content_show_history)
+                     if (settings->bools.menu_content_show_history && g_defaults.content_history)
                         if (menu_entries_append(info->list,
                                  playlist_get_conf_path(g_defaults.content_history),
                                  MENU_ENUM_LABEL_LOAD_CONTENT_HISTORY_STR,

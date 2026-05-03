@@ -3267,7 +3267,7 @@ static void *d3d11_gfx_init(const video_info_t* video,
 
    matrix_4x4_identity(d3d11->identity);
 
-   video_driver_set_size(d3d11->vp.full_width, d3d11->vp.full_height);
+   video_driver_set_output_size(d3d11->vp.full_width, d3d11->vp.full_height);
    d3d11->viewport.Width  = d3d11->vp.full_width;
    d3d11->viewport.Height = d3d11->vp.full_height;
    d3d11->scissor.right   = d3d11->vp.full_width;
@@ -4031,7 +4031,7 @@ static bool d3d11_gfx_frame(
       d3d11->flags                              &= ~D3D11_ST_FLAG_RESIZE_CHAIN;
       d3d11->flags                              |=  D3D11_ST_FLAG_RESIZE_VIEWPORT;
 
-      video_driver_set_size(video_width, video_height);
+      video_driver_set_output_size(video_width, video_height);
 
 #ifdef HAVE_DXGI_HDR
 #ifdef __WINRT__
@@ -4746,7 +4746,26 @@ static bool d3d11_gfx_frame(
 #ifdef HAVE_GFX_WIDGETS
    if (widgets_active)
    {
+      /* d3d11_render_overlay binds d3d11->overlays.vbo as the
+       * input vertex buffer and may set a non-screen viewport
+       * (d3d11->frame.viewport when the overlay isn't
+       * fullscreen).  gfx_display_d3d11_draw writes its sprite
+       * vertices into d3d11->sprites.vbo via Map() but reads
+       * back from whatever buffer is currently bound, so without
+       * restoring the binding here the widget draws fetch the
+       * wrong vertex stream and silently produce nothing on
+       * screen — the widget state machine still runs, the
+       * sprites still get written, but the Draw() reads from
+       * overlays.vbo instead.  Mirror the OSD-msg block below:
+       * screen viewport, sprite vbo, sprite blend state. */
+      UINT stride = sizeof(d3d11_sprite_t);
+      UINT offset = 0;
       context->lpVtbl->RSSetViewports(context, 1, &d3d11->viewport);
+      d3d11->context->lpVtbl->OMSetBlendState(d3d11->context,
+            d3d11->blend_enable,
+            NULL, D3D11_DEFAULT_SAMPLE_MASK);
+      context->lpVtbl->IASetVertexBuffers(
+            context, 0, 1, &d3d11->sprites.vbo, &stride, &offset);
       gfx_widgets_frame(video_info);
    }
 #endif
@@ -4995,7 +5014,7 @@ static bool d3d11_gfx_alive(void* data)
    if (     (d3d11->flags & D3D11_ST_FLAG_RESIZE_CHAIN)
          && (d3d11->vp.full_width  != 0)
          && (d3d11->vp.full_height != 0))
-      video_driver_set_size(d3d11->vp.full_width, d3d11->vp.full_height);
+      video_driver_set_output_size(d3d11->vp.full_width, d3d11->vp.full_height);
 
    return !quit;
 }

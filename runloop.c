@@ -2449,7 +2449,7 @@ bool runloop_environment_cb(unsigned cmd, void *data)
             RARCH_LOG("[Environ] Setting audio latency to %u ms.\n", audio_latency_new);
 
             command_event(CMD_EVENT_REINIT, &reinit_flags);
-            video_driver_set_aspect_ratio();
+            command_event(CMD_EVENT_VIDEO_SET_ASPECT_RATIO, NULL);
 
             /* Cannot continue recording with different
              * parameters.
@@ -2688,7 +2688,7 @@ bool runloop_environment_cb(unsigned cmd, void *data)
             command_event(CMD_EVENT_REINIT, &reinit_flags);
 
             if (no_video_reinit)
-               video_driver_set_aspect_ratio();
+               command_event(CMD_EVENT_VIDEO_SET_ASPECT_RATIO, NULL);
 
             if (video_switch_refresh_rate)
                video_display_server_set_refresh_rate(refresh_rate);
@@ -2752,7 +2752,7 @@ bool runloop_environment_cb(unsigned cmd, void *data)
 
             memcpy(sys_info->subsystem.data, info,
                   i * sizeof(*sys_info->subsystem.data));
-            sys_info->subsystem.size                 = i;
+            sys_info->subsystem.size                 = (unsigned)i;
             runloop_st->current_core.flags          |=
                   RETRO_CORE_FLAG_HAS_SET_SUBSYSTEMS;
          }
@@ -2797,7 +2797,7 @@ bool runloop_environment_cb(unsigned cmd, void *data)
             sys_info->ports.data = info_ptr;
             memcpy(sys_info->ports.data, info,
                   i * sizeof(*sys_info->ports.data));
-            sys_info->ports.size = i;
+            sys_info->ports.size = (unsigned)i;
          }
          break;
       }
@@ -2919,7 +2919,7 @@ bool runloop_environment_cb(unsigned cmd, void *data)
 
             /* Forces recomputation of aspect ratios if
              * using core-dependent aspect ratios. */
-            video_driver_set_aspect_ratio();
+            command_event(CMD_EVENT_VIDEO_SET_ASPECT_RATIO, NULL);
 
             /* Ignore frame delay target temporarily */
             if (video_frame_delay_auto)
@@ -4263,6 +4263,7 @@ static bool event_init_content(
 #endif
    const enum rarch_core_type current_core_type = runloop_st->current_core_type;
    uint8_t flags                                = content_get_flags();
+   bool entry_state_load                        = runloop_st->entry_state_slot > -1;
 
    if (current_core_type == CORE_TYPE_PLAIN)
       runloop_st->flags |=  RUNLOOP_FLAG_USE_SRAM;
@@ -4318,6 +4319,22 @@ static bool event_init_content(
 
          if (entry && entry->entry_slot > 0)
             runloop_st->entry_state_slot = entry->entry_slot;
+
+         entry_state_load = runloop_st->entry_state_slot > -1;
+
+         /* Override entry slot in savestate run list */
+         {
+            menu_entry_t menu_entry;
+            MENU_ENTRY_INITIALIZE(menu_entry);
+            menu_entry.flags |= MENU_ENTRY_FLAG_LABEL_ENABLED;
+            menu_entry_get(&menu_entry, 0, 0, NULL, true);
+
+            if (string_is_equal(menu_entry.label, MENU_ENUM_LABEL_STATE_SLOT_RUN_STR))
+            {
+               runloop_st->entry_state_slot = menu_st->driver_data->state_slot_run;
+               entry_state_load = true;
+            }
+         }
       }
 #endif
 
@@ -4344,7 +4361,7 @@ static bool event_init_content(
       if (!(input_st->bsv_movie_state.flags & BSV_FLAG_MOVIE_START_PLAYBACK))
 #endif
       {
-         if (     runloop_st->entry_state_slot > -1
+         if (     entry_state_load
                && !command_event_load_entry_state(settings))
          {
             /* Loading the state failed, reset entry slot */
@@ -4774,6 +4791,15 @@ bool runloop_event_init_core(
 
    /* Set core environment */
    runloop_st->current_core.retro_set_environment(runloop_environment_cb);
+
+#ifdef HAVE_MENU
+   /* Early return for playlist entry savestate menu paths */
+   {
+      struct menu_state *menu_st = menu_state_get_ptr();
+      if (menu_st && menu_st->flags & MENU_ST_FLAG_PRETEND_CORE_INIT)
+         return false;
+   }
+#endif
 
    /* Load any input remap files
     * > Note that we always cache the current global
@@ -6255,6 +6281,7 @@ static enum runloop_state_enum runloop_check_state(
          }
 
          menu_st->flags &= ~MENU_ST_FLAG_PENDING_STARTUP_PAGE;
+         return RUNLOOP_STATE_POLLED_AND_SLEEP;
       }
       else if (!menu_driver_iterate(menu_st, p_disp, anim_get_ptr(),
                settings, action, current_time))

@@ -2050,7 +2050,7 @@ void video_driver_set_filtering(unsigned index,
             index, smooth, ctx_scaling);
 }
 
-void video_driver_get_size(unsigned *width, unsigned *height)
+void video_driver_get_output_size(unsigned *width, unsigned *height)
 {
    video_driver_state_t *video_st = &video_driver_st;
 #ifdef HAVE_THREADS
@@ -2072,7 +2072,7 @@ void video_driver_get_size(unsigned *width, unsigned *height)
       *height       = video_st->height;
 }
 
-void video_driver_set_size(unsigned width, unsigned height)
+void video_driver_set_output_size(unsigned width, unsigned height)
 {
    video_driver_state_t *video_st = &video_driver_st;
 #ifdef HAVE_THREADS
@@ -3080,8 +3080,28 @@ bool video_driver_get_viewport_info(struct video_viewport *viewport)
 {
    video_driver_state_t *video_st  = &video_driver_st;
    const video_driver_t *vid       = video_st->current_video;
-   if (!vid || !vid->viewport_info)
+   if (!viewport)
       return false;
+   if (!vid || !vid->viewport_info)
+   {
+      /* Some video drivers don't implement viewport_info (gdi,
+       * caca, sixel, network, fpga, vg, ps2, xenon360, xshm at
+       * the time of writing).  The contract was previously: we
+       * silently returned false and left the caller's struct
+       * untouched.  Several callers in menu_setting.c and
+       * elsewhere ignored the return value and proceeded to
+       * read fields off the struct anyway — and since callers
+       * declare it as a stack local, the reads landed on
+       * uninitialised memory.  In the menu's "Custom Aspect
+       * Ratio" handlers that uninitialised value flowed
+       * straight into settings->video_vp_custom and got
+       * persisted to retroarch.cfg, producing stuff like
+       * custom_viewport_width=57874 / custom_viewport_x=
+       * 972119847 on shutdown.  Zero the struct here so the
+       * worst a misbehaving caller can do is read all zeros. */
+      memset(viewport, 0, sizeof(*viewport));
+      return false;
+   }
    vid->viewport_info(video_st->data, viewport);
    return true;
 }
@@ -3206,10 +3226,13 @@ size_t video_driver_get_window_title(char *s, size_t len)
    video_driver_state_t *video_st = &video_driver_st;
    if (s && (video_st->flags & VIDEO_FLAG_WINDOW_TITLE_UPDATE))
    {
-      strlcpy(s, video_st->window_title, len);
+      size_t n = strlcpy(s, video_st->window_title, len);
       video_st->flags &= ~VIDEO_FLAG_WINDOW_TITLE_UPDATE;
+      if (n >= len)
+         return len ? len - 1 : 0;
+      return n;
    }
-   return video_st->window_title_len;
+   return 0;
 }
 
 void video_driver_update_title(void *data)
@@ -5358,11 +5381,13 @@ static INLINE void video_driver_scanline_before_frame(video_driver_state_t *vide
    }
    else if (video_st->frame_count > refresh_rate)
    {
-      /* Disable if the core frame takes too long or has too much deviation */
-      double stddev = 0.0;
-      video_monitor_fps_statistics(NULL, &stddev, NULL);
+      /* Disable if the core and/or frame takes too long */
+      uint16_t frame_time_index = video_st->frame_time_count & (MEASURE_FRAME_TIME_SAMPLES_COUNT - 1);
+      uint16_t sample_index     = (uint16_t)((frame_time_index - 1) & (MEASURE_FRAME_TIME_SAMPLES_COUNT - 1));
+      retro_time_t frame_time   = video_st->frame_time_samples[sample_index];
 
-      if (stddev > 0.75f || core_run_time > frame_time_target)
+      if (     core_run_time > frame_time_target
+            || frame_time > frame_time_target * 2)
       {
          scanline_next = 0;
          scanline_hold = refresh_rate / 2;
@@ -5388,7 +5413,7 @@ static INLINE void video_driver_scanline_before_frame(video_driver_state_t *vide
       /* Core time based minimum nudge */
       while (  corelines > 0
             && scanline_next >= -corelines
-            && core_run_time < frame_time_target / 4)
+            && core_run_time < frame_time_target / 3)
       {
          scanline_next--;
          corelines--;

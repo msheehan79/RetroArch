@@ -2463,7 +2463,7 @@ static struct config_uint_setting *populate_settings_uint(
    SETTING_UINT("autosave_interval",             &settings->uints.autosave_interval,  true, DEFAULT_AUTOSAVE_INTERVAL, false);
    SETTING_UINT("rewind_granularity",            &settings->uints.rewind_granularity, true, DEFAULT_REWIND_GRANULARITY, false);
    SETTING_UINT("rewind_buffer_size_step",       &settings->uints.rewind_buffer_size_step, true, DEFAULT_REWIND_BUFFER_SIZE_STEP, false);
-   SETTING_UINT("run_ahead_frames",              &settings->uints.run_ahead_frames, true, 1,  false);
+   SETTING_UINT("run_ahead_frames",              &settings->uints.run_ahead_frames, true, DEFAULT_RUN_AHEAD_FRAMES,  false);
    SETTING_UINT("replay_max_keep",               &settings->uints.replay_max_keep, true, DEFAULT_REPLAY_MAX_KEEP, false);
    SETTING_UINT("replay_checkpoint_interval",    &settings->uints.replay_checkpoint_interval,  true, DEFAULT_REPLAY_CHECKPOINT_INTERVAL, false);
    SETTING_UINT("savestate_max_keep",            &settings->uints.savestate_max_keep, true, DEFAULT_SAVESTATE_MAX_KEEP, false);
@@ -3576,7 +3576,8 @@ static bool check_menu_driver_compatibility(settings_t *settings)
    switch (video_driver[0])
    {
       case 'd':
-         return (memcmp(video_driver, "d3d9_hlsl", 9) == 0 && video_driver[9] == '\0')
+         return (memcmp(video_driver, "d3d8",     4) == 0 && video_driver[4]  == '\0')
+             || (memcmp(video_driver, "d3d9_hlsl", 9) == 0 && video_driver[9] == '\0')
              || (memcmp(video_driver, "d3d9_cg",  7) == 0 && video_driver[7]  == '\0')
              || (memcmp(video_driver, "d3d10",    5) == 0 && video_driver[5]  == '\0')
              || (memcmp(video_driver, "d3d11",    5) == 0 && video_driver[5]  == '\0')
@@ -3588,6 +3589,8 @@ static bool check_menu_driver_compatibility(settings_t *settings)
                 || (memcmp(video_driver, "glcore", 6) == 0 && video_driver[6] == '\0');
          if (video_driver[1] == 'x')
             return (memcmp(video_driver, "gx2",    3) == 0 && video_driver[3] == '\0');
+         if (video_driver[1] == 'd')
+            return (memcmp(video_driver, "gdi",    3) == 0 && video_driver[3] == '\0');
          return false;
       case 'v':
          return (memcmp(video_driver, "vulkan", 6) == 0 && video_driver[6] == '\0')
@@ -3596,6 +3599,15 @@ static bool check_menu_driver_compatibility(settings_t *settings)
          return (memcmp(video_driver, "metal",  5) == 0 && video_driver[5] == '\0');
       case 'r':
          return (memcmp(video_driver, "rsx",    3) == 0 && video_driver[3] == '\0');
+      case 's':
+         /* sdl2 supports the full menu set (XMB/Ozone/MaterialUI/RGUI)
+          * via gfx_display_ctx_sdl2 + sdl2_raster_font, gated on
+          * SDL_RenderGeometry (>= 2.0.18). On older SDL builds the
+          * driver self-disables the gfx_display backend, and only
+          * RGUI's bitmap path is functional - which already returned
+          * true via the rgui early-out above, so allowing sdl2 here
+          * is safe regardless of the runtime SDL version. */
+         return (memcmp(video_driver, "sdl2",   4) == 0 && video_driver[4] == '\0');
       case 'c':
          return (memcmp(video_driver, "ctr",    3) == 0 && video_driver[3] == '\0');
       default:
@@ -4641,14 +4653,16 @@ static bool config_load_file(global_t *global,
    if (!(bool)RHMAP_HAS_STR(conf->entries_map, "user_language"))
       msg_hash_set_uint(MSG_HASH_USER_LANGUAGE, frontend_driver_get_user_language());
 
-   if (frontend_driver_has_gamemode() &&
-         !frontend_driver_set_gamemode(settings->bools.gamemode_enable) &&
-         settings->bools.gamemode_enable)
-   {
-      RARCH_WARN("[Config] GameMode unsupported - disabling...\n");
-      configuration_set_bool(settings,
-            settings->bools.gamemode_enable, false);
-   }
+   /* If GameMode is enabled in the config but libgamemode is not
+    * available, warn once. Do NOT clear the setting: that would
+    * silently overwrite the user's preference in retroarch.cfg, so
+    * a transient failure (sandbox path issue, library not yet
+    * installed, etc.) would force them to re-enable it manually on
+    * every subsequent launch. The probe is latched inside the
+    * frontend driver, so it will not be retried this session. */
+   if (     settings->bools.gamemode_enable
+         && frontend_driver_has_gamemode())
+      frontend_driver_set_gamemode(true);
 
    /* If this is the first run of an existing installation
     * after the independent favourites playlist size limit was
@@ -5424,7 +5438,7 @@ void input_config_get_prefix(char *s, char len, char user, bool meta)
  */
 static void input_config_save_keybinds_user(config_file_t *conf, unsigned user)
 {
-   size_t i = 0;
+   unsigned i;
    for (i = 0; input_config_bind_map_get_valid(i); i++)
    {
       char key[64];
@@ -5470,7 +5484,7 @@ static void input_config_save_keybinds_user_override(config_file_t *conf,
       unsigned user, unsigned bind_id,
       const struct retro_keybind *override_bind)
 {
-   size_t i = bind_id;
+   unsigned i = bind_id;
 
    if (input_config_bind_map_get_valid(i))
    {
@@ -5521,7 +5535,7 @@ static void input_config_save_keybinds_user_override(config_file_t *conf,
 static void input_config_save_keybinds_user_minimal(config_file_t *conf,
       unsigned user, const retro_keybind_set default_binds)
 {
-   size_t i = 0;
+   unsigned i;
    for (i = 0; input_config_bind_map_get_valid(i); i++)
    {
       char key[64];
@@ -6983,6 +6997,21 @@ bool input_remapping_load_file(void *data, const char *path)
                if (_remap == -1)
                   _remap = RARCH_UNMAPPED;
 
+               /* Reject .rmp values outside the legitimate range.
+                * Runtime use sites in input_driver.c index a
+                * fixed-size analog_value[][8] array using
+                * (_remap - RARCH_FIRST_CUSTOM_BIND); pre-this-patch
+                * a malformed .rmp could supply an arbitrary int
+                * here and OOB-write up to ~1007 elements past
+                * analog_value, corrupting adjacent input-state
+                * fields and (for the last user) the keys[] mask.
+                * Legal values are any concrete bind index in
+                * [0, RARCH_ANALOG_BIND_LIST_END) plus the
+                * RARCH_UNMAPPED sentinel. */
+               if (   _remap != (int)RARCH_UNMAPPED
+                   && (_remap < 0 || _remap >= (int)RARCH_ANALOG_BIND_LIST_END))
+                  _remap = RARCH_UNMAPPED;
+
                configuration_set_uint(settings,
                      settings->uints.input_remap_ids[i][j], _remap);
             }
@@ -7009,6 +7038,12 @@ bool input_remapping_load_file(void *data, const char *path)
             if (config_get_int(conf, ident, &_remap))
             {
                if (_remap == -1)
+                  _remap = RARCH_UNMAPPED;
+
+               /* See the matching comment in the button-branch
+                * above: same OOB-write primitive, same fix. */
+               if (   _remap != (int)RARCH_UNMAPPED
+                   && (_remap < 0 || _remap >= (int)RARCH_ANALOG_BIND_LIST_END))
                   _remap = RARCH_UNMAPPED;
 
                configuration_set_uint(settings,
