@@ -4428,10 +4428,7 @@ void video_driver_frame(const void *data, unsigned width,
             video_st->title_buf,
             sizeof(video_st->window_title));
 
-      if (video_info.fps_show)
-         _len = strlcpy(status_text,
-               msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NOT_AVAILABLE),
-               sizeof(status_text));
+      status_text[0] = '\0';
 
       video_st->flags |= VIDEO_FLAG_WINDOW_TITLE_UPDATE;
    }
@@ -4776,6 +4773,7 @@ void video_driver_frame(const void *data, unsigned width,
        && !((video_info.menu_st_flags & MENU_ST_FLAG_SCREENSAVER_ACTIVE))
 #endif
        && !video_info.notifications_hidden
+       && *status_text
       )
    {
 #if defined(HAVE_GFX_WIDGETS)
@@ -5385,13 +5383,15 @@ static INLINE void video_driver_scanline_before_frame(video_driver_state_t *vide
       uint16_t frame_time_index = video_st->frame_time_count & (MEASURE_FRAME_TIME_SAMPLES_COUNT - 1);
       uint16_t sample_index     = (uint16_t)((frame_time_index - 1) & (MEASURE_FRAME_TIME_SAMPLES_COUNT - 1));
       retro_time_t frame_time   = video_st->frame_time_samples[sample_index];
+      bool frame_time_deviation = frame_time >= frame_time_target * 1.66f || frame_time <= frame_time_target * 0.33f;
 
-      if (     core_run_time > frame_time_target
-            || frame_time > frame_time_target * 2)
+      if (scanline_hold && (frame_time_deviation || core_run_time >= frame_time_target - 3000))
       {
          scanline_next = 0;
          scanline_hold = refresh_rate / 2;
       }
+      else if (!scanline_hold && frame_time_deviation)
+         scanline_hold += 3;
    }
 
    /* Shift overflow */
@@ -5401,19 +5401,28 @@ static INLINE void video_driver_scanline_before_frame(video_driver_state_t *vide
    /* Allow change */
    if (!scanline_hold)
    {
-      int16_t corelines = video_height * ((double)core_run_time / (double)frame_time_target);
+      int16_t corelines = (video_height + scanline_blank) * ((double)core_run_time / (double)frame_time_target);
 
       /* Fine-tuning */
       if (     scanline > -scanline_blank
-            && scanline < corelines)
+            && scanline < corelines + scanline_blank)
          scanline_next -= 2;
-      else if (scanline_next < scanline + corelines)
+      else if (scanline_next <= scanline + corelines)
          scanline_next += 4;
+
+      if (     scanline > 0
+            && scanline < video_height - scanline_blank
+            && scanline_next >= -(scanline + corelines + scanline_blank))
+         scanline_next--;
+      else if (scanline > (video_height - scanline_blank) / 2
+            || scanline < -scanline_blank)
+         scanline_next++;
 
       /* Core time based minimum nudge */
       while (  corelines > 0
+            && scanline > scanline_blank
             && scanline_next >= -corelines
-            && core_run_time < frame_time_target / 3)
+            && core_run_time <= frame_time_target / 2)
       {
          scanline_next--;
          corelines--;
@@ -5464,7 +5473,7 @@ static INLINE void video_driver_scanline_after_frame(video_driver_state_t *video
    if (wait && frame_time_target > core_run_time)
    {
       int8_t sleep = (frame_time_target - core_run_time) / 1000;
-      if (sleep > 0)
+      if (sleep > 1)
       {
          /* Sleeping too much causes problems */
          sleep -= 4;
