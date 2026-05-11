@@ -5663,6 +5663,14 @@ MSG_HASH(
    "Zobrazenie použitia pamäte sa bude aktualizovať v nastavenom intervale v snímkach."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_TIME_SHOW,
+   "Zobraziť čas"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_TIME_SHOW,
+   "Zobraziť aktuálny čas v preferovanom formáte."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_NETPLAY_PING_SHOW,
    "Zobraziť netplay ping"
    )
@@ -6306,7 +6314,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CONTENT_SHOW_NETPLAY,
-   "Zobraziť menu 'Netplay'."
+   "Zobraziť položku „Netplay“ v hlavnom menu alebo v zoznamoch skladieb."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_HISTORY,
@@ -6489,7 +6497,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_UNDO_SAVE_LOAD_STATE,
-   "Zobraziť možnosti pre vrátenie uloženia/načítania stavu."
+   "Zobraziť možnosti vrátenia uloženia/načítania stavu. Štart na RetroPade spustí vrátenie uloženia/načítania, keď je skryté."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_OPTIONS,
@@ -8465,10 +8473,6 @@ MSG_HASH(
    "Skenuje adresár pre obsah, ktorý zodpovedá databáze."
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_SCAN_THIS_DIRECTORY,
-   "<Prehľadať tento adresár>"
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_HELP_SCAN_THIS_DIRECTORY,
    "Vyberte na skenovanie aktuálneho adresára pre obsah."
    )
@@ -10392,24 +10396,8 @@ MSG_HASH(
    "Bez zdroja"
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_USE_THIS_DIRECTORY,
-   "<Použiť tento adresár>"
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_HELP_USE_THIS_DIRECTORY,
    "Vyberte toto pre nastavenie ako adresár."
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_DIRECTORY_CONTENT,
-   "<adresár obsahu>"
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_DIRECTORY_DEFAULT,
-   "<Predvolené>"
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_DIRECTORY_NONE,
-   "<Žiadne>"
    )
 MSG_HASH( /* FIXME Unused? */
    MENU_ENUM_LABEL_VALUE_RETROKEYBOARD,
@@ -10442,10 +10430,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DOWN_SELECT,
    "Dolu + Select"
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_RUMBLE_TYPE_DISABLED,
-   "<Zakázané>"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_RUMBLE_TYPE_CHANGES,
@@ -10490,10 +10474,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_RUMBLE_PORT_16,
    "Všetko"
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_CHEAT_TYPE_DISABLED,
-   "<zakázané>"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_CHEAT_TYPE_SET_TO_VALUE,
@@ -10708,18 +10688,6 @@ MSG_HASH(
    "Obsah"
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_SYSTEM_NAME_USE_CONTENT_DIR,
-   "<adresár obsahu>"
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_SYSTEM_NAME_USE_CUSTOM,
-   "<Vlastné>"
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_CORE_NAME_DETECT,
-   "<Neurčené>"
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SCAN_METHOD_AUTO,
    "Plne automatické"
    )
@@ -10746,10 +10714,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SCAN_USE_DB_NONE,
    "Žiadne"
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_SCAN_TARGET_PLAYLIST_CUSTOM,
-   "<Vlastné>"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LEFT_ANALOG,
@@ -11357,6 +11321,10 @@ MSG_HASH(
    "Faktor vertikálneho prelínania"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_MENU_XMB_SHOW_HORIZONTAL_LIST,
+   "Zobraziť vodorovný zoznam"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MENU_XMB_SHOW_TITLE_HEADER,
    "Zobraziť hlavičku názvu"
    )
@@ -11589,6 +11557,14 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_OZONE_COLLAPSE_SIDEBAR,
    "Mať ľavý bočný panel vždy zbalený."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_SHOW_SIDEBAR,
+   "Zobraziť bočný panel"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_OZONE_SHOW_SIDEBAR,
+   "Povoliť navigáciu v ľavom bočnom paneli a zoznamy skladieb."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_OZONE_TRUNCATE_PLAYLIST_NAME,
@@ -12002,10 +11978,6 @@ MSG_HASH(
    "Téma:"
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_QT_MENU_VIEW_OPTIONS_THEME_SYSTEM_DEFAULT,
-   "<Predvolené systémom>"
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QT_MENU_VIEW_OPTIONS_THEME_DARK,
    "Tmavý"
    )
@@ -12096,10 +12068,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QT_CORE_INFO,
    "Informácie o jadre"
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_QT_CORE_SELECTION_ASK,
-   "<Opýtať sa>"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QT_INFORMATION,
@@ -12340,10 +12308,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QT_SELECT_FOLDER,
    "Vybrať priečinok"
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_QT_FIELD_MULTIPLE,
-   "<viac>"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QT_COULD_NOT_UPDATE_PLAYLIST_ENTRY,
@@ -14061,7 +14025,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_UNDOING_SAVE_STATE,
-   "Vracia sa uložený stav"
+   "Vracia sa uložený stav..."
    )
 MSG_HASH(
    MSG_UNKNOWN,

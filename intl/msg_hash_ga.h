@@ -5735,6 +5735,14 @@ MSG_HASH(
    "Déanfar an taispeáint úsáide cuimhne a nuashonrú ag an eatramh socraithe i bhfrámaí."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_TIME_SHOW,
+   "Am Taispeána"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_TIME_SHOW,
+   "Taispeáin an t-am reatha san fhormáid is fearr leat."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_NETPLAY_PING_SHOW,
    "Ping Líonra Taispeána"
    )
@@ -6374,7 +6382,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CONTENT_SHOW_NETPLAY,
-   "Taispeáin an roghchlár 'Netplay'."
+   "Taispeáin an iontráil 'Netplay' taobh istigh den Phríomh-Roghchlár nó Seinmliostaí."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_HISTORY,
@@ -6557,7 +6565,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_UNDO_SAVE_LOAD_STATE,
-   "Taispeáin na roghanna chun an staid sábhála/lódála a chealú."
+   "Taispeáin na roghanna chun an staid sábhála/luchtaithe a chealú. Spreagann RetroPad Start cealú sábháil/luchtaithe nuair a bhíonn sé i bhfolach."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_OPTIONS,
@@ -11621,6 +11629,10 @@ MSG_HASH(
    "Fachtóir Céimnithe Ingearach"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_MENU_XMB_SHOW_HORIZONTAL_LIST,
+   "Taispeáin Liosta Cothrománach"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MENU_XMB_SHOW_TITLE_HEADER,
    "Taispeáin Ceanntásc an Teidil"
    )
@@ -11873,6 +11885,14 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_OZONE_COLLAPSE_SIDEBAR,
    "Bíodh an barra taoibh clé fillte i gcónaí."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_SHOW_SIDEBAR,
+   "Taispeáin an Barra Taoibh"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_OZONE_SHOW_SIDEBAR,
+   "Ceadaigh nascleanúint agus seinmliostaí sa bharra taoibh chlé."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_OZONE_TRUNCATE_PLAYLIST_NAME,
@@ -14437,7 +14457,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_UNDOING_SAVE_STATE,
-   "Ag cealú an stáit shábhála"
+   "Ag cealú an stáit shábhála..."
    )
 MSG_HASH(
    MSG_UNKNOWN,

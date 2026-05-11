@@ -3736,6 +3736,30 @@ static size_t setting_get_string_representation_uint_menu_timedate_date_separato
    return 0;
 }
 
+static size_t setting_get_string_representation_uint_time_show(
+   rarch_setting_t *setting, char *s, size_t len)
+{
+   if (setting)
+   {
+      switch (*setting->value.target.unsigned_integer)
+      {
+         case TIME_SHOW_HM:
+            return strlcpy(s, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_TIMEDATE_HM), len);
+         case TIME_SHOW_HMS:
+            return strlcpy(s, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_TIMEDATE_HMS), len);
+         case TIME_SHOW_HM_AMPM:
+            return strlcpy(s, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_TIMEDATE_HM_AMPM), len);
+         case TIME_SHOW_HMS_AMPM:
+            return strlcpy(s, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_TIMEDATE_HMS_AMPM), len);
+         case TIME_SHOW_OFF:
+         default:
+            return strlcpy(s, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_OFF), len);
+      }
+   }
+
+   return 0;
+}
+
 static size_t setting_get_string_representation_uint_menu_add_content_entry_display_type(
       rarch_setting_t *setting, char *s, size_t len)
 {
@@ -9301,6 +9325,7 @@ static void general_write_handler(rarch_setting_t *setting)
       case MENU_ENUM_LABEL_CONTENT_SHOW_IMAGES:
       case MENU_ENUM_LABEL_CONTENT_SHOW_MUSIC:
       case MENU_ENUM_LABEL_CONTENT_SHOW_VIDEO:
+      case MENU_ENUM_LABEL_CONTENT_SHOW_NETPLAY:
       case MENU_ENUM_LABEL_CONTENT_SHOW_ADD_ENTRY:
       case MENU_ENUM_LABEL_CONTENT_SHOW_PLAYLIST_TABS:
       case MENU_ENUM_LABEL_CONTENT_SHOW_EXPLORE:
@@ -17589,6 +17614,25 @@ static bool setting_append_list(
          (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint_special;
          menu_settings_list_current_add_range(list, list_info, 1, 512, 1, true, true);
 
+         CONFIG_UINT(
+               list, list_info,
+               &settings->uints.video_time_show,
+               MENU_ENUM_LABEL_TIME_SHOW,
+               MENU_ENUM_LABEL_VALUE_TIME_SHOW,
+               DEFAULT_TIME_SHOW,
+               &group_info,
+               &subgroup_info,
+               parent_group,
+               general_write_handler,
+               general_read_handler);
+         (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint;
+         (*list)[list_info->index - 1].action_left   = &setting_uint_action_left_with_refresh;
+         (*list)[list_info->index - 1].action_right  = &setting_uint_action_right_with_refresh;
+         (*list)[list_info->index - 1].get_string_representation =
+            &setting_get_string_representation_uint_time_show;
+         menu_settings_list_current_add_range(list, list_info, 0, TIME_SHOW_LAST - 1, 1, true, true);
+         (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
+
          CONFIG_BOOL(
                list, list_info,
                &settings->bools.video_statistics_show,
@@ -19301,8 +19345,9 @@ static bool setting_append_list(
                   SD_FLAG_NONE);
          }
 
-#ifdef HAVE_XMB
-         if (string_is_equal(settings->arrays.menu_driver, "xmb"))
+#if defined(HAVE_XMB) || defined (HAVE_OZONE)
+         if (     string_is_equal(settings->arrays.menu_driver, "xmb")
+               || string_is_equal(settings->arrays.menu_driver, "ozone"))
          {
             CONFIG_BOOL(
                   list, list_info,
@@ -19329,7 +19374,10 @@ static bool setting_append_list(
             (*list)[list_info->index - 1].action_left   = setting_bool_action_left_with_refresh;
             (*list)[list_info->index - 1].action_right  = setting_bool_action_right_with_refresh;
 #endif
+         }
 
+         if (string_is_equal(settings->arrays.menu_driver, "xmb"))
+         {
             CONFIG_UINT(
                   list, list_info,
                   &settings->uints.menu_xmb_animation_horizontal_highlight,
@@ -19597,6 +19645,21 @@ static bool setting_append_list(
             (*list)[list_info->index - 1].get_string_representation =
                &setting_get_string_representation_uint_xmb_current_menu_icon;
             menu_settings_list_current_add_range(list, list_info, 0, XMB_CURRENT_MENU_ICON_LAST-1, 1, true, true);
+
+            CONFIG_BOOL(
+                  list, list_info,
+                  &settings->bools.menu_xmb_show_horizontal_list,
+                  MENU_ENUM_LABEL_MENU_XMB_SHOW_HORIZONTAL_LIST,
+                  MENU_ENUM_LABEL_VALUE_MENU_XMB_SHOW_HORIZONTAL_LIST,
+                  DEFAULT_XMB_SHOW_HORIZONTAL_LIST,
+                  MENU_ENUM_LABEL_VALUE_OFF,
+                  MENU_ENUM_LABEL_VALUE_ON,
+                  &group_info,
+                  &subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler,
+                  SD_FLAG_NONE);
 
             CONFIG_BOOL(
                   list, list_info,
@@ -20226,20 +20289,22 @@ static bool setting_append_list(
                   SD_FLAG_NONE);
 
 #ifdef HAVE_NETWORKING
-            CONFIG_BOOL(
+            CONFIG_UINT(
                   list, list_info,
-                  &settings->bools.menu_content_show_netplay,
+                  &settings->uints.menu_content_show_netplay,
                   MENU_ENUM_LABEL_CONTENT_SHOW_NETPLAY,
                   MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_NETPLAY,
                   DEFAULT_CONTENT_SHOW_NETPLAY,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
                   &group_info,
                   &subgroup_info,
                   parent_group,
                   general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+                  general_read_handler);
+            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
+            (*list)[list_info->index - 1].get_string_representation =
+               &setting_get_string_representation_uint_menu_add_content_entry_display_type;
+            menu_settings_list_current_add_range(list, list_info, 0, MENU_ADD_CONTENT_ENTRY_DISPLAY_LAST-1, 1, true, true);
+            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
 #endif
 
             CONFIG_UINT(
@@ -20545,6 +20610,21 @@ static bool setting_append_list(
                &setting_get_string_representation_uint_ozone_menu_color_theme;
             menu_settings_list_current_add_range(list, list_info, 0, OZONE_COLOR_THEME_LAST-1, 1, true, true);
             (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
+
+            CONFIG_BOOL(
+                  list, list_info,
+                  &settings->bools.ozone_show_sidebar,
+                  MENU_ENUM_LABEL_OZONE_SHOW_SIDEBAR,
+                  MENU_ENUM_LABEL_VALUE_OZONE_SHOW_SIDEBAR,
+                  DEFAULT_OZONE_SHOW_SIDEBAR,
+                  MENU_ENUM_LABEL_VALUE_OFF,
+                  MENU_ENUM_LABEL_VALUE_ON,
+                  &group_info,
+                  &subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler,
+                  SD_FLAG_NONE);
 
             CONFIG_BOOL(
                   list, list_info,

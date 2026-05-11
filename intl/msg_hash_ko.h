@@ -6405,10 +6405,6 @@ MSG_HASH(
    "'넷플레이' 표시"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_CONTENT_SHOW_NETPLAY,
-   "'넷플레이' 메뉴를 표시합니다."
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_HISTORY,
    "'최근 실행' 표시"
    )
@@ -6586,10 +6582,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_UNDO_SAVE_LOAD_STATE,
    "'상태저장/불러오기 되돌리기' 표시"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_UNDO_SAVE_LOAD_STATE,
-   "상태저장/불러오기 상태 되돌리기 항목을 표시합니다."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_OPTIONS,
@@ -14470,10 +14462,6 @@ MSG_HASH(
 MSG_HASH(
    MSG_UNDID_LOAD_STATE,
    "상태저장 불러오기 취소."
-   )
-MSG_HASH(
-   MSG_UNDOING_SAVE_STATE,
-   "상태저장 되돌리는 중"
    )
 MSG_HASH(
    MSG_UNKNOWN,

@@ -6333,10 +6333,6 @@ MSG_HASH(
    "Показати 'Netplay'"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_CONTENT_SHOW_NETPLAY,
-   "Показати меню 'Netplay'."
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_HISTORY,
    "Показати \"Історія\""
    )
@@ -6506,10 +6502,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_UNDO_SAVE_LOAD_STATE,
    "Показати 'Скасувати збереження/Завантаження'"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_UNDO_SAVE_LOAD_STATE,
-   "Показувати опції скасування збереження/завантаження."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_OPTIONS,
@@ -14290,10 +14282,6 @@ MSG_HASH(
 MSG_HASH(
    MSG_UNDID_LOAD_STATE,
    "Стан вивантаження."
-   )
-MSG_HASH(
-   MSG_UNDOING_SAVE_STATE,
-   "Скасувати збереження стану"
    )
 MSG_HASH(
    MSG_UNKNOWN,

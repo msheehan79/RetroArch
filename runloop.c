@@ -4814,15 +4814,6 @@ bool runloop_event_init_core(
    /* Set core environment */
    runloop_st->current_core.retro_set_environment(runloop_environment_cb);
 
-#ifdef HAVE_MENU
-   /* Early return for playlist entry savestate menu paths */
-   {
-      struct menu_state *menu_st = menu_state_get_ptr();
-      if (menu_st && menu_st->flags & MENU_ST_FLAG_PRETEND_CORE_INIT)
-         return false;
-   }
-#endif
-
    /* Load any input remap files
     * > Note that we always cache the current global
     *   input settings when initialising a core
@@ -8114,6 +8105,12 @@ void core_reset(void)
 {
    runloop_state_t *runloop_st    = &runloop_state;
    video_driver_state_t *video_st = video_state_get_ptr();
+
+   /* Drop video-driver caches of core-owned GPU resources before
+    * retro_reset() is allowed to destroy them. No-op on software
+    * cores or on drivers that do not implement the hook. */
+   video_driver_invalidate_hw_render_cache();
+
    video_st->frame_cache_data     = NULL;
    runloop_st->current_core.retro_reset();
 }

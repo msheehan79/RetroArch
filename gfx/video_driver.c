@@ -21,6 +21,7 @@
 #include <string/stdstring.h>
 #include <retro_math.h>
 #include <retro_timers.h>
+#include <time/rtime.h>
 
 #ifdef HAVE_CONFIG_H
 #include "../config.h"
@@ -3076,6 +3077,23 @@ bool video_driver_is_hw_context(void)
    return video_st->hw_render.context_type != RETRO_HW_CONTEXT_NONE;
 }
 
+/* Drops cached, core-owned GPU resource references from the active
+ * video driver. Safe to call unconditionally; cheap when no HW context
+ * is active or when the driver does not implement the hook. */
+void video_driver_invalidate_hw_render_cache(void)
+{
+   video_driver_state_t *video_st = &video_driver_st;
+
+   if (!video_st->current_video || !video_st->data)
+      return;
+   if (video_st->hw_render.context_type == RETRO_HW_CONTEXT_NONE)
+      return;
+   if (!video_st->current_video->invalidate_hw_render_cache)
+      return;
+
+   video_st->current_video->invalidate_hw_render_cache(video_st->data);
+}
+
 bool video_driver_get_viewport_info(struct video_viewport *viewport)
 {
    video_driver_state_t *video_st  = &video_driver_st;
@@ -3316,6 +3334,7 @@ void video_driver_build_info(video_frame_info_t *video_info)
    video_info->memory_show                 = settings->bools.video_memory_show;
    video_info->statistics_show             = settings->bools.video_statistics_show;
    video_info->framecount_show             = settings->bools.video_framecount_show;
+   video_info->time_show                   = settings->uints.video_time_show;
    video_info->core_status_msg_show        = runloop_st->core_status_msg.set;
    video_info->aspect_ratio_idx            = settings->uints.video_aspect_ratio_idx;
    video_info->post_filter_record          = settings->bools.video_post_filter_record;
@@ -4147,7 +4166,7 @@ bool video_driver_init_internal(bool *video_is_threaded, bool verbosity_enabled)
 void video_driver_frame(const void *data, unsigned width,
       unsigned height, size_t pitch)
 {
-   char status_text[128];
+   char status_text[256];
    static char video_driver_msg[256];
    static retro_time_t last_time;
    static retro_time_t curr_time;
@@ -4482,6 +4501,62 @@ void video_driver_frame(const void *data, unsigned width,
       RUNLOOP_MSG_QUEUE_UNLOCK(runloop_st);
    }
 
+   if (video_info.time_show)
+   {
+      static char time_text[64];
+      static retro_time_t next_time_update;
+      static unsigned time_show_last_format;
+      time_t time_;
+
+      _len = strlen(status_text);
+
+      if (_len > 0)
+      {
+         status_text[  _len] = ' ';
+         status_text[++_len] = '|';
+         status_text[++_len] = '|';
+         status_text[++_len] = ' ';
+         status_text[++_len] = '\0';
+      }
+
+      if (   !next_time_update
+          || (new_time >= next_time_update)
+          || video_info.time_show != time_show_last_format)
+      {
+         struct tm tm_;
+         retro_time_t time_update_interval = 0;
+
+         time(&time_);
+
+         time_show_last_format = video_info.time_show;
+         rtime_localtime(&time_, &tm_);
+
+         switch (video_info.time_show)
+         {
+            case TIME_SHOW_HM:
+               strftime(time_text, sizeof(time_text), "%H:%M", &tm_);
+               time_update_interval = (60 - tm_.tm_sec) * 1000000;
+               break;
+            case TIME_SHOW_HMS:
+               strftime(time_text, sizeof(time_text), "%H:%M:%S", &tm_);
+               time_update_interval = 500000;
+               break;
+            case TIME_SHOW_HM_AMPM:
+               strftime_am_pm(time_text, sizeof(time_text), "%I:%M %p", &tm_);
+               time_update_interval = (60 - tm_.tm_sec) * 1000000;
+               break;
+            case TIME_SHOW_HMS_AMPM:
+               strftime_am_pm(time_text, sizeof(time_text), "%I:%M:%S %p", &tm_);
+               time_update_interval = 500000;
+               break;
+         }
+
+         next_time_update = new_time + time_update_interval;
+      }
+
+      strlcpy(status_text + _len, time_text, sizeof(status_text) - _len);
+   }
+
    /* Slightly messy code,
     * but we really need to do processing before blocking on VSync
     * for best possible scheduling.
@@ -4768,6 +4843,7 @@ void video_driver_frame(const void *data, unsigned width,
           || video_info.framecount_show
           || video_info.memory_show
           || video_info.core_status_msg_show
+          || video_info.time_show
          )
 #if HAVE_MENU
        && !((video_info.menu_st_flags & MENU_ST_FLAG_SCREENSAVER_ACTIVE))
@@ -5492,14 +5568,17 @@ static INLINE void video_driver_scanline_after_frame(video_driver_state_t *video
 
       if (init)
       {
+         if (!scanline_total)
+            scanline_total = video_height;
+
          if (scanline)
             wait = true;
          else if (scanline_total > video_height)
             init = false;
-
-         if (scanline_total < scanline)
-            scanline_total = scanline + 1;
       }
+
+      if (scanline >= scanline_total)
+         scanline_total = scanline + 1;
    }
 
    video_st->scanline[SCANLINE_TOTAL] = scanline_total;

@@ -6105,10 +6105,6 @@ MSG_HASH(
    "Visa 'Netplay'"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_CONTENT_SHOW_NETPLAY,
-   "Visa 'Netplay'-menyn."
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_HISTORY,
    "Visa 'Historik'"
    )
@@ -6274,10 +6270,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_UNDO_SAVE_LOAD_STATE,
    "Visa 'Ångra Spara/Läs in tillstånd'"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_UNDO_SAVE_LOAD_STATE,
-   "Visa alternativen för att Ångra Spara/Läs in tillstånd."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_OPTIONS,
@@ -13626,10 +13618,6 @@ MSG_HASH(
 MSG_HASH(
    MSG_UNDID_LOAD_STATE,
    "Ångrade inläsningstillstånd."
-   )
-MSG_HASH(
-   MSG_UNDOING_SAVE_STATE,
-   "Ångrar sparat tillstånd"
    )
 MSG_HASH(
    MSG_UNKNOWN,
