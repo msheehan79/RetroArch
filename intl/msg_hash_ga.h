@@ -1461,7 +1461,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_DRIVER,
-   "Tiománaí físe le húsáid."
+   "Tiománaí físe le húsáid. (Atosú ag teastáil)"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_VIDEO_DRIVER_GL1,
@@ -1561,7 +1561,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_AUDIO_DRIVER,
-   "Tiománaí fuaime le húsáid."
+   "Tiománaí fuaime le húsáid. (Atosú ag teastáil)"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_AUDIO_DRIVER_RSOUND,
@@ -1622,7 +1622,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_MICROPHONE_DRIVER,
-   "Tiománaí micreafón le húsáid."
+   "Tiománaí micreafóin le húsáid. (Atosú ag teastáil)"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MICROPHONE_RESAMPLER_DRIVER,
@@ -1663,15 +1663,15 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CAMERA_DRIVER,
-   "Tiománaí ceamara le húsáid."
+   "Tiománaí ceamara le húsáid. (Atosú ag teastáil)"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_BLUETOOTH_DRIVER,
-   "Tiománaí Bluetooth le húsáid."
+   "Tiománaí Bluetooth le húsáid. (Atosú ag teastáil)"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_WIFI_DRIVER,
-   "Tiománaí Wi-Fi le húsáid."
+   "Tiománaí Wi-Fi le húsáid. (Atosú ag teastáil)"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LOCATION_DRIVER,
@@ -1679,7 +1679,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_LOCATION_DRIVER,
-   "Tiománaí suímh le húsáid."
+   "Tiománaí suímh le húsáid. (Atosú ag teastáil)"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MENU_DRIVER,
@@ -1711,11 +1711,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_RECORD_DRIVER,
-   "Tiománaí taifeadta le húsáid."
+   "Taifead an tiománaí le húsáid. (Atosú ag teastáil)"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_MIDI_DRIVER,
-   "Tiománaí MIDI le húsáid."
+   "Tiománaí MIDI le húsáid. (Atosú ag teastáil)"
    )
 
 /* Settings > Video */
@@ -3102,7 +3102,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_MAX_USERS,
-   "Uasmhéid úsáideoirí a dtacaítear leo le RetroArch."
+   "Uasmhéid úsáideoirí a dtacaítear leo le RetroArch. (Atosú riachtanach)"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_POLL_TYPE_BEHAVIOR,
@@ -4698,6 +4698,18 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_AUTOSAVE_INTERVAL,
    "Uath-shábháiltear an SRAM neamh-luaineach ag eatramh rialta. Tá sé seo díchumasaithe de réir réamhshocraithe mura socraítear a mhalairt. Tomhaistear an t-eatramh i soicindí. Díchumasaíonn luach 0 an t-uath-shábháil."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SAVESTATE_AUTOMATIC_INTERVAL,
+   "Stádas Sábháilte: Eatramh Uathoibríoch"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_SAVESTATE_AUTOMATIC_INTERVAL,
+   "Sábháil staid go huathoibríoch ag eatramh rialta (i soicindí). Socraigh go 0 le díchumasú."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_HELP_SAVESTATE_AUTOMATIC_INTERVAL,
+   "Sábhálann sé staid go huathoibríoch ag eatramh rialta, a thomhaistear i soicindí. Tá sé seo úsáideach chun cúltacaí tréimhsiúla de dhul chun cinn do chluiche a chruthú, go háirithe ar ghléasanna a d'fhéadfadh dúnadh go tobann mar gheall ar cheallraí nó fadhbanna eile. Díchumasaíonn luach 0 an ghné seo."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_REPLAY_CHECKPOINT_INTERVAL,
@@ -6508,6 +6520,14 @@ MSG_HASH(
    MENU_ENUM_SUBLABEL_MENU_SHOW_SUBLABELS,
    "Taispeáin faisnéis bhreise le haghaidh míreanna roghchláir."
    )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_MENU_SHOW_CONFIRM,
+   "Taispeáin Boscaí Deimhnithe"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_MENU_SHOW_CONFIRM,
+   "Iarr deimhniú sula scoireann tú d’ábhar, sula n-athshocraítear é nó sula ndúnann tú é. Nuair a bhíonn sé díchumasaithe, tarlaíonn na gníomhartha seo láithreach."
+   )
 MSG_HASH( /* FIXME Not RGUI specific */
    MENU_ENUM_LABEL_VALUE_RGUI_SHOW_START_SCREEN,
    "Taispeáin an Scáileán Tosaigh"
@@ -8115,6 +8135,13 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_FACEBOOK_STREAM_KEY,
    "Eochair Srutha Cearrbhachais Facebook"
+   )
+
+/* Settings > User > Accounts > Kick */
+
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_KICK_STREAM_KEY,
+   "Eochair Srutha Kick"
    )
 
 /* Settings > Directory */
