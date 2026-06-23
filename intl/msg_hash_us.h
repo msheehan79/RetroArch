@@ -4503,6 +4503,14 @@ MSG_HASH(
    "The number of frames to run ahead. Causes gameplay issues such as jitter if the number of lag frames internal to the game is exceeded."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_RUN_AHEAD_STARTUP_DELAY,
+   "Run-Ahead Startup Delay (Frames)"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_RUN_AHEAD_STARTUP_DELAY,
+   "Number of frames to wait before enabling Run-Ahead. Useful for allowing core memory maps to initialize cleanly."
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_RUNAHEAD_MODE,
    "Run additional core logic to reduce latency. Single Instance runs to a future frame, then reloads the current state. Second Instance keeps a video-only core instance at a future frame to avoid audio state issues. Preemptive Frames runs past frames with new input when needed, for efficiency."
    )

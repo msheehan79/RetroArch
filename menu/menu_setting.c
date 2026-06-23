@@ -17270,6 +17270,23 @@ static bool setting_append_list(
          (*list)[list_info->index - 1].change_handler = runahead_change_handler;
          menu_settings_list_current_add_range(list, list_info, 1, MAX_RUNAHEAD_FRAMES, 1, true, true);
 
+         CONFIG_UINT(
+               list, list_info,
+               &settings->uints.run_ahead_startup_delay,
+               MENU_ENUM_LABEL_RUN_AHEAD_STARTUP_DELAY,
+               MENU_ENUM_LABEL_VALUE_RUN_AHEAD_STARTUP_DELAY,
+               0,
+               &group_info,
+               &subgroup_info,
+               parent_group,
+               general_write_handler,
+               general_read_handler);
+         (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
+         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
+         (*list)[list_info->index - 1].offset_by = 0;
+         (*list)[list_info->index - 1].change_handler = runahead_change_handler;
+         menu_settings_list_current_add_range(list, list_info, 0, 600, 1, false, false);
+
          CONFIG_BOOL(
                list, list_info,
                &settings->bools.run_ahead_hide_warnings,

@@ -1508,6 +1508,9 @@
 /* Run core logic one or more frames ahead then load the state back to reduce perceived input lag. */
 #define DEFAULT_RUN_AHEAD_FRAMES 1
 
+/* Delay starting the Run Ahead feature by a number of frames */
+#define DEFAULT_RUN_AHEAD_STARTUP_DELAY 0
+
 /* When using the Run Ahead feature, use a secondary instance of the core. */
 #define DEFAULT_RUN_AHEAD_SECONDARY_INSTANCE true
 

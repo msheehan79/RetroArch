@@ -924,6 +924,7 @@
 #define MENU_ENUM_LABEL_RUNAHEAD_MODE_STR "run_ahead_mode"
 #define MENU_ENUM_LABEL_RUN_AHEAD_HIDE_WARNINGS_STR "run_ahead_hide_warnings"
 #define MENU_ENUM_LABEL_RUN_AHEAD_FRAMES_STR "run_ahead_frames"
+#define MENU_ENUM_LABEL_RUN_AHEAD_STARTUP_DELAY_STR "run_ahead_startup_delay"
 #define MENU_ENUM_LABEL_PREEMPT_FRAMES_STR "preemptive_frames"
 #define MENU_ENUM_LABEL_SORT_SAVEFILES_ENABLE_STR "sort_savefiles_enable"
 #define MENU_ENUM_LABEL_SORT_SAVESTATES_ENABLE_STR "sort_savestates_enable"

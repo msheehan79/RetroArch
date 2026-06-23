@@ -10826,6 +10826,7 @@ unsigned menu_displaylist_build_list(
                {MENU_ENUM_LABEL_RUNAHEAD_MODE,                         PARSE_ONLY_UINT, false },
                {MENU_ENUM_LABEL_RUN_AHEAD_FRAMES,                      PARSE_ONLY_UINT, false },
                {MENU_ENUM_LABEL_PREEMPT_FRAMES,                        PARSE_ONLY_UINT, false },
+               {MENU_ENUM_LABEL_RUN_AHEAD_STARTUP_DELAY,               PARSE_ONLY_UINT, false },
                {MENU_ENUM_LABEL_RUN_AHEAD_HIDE_WARNINGS,               PARSE_ONLY_BOOL, false },
 #endif
                {MENU_ENUM_LABEL_AUDIO_LATENCY,                         PARSE_ONLY_UINT, true },
@@ -10911,6 +10912,9 @@ unsigned menu_displaylist_build_list(
                      break;
                   case MENU_ENUM_LABEL_PREEMPT_FRAMES:
                      build_list[i].checked = runahead_supported && preempt_enabled;
+                     break;
+                  case MENU_ENUM_LABEL_RUN_AHEAD_STARTUP_DELAY:
+                     build_list[i].checked = runahead_supported && (runahead_enabled || preempt_enabled);
                      break;
                   case MENU_ENUM_LABEL_RUN_AHEAD_HIDE_WARNINGS:
                      build_list[i].checked = runahead_supported && (runahead_enabled || preempt_enabled);

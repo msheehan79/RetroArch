@@ -176,6 +176,7 @@ struct runloop
    struct retro_core_t        current_core;     /* uint64_t alignment */
 #if defined(HAVE_RUNAHEAD)
    uint64_t runahead_last_frame_count;          /* uint64_t alignment */
+   unsigned runahead_startup_delay;
 #if defined(HAVE_DYNAMIC) || defined(HAVE_DYLIB)
    struct retro_core_t secondary_core;          /* uint64_t alignment */
 #endif

@@ -783,6 +783,7 @@ DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_runahead_mode,                 MENU_
 #endif
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_run_ahead_hide_warnings,       MENU_ENUM_SUBLABEL_RUN_AHEAD_HIDE_WARNINGS)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_run_ahead_frames,              MENU_ENUM_SUBLABEL_RUN_AHEAD_FRAMES)
+DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_run_ahead_startup_delay,       MENU_ENUM_SUBLABEL_RUN_AHEAD_STARTUP_DELAY)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_preempt_frames,                MENU_ENUM_SUBLABEL_PREEMPT_FRAMES)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_input_block_timeout,           MENU_ENUM_SUBLABEL_INPUT_BLOCK_TIMEOUT)
 #ifdef HAVE_CHEATS
@@ -4322,6 +4323,9 @@ int menu_cbs_init_bind_sublabel(menu_file_list_cbs_t *cbs,
             break;
          case MENU_ENUM_LABEL_RUN_AHEAD_FRAMES:
             BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_run_ahead_frames);
+            break;
+         case MENU_ENUM_LABEL_RUN_AHEAD_STARTUP_DELAY:
+            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_run_ahead_startup_delay);
             break;
          case MENU_ENUM_LABEL_PREEMPT_FRAMES:
             BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_preempt_frames);

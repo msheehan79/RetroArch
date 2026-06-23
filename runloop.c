@@ -3886,6 +3886,9 @@ void runloop_state_free(runloop_state_t *runloop_st)
    runloop_st->core_options_callback.update_display = NULL;
 
    runloop_st->video_swap_interval_auto             = 1;
+#ifdef HAVE_RUNAHEAD
+   runloop_st->runahead_startup_delay = 0;
+#endif
 }
 
 /**
@@ -7681,6 +7684,7 @@ int runloop_iterate(void)
       unsigned run_ahead_num_frames     = settings->uints.run_ahead_frames;
       bool run_ahead_hide_warnings      = settings->bools.run_ahead_hide_warnings;
       bool run_ahead_secondary_instance = settings->bools.run_ahead_secondary_instance;
+      unsigned run_ahead_delay          = settings->uints.run_ahead_startup_delay;
       /* Run Ahead Feature replaces the call to core_run in this loop */
       bool want_runahead                = run_ahead_enabled
             && (run_ahead_num_frames > 0)
@@ -7688,6 +7692,12 @@ int runloop_iterate(void)
 #ifdef HAVE_NETWORKING
       want_runahead                     = want_runahead && !netplay_is_enabled;
 #endif
+
+      if (want_runahead && runloop_st->runahead_startup_delay < run_ahead_delay)
+      {
+         want_runahead = false; /* Force the frontend to bypass runahead */
+         runloop_st->runahead_startup_delay++;
+      }
 
       if (want_runahead)
          runahead_run(
@@ -8075,15 +8085,18 @@ bool core_set_cheat(retro_ctx_cheat_info_t *info)
    unsigned run_ahead_frames         = 0;
    bool run_ahead_secondary_instance = false;
    bool want_runahead                = false;
+   unsigned run_ahead_delay          = 0;
 
    if (settings)
    {
       run_ahead_enabled              = settings->bools.run_ahead_enabled;
       run_ahead_frames               = settings->uints.run_ahead_frames;
       run_ahead_secondary_instance   = settings->bools.run_ahead_secondary_instance;
+      run_ahead_delay                = settings->uints.run_ahead_startup_delay;
       want_runahead                  = run_ahead_enabled
             && (run_ahead_frames > 0)
-            && (runloop_st->flags & RUNLOOP_FLAG_RUNAHEAD_AVAILABLE);
+            && (runloop_st->flags & RUNLOOP_FLAG_RUNAHEAD_AVAILABLE)
+            && (runloop_st->runahead_startup_delay >= run_ahead_delay);
 #ifdef HAVE_NETWORKING
       if (want_runahead)
          want_runahead               = !netplay_driver_ctl(RARCH_NETPLAY_CTL_IS_ENABLED, NULL);
@@ -8115,15 +8128,18 @@ bool core_reset_cheat(void)
    unsigned run_ahead_frames         = 0;
    bool run_ahead_secondary_instance = false;
    bool want_runahead                = false;
+   unsigned run_ahead_delay          = 0;
 
    if (settings)
    {
       run_ahead_enabled              = settings->bools.run_ahead_enabled;
       run_ahead_frames               = settings->uints.run_ahead_frames;
       run_ahead_secondary_instance   = settings->bools.run_ahead_secondary_instance;
+      run_ahead_delay                = settings->uints.run_ahead_startup_delay;
       want_runahead                  = run_ahead_enabled
          && (run_ahead_frames > 0)
-         && (runloop_st->flags & RUNLOOP_FLAG_RUNAHEAD_AVAILABLE);
+         && (runloop_st->flags & RUNLOOP_FLAG_RUNAHEAD_AVAILABLE)
+         && (runloop_st->runahead_startup_delay >= run_ahead_delay);
 #ifdef HAVE_NETWORKING
       if (want_runahead)
          want_runahead               = !netplay_driver_ctl(RARCH_NETPLAY_CTL_IS_ENABLED, NULL);
