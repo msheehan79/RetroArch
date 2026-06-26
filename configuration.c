@@ -1295,7 +1295,9 @@ const char *config_get_default_joypad(void)
       case JOYPAD_ANDROID:
          return "android";
       case JOYPAD_SDL:
-#ifdef HAVE_SDL2
+#ifdef HAVE_SDL3
+         return "sdl3";
+#elif defined(HAVE_SDL2)
          return "sdl2";
 #else
          return "sdl";
@@ -2709,6 +2711,7 @@ static struct config_uint_setting *populate_settings_uint(
    SETTING_UINT("cheevos_visibility_summary",    &settings->uints.cheevos_visibility_summary, true, DEFAULT_CHEEVOS_VISIBILITY_SUMMARY, false);
 #endif
    SETTING_UINT("accessibility_narrator_speech_speed", &settings->uints.accessibility_narrator_speech_speed, true, DEFAULT_ACCESSIBILITY_NARRATOR_SPEECH_SPEED, false);
+   SETTING_UINT("accessibility_narrator_engine", &settings->uints.accessibility_narrator_engine, true, DEFAULT_ACCESSIBILITY_NARRATOR_ENGINE, false);
    SETTING_UINT("ai_service_mode",              &settings->uints.ai_service_mode,            true, DEFAULT_AI_SERVICE_MODE, false);
    SETTING_UINT("ai_service_target_lang",       &settings->uints.ai_service_target_lang,     true, 0, false);
    SETTING_UINT("ai_service_source_lang",       &settings->uints.ai_service_source_lang,     true, 0, false);
@@ -4017,7 +4020,7 @@ static bool config_load_file(global_t *global,
    if (!path_is_empty(RARCH_PATH_CONFIG_OVERRIDE) && !without_overrides)
    {
       char tmp_append_path[PATH_MAX_LENGTH];
-      const char *extra_path = NULL;
+      char *extra_path = NULL;
 #ifdef HAVE_OVERLAY
       char old_overlay_path[PATH_MAX_LENGTH], new_overlay_path[PATH_MAX_LENGTH];
       config_get_path(conf, "input_overlay", old_overlay_path, sizeof(old_overlay_path));
