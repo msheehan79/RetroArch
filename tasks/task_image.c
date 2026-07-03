@@ -222,6 +222,16 @@ static int cb_nbio_image_thumbnail(void *data, size_t len)
    /* Set image size */
    image->size                     = len;
 
+   /* The decoders bake the output channel order from supports_rgba.
+    * It was captured when this load was queued, but VIDEO_FLAG_USE_RGBA
+    * is cleared on every video reinit (core start/stop), so a value
+    * sampled in that window can disagree with the driver's actual upload
+    * format and yield R/B-swapped images.  Re-sample it here, once, at
+    * decode start (after any reinit has settled) - not in the per-chunk
+    * decode loop, where it would lock display_lock on every iteration. */
+   image->ti.supports_rgba = (video_driver_get_disp_flags()
+         & VIDEO_FLAG_USE_RGBA) ? true : false;
+
    /* Set task iteration duration */
    if (settings)
       refresh_rate = settings->floats.video_refresh_rate;

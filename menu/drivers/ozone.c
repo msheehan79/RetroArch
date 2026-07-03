@@ -5811,6 +5811,14 @@ compute_sublabel:
 
    /* Update scrolling */
    ozone->selection          = menu_st->selection_ptr;
+   /* selection_ptr can momentarily exceed the entry-list size when the
+    * list is rebuilt (e.g. a playlist refresh that shrinks it) before
+    * the navigation pointer is re-clamped. Every other indexed access
+    * in this file guards with (selection < size); do the same here
+    * before reading list[].userdata to avoid an out-of-bounds read
+    * (issue #18797). size >= 1 is guaranteed by the early return above. */
+   if (ozone->selection >= selection_buf->size)
+      ozone->selection       = selection_buf->size - 1;
    ozone_update_scroll(ozone, false, (ozone_node_t*)selection_buf->list[ozone->selection].userdata);
 }
 
@@ -8218,7 +8226,12 @@ static void ozone_set_thumbnail_content(void *data, const char *s)
       /* Filebrowser image updates */
       size_t selection           = menu_st->selection_ptr;
       file_list_t *selection_buf = MENU_LIST_GET_SELECTION(menu_list, 0);
-      ozone_node_t *node         = (ozone_node_t*)selection_buf->list[selection].userdata;
+      /* selection_ptr can exceed the list size when the list is
+       * rebuilt before the navigation pointer is re-clamped; guard
+       * the index like the other accesses in this file (cf. #18797). */
+      ozone_node_t *node         = (selection < selection_buf->size)
+         ? (ozone_node_t*)selection_buf->list[selection].userdata
+         : NULL;
 
       if (node)
       {
@@ -10408,6 +10421,11 @@ static void ozone_render(void *data,
 
    if (!ozone)
       return;
+
+   /* Advance animated thumbnails (animated WebP) once per frame on the
+    * main thread. No-op for still images. */
+   gfx_thumbnail_animate(&ozone->thumbnails.right);
+   gfx_thumbnail_animate(&ozone->thumbnails.left);
 
    /* Check whether screen dimensions or menu scale
     * factor have changed */

@@ -822,11 +822,14 @@ AUDIO RESAMPLER
 ============================================================ */
 #include "../libretro-common/audio/resampler/audio_resampler.c"
 #include "../libretro-common/audio/resampler/drivers/sinc_resampler.c"
+#include "../libretro-common/audio/resampler/drivers/sinc_resampler_int16.c"
 #ifdef HAVE_NEAREST_RESAMPLER
 #include "../libretro-common/audio/resampler/drivers/nearest_resampler.c"
+#include "../libretro-common/audio/resampler/drivers/nearest_resampler_int16.c"
 #endif
 #ifdef HAVE_CC_RESAMPLER
 #include "../audio/drivers_resampler/cc_resampler.c"
+#include "../audio/drivers_resampler/cc_resampler_int16.c"
 #endif
 
 /*============================================================
@@ -992,7 +995,22 @@ DRIVERS
 #include "../gfx/gfx_animation.c"
 #include "../gfx/gfx_display.c"
 #include "../gfx/gfx_thumbnail.c"
+/* rflac is used by the audio mixer (HAVE_RFLAC) and by the CHD FLAC
+ * decoder in libchdr (HAVE_CHD). Include its implementation once, ahead
+ * of both consumers, whenever either of them is present. */
+#if defined(HAVE_RFLAC) || defined(HAVE_CHD)
+#include "../libretro-common/formats/flac/rflac.c"
+#endif
 #ifdef HAVE_AUDIOMIXER
+#if defined(HAVE_RVORBIS)
+#include "../libretro-common/formats/vorbis/rvorbis.c"
+#endif
+#if defined(HAVE_RMP3)
+#include "../libretro-common/formats/mp3/rmp3.c"
+#endif
+#if defined(HAVE_RFLAC) || defined(HAVE_RVORBIS) || defined(HAVE_RMP3)
+#include "../libretro-common/formats/audio_transfer.c"
+#endif
 #include "../libretro-common/audio/audio_mixer.c"
 #endif
 

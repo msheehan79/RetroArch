@@ -1465,6 +1465,13 @@ static unsigned menu_displaylist_parse_core_option_dropdown_list(
       return 0;
 
    option_index = string_to_unsigned(opt+1);
+
+   /* The core option set can shrink at runtime, leaving a stale
+    * entry index in the menu path.  Reject an out-of-range index
+    * before taking the address of coreopts->opts[option_index]. */
+   if (option_index >= coreopts->size)
+      return 0;
+
    val_d[0]     = '\0';
    snprintf(val_d, sizeof(val_d), "%d", option_index);
 
@@ -1472,7 +1479,7 @@ static unsigned menu_displaylist_parse_core_option_dropdown_list(
    option = (struct core_option*)&coreopts->opts[option_index];
    val    = core_option_manager_get_val(coreopts, option_index);
 
-   if (!option || !val || !*val)
+   if (!val || !*val)
       return 0;
 
    lbl_enabled  = msg_hash_to_str(MENU_ENUM_LABEL_ENABLED);
@@ -7568,7 +7575,7 @@ unsigned menu_displaylist_build_list(
             {
                if (menu_entries_append(list,
                         msg_hash_to_str(MENU_ENUM_LABEL_VALUE_SHADER_WATCH_FOR_CHANGES),
-                        MENU_ENUM_LABEL_SHADER_WATCH_FOR_CHANGES_STR,
+                        msg_hash_to_str(MENU_ENUM_LABEL_SHADER_WATCH_FOR_CHANGES),
                         MENU_ENUM_LABEL_SHADER_WATCH_FOR_CHANGES,
                         0, 0, 0, NULL))
                   count++;
@@ -7576,7 +7583,7 @@ unsigned menu_displaylist_build_list(
 
             if (menu_entries_append(list,
                      msg_hash_to_str(MENU_ENUM_LABEL_VALUE_VIDEO_SHADER_REMEMBER_LAST_DIR),
-                     MENU_ENUM_LABEL_VIDEO_SHADER_REMEMBER_LAST_DIR_STR,
+                     msg_hash_to_str(MENU_ENUM_LABEL_VIDEO_SHADER_REMEMBER_LAST_DIR),
                      MENU_ENUM_LABEL_VIDEO_SHADER_REMEMBER_LAST_DIR,
                      0, 0, 0, NULL))
                count++;
@@ -7894,6 +7901,14 @@ unsigned menu_displaylist_build_list(
                         MENU_ENUM_LABEL_AUDIO_RESAMPLER_QUALITY,
                         PARSE_ONLY_UINT, false) == 0)
                   count++;
+               if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
+                        MENU_ENUM_LABEL_AUDIO_FASTPATH_S16,
+                        PARSE_ONLY_BOOL, false) == 0)
+                  count++;
+               if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
+                        MENU_ENUM_LABEL_AUDIO_FORMAT_NEGOTIATION,
+                        PARSE_ONLY_UINT, false) == 0)
+                  count++;
             }
             if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
                      MENU_ENUM_LABEL_AUDIO_BLOCK_FRAMES,
@@ -7904,10 +7919,6 @@ unsigned menu_displaylist_build_list(
             {
                if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
                         MENU_ENUM_LABEL_AUDIO_WASAPI_EXCLUSIVE_MODE,
-                        PARSE_ONLY_BOOL, false) == 0)
-                  count++;
-               if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
-                        MENU_ENUM_LABEL_AUDIO_WASAPI_FLOAT_FORMAT,
                         PARSE_ONLY_BOOL, false) == 0)
                   count++;
                if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
@@ -10506,7 +10517,7 @@ unsigned menu_displaylist_build_list(
                {MENU_ENUM_LABEL_MENU_SHOW_LOAD_CONTENT,                                PARSE_ONLY_BOOL, true  },
                {MENU_ENUM_LABEL_MENU_SHOW_LOAD_DISC,                                   PARSE_ONLY_BOOL, true  },
                {MENU_ENUM_LABEL_MENU_SHOW_DUMP_DISC,                                   PARSE_ONLY_BOOL, true  },
-#ifdef HAVE_LAKKA
+#if defined(HAVE_CDROM) && defined(HAVE_LAKKA)
                {MENU_ENUM_LABEL_MENU_SHOW_EJECT_DISC,                                  PARSE_ONLY_BOOL, true  },
 #endif
                {MENU_ENUM_LABEL_CONTENT_SHOW_PLAYLISTS,                                PARSE_ONLY_BOOL, true  },
@@ -12084,14 +12095,14 @@ unsigned menu_displaylist_build_list(
                {MENU_ENUM_LABEL_MENU_SCALE_FACTOR,                            PARSE_ONLY_FLOAT,  true},
                {MENU_ENUM_LABEL_OZONE_PADDING_FACTOR,                         PARSE_ONLY_FLOAT,  true},
                {MENU_ENUM_LABEL_MENU_FRAMEBUFFER_OPACITY,                     PARSE_ONLY_FLOAT,  true},
-               {MENU_ENUM_LABEL_MENU_HDR_BRIGHTNESS_NITS,                         PARSE_ONLY_FLOAT,  false},
+               {MENU_ENUM_LABEL_MENU_HDR_BRIGHTNESS_NITS,                     PARSE_ONLY_FLOAT,  false},
                {MENU_ENUM_LABEL_XMB_RIBBON_ENABLE,                            PARSE_ONLY_UINT,   true},
                {MENU_ENUM_LABEL_XMB_THEME,                                    PARSE_ONLY_UINT,   true},
                {MENU_ENUM_LABEL_XMB_MENU_COLOR_THEME,                         PARSE_ONLY_UINT,   true},
                {MENU_ENUM_LABEL_XMB_ALPHA_FACTOR,                             PARSE_ONLY_UINT,   true},
-               {MENU_ENUM_LABEL_MENU_WALLPAPER_OPACITY,                       PARSE_ONLY_FLOAT,  true},
                {MENU_ENUM_LABEL_MENU_WALLPAPER,                               PARSE_ONLY_PATH ,  true},
                {MENU_ENUM_LABEL_DYNAMIC_WALLPAPER,                            PARSE_ONLY_BOOL ,  true},
+               {MENU_ENUM_LABEL_MENU_WALLPAPER_OPACITY,                       PARSE_ONLY_FLOAT,  true},
                {MENU_ENUM_LABEL_MENU_USE_PREFERRED_SYSTEM_COLOR_THEME,        PARSE_ONLY_BOOL,   true},
                {MENU_ENUM_LABEL_OZONE_MENU_COLOR_THEME,                       PARSE_ONLY_UINT,   false},
                {MENU_ENUM_LABEL_MATERIALUI_MENU_COLOR_THEME,                  PARSE_ONLY_UINT,   true},
@@ -12116,8 +12127,8 @@ unsigned menu_displaylist_build_list(
                {MENU_ENUM_LABEL_MATERIALUI_ICONS_ENABLE,                      PARSE_ONLY_BOOL,   true},
                {MENU_ENUM_LABEL_MATERIALUI_PLAYLIST_ICONS_ENABLE,             PARSE_ONLY_BOOL,   false},
                {MENU_ENUM_LABEL_XMB_ENTRY_ICONS,                              PARSE_ONLY_BOOL,   true},
-               {MENU_ENUM_LABEL_XMB_CURRENT_MENU_ICON,                        PARSE_ONLY_UINT,   true},
                {MENU_ENUM_LABEL_XMB_SWITCH_ICONS,                             PARSE_ONLY_BOOL,   true},
+               {MENU_ENUM_LABEL_XMB_CURRENT_MENU_ICON,                        PARSE_ONLY_UINT,   true},
                {MENU_ENUM_LABEL_MENU_RGUI_SWITCH_ICONS,                       PARSE_ONLY_BOOL,   true},
                {MENU_ENUM_LABEL_MATERIALUI_SWITCH_ICONS,                      PARSE_ONLY_BOOL,   true},
                {MENU_ENUM_LABEL_OZONE_HEADER_ICON,                            PARSE_ONLY_UINT,   true},

@@ -4976,6 +4976,7 @@ void video_driver_frame(const void *data, unsigned width,
                " Aspect:      %3.3f\n"
                " FPS:         %3.2f\n"
                " Sample Rate: %6.2f\n"
+               " Sample Format: %s\n"
                "VIDEO: %s\n"
                " Viewport:    %u x %u\n"
                " - Scale:     %u x %u\n"
@@ -4986,12 +4987,6 @@ void video_driver_frame(const void *data, unsigned width,
                " - Deviation:%6.2f %%\n"
                " Frames:   %8" PRIu64"\n"
                " - Dropped:   %5u\n"
-               "AUDIO: %s\n"
-               " Saturation: %6.2f %%\n"
-               " Deviation:  %6.2f %%\n"
-               " Underrun:   %6.2f %%\n"
-               " Blocking:   %6.2f %%\n"
-               " Samples:  %8d\n"
                ,
                frame_cache_width,
                frame_cache_height,
@@ -5002,6 +4997,7 @@ void video_driver_frame(const void *data, unsigned width,
                av_info->geometry.aspect_ratio,
                av_info->timing.fps,
                av_info->timing.sample_rate,
+               audio_state_get_ptr()->stat_core_is_float ? "float" : "int16",
                vid->ident,
                video_info.width,
                video_info.height,
@@ -5016,13 +5012,30 @@ void video_driver_frame(const void *data, unsigned width,
                frame_time / 1000.0f,
                100.0f * stddev,
                video_st->frame_count,
-               video_st->frame_drop_count,
+               video_st->frame_drop_count);
+
+         /* Split from the block above: a single concatenated format
+          * literal exceeded the 509-byte minimum ISO C90 guarantees
+          * (-Werror=overlength-strings in the C89 lane). */
+         __len += snprintf(video_info.stat_text + __len,
+               sizeof(video_info.stat_text) - __len,
+               "AUDIO: %s\n"
+               " Saturation: %6.2f %%\n"
+               " Deviation:  %6.2f %%\n"
+               " Underrun:   %6.2f %%\n"
+               " Blocking:   %6.2f %%\n"
+               " Samples:  %8d\n"
+               " Sample Format: %s\n"
+               " Resampling: %s\n"
+               ,
                audio_state_get_ptr()->current_audio->ident,
                audio_stats.average_buffer_saturation,
                audio_stats.std_deviation_percentage,
                audio_stats.close_to_underrun,
                audio_stats.close_to_blocking,
-               audio_stats.samples);
+               audio_stats.samples,
+               audio_state_get_ptr()->stat_frontend_is_float ? "float" : "int16",
+               (audio_state_get_ptr()->src_ratio_orig == 1.0) ? "no" : "yes");
 
          /* TODO/FIXME - localize */
          __len += strlcpy(video_info.stat_text + __len, "LATENCY\n",

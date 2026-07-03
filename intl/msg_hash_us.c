@@ -521,6 +521,148 @@ int msg_hash_get_help_us_enum(enum msg_hash_enums msg, char *s, size_t len)
 #endif
 
 #ifdef HAVE_MENU
+#if defined(MSG_HASH_HAVE_STRTAB)
+#undef MSG_HASH
+#define MSG_HASH(Id, str) str,
+static const char *const msg_hash_us_lbl_strs[] = {
+#include "msg_hash_lbl.h"
+#define SETTINGS_DEF_STRINGS_PASS
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) n,
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) n,
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) n,
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) n,
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) n,
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) n,
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) n,
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) n,
+#include "../settings/settings_def_video_fullscreen.h"
+#include "../settings/settings_def_video_sync.h"
+#include "../settings/settings_def_overlay_enable.h"
+#include "../settings/settings_def_microphone.h"
+#include "../settings/settings_def_audio_sync.h"
+#include "../settings/settings_def_audio_enable.h"
+#include "../settings/settings_def_ui_menubar.h"
+#include "../settings/settings_def_video_window_decorations.h"
+#include "../settings/settings_def_video_srgb.h"
+#include "../settings/settings_def_video_wiiu_drc.h"
+#include "../settings/settings_def_shader_watch.h"
+#include "../settings/settings_def_video_dingux_ipu.h"
+#include "../settings/settings_def_video_notch.h"
+#include "../settings/settings_def_menu_steam.h"
+#include "../settings/settings_def_input_android_workaround.h"
+#include "../settings/settings_def_video_frame_time_sample.h"
+#include "../settings/settings_def_video_adaptive_vsync.h"
+#include "../settings/settings_def_video_smooth.h"
+#include "../settings/settings_def_frame_time_counter.h"
+#include "../settings/settings_def_menu_filebrowser.h"
+#include "../settings/settings_def_video_filter_rotation.h"
+#include "../settings/settings_def_cheevos.h"
+#include "../settings/settings_def_video_suspend_screensaver.h"
+#include "../settings/settings_def_cheevos_visibility.h"
+#include "../settings/settings_def_ui_focus.h"
+#include "../settings/settings_def_multimedia.h"
+#include "../settings/settings_def_menu_rgui_thumbnails.h"
+#include "../settings/settings_def_menu_power_views.h"
+#include "../settings/settings_def_recording_video.h"
+#include "../settings/settings_def_input_backtouch.h"
+#include "../settings/settings_def_menu_rgui_layout.h"
+#include "../settings/settings_def_cheats_apply.h"
+#include "../settings/settings_def_shader_preset.h"
+#include "../settings/settings_def_input_vmouse.h"
+#include "../settings/settings_def_menu_desktop.h"
+#include "../settings/settings_def_video_gamecube.h"
+#include "../settings/settings_def_menu_sounds.h"
+#include "../settings/settings_def_menu_main_views.h"
+#include "../settings/settings_def_menu_quick_views.h"
+#include "../settings/settings_def_menu_settings_views.h"
+#include "../settings/settings_def_video_bias.h"
+#include "../settings/settings_def_video_window.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+#undef SETTINGS_DEF_STRINGS_PASS
+};
+#undef MSG_HASH
+#define MSG_HASH(Id, str) (uint32_t)Id,
+static const uint32_t msg_hash_us_lbl_ids[] = {
+#include "msg_hash_lbl.h"
+#define SETTINGS_DEF_STRINGS_PASS
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) (uint32_t)MENU_ENUM_LABEL_##T,
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) (uint32_t)MENU_ENUM_LABEL_##T,
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) (uint32_t)MENU_ENUM_LABEL_##T,
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) (uint32_t)MENU_ENUM_LABEL_##T,
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) (uint32_t)MENU_ENUM_LABEL_##T,
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) (uint32_t)MENU_ENUM_LABEL_##T,
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) (uint32_t)MENU_ENUM_LABEL_##T,
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) (uint32_t)MENU_ENUM_LABEL_##T,
+#include "../settings/settings_def_video_fullscreen.h"
+#include "../settings/settings_def_video_sync.h"
+#include "../settings/settings_def_overlay_enable.h"
+#include "../settings/settings_def_microphone.h"
+#include "../settings/settings_def_audio_sync.h"
+#include "../settings/settings_def_audio_enable.h"
+#include "../settings/settings_def_ui_menubar.h"
+#include "../settings/settings_def_video_window_decorations.h"
+#include "../settings/settings_def_video_srgb.h"
+#include "../settings/settings_def_video_wiiu_drc.h"
+#include "../settings/settings_def_shader_watch.h"
+#include "../settings/settings_def_video_dingux_ipu.h"
+#include "../settings/settings_def_video_notch.h"
+#include "../settings/settings_def_menu_steam.h"
+#include "../settings/settings_def_input_android_workaround.h"
+#include "../settings/settings_def_video_frame_time_sample.h"
+#include "../settings/settings_def_video_adaptive_vsync.h"
+#include "../settings/settings_def_video_smooth.h"
+#include "../settings/settings_def_frame_time_counter.h"
+#include "../settings/settings_def_menu_filebrowser.h"
+#include "../settings/settings_def_video_filter_rotation.h"
+#include "../settings/settings_def_cheevos.h"
+#include "../settings/settings_def_video_suspend_screensaver.h"
+#include "../settings/settings_def_cheevos_visibility.h"
+#include "../settings/settings_def_ui_focus.h"
+#include "../settings/settings_def_multimedia.h"
+#include "../settings/settings_def_menu_rgui_thumbnails.h"
+#include "../settings/settings_def_menu_power_views.h"
+#include "../settings/settings_def_recording_video.h"
+#include "../settings/settings_def_input_backtouch.h"
+#include "../settings/settings_def_menu_rgui_layout.h"
+#include "../settings/settings_def_cheats_apply.h"
+#include "../settings/settings_def_shader_preset.h"
+#include "../settings/settings_def_input_vmouse.h"
+#include "../settings/settings_def_menu_desktop.h"
+#include "../settings/settings_def_video_gamecube.h"
+#include "../settings/settings_def_menu_sounds.h"
+#include "../settings/settings_def_menu_main_views.h"
+#include "../settings/settings_def_menu_quick_views.h"
+#include "../settings/settings_def_menu_settings_views.h"
+#include "../settings/settings_def_video_bias.h"
+#include "../settings/settings_def_video_window.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+#undef SETTINGS_DEF_STRINGS_PASS
+};
+#undef MSG_HASH
+#define MSG_HASH(Id, str) case Id: return str;
+
+static const msg_hash_strtab_t msg_hash_us_lbl_strtab =
+{ msg_hash_us_lbl_ids, msg_hash_us_lbl_strs,
+  (uint32_t)(sizeof(msg_hash_us_lbl_ids) / sizeof(msg_hash_us_lbl_ids[0])),
+  NULL };
+
+static msg_hash_strtab_index_t msg_hash_us_lbl_index;
+#endif
+
 static const char *menu_hash_to_str_us_label_enum(enum msg_hash_enums msg)
 {
    if (   msg <= MENU_ENUM_LABEL_INPUT_HOTKEY_BIND_END
@@ -532,6 +674,14 @@ static const char *menu_hash_to_str_us_label_enum(enum msg_hash_enums msg)
       return hotkey_lbl;
    }
 
+#if defined(MSG_HASH_HAVE_STRTAB)
+   {
+      const char *ret = msg_hash_strtab_lookup(&msg_hash_us_lbl_strtab,
+            &msg_hash_us_lbl_index, (uint32_t)msg);
+      if (ret)
+         return ret;
+   }
+#else
    switch (msg)
    {
 #include "msg_hash_lbl.h"
@@ -541,8 +691,57 @@ static const char *menu_hash_to_str_us_label_enum(enum msg_hash_enums msg)
 #endif
          break;
    }
+#endif
 
    return "null";
+}
+#endif
+
+#if defined(MSG_HASH_HAVE_STRTAB)
+/* The hand-maintained MSG_HASH rows are expanded three times: once
+ * into exactly-sized members of a packed blob struct (named by the
+ * id token, so mutually exclusive guarded duplicates stay legal),
+ * once into its initializer, and once into the id array.  This
+ * keeps the file freely hand-editable and h2json-parseable while
+ * eliminating the string pointer array and its relocations, the
+ * same layout the generated translation headers use. */
+#undef MSG_HASH
+#define MSG_HASH(Id, str) char m_##Id[sizeof(str)];
+static const struct msg_hash_us_blob_s
+{
+#include "msg_hash_us.h"
+}
+#undef MSG_HASH
+#define MSG_HASH(Id, str) str,
+msg_hash_us_blob =
+{
+#include "msg_hash_us.h"
+};
+#undef MSG_HASH
+#define MSG_HASH(Id, str) (uint32_t)Id,
+static const uint32_t msg_hash_us_ids[] = {
+#include "msg_hash_us.h"
+};
+#undef MSG_HASH
+#define MSG_HASH(Id, str) case Id: return str;
+
+static const msg_hash_strtab_t msg_hash_us_strtab =
+{ msg_hash_us_ids, NULL,
+  (uint32_t)(sizeof(msg_hash_us_ids) / sizeof(msg_hash_us_ids[0])),
+  (const char*)&msg_hash_us_blob };
+
+static msg_hash_strtab_index_t msg_hash_us_index;
+
+void msg_hash_us_index_init(void)
+{
+   if (msg_hash_us_index.tab != &msg_hash_us_strtab)
+      msg_hash_strtab_index_build(&msg_hash_us_index,
+            &msg_hash_us_strtab);
+#ifdef HAVE_MENU
+   if (msg_hash_us_lbl_index.tab != &msg_hash_us_lbl_strtab)
+      msg_hash_strtab_index_build(&msg_hash_us_lbl_index,
+            &msg_hash_us_lbl_strtab);
+#endif
 }
 #endif
 
@@ -555,6 +754,14 @@ const char *msg_hash_to_str_us(enum msg_hash_enums msg)
        return ret;
 #endif
 
+#if defined(MSG_HASH_HAVE_STRTAB)
+    {
+       const char *s = msg_hash_strtab_lookup(&msg_hash_us_strtab,
+             &msg_hash_us_index, (uint32_t)msg);
+       if (s)
+          return s;
+    }
+#else
     switch (msg)
     {
 #include "msg_hash_us.h"
@@ -567,6 +774,7 @@ const char *msg_hash_to_str_us(enum msg_hash_enums msg)
 #endif
             break;
     }
+#endif
 
     return "null";
 }

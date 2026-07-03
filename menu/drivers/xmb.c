@@ -715,6 +715,15 @@ static void xmb_free_list_nodes(file_list_t *list, bool actiondata)
 {
    unsigned i;
    unsigned size = list ? (unsigned)list->size : 0;
+   uintptr_t tag = (uintptr_t)list;
+
+   /* Kill any in-flight tweens whose subject points into a node we are
+    * about to free.  Horizontal-list node highlight animations are tagged
+    * with the address of their owning file_list_t (see
+    * xmb_list_open_horizontal_list / xmb_list_switch_horizontal_list);
+    * without this the next gfx_animation_update() would write through a
+    * freed node->alpha.  No-op when nothing is tagged for this list. */
+   gfx_animation_kill_by_tag(&tag);
 
    for (i = 0; i < size; ++i)
    {
@@ -2446,6 +2455,13 @@ static xmb_node_t *xmb_node_allocate_userdata(
    }
 
    tmp = (xmb_node_t*)file_list_get_userdata_at_offset(&xmb->horizontal_list, i);
+   if (tmp)
+   {
+      /* Kill in-flight highlight tweens on the node before freeing it;
+       * they are tagged by the horizontal list (see below). */
+      uintptr_t tag = (uintptr_t)&xmb->horizontal_list;
+      gfx_animation_kill_by_tag(&tag);
+   }
    xmb_free_node(tmp);
 
    xmb->horizontal_list.list[i].userdata = node;
@@ -2938,8 +2954,13 @@ static void xmb_list_switch_horizontal_list(xmb_handle_t *xmb,
       /* Horizontal icon highlight animation */
       entry.target_value = ia;
       entry.subject      = &node->alpha;
-      /* TODO/FIXME - integer conversion resulted in change of sign */
-      entry.tag          = -1;
+      /* Playlist categories (j > system_tab_end) are heap nodes in
+       * horizontal_list that can be freed at runtime (e.g. a dbscan
+       * finishing); tag their tweens with the owning list so the free
+       * paths can kill them.  Embedded system-tab nodes are never freed
+       * and keep the untagged (-1) sentinel. */
+      entry.tag          = (j > xmb->system_tab_end)
+            ? (uintptr_t)&xmb->horizontal_list : (uintptr_t)-1;
       entry.cb           = NULL;
 
       switch (animation_horizontal_highlight)
@@ -3131,8 +3152,11 @@ static void xmb_list_open_horizontal_list(xmb_handle_t *xmb, bool animate)
          anim_entry.target_value = ia;
          anim_entry.subject      = &node->alpha;
          anim_entry.easing_enum  = XMB_EASING_ALPHA;
-         /* TODO/FIXME - integer conversion resulted in change of sign */
-         anim_entry.tag          = -1;
+         /* See xmb_list_switch_horizontal_list: tag playlist-node tweens
+          * with the owning list so runtime frees can kill them; embedded
+          * system-tab nodes keep the untagged (-1) sentinel. */
+         anim_entry.tag          = (j > xmb->system_tab_end)
+               ? (uintptr_t)&xmb->horizontal_list : (uintptr_t)-1;
          anim_entry.cb           = NULL;
 
          if (anim_entry.subject)
@@ -6091,10 +6115,11 @@ static int xmb_draw_item(
    }
 
    /* Current selection indicator arrow for compact mode */
-   if (     !xmb->assets_missing
-         && !show_entry_icons)
+   if (!show_entry_icons)
    {
-      uintptr_t tex = (i == current
+      uintptr_t tex = (
+               !xmb->assets_missing
+            && i == current
             && settings->uints.menu_xmb_current_menu_icon != XMB_CURRENT_MENU_ICON_NORMAL)
                   ? xmb->textures.list[XMB_TEXTURE_ARROW] : 0;
       int icon_size = xmb->icon_size;
@@ -6106,13 +6131,14 @@ static int xmb_draw_item(
       gfx_display_set_alpha(color, MIN(xmb->items_passive_alpha, xmb->alpha));
 
       /* Checked dropdown indicator replaces arrow */
-      if (entry.flags & MENU_ENTRY_FLAG_CHECKED)
+      if (!xmb->assets_missing && entry.flags & MENU_ENTRY_FLAG_CHECKED)
       {
          current_y = icon_y;
          tex = xmb->textures.list[XMB_TEXTURE_CHECKMARK];
       }
 
       if (tex)
+      {
          xmb_draw_icon(
                userdata,
                p_disp,
@@ -6129,10 +6155,38 @@ static int xmb_draw_item(
                video_height,
                node->alpha,
                (entry.flags & MENU_ENTRY_FLAG_CHECKED) ? 0 : M_PI,
-               0.5f,
+               0.333f,
                &color[0],
                xmb->shadow_offset / 2,
                mymat);
+      }
+      else if (xmb->assets_missing)
+      {
+         /* RGUI-like missing assets fallback for current and checked items */
+         if (i == current)
+            xmb_draw_text(shadows_enable, xmb, settings,
+                  ">",
+                  xmb->margins_screen_left + xmb->margins_label_left,
+                  xmb->margins_screen_top + node->y + label_offset,
+                  1,
+                  node->label_alpha * xmb->alpha_list,
+                  TEXT_ALIGN_LEFT,
+                  video_width,
+                  video_height,
+                  xmb->font);
+
+         if (entry.flags & MENU_ENTRY_FLAG_CHECKED)
+            xmb_draw_text(shadows_enable, xmb, settings,
+                  "|",
+                  xmb->margins_screen_left + (xmb->margins_label_left * 1.33f),
+                  xmb->margins_screen_top + node->y + label_offset,
+                  1,
+                  node->label_alpha * xmb->alpha_list,
+                  TEXT_ALIGN_LEFT,
+                  video_width,
+                  video_height,
+                  xmb->font);
+      }
    }
 
    return 0;
@@ -6714,19 +6768,30 @@ static void xmb_layout_common(xmb_handle_t *xmb, float scale_factor, unsigned ne
 static void xmb_layout_ps3(xmb_handle_t *xmb, settings_t *settings)
 {
    float scale_factor            = xmb->last_scale_factor;
-   float scale_cap               = (settings->floats.menu_scale_factor > 1.0f) ? settings->floats.menu_scale_factor : 1;
+   float scale_cap               = (settings->floats.menu_scale_factor > 1) ? settings->floats.menu_scale_factor : 1;
    unsigned new_font_size        = 32 * scale_factor;
 
-   xmb->above_subitem_offset     =  1.5f;
-   xmb->above_item_offset        = -1.0f;
-   xmb->active_item_factor       =  3.0f;
-   xmb->under_item_offset        =  5.0f;
+   xmb->above_subitem_offset     =  1.5f / scale_cap;
+   xmb->above_item_offset        = -1.0f / scale_cap;
+   xmb->active_item_factor       =  3.0f / scale_cap;
+   xmb->under_item_offset        =  5.0f / scale_cap;
+
+   /* Scaling limits */
+   if (xmb->active_item_factor < 2)
+      xmb->active_item_factor    = 2.0f;
+
+   if (xmb->above_subitem_offset < 1.5f)
+      xmb->above_subitem_offset  = 1.5f;
+
+   if (xmb->under_item_offset < 3)
+      xmb->under_item_offset     = 3.0f;
 
    if (     !settings->bools.menu_show_sublabels
          && !settings->bools.menu_xmb_entry_icons)
    {
-      xmb->above_subitem_offset  = 3.0f;
-      xmb->under_item_offset     = 3.0f;
+      xmb->active_item_factor    = 3.0f / scale_cap;
+      xmb->above_subitem_offset  = 3.0f / scale_cap;
+      xmb->under_item_offset     = 3.0f / scale_cap;
    }
 
    xmb->font_size                = new_font_size;
@@ -6750,19 +6815,30 @@ static void xmb_layout_ps3(xmb_handle_t *xmb, settings_t *settings)
 static void xmb_layout_psp(xmb_handle_t *xmb, settings_t *settings)
 {
    float scale_factor            = xmb->last_scale_factor;
-   float scale_cap               = (settings->floats.menu_scale_factor > 1.0f) ? settings->floats.menu_scale_factor : 1;
+   float scale_cap               = (settings->floats.menu_scale_factor > 1) ? settings->floats.menu_scale_factor : 1;
    unsigned new_font_size        = 26 * scale_factor;
 
-   xmb->above_subitem_offset     =  1.5f;
-   xmb->above_item_offset        = -0.5f;
-   xmb->active_item_factor       =  2.0f;
-   xmb->under_item_offset        =  3.0f;
+   xmb->above_subitem_offset     =  1.5f / scale_cap;
+   xmb->above_item_offset        = -0.5f / scale_cap;
+   xmb->active_item_factor       =  2.0f / scale_cap;
+   xmb->under_item_offset        =  3.0f / scale_cap;
+
+   /* Scaling limits */
+   if (xmb->active_item_factor < 1)
+      xmb->active_item_factor    = 1.0f;
+
+   if (xmb->above_subitem_offset < 1)
+      xmb->above_subitem_offset  = 1.0f;
+
+   if (xmb->under_item_offset < 1)
+      xmb->under_item_offset     = 1.0f;
 
    if (     !settings->bools.menu_show_sublabels
          && !settings->bools.menu_xmb_entry_icons)
    {
-      xmb->above_subitem_offset  = 2.0f;
-      xmb->under_item_offset     = 2.0f;
+      xmb->active_item_factor    = 2.0f / scale_cap;
+      xmb->above_subitem_offset  = 2.0f / scale_cap;
+      xmb->under_item_offset     = 2.0f / scale_cap;
    }
 
    xmb->font_size                = new_font_size;
@@ -7341,6 +7417,12 @@ static void xmb_render(void *data,
 
    if (!xmb)
       return;
+
+   /* Advance animated thumbnails (animated WebP) once per frame on the
+    * main thread. No-op for still images. */
+   gfx_thumbnail_animate(&xmb->thumbnails.right);
+   gfx_thumbnail_animate(&xmb->thumbnails.left);
+   gfx_thumbnail_animate(&xmb->thumbnails.icon);
 
    /* Handle deferred context reset from a previous scale factor /
     * layout change. We must wait two xmb_render() calls (not one)
@@ -8861,9 +8943,19 @@ static void xmb_frame(void *data, video_frame_info_t *video_info)
 
       if (current_menu_icon == XMB_CURRENT_MENU_ICON_TITLE)
       {
-         icon_size /= 3.0f;
-         current_x  = xmb->margins_title_left - (icon_size / 6.0f);
-         current_y  = xmb->margins_title_top  + (icon_size / 4.0f);
+         float scale_factor = (settings->floats.menu_scale_factor > 1) ? settings->floats.menu_scale_factor : 1;
+
+         icon_size /= 3.5f;
+
+         if (scale_factor > 1)
+            icon_size *= scale_factor;
+
+         current_x  = xmb->margins_title_left - (icon_size / 0.75f);
+         current_x += (xmb->icon_size - icon_size) / 2.0f;
+         if (current_x < icon_size / 2)
+            current_x = icon_size / 2;
+
+         current_y  = xmb->margins_title_top + (icon_size / 6.0f);
       }
 
       if (xmb->depth > 1 || current_menu_icon == XMB_CURRENT_MENU_ICON_TITLE)
@@ -9408,7 +9500,7 @@ static void xmb_frame(void *data, video_frame_info_t *video_info)
    /* Draw thumbnails: END   */
    /**************************/
 
-   /* Clock image */
+   /* Battery */
    gfx_display_set_alpha(xmb_item_color, MIN(xmb->alpha, 1.00f));
 
    if (battery_level_enable)
@@ -9421,11 +9513,13 @@ static void xmb_frame(void *data, video_frame_info_t *video_info)
 
       if (powerstate.battery_enabled)
       {
-         size_t x_pos      = xmb->icon_size / 5;
+         float scale_factor = (settings->floats.menu_scale_factor > 1) ? settings->floats.menu_scale_factor : 1;
+         float icon_size    = (!xmb->assets_missing) ? xmb->icon_size * 0.90f : 0;
+         size_t x_pos       = (float)(icon_size / 4 * scale_factor);
 
          if (!xmb->assets_missing)
          {
-            float margin_offset = -(xmb->icon_size / 2) - (7 * xmb->last_scale_factor);
+            float margin_offset = -(icon_size / 2) - (7 * xmb->last_scale_factor);
 
             if (dispctx && dispctx->blend_begin)
                dispctx->blend_begin(userdata);
@@ -9436,8 +9530,8 @@ static void xmb_frame(void *data, video_frame_info_t *video_info)
                   video_width,
                   video_height,
                   shadows_enable,
-                  xmb->icon_size,
-                  xmb->icon_size,
+                  icon_size,
+                  icon_size,
                   tex_list[
                   powerstate.charging       ? XMB_TEXTURE_BATTERY_CHARGING   :
                   (powerstate.percent > 80) ? XMB_TEXTURE_BATTERY_FULL :
@@ -9447,12 +9541,12 @@ static void xmb_frame(void *data, video_frame_info_t *video_info)
                   XMB_TEXTURE_BATTERY_20
                   ],
                   video_width - xmb->margins_title_left + margin_offset,
-                  xmb->icon_size + xmb->margins_title_top + margin_offset,
+                  icon_size + xmb->margins_title_top + margin_offset,
                   video_width,
                   video_height,
                   xmb->alpha,
                   0,
-                  1,
+                  scale_factor,
                   &xmb_item_color[0],
                   xmb->shadow_offset,
                   &mymat);
@@ -9473,19 +9567,28 @@ static void xmb_frame(void *data, video_frame_info_t *video_info)
       }
    }
 
+   /* Clock */
    if (timedate_enable)
    {
       gfx_display_ctx_datetime_t datetime;
       char timedate[256];
-      size_t _len  = 0;
-      size_t x_pos = 0;
+      size_t _len        = 0;
+      size_t x_pos       = 0;
+      float scale_factor = (settings->floats.menu_scale_factor > 1) ? settings->floats.menu_scale_factor : 1;
+      float icon_size    = (!xmb->assets_missing) ? xmb->icon_size * 0.90f : 0;
 
       if (percent_width)
-         x_pos += percent_width + (xmb->icon_size / 2);
+      {
+         x_pos += percent_width + (float)(icon_size / 2 * scale_factor);
+
+         /* Use font size based padding with missing assets instead of icon size */
+         if (!icon_size)
+            x_pos += font_driver_get_message_width(xmb->font, "0", 2, 1.0f);
+      }
 
       if (!xmb->assets_missing)
       {
-         float margin_offset = -(xmb->icon_size / 2) - (7 * xmb->last_scale_factor);
+         float margin_offset = -(icon_size / 2) - (7 * xmb->last_scale_factor);
 
          if (dispctx && dispctx->blend_begin)
             dispctx->blend_begin(userdata);
@@ -9496,16 +9599,16 @@ static void xmb_frame(void *data, video_frame_info_t *video_info)
                video_width,
                video_height,
                shadows_enable,
-               xmb->icon_size,
-               xmb->icon_size,
+               icon_size,
+               icon_size,
                tex_list[XMB_TEXTURE_CLOCK],
                video_width - xmb->margins_title_left + margin_offset - x_pos,
-               xmb->icon_size + xmb->margins_title_top + margin_offset,
+               icon_size + xmb->margins_title_top + margin_offset,
                video_width,
                video_height,
                xmb->alpha,
                0,
-               1,
+               scale_factor,
                &xmb_item_color[0],
                xmb->shadow_offset,
                &mymat);
@@ -9521,7 +9624,8 @@ static void xmb_frame(void *data, video_frame_info_t *video_info)
             xmb->font, timedate, _len, 1.0f);
 
       xmb_draw_text(shadows_enable, xmb, settings, timedate,
-            video_width - xmb->margins_title_left - (!xmb->assets_missing ? xmb->icon_size / 4 : 0) - x_pos,
+            video_width - xmb->margins_title_left - x_pos
+                  - (!xmb->assets_missing ? xmb->icon_size / 4 * scale_factor : 0),
             xmb->margins_title_top, 1, 1, TEXT_ALIGN_RIGHT,
             video_width, video_height, xmb->font);
    }
