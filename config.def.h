@@ -886,8 +886,11 @@
 #endif
 #define DEFAULT_MENU_CONTENT_SHOW_CONTENTLESS_CORES MENU_CONTENTLESS_CORES_DISPLAY_SINGLE_PURPOSE
 
-#ifdef HAVE_XMB
+/* Shared with the Ozone driver. */
+#if defined(HAVE_XMB) || defined(HAVE_OZONE)
 #define DEFAULT_XMB_ANIMATION                      0
+#endif
+#ifdef HAVE_XMB
 #define DEFAULT_XMB_VERTICAL_FADE_FACTOR           100
 #define DEFAULT_XMB_SHOW_HORIZONTAL_LIST           true
 #define DEFAULT_XMB_SHOW_TITLE_HEADER              true
@@ -1968,7 +1971,7 @@
 
 #define DEFAULT_AI_SERVICE_URL "http://localhost:4404/"
 
-#if defined(HAVE_FFMPEG) || defined(HAVE_MPV)
+#if defined(HAVE_FFMPEG) || defined(HAVE_MPV) || defined(HAVE_WEBMPLAYER)
 #define DEFAULT_BUILTIN_MEDIAPLAYER_ENABLE true
 #else
 #define DEFAULT_BUILTIN_MEDIAPLAYER_ENABLE false

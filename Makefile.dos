@@ -37,6 +37,7 @@ HAVE_MENU_COMMON = 1
 HAVE_RTGA = 1
 HAVE_RPNG = 1
 HAVE_RWEBP = 1
+HAVE_RDDS = 1
 HAVE_RJPEG = 1
 HAVE_RBMP = 1
 HAVE_7ZIP = 1
@@ -66,7 +67,7 @@ HAVE_CMD                 := 1
 HAVE_CHEEVOS = 0
 HAVE_CHD = 1
 HAVE_RVORBIS = 1
-HAVE_IBXM = 1
+HAVE_RMODTRACKER = 1
 HAVE_CORE_INFO_CACHE = 1
 HAVE_XDELTA = 0 # disabled because <lzma.h> isn't available (or we haven't figured out how to install it)
 

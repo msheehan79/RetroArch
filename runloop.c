@@ -302,6 +302,10 @@ static void runloop_game_ai_think_cb(void *userdata,
 #define SYMBOL_MPV(x) current_core->x = libretro_mpv_##x
 #endif
 
+#ifdef HAVE_WEBMPLAYER
+#define SYMBOL_WEBM(x) current_core->x = libretro_webm_##x
+#endif
+
 #ifdef HAVE_IMAGEVIEWER
 #define SYMBOL_IMAGEVIEWER(x) current_core->x = libretro_imageviewer_##x
 #endif
@@ -3835,6 +3839,11 @@ bool runloop_init_libretro_symbols(
          CORE_SYMBOLS(SYMBOL_MPV);
 #endif
          break;
+      case CORE_TYPE_WEBM:
+#ifdef HAVE_WEBMPLAYER
+         CORE_SYMBOLS(SYMBOL_WEBM);
+#endif
+         break;
       case CORE_TYPE_IMAGEVIEWER:
 #ifdef HAVE_IMAGEVIEWER
          CORE_SYMBOLS(SYMBOL_IMAGEVIEWER);
@@ -6345,7 +6354,7 @@ static enum runloop_state_enum runloop_check_state(
                generic_action_ok_displaylist_push(
                      msg_hash_to_str(MENU_ENUM_LABEL_VALUE_HISTORY_TAB),
                      NULL,
-                     MENU_ENUM_LABEL_LOAD_CONTENT_HISTORY_STR,
+                     msg_hash_to_str(MENU_ENUM_LABEL_LOAD_CONTENT_HISTORY),
                      MENU_SETTING_ACTION,
                      0, 0, ACTION_OK_DL_GENERIC);
                break;
@@ -6385,7 +6394,7 @@ static enum runloop_state_enum runloop_check_state(
                generic_action_ok_displaylist_push(
                      msg_hash_to_str(MENU_ENUM_LABEL_VALUE_LOAD_CONTENT_LIST),
                      NULL,
-                     MENU_ENUM_LABEL_LOAD_CONTENT_LIST_STR,
+                     msg_hash_to_str(MENU_ENUM_LABEL_LOAD_CONTENT_LIST),
                      MENU_SETTING_ACTION,
                      0, 0, ACTION_OK_DL_GENERIC);
                break;

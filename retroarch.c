@@ -2880,6 +2880,11 @@ enum rarch_content_type path_is_media_type(const char *path)
 
    switch (msg_hash_to_file_type(ext_lower))
    {
+#if defined(HAVE_WEBMPLAYER) && !defined(HAVE_FFMPEG) && !defined(HAVE_MPV)
+      case FILE_TYPE_MKV:
+      case FILE_TYPE_WEBM:
+         return RARCH_CONTENT_MOVIE;
+#endif
 #if defined(HAVE_FFMPEG) || defined(HAVE_MPV)
       case FILE_TYPE_OGM:
       case FILE_TYPE_MKV:
@@ -2920,7 +2925,7 @@ enum rarch_content_type path_is_media_type(const char *path)
 #if !defined(HAVE_AUDIOMIXER) || defined(HAVE_RWAV)
       case FILE_TYPE_WAV:
 #endif
-#if !defined(HAVE_AUDIOMIXER) || defined(HAVE_IBXM)
+#if !defined(HAVE_AUDIOMIXER) || defined(HAVE_RMODTRACKER)
       case FILE_TYPE_MOD:
       case FILE_TYPE_S3M:
       case FILE_TYPE_XM:
@@ -3968,6 +3973,72 @@ bool command_event(enum event_command cmd, void *data)
       case CMD_EVENT_CHEEVOS_HARDCORE_MODE_TOGGLE:
 #ifdef HAVE_CHEEVOS
          rcheevos_toggle_hardcore_paused();
+#endif
+         break;
+      case CMD_EVENT_OSD_NOTIFICATION_TOGGLE:
+#if defined(HAVE_GFX_WIDGETS)
+         {
+            /* Toggle the gfx_widgets notification system to match current
+             * settings WITHOUT a full driver reinit. The classic OSD font is
+             * always initialised by the video drivers and gated per-frame, so
+             * only the widget lifecycle needs adjusting. Mirrors the enable
+             * decision in drivers_init() and the threaded deinit barrier in
+             * driver_uninit(). */
+            /* Gate on the *active* state -- what gfx_widgets_ready() and the
+             * menu read -- not the INITED flag. A persisting deinit leaves
+             * INITED set, which would wedge the toggle after the first use
+             * (toggle worked once, then the menu stopped updating). */
+            dispgfx_widget_t *p_dispwidget = dispwidget_get_ptr();
+            bool widgets_active            = p_dispwidget->active;
+            bool want_widgets              =
+                     settings->bools.video_font_enable
+                  && settings->bools.menu_enable_widgets
+                  && video_st->current_video
+                  && video_st->current_video->gfx_widgets_enabled
+                  && video_st->current_video->gfx_widgets_enabled(
+                        video_st->data);
+
+            if (want_widgets && !widgets_active)
+            {
+               bool force_fs            = (video_st->flags &
+                     VIDEO_FLAG_FORCE_FULLSCREEN) ? true : false;
+               bool video_is_fullscreen = settings->bools.video_fullscreen
+                     || force_fs;
+               p_dispwidget->active     = gfx_widgets_init(
+                     disp_get_ptr(),
+                     anim_get_ptr(),
+                     settings,
+                     (uintptr_t)&p_dispwidget->active,
+                     VIDEO_DRIVER_IS_THREADED_INTERNAL(video_st),
+                     video_st->width,
+                     video_st->height,
+                     video_is_fullscreen,
+                     settings->paths.directory_assets,
+                     settings->paths.path_font);
+            }
+            else if (!want_widgets && widgets_active)
+            {
+#ifdef HAVE_THREADS
+               /* Same barrier as driver_uninit(): never free widget GPU
+                * resources while the video thread may still reference them. */
+               if (     VIDEO_DRIVER_IS_THREADED_INTERNAL(video_st)
+                     && (video_st->flags & VIDEO_FLAG_THREAD_WRAPPER_ACTIVE))
+                  video_thread_wait_idle();
+#endif
+               /* Full teardown (not persisting): a real user toggle-off
+                * must clear INITED so a later toggle-on re-inits cleanly. */
+               gfx_widgets_deinit(false);
+               p_dispwidget->active = false;
+            }
+         }
+#endif
+#ifdef HAVE_MENU
+         /* Toggling notifications/widgets can change which dependent entries
+          * are shown, so rebuild the current menu list. The old full reinit
+          * did this implicitly via menu_driver_init(); set the flag after the
+          * widget work so it survives into the next menu iteration. */
+         menu_st->flags                 |=  MENU_ST_FLAG_ENTRIES_NEED_REFRESH
+                                         |  MENU_ST_FLAG_PREVENT_POPULATE;
 #endif
          break;
       case CMD_EVENT_REINIT_FROM_TOGGLE:
@@ -5824,6 +5895,11 @@ bool command_event(enum event_command cmd, void *data)
                      settings->bools.vrr_runloop_enable ? MSG_VRR_RUNLOOP_ENABLED
                      : MSG_VRR_RUNLOOP_DISABLED);
             settings->bools.vrr_runloop_enable = !(settings->bools.vrr_runloop_enable);
+            /* Re-adjust audio/video system rates for the new VRR mode so the
+             * hotkey matches the menu toggle instead of leaving the audio
+             * input rate stale until the next reinit. */
+            driver_ctl(RARCH_DRIVER_CTL_SET_REFRESH_RATE,
+                  &settings->floats.video_refresh_rate);
             runloop_msg_queue_push(_msg, strlen(_msg), 1, 100, false, NULL,
                   MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
          }
@@ -6675,6 +6751,9 @@ static void retroarch_print_features(void)
 #ifdef HAVE_RWEBP
    _len += _PSUPP_BUF(buf, _len, SUPPORTS_RWEBP,           "RWEBP",           "WebP (RWEBP) image loading");
 #endif
+#ifdef HAVE_RDDS
+   _len += _PSUPP_BUF(buf, _len, SUPPORTS_RDDS,            "RDDS",            "DDS (RDDS) image loading");
+#endif
 #ifdef HAVE_SDL
    _len += _PSUPP_BUF(buf, _len, SUPPORTS_SDL,             "SDL1",            "SDL1 input/audio/video drivers");
 #endif
@@ -7222,6 +7301,11 @@ static void retroarch_parse_input_libretro_path(
       else if (!memcmp(path, "mpv", STRLEN_CONST("mpv")))
       {
          runloop_set_current_core_type(CORE_TYPE_MPV, true);
+         return;
+      }
+      else if (!memcmp(path, "webm", STRLEN_CONST("webm")))
+      {
+         runloop_set_current_core_type(CORE_TYPE_WEBM, true);
          return;
       }
       else if (!memcmp(path, "imageviewer", STRLEN_CONST("imageviewer")))
@@ -8145,6 +8229,16 @@ static void retroarch_validate_cpu_features(void)
  *
  * @return true on success, otherwise false if there was an error.
  **/
+/* Runtime savestate probe for core_info. A running core that reports a
+ * nonzero serializable size can save/load state even if its info file
+ * declares otherwise; core_info.c consults this via a registered seam so
+ * it need not depend on the runloop/retroarch backend directly. */
+static bool retroarch_core_info_savestate_probe(void)
+{
+   return (runloop_get_flags() & RUNLOOP_FLAG_CORE_RUNNING)
+         && core_serialize_size() > 0;
+}
+
 bool retroarch_main_init(int argc, char *argv[])
 {
 #if defined(DEBUG) && defined(HAVE_DRMINGW)
@@ -8168,6 +8262,8 @@ bool retroarch_main_init(int argc, char *argv[])
 #ifdef HAVE_MENU
    struct menu_state *menu_st    = menu_state_get_ptr();
 #endif
+
+   core_info_set_savestate_probe(retroarch_core_info_savestate_probe);
 
    input_st->osk_idx             = OSK_LOWERCASE_LATIN;
    video_st->flags              |= VIDEO_FLAG_ACTIVE;
@@ -8335,6 +8431,12 @@ bool retroarch_main_init(int argc, char *argv[])
 #elif defined(HAVE_FFMPEG)
                   retroarch_override_setting_set(RARCH_OVERRIDE_SETTING_LIBRETRO, NULL);
                   runloop_set_current_core_type(CORE_TYPE_FFMPEG, false);
+#elif defined(HAVE_WEBMPLAYER)
+                  if (cont_type == RARCH_CONTENT_MOVIE)
+                  {
+                     retroarch_override_setting_set(RARCH_OVERRIDE_SETTING_LIBRETRO, NULL);
+                     runloop_set_current_core_type(CORE_TYPE_WEBM, false);
+                  }
 #endif
                }
                break;

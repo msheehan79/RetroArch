@@ -33,7 +33,9 @@
 
 #define CINTERFACE
 
-#define HAVE_IBXM 1
+#define HAVE_RMODTRACKER 1
+
+#define HAVE_ROPUS 1
 
 #if defined(HAVE_ZLIB) || defined(HAVE_7ZIP)
 #define HAVE_COMPRESSION 1
@@ -438,7 +440,15 @@ VIDEO IMAGE
 #include "../libretro-common/formats/bmp/rbmp.c"
 #endif
 #ifdef HAVE_RWEBP
+#include "../libretro-common/formats/vp8/rvp8.c"
 #include "../libretro-common/formats/webp/rwebp.c"
+#endif
+
+#ifdef HAVE_RVP9
+#include "../libretro-common/formats/vp9/rvp9.c"
+#endif
+#ifdef HAVE_RDDS
+#include "../libretro-common/formats/dds/rdds.c"
 #endif
 
 #include "../libretro-common/formats/bmp/rbmp_encode.c"
@@ -573,11 +583,6 @@ VIDEO DRIVER
 #elif defined(PS2)
 #include "../gfx/drivers/ps2_gfx.c"
 #elif defined(HAVE_VITA2D)
-#include "../deps/libvita2d/source/vita2d.c"
-#include "../deps/libvita2d/source/vita2d_texture.c"
-#include "../deps/libvita2d/source/vita2d_draw.c"
-#include "../deps/libvita2d/source/utils.c"
-
 #include "../gfx/drivers/vita2d_gfx.c"
 #elif defined(_3DS)
 #include "../gfx/drivers/ctr_gfx.c"
@@ -593,7 +598,7 @@ VIDEO DRIVER
 #endif
 #endif
 
-#include "../deps/ibxm/ibxm.c"
+#include "../libretro-common/formats/mod/rmodtracker.c"
 
 /*============================================================
 FONTS
@@ -1008,7 +1013,10 @@ DRIVERS
 #if defined(HAVE_RMP3)
 #include "../libretro-common/formats/mp3/rmp3.c"
 #endif
-#if defined(HAVE_RFLAC) || defined(HAVE_RVORBIS) || defined(HAVE_RMP3)
+#ifdef HAVE_ROPUS
+#include "../libretro-common/formats/opus/ropus.c"
+#endif
+#if defined(HAVE_RFLAC) || defined(HAVE_RVORBIS) || defined(HAVE_RMP3) || defined(HAVE_RMODTRACKER) || defined(HAVE_ROPUS)
 #include "../libretro-common/formats/audio_transfer.c"
 #endif
 #include "../libretro-common/audio/audio_mixer.c"
@@ -1090,6 +1098,10 @@ CORES
 ============================================================ */
 #ifdef HAVE_FFMPEG
 #include "../cores/libretro-ffmpeg/ffmpeg_core.c"
+#endif
+
+#ifdef HAVE_WEBMPLAYER
+#include "../cores/libretro-webm/webm_core.c"
 #endif
 
 #if defined(HAVE_MPV)

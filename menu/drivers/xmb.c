@@ -1640,7 +1640,7 @@ static void xmb_update_savestate_thumbnail_path(void *data, unsigned i)
          unsigned _state_slot = string_to_unsigned(entry.label);
          if (     _state_slot == MENU_ENUM_LABEL_STATE_SLOT
                || string_is_equal(entry.label, MENU_ENUM_LABEL_STATE_SLOT_RUN_STR)
-               || string_is_equal(entry.label, MENU_ENUM_LABEL_STATE_SLOT_STR)
+               || string_is_equal(entry.label, msg_hash_to_str(MENU_ENUM_LABEL_STATE_SLOT))
                || string_is_equal(entry.label, MENU_ENUM_LABEL_LOAD_STATE_STR)
                || string_is_equal(entry.label, MENU_ENUM_LABEL_SAVE_STATE_STR))
          {
@@ -3645,7 +3645,7 @@ static void xmb_populate_entries(void *data,
 #endif
             )
          )
-         || string_is_equal(label, MENU_ENUM_LABEL_LOAD_CONTENT_HISTORY_STR)
+         || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_LOAD_CONTENT_HISTORY))
          || string_is_equal(label, MENU_ENUM_LABEL_DEFERRED_PLAYLIST_LIST_STR)
          || string_is_equal(label, MENU_ENUM_LABEL_DEFERRED_FAVORITES_LIST_STR)
          || string_is_equal(label, MENU_ENUM_LABEL_DEFERRED_IMAGES_LIST_STR)
@@ -3695,14 +3695,14 @@ static void xmb_populate_entries(void *data,
     *   selecting 'load content' */
    xmb->is_file_list =
             string_is_equal(label, MENU_ENUM_LABEL_FAVORITES_STR)
-         || string_is_equal(label, MENU_ENUM_LABEL_MENU_WALLPAPER_STR);
+         || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_MENU_WALLPAPER));
 
    /* Determine whether this is the quick menu */
    xmb->is_quick_menu =
             string_is_equal(label,
                   MENU_ENUM_LABEL_DEFERRED_RPL_ENTRY_ACTIONS_STR)
          || string_is_equal(label,
-               MENU_ENUM_LABEL_CONTENT_SETTINGS_STR)
+               msg_hash_to_str(MENU_ENUM_LABEL_CONTENT_SETTINGS))
          || string_is_equal(label,
                MENU_ENUM_LABEL_SAVESTATE_LIST_STR);
 
@@ -3727,7 +3727,7 @@ static void xmb_populate_entries(void *data,
       /* Quick Menu under Explore list must also be Quick Menu */
       if (     string_is_equal(entry.label, MENU_ENUM_LABEL_RUN_STR)
             || string_is_equal(entry.label, MENU_ENUM_LABEL_RESUME_CONTENT_STR)
-            || string_is_equal(entry.label, MENU_ENUM_LABEL_STATE_SLOT_STR)
+            || string_is_equal(entry.label, msg_hash_to_str(MENU_ENUM_LABEL_STATE_SLOT))
          )
       {
          xmb->is_quick_menu = true;

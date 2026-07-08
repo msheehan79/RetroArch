@@ -1084,7 +1084,7 @@ int generic_action_ok_displaylist_push(
       case ACTION_OK_DL_AUDIO_DSP_PLUGIN:
          filebrowser_clear_type();
          info.directory_ptr = idx;
-         info_label         = MENU_ENUM_LABEL_AUDIO_DSP_PLUGIN_STR;
+         info_label         = msg_hash_to_str(MENU_ENUM_LABEL_AUDIO_DSP_PLUGIN);
          info.enum_idx      = MENU_ENUM_LABEL_AUDIO_DSP_PLUGIN;
          dl_type            = DISPLAYLIST_FILE_BROWSER_SELECT_FILE;
 
@@ -1098,7 +1098,7 @@ int generic_action_ok_displaylist_push(
       case ACTION_OK_DL_VIDEO_FILTER:
          filebrowser_clear_type();
          info.directory_ptr = idx;
-         info_label         = MENU_ENUM_LABEL_VIDEO_FILTER_STR;
+         info_label         = msg_hash_to_str(MENU_ENUM_LABEL_VIDEO_FILTER);
          info.enum_idx      = MENU_ENUM_LABEL_VIDEO_FILTER;
          dl_type            = DISPLAYLIST_FILE_BROWSER_SELECT_FILE;
 
@@ -1112,7 +1112,7 @@ int generic_action_ok_displaylist_push(
       case ACTION_OK_DL_OVERLAY_PRESET:
          filebrowser_set_type(FILEBROWSER_SELECT_OVERLAY);
          info.directory_ptr = idx;
-         info_label         = MENU_ENUM_LABEL_OVERLAY_PRESET_STR;
+         info_label         = msg_hash_to_str(MENU_ENUM_LABEL_OVERLAY_PRESET);
          info.enum_idx      = MENU_ENUM_LABEL_OVERLAY_PRESET;
          dl_type            = DISPLAYLIST_FILE_BROWSER_SELECT_FILE;
 
@@ -1155,7 +1155,7 @@ int generic_action_ok_displaylist_push(
       case ACTION_OK_DL_VIDEO_FONT:
          filebrowser_set_type(FILEBROWSER_SELECT_VIDEO_FONT);
          info.directory_ptr = idx;
-         info_label         = MENU_ENUM_LABEL_VIDEO_FONT_PATH_STR;
+         info_label         = msg_hash_to_str(MENU_ENUM_LABEL_VIDEO_FONT_PATH);
          info.enum_idx      = MENU_ENUM_LABEL_VIDEO_FONT_PATH;
          dl_type            = DISPLAYLIST_FILE_BROWSER_SELECT_FILE;
 
@@ -1889,7 +1889,7 @@ int generic_action_ok_displaylist_push(
       case ACTION_OK_DL_CONTENT_SETTINGS:
          info.list          = MENU_LIST_GET_SELECTION(menu_list, 0);
          info_path          = msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CONTENT_SETTINGS);
-         info_label         = MENU_ENUM_LABEL_CONTENT_SETTINGS_STR;
+         info_label         = msg_hash_to_str(MENU_ENUM_LABEL_CONTENT_SETTINGS);
          info.enum_idx      = MENU_ENUM_LABEL_CONTENT_SETTINGS;
          menu_entries_append(menu_stack, info_path, info_label,
                MENU_ENUM_LABEL_CONTENT_SETTINGS,
@@ -2193,8 +2193,8 @@ static int set_path_generic(const char *label, const char *action_path)
    {
       if (setting->value.target.string)
          strlcpy(setting->value.target.string, action_path, setting->size);
-      if (setting->change_handler)
-         setting->change_handler(setting);
+      if (setting->actions->change)
+         setting->actions->change(setting);
       return menu_setting_generic(setting, 0, false);
    }
 
@@ -2636,8 +2636,8 @@ static int action_ok_set_path_overlay_carchive(const char *path,
       if (setting->value.target.string)
          strlcpy(setting->value.target.string,
                action_path, setting->size);
-      if (setting->change_handler)
-         setting->change_handler(setting);
+      if (setting->actions->change)
+         setting->actions->change(setting);
    }
 
    menu_entries_flush_stack(MENU_ENUM_LABEL_DEFERRED_ONSCREEN_OVERLAY_SETTINGS_LIST_STR, 0);
@@ -3508,8 +3508,8 @@ static void menu_input_st_string_cb_save_preset(void *userdata,
       {
          if (setting->value.target.string)
             strlcpy(setting->value.target.string, str, setting->size);
-         if (setting->change_handler)
-            setting->change_handler(setting);
+         if (setting->actions->change)
+            setting->actions->change(setting);
          menu_setting_generic(setting, 0, false);
       }
       else if (label && *label)
@@ -3781,8 +3781,8 @@ static void menu_input_st_string_cb_cheat_file_save_as(
       {
          if (setting->value.target.string)
             strlcpy(setting->value.target.string, str, setting->size);
-         if (setting->change_handler)
-            setting->change_handler(setting);
+         if (setting->actions->change)
+            setting->actions->change(setting);
          menu_setting_generic(setting, 0, false);
       }
       else if (label && *label)
@@ -3988,8 +3988,8 @@ static void menu_input_st_string_cb_remap_file_save_as(
       {
          if (setting->value.target.string)
             strlcpy(setting->value.target.string, str, setting->size);
-         if (setting->change_handler)
-            setting->change_handler(setting);
+         if (setting->actions->change)
+            setting->actions->change(setting);
          menu_setting_generic(setting, 0, false);
       }
       else if (label && *label)
@@ -4126,8 +4126,8 @@ static void menu_input_st_string_cb_config_file_save_as(
       {
          if (setting->value.target.string)
             strlcpy(setting->value.target.string, str, setting->size);
-         if (setting->change_handler)
-            setting->change_handler(setting);
+         if (setting->actions->change)
+            setting->actions->change(setting);
          menu_setting_generic(setting, 0, false);
       }
       else if (label && *label)
@@ -4161,8 +4161,8 @@ static void menu_input_st_string_cb_override_file_save_as(
       {
          if (setting->value.target.string)
             strlcpy(setting->value.target.string, str, setting->size);
-         if (setting->change_handler)
-            setting->change_handler(setting);
+         if (setting->actions->change)
+            setting->actions->change(setting);
          menu_setting_generic(setting, 0, false);
       }
       else if (label && *label)
@@ -4404,7 +4404,7 @@ static int action_ok_load_core_deferred(const char *path,
 DEFAULT_ACTION_OK_START_BUILTIN_CORE(action_ok_start_net_retropad_core, CORE_TYPE_NETRETROPAD)
 DEFAULT_ACTION_OK_START_BUILTIN_CORE(action_ok_start_video_processor_core, CORE_TYPE_VIDEO_PROCESSOR)
 
-#if defined(HAVE_FFMPEG) || defined(HAVE_MPV)
+#if defined(HAVE_FFMPEG) || defined(HAVE_MPV) || defined(HAVE_WEBMPLAYER)
 static int action_ok_file_load_ffmpeg(const char *path,
       const char *label, unsigned type, size_t idx, size_t entry_idx)
 {
@@ -4423,12 +4423,15 @@ static int action_ok_file_load_ffmpeg(const char *path,
          sizeof(new_path));
 
    /* TODO/FIXME - should become runtime optional */
-#ifdef HAVE_MPV
+#if defined(HAVE_MPV)
    return default_action_ok_load_content_with_core_from_menu(
          new_path, CORE_TYPE_MPV);
-#else
+#elif defined(HAVE_FFMPEG)
    return default_action_ok_load_content_with_core_from_menu(
          new_path, CORE_TYPE_FFMPEG);
+#else
+   return default_action_ok_load_content_with_core_from_menu(
+         new_path, CORE_TYPE_WEBM);
 #endif
 }
 #endif
@@ -6961,7 +6964,7 @@ static void netplay_refresh_rooms_cb(retro_task_t *task, void *task_data,
 
    /* Don't push the results if we left the netplay menu */
    if (     !string_is_equal(label, MENU_ENUM_LABEL_NETPLAY_TAB_STR)
-         && !string_is_equal(label, MENU_ENUM_LABEL_NETPLAY_STR))
+         && !string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_NETPLAY)))
       return;
 
    if (err)
@@ -7042,7 +7045,7 @@ static void netplay_refresh_lan_cb(const void *data)
 
    /* Don't push the results if we left the netplay menu */
    if (     !string_is_equal(label, MENU_ENUM_LABEL_NETPLAY_TAB_STR)
-         && !string_is_equal(label, MENU_ENUM_LABEL_NETPLAY_STR))
+         && !string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_NETPLAY)))
       return;
 
    if (!hosts || !hosts->size)
@@ -7309,8 +7312,8 @@ static int action_ok_push_dropdown_setting_uint_item_special(const char *path,
 
    *setting->value.target.unsigned_integer = value;
 
-   if (setting->change_handler)
-      setting->change_handler(setting);
+   if (setting->actions->change)
+      setting->actions->change(setting);
 
    return action_cancel_pop_default(NULL, NULL, 0, 0);
 }
@@ -7342,7 +7345,7 @@ static int generic_action_ok_dropdown_setting(const char *path, const char *labe
          }
          break;
       case ST_STRING_OPTIONS:
-         if (setting->get_string_representation)
+         if (setting->actions->repr)
          {
             const char *tok       = setting->values;
             unsigned tok_idx      = 0;
@@ -7376,8 +7379,8 @@ static int generic_action_ok_dropdown_setting(const char *path, const char *labe
          break;
    }
 
-   if (setting->change_handler)
-      setting->change_handler(setting);
+   if (setting->actions->change)
+      setting->actions->change(setting);
 
    return action_cancel_pop_default(NULL, NULL, 0, 0);
 }
@@ -9981,15 +9984,15 @@ static int menu_cbs_init_bind_ok_compare_type(menu_file_list_cbs_t *cbs,
                   || string_is_equal(menu_label,
                      MENU_ENUM_LABEL_SUBSYSTEM_ADD_STR)
                   || string_is_equal(menu_label,
-                     MENU_ENUM_LABEL_VIDEO_FONT_PATH_STR)
+                     msg_hash_to_str(MENU_ENUM_LABEL_VIDEO_FONT_PATH))
                   || string_is_equal(menu_label,
-                     MENU_ENUM_LABEL_XMB_FONT_STR)
+                     msg_hash_to_str(MENU_ENUM_LABEL_XMB_FONT))
                   || string_is_equal(menu_label,
-                     MENU_ENUM_LABEL_OZONE_FONT_STR)
+                     msg_hash_to_str(MENU_ENUM_LABEL_OZONE_FONT))
                   || string_is_equal(menu_label,
-                     MENU_ENUM_LABEL_AUDIO_DSP_PLUGIN_STR)
+                     msg_hash_to_str(MENU_ENUM_LABEL_AUDIO_DSP_PLUGIN))
                   || string_is_equal(menu_label,
-                     MENU_ENUM_LABEL_VIDEO_FILTER_STR))
+                     msg_hash_to_str(MENU_ENUM_LABEL_VIDEO_FILTER)))
                BIND_ACTION_OK(cbs, action_ok_directory_push);
             else
                BIND_ACTION_OK(cbs, action_ok_push_random_dir);
@@ -10223,7 +10226,7 @@ static int menu_cbs_init_bind_ok_compare_type(menu_file_list_cbs_t *cbs,
             }
             break;
          case FILE_TYPE_MOVIE:
-#if defined(HAVE_FFMPEG) || defined(HAVE_MPV)
+#if defined(HAVE_FFMPEG) || defined(HAVE_MPV) || defined(HAVE_WEBMPLAYER)
             /* TODO/FIXME - handle scan case */
             BIND_ACTION_OK(cbs, action_ok_file_load_ffmpeg);
 #endif

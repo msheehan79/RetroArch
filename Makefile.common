@@ -1219,23 +1219,19 @@ ifeq ($(HAVE_THREAD_STORAGE), 1)
 endif
 
 ifeq ($(HAVE_VITA2D), 1)
-   OBJ += $(DEPS_DIR)/libvita2d/source/vita2d.o \
-          $(DEPS_DIR)/libvita2d/source/vita2d_texture.o \
-          $(DEPS_DIR)/libvita2d/source/vita2d_draw.o \
-          $(DEPS_DIR)/libvita2d/source/utils.o
-
-   OBJ += $(DEPS_DIR)/libvita2d/shader/clear_v_gxp.o \
-          $(DEPS_DIR)/libvita2d/shader/clear_f_gxp.o \
-          $(DEPS_DIR)/libvita2d/shader/color_v_gxp.o \
-          $(DEPS_DIR)/libvita2d/shader/color_f_gxp.o \
-          $(DEPS_DIR)/libvita2d/shader/texture_v_gxp.o \
-          $(DEPS_DIR)/libvita2d/shader/texture_f_gxp.o \
-          $(DEPS_DIR)/libvita2d/shader/texture_tint_v_gxp.o \
-          $(DEPS_DIR)/libvita2d/shader/texture_tint_f_gxp.o
+   # The vita2d GXM backend is now folded directly into vita2d_gfx.c; only
+   # the precompiled shader blobs remain as a dependency (the driver still
+   # references clear_v_gxp/texture_v_gxp/... as externs).
+   OBJ += gfx/drivers/vita_shaders/clear_v_gxp.o \
+          gfx/drivers/vita_shaders/clear_f_gxp.o \
+          gfx/drivers/vita_shaders/color_v_gxp.o \
+          gfx/drivers/vita_shaders/color_f_gxp.o \
+          gfx/drivers/vita_shaders/texture_v_gxp.o \
+          gfx/drivers/vita_shaders/texture_f_gxp.o \
+          gfx/drivers/vita_shaders/texture_tint_v_gxp.o \
+          gfx/drivers/vita_shaders/texture_tint_f_gxp.o
 
    OBJ += gfx/drivers/vita2d_gfx.o
-
-   INCLUDE_DIRS += -I$(DEPS_DIR)/libvita2d/include
 endif
 
 ifeq ($(TARGET), retroarch_3ds)
@@ -2066,9 +2062,30 @@ ifeq ($(HAVE_ZSTD),1)
            $(ZSOBJ)
 endif
 
-ifeq ($(HAVE_IBXM), 1)
-   DEFINES += -DHAVE_IBXM
-   OBJ += $(DEPS_DIR)/ibxm/ibxm.o
+ifeq ($(HAVE_RMODTRACKER), 1)
+   DEFINES += -DHAVE_RMODTRACKER
+   OBJ += $(LIBRETRO_COMM_DIR)/formats/mod/rmodtracker.o
+ifneq ($(HAVE_BUILTINFLAC),1)
+ifneq ($(HAVE_RVORBIS),1)
+ifneq ($(HAVE_RMP3),1)
+   OBJ += $(LIBRETRO_COMM_DIR)/formats/audio_transfer.o
+endif
+endif
+endif
+endif
+
+ifeq ($(HAVE_ROPUS), 1)
+   DEFINES += -DHAVE_ROPUS
+   OBJ += $(LIBRETRO_COMM_DIR)/formats/opus/ropus.o
+ifneq ($(HAVE_BUILTINFLAC),1)
+ifneq ($(HAVE_RVORBIS),1)
+ifneq ($(HAVE_RMP3),1)
+ifneq ($(HAVE_RMODTRACKER),1)
+   OBJ += $(LIBRETRO_COMM_DIR)/formats/audio_transfer.o
+endif
+endif
+endif
+endif
 endif
 
 ifeq ($(HAVE_BUILTINFLAC),1)
@@ -2280,6 +2297,11 @@ ifeq ($(HAVE_RTGA), 1)
    OBJ += $(LIBRETRO_COMM_DIR)/formats/tga/rtga.o
 endif
 
+ifeq ($(HAVE_RDDS), 1)
+   DEFINES += -DHAVE_RDDS
+   OBJ += $(LIBRETRO_COMM_DIR)/formats/dds/rdds.o
+endif
+
 ifeq ($(HAVE_RPNG), 1)
    DEFINES += -DHAVE_RPNG
    OBJ += $(LIBRETRO_COMM_DIR)/formats/png/rpng.o \
@@ -2298,7 +2320,23 @@ endif
 
 ifeq ($(HAVE_RWEBP), 1)
    DEFINES += -DHAVE_RWEBP
-   OBJ += $(LIBRETRO_COMM_DIR)/formats/webp/rwebp.o
+   OBJ += $(LIBRETRO_COMM_DIR)/formats/webp/rwebp.o \
+          $(LIBRETRO_COMM_DIR)/formats/vp8/rvp8.o
+endif
+
+ifeq ($(HAVE_RWEBM), 1)
+   DEFINES += -DHAVE_RWEBM
+   OBJ += $(LIBRETRO_COMM_DIR)/formats/webm/rwebm.o
+endif
+
+ifeq ($(HAVE_RVP9), 1)
+   DEFINES += -DHAVE_RVP9
+   OBJ += $(LIBRETRO_COMM_DIR)/formats/vp9/rvp9.o
+endif
+
+ifeq ($(HAVE_WEBMPLAYER), 1)
+   DEFINES += -DHAVE_WEBMPLAYER
+   OBJ += cores/libretro-webm/webm_core.o
 endif
 
 OBJ += $(LIBRETRO_COMM_DIR)/formats/bmp/rbmp_encode.o \

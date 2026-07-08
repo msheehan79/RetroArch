@@ -77,13 +77,16 @@ def parse_enum_names(msg_hash_h):
                     if dskip: dskip.pop()
                     if len(dstack) > len(stack): dstack.pop()
                     continue
-                dm = re.match(r'S_(BOOL|UINT|INT|FLOAT)(_NS)?(_H)?\s*\(\s*\w+,\s*(\w+),', ds)
+                dm = re.match(r'S_(BOOL|UINT|INT|FLOAT|STRING_P|STRING|DIR|PATH_DS|PATH)(_EX|_LV|_AT|_AT_EX)?(_NS)?(_H)?\s*\(\s*(?:offsetof\s*\([^)]*\)|\w+),\s*(\w+),', ds)
+                if not dm:
+                    am = re.match(r'S_(ACTION)(_EX|_LV)?(_NS)?(_H)?\s*\(\s*(\w+),', ds)
+                    dm = am
                 if dm:
                     dg = tuple((g[0], g[1]) for g in dstack)
                     for pfx in ('MENU_ENUM_LABEL_', 'MENU_ENUM_SUBLABEL_',
                                 'MENU_ENUM_LABEL_VALUE_') + (
-                                ('MENU_ENUM_LABEL_HELP_',) if dm.group(3) else ()):
-                        names.append((pfx + dm.group(4), dg))
+                                ('MENU_ENUM_LABEL_HELP_',) if dm.group(4) else ()):
+                        names.append((pfx + dm.group(5), dg))
             continue
         if s.startswith('#'):
             continue
@@ -186,7 +189,7 @@ def main():
           'libretro-common/string/stdstring.c '
           'libretro-common/compat/compat_strl.c '
           'libretro-common/encodings/encoding_utf.c')
-    flags = ('-O2 -I. -Ilibretro-common/include '
+    flags = ('-O0 -g0 -I. -Ilibretro-common/include '
              '-DRARCH_INTERNAL -DHAVE_MENU -DHAVE_LANGEXTRA')
     r = run('gcc %s %s /tmp/mh_name_stubs.c /tmp/mh_name_tu.c -o /tmp/mh_name'
             % (flags, mh))

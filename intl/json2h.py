@@ -65,7 +65,11 @@ def expand_def_includes(text, base_dir):
                 # A guard alternated with the strings pass is always true
                 # for string consumers; this expansion mirrors the us.h
                 # consumer, which defines the pass, so drop the pair.
-                if 'SETTINGS_DEF_STRINGS_PASS' in ls:
+                if 'SETTINGS_DEF' in ls:
+                    # Pass markers - strings-pass alternations, the
+                    # config-pass wrapper on divergent-key rows, the
+                    # enum-pass alias shells - are def-file internals,
+                    # always true for string consumers; drop the pair.
                     skip_endif.append(True)
                     i = line_end + 1
                     continue
@@ -80,7 +84,7 @@ def expand_def_includes(text, base_dir):
                 out.append(def_text[i:line_end])
                 i = line_end + 1
                 continue
-            m = re.match(r'S_(BOOL|UINT|INT|FLOAT)(_NS)?(_H)?\s*\(', def_text[i:])
+            m = re.match(r'S_(BOOL|UINT|INT|FLOAT|STRING_P|STRING|DIR|PATH_DS|PATH|ACTION)(_EX|_LV|_AT|_AT_EX)?(_NS)?(_H)?\s*\(', def_text[i:])
             if not m:
                 i = line_end + 1
                 continue
@@ -108,8 +112,11 @@ def expand_def_includes(text, base_dir):
                 else:
                     args[-1] += ch
                 jx += 1
-            token = args[1].strip()
-            if m.group(2):
+            token = (args[0] if m.group(1) == 'ACTION' else args[1]).strip()
+            if m.group(2) == '_LV':
+                # the value string belongs to the value token's owning def
+                pairs = () if m.group(3) else (('MENU_ENUM_SUBLABEL_', args[-1]),)
+            elif m.group(3):
                 pairs = (('MENU_ENUM_LABEL_VALUE_', args[-1]),)
             else:
                 pairs = (('MENU_ENUM_LABEL_VALUE_', args[-2]),
@@ -380,7 +387,21 @@ PRAGMA_BLOCK = (
 '#pragma warning(disable:4045)\n'
 '#endif\n')
 
+def dedup_guards(g):
+    # A def row's own platform guard can repeat an enclosing template
+    # guard; nested identical plain guards are meaningless, so emit
+    # each open condition once. Else-branches are never deduplicated.
+    out, open_conds = [], set()
+    for cond, in_else in g:
+        if not in_else and cond in open_conds:
+            continue
+        out.append((cond, in_else))
+        open_conds.add(cond)
+    return tuple(out)
+
 def emit_guard_transition(out, prev, cur):
+    prev = dedup_guards(prev)
+    cur = dedup_guards(cur)
     if prev == cur:
         return
     for _ in prev:
@@ -424,8 +445,18 @@ def member_base_names(rows):
                 names[key] = 's_%08x_c%u' % (h, n)
     return names
 
-def pack(text, lang):
+def pack(text, lang, source=None):
     rows = parse_rows_with_guards(text)
+    if source is not None:
+        # Rows byte-identical to the source language and rows holding the
+        # literal untranslated marker are dead weight: the runtime lookup
+        # falls back to the base table for missing rows and for "null"
+        # values alike, so omitting them is behaviorally invisible.
+        # Measured at 48 percent of the translation payload. Comparison
+        # happens on decoded bytes so escape spelling cannot defeat it.
+        rows = [r for r in rows
+                if decode_c_literal(r[1]) != b'null'
+                and decode_c_literal(r[1]) != source.get(r[0], None)]
     if not rows:
         raise SystemExit('packed emitter: no rows for ' + lang)
     seen_keys = set()
@@ -450,6 +481,13 @@ def pack(text, lang):
         if _alien:
             raise SystemExit('packed emitter: keys not in source: '
                              + ', '.join(sorted(_alien)[:5]))
+    # Canonical row order: the template follows msg_hash_us.h, which the
+    # single-source migrations continually restructure, so template order
+    # churns the whole packed file on every sync even when no value
+    # changed.  The runtime contract is order-free (ids[] pairs each row
+    # with its enum; the index maps by id; guards ride per row), so rows
+    # sort by key and the output is invariant under template reshuffling.
+    rows = sorted(rows, key=lambda r: r[0])
     mnames = member_base_names(rows)
     members = []   # (text, guard)
     inits   = []   # (text, guard)
@@ -529,5 +567,7 @@ with open('msg_hash_us.h', 'r', encoding='utf-8') as template_file:
             new_translation = update(messages, template, source_messages)
             with open(h_filename, 'w', encoding='utf-8') as h_file:
                 h_file.seek(0)
-                h_file.write(pack(new_translation, LANG))
+                _src_bytes = dict((k, v.encode('utf-8'))
+                                  for k, v in source_messages.items())
+                h_file.write(pack(new_translation, LANG, _src_bytes))
                 h_file.truncate()
