@@ -45,6 +45,7 @@
 #define ID_SIMPLEBLOCK     0xA3u
 #define ID_BLOCKGROUP      0xA0u
 #define ID_BLOCK           0xA1u
+#define ID_DISCARDPADDING  0x75A2u
 
 #define TRACKTYPE_VIDEO    1
 #define TRACKTYPE_AUDIO    2
@@ -119,6 +120,27 @@ static uint64_t be_uint(const uint8_t *p, size_t n)
    return v;
 }
 
+/* Signed big-endian integer element payload (sign-extended). */
+/* Multiply a tick count by the ns-per-tick scale, saturating instead of
+ * overflowing on corrupt input (timestamps are informational). */
+static int64_t webm_scale_ts(int64_t ticks, int64_t scale)
+{
+   if (ticks == 0 || scale == 0)
+      return 0;
+   if (ticks > 0 && ticks > INT64_MAX / scale)
+      return INT64_MAX;
+   if (ticks < 0 && ticks < INT64_MIN / scale)
+      return INT64_MIN;
+   return ticks * scale;
+}
+
+static int64_t ebml_sint(const uint8_t *p, size_t n)
+{
+   uint64_t v = be_uint(p, n);
+   int shift  = (int)(64 - 8 * n);
+   return ((int64_t)(v << shift)) >> shift;
+}
+
 /* Read a big-endian IEEE float/double (Matroska float element). */
 static double be_float(const uint8_t *p, size_t n)
 {
@@ -156,6 +178,8 @@ struct rwebm
    int64_t        cluster_ts;       /* current cluster timestamp (ticks)   */
    /* Lacing: a SimpleBlock may carry several frames; we emit them one at a
     * time, so remember where we are within a block. */
+   int64_t pending_discard;         /* DiscardPadding for the next Block   */
+   int64_t lace_discard;            /* padding owed by the laced block     */
    const uint8_t *lace_data;        /* payload after the block header      */
    const uint32_t *lace_sizes;      /* not used (see note); kept simple    */
    int            lace_count;
@@ -298,6 +322,31 @@ void rwebm_rewind(rwebm_t *webm)
    webm->lace_index = 0;
 }
 
+/* DiscardPadding for the Block just parsed: the element may sit before
+ * the Block (already captured in pending_discard) or after it within
+ * the same BlockGroup, so scan the remaining group siblings. */
+static int64_t webm_group_discard(rwebm_t *webm, const uint8_t *p,
+      const uint8_t *group_end)
+{
+   int64_t v = webm->pending_discard;
+   ebml_reader s;
+   webm->pending_discard = 0;
+   s.p   = p;
+   s.end = group_end;
+   while (s.p < s.end)
+   {
+      int ok;
+      uint32_t id = ebml_read_id(&s);
+      uint64_t sz = ebml_read_vint(&s, 1, &ok);
+      if (!id || !ok || s.p + sz > s.end)
+         break;
+      if (id == ID_DISCARDPADDING && sz >= 1 && sz <= 8)
+         v = ebml_sint(s.p, (size_t)sz);
+      s.p += sz;
+   }
+   return v;
+}
+
 int rwebm_read_packet(rwebm_t *webm, rwebm_packet *pkt)
 {
    ebml_reader r;
@@ -313,6 +362,8 @@ int rwebm_read_packet(rwebm_t *webm, rwebm_packet *pkt)
       pkt->track     = webm->lace_track;
       pkt->timestamp = webm->lace_ts;
       pkt->keyframe  = webm->lace_keyframe;
+      pkt->discard_padding = (webm->lace_index == webm->lace_count)
+         ? webm->lace_discard : 0;
       return 1;
    }
 
@@ -331,9 +382,21 @@ int rwebm_read_packet(rwebm_t *webm, rwebm_packet *pkt)
       if (id == ID_CLUSTER || id == ID_BLOCKGROUP)
       {
          /* Descend: Cluster holds Timestamp + blocks; BlockGroup wraps a
-          * single Block (plus duration/refs we ignore). Scan children. */
+          * single Block (plus DiscardPadding/duration/refs). Scan
+          * children. */
+         if (id == ID_BLOCKGROUP)
+            webm->pending_discard = 0;
          r.p   = body;
          r.end = body + sz;
+         continue;
+      }
+      if (id == ID_DISCARDPADDING)
+      {
+         /* Signed big-endian integer, nanoseconds; may precede the
+          * Block within its BlockGroup. */
+         if (sz >= 1 && sz <= 8)
+            webm->pending_discard = ebml_sint(body, (size_t)sz);
+         r.p = body + sz;
          continue;
       }
       if (id == ID_TIMESTAMP)
@@ -375,10 +438,12 @@ int rwebm_read_packet(rwebm_t *webm, rwebm_packet *pkt)
                pkt->data      = frame;
                pkt->size      = frame_len;
                pkt->track     = tidx;
-               pkt->timestamp = (webm->cluster_ts + rel_ts)
-                              * webm->timestamp_scale;
+               pkt->timestamp = webm_scale_ts(webm->cluster_ts + rel_ts,
+                              webm->timestamp_scale);
                pkt->keyframe  = (id == ID_SIMPLEBLOCK)
                               ? ((flags & 0x80) != 0) : 1;
+               pkt->discard_padding = (id == ID_BLOCK)
+                  ? webm_group_discard(webm, body + sz, r.end) : 0;
                webm->cur      = body + sz;
                return 1;
             }
@@ -396,40 +461,58 @@ int rwebm_read_packet(rwebm_t *webm, rwebm_packet *pkt)
                { r.p = body + sz; continue; }
                if (lace_type == 1) /* Xiph */
                {
+                  int bad = 0;
                   for (k = 0; k < nframes - 1; k++)
                   {
                      uint32_t l = 0;
                      while (fp < fend && *fp == 255) { l += 255; fp++; }
-                     if (fp >= fend) break;
+                     if (fp >= fend) { bad = 1; break; }
                      l += *fp++;
                      sizes[k] = l;
                   }
+                  if (bad)
+                  { r.p = body + sz; continue; }
                }
                else if (lace_type == 3) /* EBML */
                {
-                  ebml_reader lr; int lok;
+                  ebml_reader lr; int lok = 0;
                   uint64_t first;
+                  int bad = 0;
+                  int64_t prev;
                   lr.p = fp; lr.end = fend;
                   first = ebml_read_vint(&lr, 1, &lok);
+                  if (!lok || first > (uint64_t)(fend - lr.p))
+                  { r.p = body + sz; continue; }
                   sizes[0] = (uint32_t)first;
+                  prev = (int64_t)first;
                   for (k = 1; k < nframes - 1; k++)
                   {
                      /* signed vint delta; decode as vint then unbias */
                      const uint8_t *sp = lr.p;
-                     uint8_t fb = *sp; int len = 1; uint8_t m = 0x80;
-                     int64_t bias;
+                     uint8_t fb; int len = 1; uint8_t m = 0x80;
+                     int64_t bias, val;
                      uint64_t raw;
+                     if (sp >= lr.end) { bad = 1; break; }
+                     fb = *sp;
                      while (len <= 8 && !(fb & m)) { m >>= 1; len++; }
                      raw  = ebml_read_vint(&lr, 1, &lok);
+                     if (!lok) { bad = 1; break; }
                      bias = (int64_t)((((uint64_t)1) << (7 * len - 1)) - 1);
-                     sizes[k] = (uint32_t)((int64_t)sizes[k-1]
-                              + ((int64_t)raw - bias));
+                     val  = prev + ((int64_t)raw - bias);
+                     if (val < 0) { bad = 1; break; }
+                     sizes[k] = (uint32_t)val;
+                     prev = val;
                   }
+                  if (bad)
+                  { r.p = body + sz; continue; }
                   fp = lr.p;
                }
                else /* fixed-size (lace_type == 2) */
                {
-                  uint32_t each = (uint32_t)((fend - fp) / nframes);
+                  uint32_t each;
+                  if (nframes <= 0 || fend < fp)
+                  { r.p = body + sz; continue; }
+                  each = (uint32_t)((size_t)(fend - fp) / (size_t)nframes);
                   for (k = 0; k < nframes; k++)
                      sizes[k] = each;
                }
@@ -441,16 +524,34 @@ int rwebm_read_packet(rwebm_t *webm, rwebm_packet *pkt)
                   int j;
                   if (lace_type != 2)
                   {
+                     size_t avail = (size_t)(fend - data_start);
                      for (k = 0; k < nframes - 1; k++) used += sizes[k];
-                     sizes[nframes - 1] =
-                        (uint32_t)((fend - data_start) - used);
+                     if ((size_t)used > avail)
+                     { r.p = body + sz; continue; }
+                     sizes[nframes - 1] = (uint32_t)(avail - used);
+                  }
+                  /* Every frame must lie within [data_start, fend). */
+                  {
+                     size_t total = 0;
+                     int bad = 0;
+                     for (k = 0; k < nframes; k++)
+                     {
+                        total += sizes[k];
+                        if (total > (size_t)(fend - data_start))
+                        { bad = 1; break; }
+                     }
+                     if (bad)
+                     { r.p = body + sz; continue; }
                   }
                   cursor = data_start;
                   webm->lace_count = nframes;
                   webm->lace_index = 0;
                   webm->lace_track = tidx;
-                  webm->lace_ts    = (webm->cluster_ts + rel_ts)
-                                   * webm->timestamp_scale;
+                  webm->lace_ts    = webm_scale_ts(
+                                     webm->cluster_ts + rel_ts,
+                                     webm->timestamp_scale);
+               webm->lace_discard = (id == ID_BLOCK)
+                  ? webm_group_discard(webm, body + sz, r.end) : 0;
                   webm->lace_keyframe = (id == ID_SIMPLEBLOCK)
                                       ? ((flags & 0x80) != 0) : 1;
                   for (j = 0; j < nframes; j++)
@@ -468,6 +569,9 @@ int rwebm_read_packet(rwebm_t *webm, rwebm_packet *pkt)
                      pkt->track     = webm->lace_track;
                      pkt->timestamp = webm->lace_ts;
                      pkt->keyframe  = webm->lace_keyframe;
+                     pkt->discard_padding =
+                        (webm->lace_index == webm->lace_count)
+                        ? webm->lace_discard : 0;
                      return 1;
                   }
                }
@@ -552,7 +656,13 @@ rwebm_t *rwebm_open_memory(const uint8_t *data, size_t size)
                if (!iid || !iok || ibody + isz > ir.end)
                   break;
                if (iid == ID_TIMESTAMPSCALE)
-                  w->timestamp_scale = (int64_t)be_uint(ibody, (size_t)isz);
+               {
+                  int64_t ts = (int64_t)be_uint(ibody, (size_t)isz);
+                  /* Matroska caps this at 10 ms/tick; reject nonsense and
+                   * keep the 1 ms default so timestamp math stays sane. */
+                  if (ts > 0 && ts <= 10000000)
+                     w->timestamp_scale = ts;
+               }
                else if (iid == ID_DURATION)
                   w->duration_ticks = be_float(ibody, (size_t)isz);
                ir.p = ibody + isz;

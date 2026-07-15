@@ -8,7 +8,7 @@
  * management and the full loop filter), developed and verified
  * byte-identical against libvpx across intra and inter test corpora.
  *
- * Profile 0 (8-bit 4:2:0) single-tile streams without segmentation or
+ * Profile 0 (8-bit 4:2:0) streams (tiled or not) without segmentation or
  * reference scaling are supported; see <formats/rvp9.h> for the exact
  * limits and the public API.
  *
@@ -21,6 +21,15 @@
 
 #include <retro_inline.h>
 #include <formats/rvp9.h>
+
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#define RVP9_SSE2 1
+#include <emmintrin.h>
+#endif
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+#define RVP9_NEON 1
+#include <arm_neon.h>
+#endif
 
 /* ==================================================================== */
 /* Probability / scan / kernel tables, generated from libvpx.           */
@@ -1042,6 +1051,15 @@ static int rvp9_rb_unsigned_max(rvp9_rb *rb, int max)
    return bits ? rvp9_rb_lit(rb, bits) : 0;
 }
 
+/* libvpx get_tile_offset(): tile edges are aligned to 64x64
+ * superblocks and clamped to the frame. */
+static int rvp9_tile_offset(int idx, int mis, int log2)
+{
+   int sbs = (mis + 7) >> 3;
+   int off = ((idx * sbs) >> log2) << 3;
+   return off < mis ? off : mis;
+}
+
 static void rvp9_get_tile_n_bits(int mi_cols, int *min_log2, int *max_log2)
 {
    /* libvpx vp9_get_tile_n_bits: tiles are >=256 and <=4096 px wide */
@@ -1305,13 +1323,43 @@ static const uint8_t rvp9_norm[256] = {
 
 static void rvp9_br_fill(rvp9_br *b)
 {
-   /* Byte-at-a-time equivalent of libvpx vpx_reader_fill: top up the
-    * 64-bit value register; once the buffer is exhausted, inflate count
-    * so subsequent reads consume the implicit trailing zeros. */
+   /* libvpx vpx_reader_fill: top up the 64-bit value register; once
+    * the buffer is exhausted, inflate count so subsequent reads
+    * consume the implicit trailing zeros. When at least 8 bytes
+    * remain, take the bulk path: one big-endian load of exactly the
+    * bytes the loop would consume (byte k of the load sits at bit
+    * 56 - 8k, and >> (count + 8) lands it at 48 - count - 8k, the
+    * loop's shift for byte k; masking to nbytes drops the tail bytes
+    * the loop would not have loaded). */
    int shift = 64 - 8 - (b->count + 8);
    int bits_left = (int)(b->end - b->buf) * 8;
    int bits_over = shift + 8 - bits_left;
    int loop_end  = 0;
+   if (bits_over < 0 && shift >= 0 && b->end - b->buf >= 8)
+   {
+      int nbytes = shift / 8 + 1;
+      uint64_t big;
+      memcpy(&big, b->buf, 8);
+#if defined(MSB_FIRST)
+      /* already big-endian in memory */
+#elif defined(__GNUC__)
+      big = __builtin_bswap64(big);
+#else
+      big = ((big & 0x00000000000000FFull) << 56)
+          | ((big & 0x000000000000FF00ull) << 40)
+          | ((big & 0x0000000000FF0000ull) << 24)
+          | ((big & 0x00000000FF000000ull) <<  8)
+          | ((big & 0x000000FF00000000ull) >>  8)
+          | ((big & 0x0000FF0000000000ull) >> 24)
+          | ((big & 0x00FF000000000000ull) >> 40)
+          | ((big & 0xFF00000000000000ull) >> 56);
+#endif
+      big      &= ~0ull << (64 - 8 * nbytes);
+      b->value |= big >> (b->count + 8);
+      b->buf   += nbytes;
+      b->count += nbytes * 8;
+      return;
+   }
    if (bits_over >= 0)
    {
       b->count += RVP9_LOTS_OF_BITS;
@@ -1665,19 +1713,19 @@ static INLINE uint8_t rvp9_clip8(int v)
 /* cospi/sinpi constants (vpx_dsp/txfm_common.h) */
 #define c1_p64  16364
 #define RVP9_WRAP(x) (x)
-static const int16_t rvp9_cospi64[32] = {
+static const int64_t rvp9_cospi64[32] = {
    16384, 16364, 16305, 16207, 16069, 15893, 15679, 15426,
    15137, 14811, 14449, 14053, 13623, 13160, 12665, 12140,
    11585, 11003, 10394,  9760,  9102,  8423,  7723,  7005,
     6270,  5520,  4756,  3981,  3196,  2404,  1606,   804
 };
-static const int16_t rvp9_sinpi[5] = { 0, 5283, 9929, 13377, 15212 };
+static const int64_t rvp9_sinpi[5] = { 0, 5283, 9929, 13377, 15212 };
 
 
 static void rvp9_idct4(const rvp9_tran *input, rvp9_tran *output)
 {
    int16_t step[4];
-   int temp1, temp2;
+   int64_t temp1, temp2;
    temp1 = ((int)input[0] + input[2]) * rvp9_cospi64[16];
    temp2 = ((int)input[0] - input[2]) * rvp9_cospi64[16];
    step[0] = (int16_t)rvp9_round_shift(temp1);
@@ -1694,8 +1742,8 @@ static void rvp9_idct4(const rvp9_tran *input, rvp9_tran *output)
 
 static void rvp9_iadst4(const rvp9_tran *input, rvp9_tran *output)
 {
-   int s0, s1, s2, s3, s4, s5, s6, s7;
-   int x0 = input[0], x1 = input[1], x2 = input[2], x3 = input[3];
+   int64_t s0, s1, s2, s3, s4, s5, s6, s7;
+   int64_t x0 = input[0], x1 = input[1], x2 = input[2], x3 = input[3];
    if (!(x0 | x1 | x2 | x3))
    {
       output[0] = output[1] = output[2] = output[3] = 0;
@@ -1726,7 +1774,7 @@ static void rvp9_iadst4(const rvp9_tran *input, rvp9_tran *output)
 static void rvp9_idct8(const rvp9_tran *input, rvp9_tran *output)
 {
    int16_t step1[8], step2[8];
-   int temp1, temp2;
+   int64_t temp1, temp2;
    step1[0] = (int16_t)input[0];
    step1[2] = (int16_t)input[4];
    step1[1] = (int16_t)input[2];
@@ -1778,9 +1826,9 @@ static void rvp9_idct8(const rvp9_tran *input, rvp9_tran *output)
 
 static void rvp9_iadst8(const rvp9_tran *input, rvp9_tran *output)
 {
-   int s0,s1,s2,s3,s4,s5,s6,s7;
-   int x0 = input[7], x1 = input[0], x2 = input[5], x3 = input[2];
-   int x4 = input[3], x5 = input[4], x6 = input[1], x7 = input[6];
+   int64_t s0,s1,s2,s3,s4,s5,s6,s7;
+   int64_t x0 = input[7], x1 = input[0], x2 = input[5], x3 = input[2];
+   int64_t x4 = input[3], x5 = input[4], x6 = input[1], x7 = input[6];
    if (!(x0|x1|x2|x3|x4|x5|x6|x7))
    {
       memset(output, 0, 8 * sizeof(*output));
@@ -3360,10 +3408,12 @@ static INLINE rvp9_mv rvp9_scale_mv_sb(const rvp9_mi *mi, int ref,
 static INLINE int rvp9_is_inside(const rvp9_dec *d, int mi_col, int mi_row,
       const int8_t *pos)
 {
+   /* libvpx is_inside(): rows are bounded by the frame, columns by the
+    * current tile (candidate scans never cross a vertical tile edge). */
    return !(mi_row + pos[0] < 0 ||
-            mi_col + pos[1] < 0 ||          /* single tile: start 0 */
+            mi_col + pos[1] < d->tile_col_start ||
             mi_row + pos[0] >= d->mi_rows ||
-            mi_col + pos[1] >= d->mi_cols);
+            mi_col + pos[1] >= d->tile_col_end);
 }
 
 /* Returns refmv_count; fills list[2]. mode/block semantics as libvpx
@@ -4323,9 +4373,10 @@ static void rvp9_decode_block(rvp9_dec *d, int mi_row, int mi_col,
 {
    rvp9_mi *mi = d->mi + mi_row * d->mi_cols + mi_col;
    const rvp9_mi *above = mi_row > 0 ? mi - d->mi_cols : NULL;
-   const rvp9_mi *left  = mi_col > 0 ? mi - 1 : NULL;
-   /* left neighbour only within the same tile row context; single tile
-    * for now, so the frame edge is the only boundary. */
+   /* The left neighbour never crosses a vertical tile edge (libvpx
+    * set_mi_row_col: left_mi is gated on tile->mi_col_start); the above
+    * neighbour is frame-based even with tile rows. */
+   const rvp9_mi *left  = mi_col > d->tile_col_start ? mi - 1 : NULL;
    int bw = 1 << rvp9_mi_w_l2[bsize];
    int bh = 1 << rvp9_mi_h_l2[bsize];
    int x_mis = bw < d->mi_cols - mi_col ? bw : d->mi_cols - mi_col;
@@ -4589,7 +4640,7 @@ modes_done:
                   mode = mi->bmodes[(row << 1) + col];
 
                have_top   = row || (mi_row > 0);
-               have_left  = col || (mi_col > 0);
+               have_left  = col || (mi_col > d->tile_col_start);
                have_right = (col + step) < num4w;
 
                rvp9_build_intra(d, dst, stride, dst, stride, mode, tx_size,
@@ -4957,7 +5008,6 @@ int rvp9_decode_frame(rvp9_dec *d, const uint8_t *data, size_t len,
       return 1;
    }
 
-   if (hd->log2_tile_cols || hd->log2_tile_rows) return -3;
    if (hd->seg_enabled) return -4;
 
    /* map named ref slots to fbs for inter frames */
@@ -4973,6 +5023,8 @@ int rvp9_decode_frame(rvp9_dec *d, const uint8_t *data, size_t len,
 
    d->mi_cols = hd->mi_cols;
    d->mi_rows = hd->mi_rows;
+   d->tile_col_start = 0;             /* set per tile before decoding  */
+   d->tile_col_end   = d->mi_cols;
 
    /* allocate on first frame (fixed dims thereafter) */
    if (!d->buf_y)
@@ -5094,22 +5146,66 @@ int rvp9_decode_frame(rvp9_dec *d, const uint8_t *data, size_t len,
    }
 
 
-   /* tile data */
+   /* tile data: tiles in raster order; every tile except the last is
+    * prefixed with its size as 32-bit big-endian (the last one runs to
+    * the end of the frame). Above contexts are cleared once per frame
+    * and span tile columns; left contexts are cleared at the start of
+    * every superblock row of every tile, which is what confines them
+    * to the tile. */
    tile_off = hd->uncomp_size + hd->first_partition_size;
    if (tile_off >= len) return -12;
-   if (rvp9_br_init(&d->r, data + tile_off, len - tile_off)) return -13;
 
    memset(d->above_seg, 0, d->mi_cols + 8);
    for (i = 0; i < 3; i++)
       memset(d->above_ctx[i], 0, d->mi_cols * 2 + 16);
    memset(d->mi, 0, (size_t)d->mi_cols * d->mi_rows * sizeof(rvp9_mi));
 
-   for (sb_row = 0; sb_row < d->mi_rows; sb_row += 8)
    {
-      memset(d->left_seg, 0, sizeof d->left_seg);
-      memset(d->left_ctx, 0, sizeof d->left_ctx);
-      for (sb_col = 0; sb_col < d->mi_cols; sb_col += 8)
-         rvp9_decode_partition(d, sb_row, sb_col, 12, 4);
+      const uint8_t *tp   = data + tile_off;
+      const uint8_t *tend = data + len;
+      int tile_cols       = 1 << hd->log2_tile_cols;
+      int tile_rows       = 1 << hd->log2_tile_rows;
+      int tr, tc;
+
+      for (tr = 0; tr < tile_rows; tr++)
+      {
+         int row_start = rvp9_tile_offset(tr,     d->mi_rows,
+               hd->log2_tile_rows);
+         int row_end   = rvp9_tile_offset(tr + 1, d->mi_rows,
+               hd->log2_tile_rows);
+         for (tc = 0; tc < tile_cols; tc++)
+         {
+            int last   = (tr == tile_rows - 1) && (tc == tile_cols - 1);
+            size_t tsz;
+            if (!last)
+            {
+               if (tend - tp < 4) return -12;
+               tsz = ((size_t)tp[0] << 24) | ((size_t)tp[1] << 16)
+                   | ((size_t)tp[2] << 8)  |  (size_t)tp[3];
+               tp += 4;
+               if (tsz > (size_t)(tend - tp)) return -12;
+            }
+            else
+               tsz = (size_t)(tend - tp);
+
+            d->tile_col_start = rvp9_tile_offset(tc,     d->mi_cols,
+                  hd->log2_tile_cols);
+            d->tile_col_end   = rvp9_tile_offset(tc + 1, d->mi_cols,
+                  hd->log2_tile_cols);
+
+            if (rvp9_br_init(&d->r, tp, tsz)) return -13;
+
+            for (sb_row = row_start; sb_row < row_end; sb_row += 8)
+            {
+               memset(d->left_seg, 0, sizeof d->left_seg);
+               memset(d->left_ctx, 0, sizeof d->left_ctx);
+               for (sb_col = d->tile_col_start; sb_col < d->tile_col_end;
+                     sb_col += 8)
+                  rvp9_decode_partition(d, sb_row, sb_col, 12, 4);
+            }
+            tp += tsz;
+         }
+      }
    }
    if (d->corrupted) return -14;
 
@@ -5326,9 +5422,843 @@ static void rvp9_filter16(int8_t mask, uint8_t thresh, int8_t flat,
   }
 }
 
+#if defined(RVP9_SSE2)
+/* ---- 8-lane SSE2 loop filter ----
+ * Each __m128i carries 8 samples (one per filtered line) in its low
+ * half. Every step mirrors the scalar functions above exactly:
+ * - the six 'limit' terms use max-of-absdiffs (max(a,b) > L is
+ *   identical to (a > L) | (b > L)), compared via subs_epu8 == 0,
+ *   which is exact for all u8 inputs;
+ * - the blimit term (abs(p0-q0)*2 + abs(p1-q1)/2) is evaluated in
+ *   16-bit lanes so no saturation can occur;
+ * - filter4 runs in saturating int8 (adds/subs_epi8 ==
+ *   signed_char_clamp); the three successive saturating adds of
+ *   (qs0 - ps0) equal the scalar's single clamp of filter + 3*d for
+ *   all inputs (when |d| <= 127 no intermediate can saturate because
+ *   the partial sums lie between two in-range endpoints; when |d| >=
+ *   128 the true result is already at the rail the saturated steps
+ *   reach);
+ * - filter8/filter16 smoothing runs in u16 lanes (sums <= 4080) with
+ *   the +4/+8 rounding and shifts of the scalar, packed back with
+ *   packus (values are exact 8-bit results, so no saturation);
+ * - lanes where a level's condition fails keep the previous level's
+ *   result via mask blends, reproducing the scalar cascade
+ *   filter16 -> filter8 -> filter4 -> unchanged. */
+
+static INLINE __m128i rvp9_lf_absd8(__m128i a, __m128i b)
+{
+   return _mm_or_si128(_mm_subs_epu8(a, b), _mm_subs_epu8(b, a));
+}
+
+/* 0xFF lanes where max(a..) <= t */
+static INLINE __m128i rvp9_lf_le8(__m128i maxv, __m128i t)
+{
+   return _mm_cmpeq_epi8(_mm_subs_epu8(maxv, t), _mm_setzero_si128());
+}
+
+static INLINE __m128i rvp9_lf_blend8(__m128i sel, __m128i a, __m128i b)
+{
+   /* sel ? a : b, sel lanes are 0x00/0xFF */
+   return _mm_or_si128(_mm_and_si128(sel, a), _mm_andnot_si128(sel, b));
+}
+
+/* filter_mask (0xFF = filter) and hev (0xFF = high edge variance) */
+static void rvp9_lf_mask_hev_sse2(__m128i limit, __m128i blimit,
+      __m128i thresh,
+      __m128i p3, __m128i p2, __m128i p1, __m128i p0,
+      __m128i q0, __m128i q1, __m128i q2, __m128i q3,
+      __m128i *mask, __m128i *hev)
+{
+   const __m128i zero = _mm_setzero_si128();
+   __m128i m = _mm_max_epu8(rvp9_lf_absd8(p3, p2), rvp9_lf_absd8(p2, p1));
+   __m128i in_limit, in_blimit;
+   __m128i d0, d1, t_lo, blim_lo;
+   m = _mm_max_epu8(m, rvp9_lf_absd8(p1, p0));
+   m = _mm_max_epu8(m, rvp9_lf_absd8(q1, q0));
+   m = _mm_max_epu8(m, rvp9_lf_absd8(q2, q1));
+   m = _mm_max_epu8(m, rvp9_lf_absd8(q3, q2));
+   in_limit = rvp9_lf_le8(m, limit);
+
+   /* abs(p0-q0)*2 + abs(p1-q1)/2 <= blimit, exact in 16-bit */
+   d0      = rvp9_lf_absd8(p0, q0);
+   d1      = rvp9_lf_absd8(p1, q1);
+   t_lo    = _mm_add_epi16(
+         _mm_slli_epi16(_mm_unpacklo_epi8(d0, zero), 1),
+         _mm_srli_epi16(_mm_unpacklo_epi8(d1, zero), 1));
+   blim_lo = _mm_unpacklo_epi8(blimit, zero);
+   in_blimit = _mm_packs_epi16(
+         _mm_cmpgt_epi16(t_lo, blim_lo), _mm_cmpgt_epi16(t_lo, blim_lo));
+   in_blimit = _mm_andnot_si128(in_blimit, _mm_set1_epi8((char)0xFF));
+
+   *mask = _mm_and_si128(in_limit, in_blimit);
+
+   *hev  = _mm_xor_si128(
+         rvp9_lf_le8(_mm_max_epu8(rvp9_lf_absd8(p1, p0),
+                                  rvp9_lf_absd8(q1, q0)), thresh),
+         _mm_set1_epi8((char)0xFF));
+}
+
+/* flat_mask4 with thresh 1 (0xFF = flat) */
+static INLINE __m128i rvp9_lf_flat4_sse2(__m128i p3, __m128i p2,
+      __m128i p1, __m128i p0, __m128i q0, __m128i q1, __m128i q2,
+      __m128i q3)
+{
+   const __m128i one = _mm_set1_epi8(1);
+   __m128i m = _mm_max_epu8(rvp9_lf_absd8(p1, p0), rvp9_lf_absd8(q1, q0));
+   m = _mm_max_epu8(m, rvp9_lf_absd8(p2, p0));
+   m = _mm_max_epu8(m, rvp9_lf_absd8(q2, q0));
+   m = _mm_max_epu8(m, rvp9_lf_absd8(p3, p0));
+   m = _mm_max_epu8(m, rvp9_lf_absd8(q3, q0));
+   return rvp9_lf_le8(m, one);
+}
+
+/* filter4 on 8 lanes; writes new p1,p0,q0,q1 */
+static void rvp9_lf_filter4_sse2(__m128i mask, __m128i hev,
+      __m128i *p1, __m128i *p0, __m128i *q0, __m128i *q1)
+{
+   const __m128i zero = _mm_setzero_si128();
+   const __m128i sb   = _mm_set1_epi8((char)0x80);
+   const __m128i t3   = _mm_set1_epi8(3);
+   const __m128i t4   = _mm_set1_epi8(4);
+   const __m128i one  = _mm_set1_epi8(1);
+   __m128i ps1 = _mm_xor_si128(*p1, sb);
+   __m128i ps0 = _mm_xor_si128(*p0, sb);
+   __m128i qs0 = _mm_xor_si128(*q0, sb);
+   __m128i qs1 = _mm_xor_si128(*q1, sb);
+   __m128i filt, work, f1, f2, f3;
+
+   filt = _mm_and_si128(_mm_subs_epi8(ps1, qs1), hev);
+   work = _mm_subs_epi8(qs0, ps0);
+   filt = _mm_adds_epi8(filt, work);
+   filt = _mm_adds_epi8(filt, work);
+   filt = _mm_adds_epi8(filt, work);
+   filt = _mm_and_si128(filt, mask);
+
+   f1 = _mm_adds_epi8(filt, t4);
+   f2 = _mm_adds_epi8(filt, t3);
+   /* arithmetic >>3 on int8 lanes: value into the high byte, srai 11 */
+   f1 = _mm_packs_epi16(
+         _mm_srai_epi16(_mm_unpacklo_epi8(zero, f1), 11),
+         _mm_srai_epi16(_mm_unpackhi_epi8(zero, f1), 11));
+   f2 = _mm_packs_epi16(
+         _mm_srai_epi16(_mm_unpacklo_epi8(zero, f2), 11),
+         _mm_srai_epi16(_mm_unpackhi_epi8(zero, f2), 11));
+
+   *q0 = _mm_xor_si128(_mm_subs_epi8(qs0, f1), sb);
+   *p0 = _mm_xor_si128(_mm_adds_epi8(ps0, f2), sb);
+
+   /* (f1 + 1) >> 1, masked off where hev */
+   f3 = _mm_adds_epi8(f1, one);
+   f3 = _mm_packs_epi16(
+         _mm_srai_epi16(_mm_unpacklo_epi8(zero, f3), 9),
+         _mm_srai_epi16(_mm_unpackhi_epi8(zero, f3), 9));
+   f3 = _mm_andnot_si128(hev, f3);
+
+   *q1 = _mm_xor_si128(_mm_subs_epi8(qs1, f3), sb);
+   *p1 = _mm_xor_si128(_mm_adds_epi8(ps1, f3), sb);
+}
+
+/* One 7-tap smoothing output in u16 lanes: (sum + 4) >> 3 packed */
+static INLINE __m128i rvp9_lf_r3(__m128i sum_lo)
+{
+   __m128i r = _mm_srli_epi16(_mm_add_epi16(sum_lo, _mm_set1_epi16(4)), 3);
+   return _mm_packus_epi16(r, r);
+}
+
+static INLINE __m128i rvp9_lf_r4(__m128i sum_lo)
+{
+   __m128i r = _mm_srli_epi16(_mm_add_epi16(sum_lo, _mm_set1_epi16(8)), 4);
+   return _mm_packus_epi16(r, r);
+}
+
+/* filter8 cascade on 8 lanes: filter4 everywhere, 7-tap where
+ * (flat & mask). p3/q3 are read-only. */
+static void rvp9_lf_filter8_sse2(__m128i mask, __m128i hev, __m128i flat,
+      __m128i p3, __m128i *p2, __m128i *p1, __m128i *p0,
+      __m128i *q0, __m128i *q1, __m128i *q2, __m128i q3)
+{
+   const __m128i zero = _mm_setzero_si128();
+   __m128i sel = _mm_and_si128(flat, mask);
+   __m128i f_p1 = *p1, f_p0 = *p0, f_q0 = *q0, f_q1 = *q1;
+   __m128i P3 = _mm_unpacklo_epi8(p3, zero);
+   __m128i P2 = _mm_unpacklo_epi8(*p2, zero);
+   __m128i P1 = _mm_unpacklo_epi8(*p1, zero);
+   __m128i P0 = _mm_unpacklo_epi8(*p0, zero);
+   __m128i Q0 = _mm_unpacklo_epi8(*q0, zero);
+   __m128i Q1 = _mm_unpacklo_epi8(*q1, zero);
+   __m128i Q2 = _mm_unpacklo_epi8(*q2, zero);
+   __m128i Q3 = _mm_unpacklo_epi8(q3, zero);
+   __m128i sum, s_p2, s_p1, s_p0, s_q0, s_q1, s_q2;
+
+   rvp9_lf_filter4_sse2(mask, hev, &f_p1, &f_p0, &f_q0, &f_q1);
+
+   /* op2 = (p3+p3+p3+2p2+p1+p0+q0 + 4) >> 3, then slide */
+   sum  = _mm_add_epi16(_mm_add_epi16(P3, P3),
+          _mm_add_epi16(_mm_add_epi16(P3, P2),
+          _mm_add_epi16(_mm_add_epi16(P2, P1),
+                        _mm_add_epi16(P0, Q0))));
+   s_p2 = rvp9_lf_r3(sum);
+   sum  = _mm_add_epi16(sum, _mm_sub_epi16(
+          _mm_add_epi16(P1, Q1), _mm_add_epi16(P3, P2)));
+   s_p1 = rvp9_lf_r3(sum);
+   sum  = _mm_add_epi16(sum, _mm_sub_epi16(
+          _mm_add_epi16(P0, Q2), _mm_add_epi16(P3, P1)));
+   s_p0 = rvp9_lf_r3(sum);
+   sum  = _mm_add_epi16(sum, _mm_sub_epi16(
+          _mm_add_epi16(Q0, Q3), _mm_add_epi16(P3, P0)));
+   s_q0 = rvp9_lf_r3(sum);
+   sum  = _mm_add_epi16(sum, _mm_sub_epi16(
+          _mm_add_epi16(Q1, Q3), _mm_add_epi16(P2, Q0)));
+   s_q1 = rvp9_lf_r3(sum);
+   sum  = _mm_add_epi16(sum, _mm_sub_epi16(
+          _mm_add_epi16(Q2, Q3), _mm_add_epi16(P1, Q1)));
+   s_q2 = rvp9_lf_r3(sum);
+
+   *p2 = rvp9_lf_blend8(sel, s_p2, *p2);
+   *p1 = rvp9_lf_blend8(sel, s_p1, f_p1);
+   *p0 = rvp9_lf_blend8(sel, s_p0, f_p0);
+   *q0 = rvp9_lf_blend8(sel, s_q0, f_q0);
+   *q1 = rvp9_lf_blend8(sel, s_q1, f_q1);
+   *q2 = rvp9_lf_blend8(sel, s_q2, *q2);
+}
+
+/* full 16 cascade on 8 lanes; r[0]=p7 .. r[7]=p0, r[8]=q0 .. r[15]=q7;
+ * r[0]/r[15] are read-only. The 15-tap smoothing consumes ORIGINAL
+ * samples (in the scalar, filter8/filter4 only run in the else
+ * branch), so the samples are widened before the inner cascade
+ * mutates r[5..10]; per-lane selection then reproduces the cascade. */
+static void rvp9_lf_filter16_sse2(__m128i mask, __m128i hev, __m128i flat,
+      __m128i flat2, __m128i r[16])
+{
+   const __m128i zero = _mm_setzero_si128();
+   __m128i sel = _mm_and_si128(flat2, _mm_and_si128(flat, mask));
+   __m128i W[16], out[14], sum;
+   int i;
+
+   for (i = 0; i < 16; i++)
+      W[i] = _mm_unpacklo_epi8(r[i], zero);
+
+   /* filter8 (which itself runs filter4) on the inner samples */
+   rvp9_lf_filter8_sse2(mask, hev, flat, r[4], &r[5], &r[6], &r[7],
+         &r[8], &r[9], &r[10], r[11]);
+
+   /* 15-tap [1,1,1,1,1,1,1,2,1,1,1,1,1,1,1] as a sliding sum:
+    * S(p6) = 7*p7 + 2*p6 + p5+p4+p3+p2+p1+p0+q0 */
+   sum = _mm_add_epi16(_mm_slli_epi16(W[0], 3), W[1]); /* 8p7 + p6 */
+   sum = _mm_sub_epi16(sum, W[0]);                     /* 7p7 + p6 */
+   sum = _mm_add_epi16(sum, W[1]);                     /* + p6     */
+   for (i = 2; i <= 8; i++)
+      sum = _mm_add_epi16(sum, W[i]);
+   out[0] = rvp9_lf_r4(sum);                           /* p6 */
+   /* p-side slides: - p7 - prev_center + new_center + next q */
+   sum = _mm_add_epi16(sum, _mm_sub_epi16(
+         _mm_add_epi16(W[2], W[9]),  _mm_add_epi16(W[0], W[1])));
+   out[1] = rvp9_lf_r4(sum);                           /* p5 */
+   sum = _mm_add_epi16(sum, _mm_sub_epi16(
+         _mm_add_epi16(W[3], W[10]), _mm_add_epi16(W[0], W[2])));
+   out[2] = rvp9_lf_r4(sum);                           /* p4 */
+   sum = _mm_add_epi16(sum, _mm_sub_epi16(
+         _mm_add_epi16(W[4], W[11]), _mm_add_epi16(W[0], W[3])));
+   out[3] = rvp9_lf_r4(sum);                           /* p3 */
+   sum = _mm_add_epi16(sum, _mm_sub_epi16(
+         _mm_add_epi16(W[5], W[12]), _mm_add_epi16(W[0], W[4])));
+   out[4] = rvp9_lf_r4(sum);                           /* p2 */
+   sum = _mm_add_epi16(sum, _mm_sub_epi16(
+         _mm_add_epi16(W[6], W[13]), _mm_add_epi16(W[0], W[5])));
+   out[5] = rvp9_lf_r4(sum);                           /* p1 */
+   sum = _mm_add_epi16(sum, _mm_sub_epi16(
+         _mm_add_epi16(W[7], W[14]), _mm_add_epi16(W[0], W[6])));
+   out[6] = rvp9_lf_r4(sum);                           /* p0 */
+   sum = _mm_add_epi16(sum, _mm_sub_epi16(
+         _mm_add_epi16(W[8], W[15]), _mm_add_epi16(W[0], W[7])));
+   out[7] = rvp9_lf_r4(sum);                           /* q0 */
+   /* q-side slides: - leaving p - prev_center + new_center + q7 */
+   sum = _mm_add_epi16(sum, _mm_sub_epi16(
+         _mm_add_epi16(W[9],  W[15]), _mm_add_epi16(W[1], W[8])));
+   out[8] = rvp9_lf_r4(sum);                           /* q1 */
+   sum = _mm_add_epi16(sum, _mm_sub_epi16(
+         _mm_add_epi16(W[10], W[15]), _mm_add_epi16(W[2], W[9])));
+   out[9] = rvp9_lf_r4(sum);                           /* q2 */
+   sum = _mm_add_epi16(sum, _mm_sub_epi16(
+         _mm_add_epi16(W[11], W[15]), _mm_add_epi16(W[3], W[10])));
+   out[10] = rvp9_lf_r4(sum);                          /* q3 */
+   sum = _mm_add_epi16(sum, _mm_sub_epi16(
+         _mm_add_epi16(W[12], W[15]), _mm_add_epi16(W[4], W[11])));
+   out[11] = rvp9_lf_r4(sum);                          /* q4 */
+   sum = _mm_add_epi16(sum, _mm_sub_epi16(
+         _mm_add_epi16(W[13], W[15]), _mm_add_epi16(W[5], W[12])));
+   out[12] = rvp9_lf_r4(sum);                          /* q5 */
+   sum = _mm_add_epi16(sum, _mm_sub_epi16(
+         _mm_add_epi16(W[14], W[15]), _mm_add_epi16(W[6], W[13])));
+   out[13] = rvp9_lf_r4(sum);                          /* q6 */
+
+   for (i = 0; i < 14; i++)
+      r[i + 1] = rvp9_lf_blend8(sel, out[i], r[i + 1]);
+}
+
+/* 8x8 byte transpose: in[k] low 8 bytes are row k; out likewise. */
+static void rvp9_lf_transpose8x8(const __m128i *in, __m128i *out)
+{
+   __m128i a0 = _mm_unpacklo_epi8(in[0], in[1]);
+   __m128i a1 = _mm_unpacklo_epi8(in[2], in[3]);
+   __m128i a2 = _mm_unpacklo_epi8(in[4], in[5]);
+   __m128i a3 = _mm_unpacklo_epi8(in[6], in[7]);
+   __m128i b0 = _mm_unpacklo_epi16(a0, a1);
+   __m128i b1 = _mm_unpackhi_epi16(a0, a1);
+   __m128i b2 = _mm_unpacklo_epi16(a2, a3);
+   __m128i b3 = _mm_unpackhi_epi16(a2, a3);
+   __m128i c0 = _mm_unpacklo_epi32(b0, b2);
+   __m128i c1 = _mm_unpackhi_epi32(b0, b2);
+   __m128i c2 = _mm_unpacklo_epi32(b1, b3);
+   __m128i c3 = _mm_unpackhi_epi32(b1, b3);
+   out[0] = c0;
+   out[1] = _mm_srli_si128(c0, 8);
+   out[2] = c1;
+   out[3] = _mm_srli_si128(c1, 8);
+   out[4] = c2;
+   out[5] = _mm_srli_si128(c2, 8);
+   out[6] = c3;
+   out[7] = _mm_srli_si128(c3, 8);
+}
+
+
+
+/* ---- SSE2 edge appliers (8 lines per call, like the scalar) ---- */
+
+static void rvp9_lpf_horizontal_4_sse2(uint8_t *s, int pitch,
+      uint8_t blimit, uint8_t limit, uint8_t thresh)
+{
+   __m128i bl = _mm_set1_epi8((char)blimit);
+   __m128i li = _mm_set1_epi8((char)limit);
+   __m128i th = _mm_set1_epi8((char)thresh);
+   __m128i p3 = _mm_loadl_epi64((const __m128i*)(s - 4 * pitch));
+   __m128i p2 = _mm_loadl_epi64((const __m128i*)(s - 3 * pitch));
+   __m128i p1 = _mm_loadl_epi64((const __m128i*)(s - 2 * pitch));
+   __m128i p0 = _mm_loadl_epi64((const __m128i*)(s - 1 * pitch));
+   __m128i q0 = _mm_loadl_epi64((const __m128i*)(s + 0 * pitch));
+   __m128i q1 = _mm_loadl_epi64((const __m128i*)(s + 1 * pitch));
+   __m128i q2 = _mm_loadl_epi64((const __m128i*)(s + 2 * pitch));
+   __m128i q3 = _mm_loadl_epi64((const __m128i*)(s + 3 * pitch));
+   __m128i mask, hev;
+   rvp9_lf_mask_hev_sse2(li, bl, th, p3, p2, p1, p0, q0, q1, q2, q3,
+         &mask, &hev);
+   rvp9_lf_filter4_sse2(mask, hev, &p1, &p0, &q0, &q1);
+   _mm_storel_epi64((__m128i*)(s - 2 * pitch), p1);
+   _mm_storel_epi64((__m128i*)(s - 1 * pitch), p0);
+   _mm_storel_epi64((__m128i*)(s + 0 * pitch), q0);
+   _mm_storel_epi64((__m128i*)(s + 1 * pitch), q1);
+}
+
+static void rvp9_lpf_horizontal_8_sse2(uint8_t *s, int pitch,
+      uint8_t blimit, uint8_t limit, uint8_t thresh)
+{
+   __m128i bl = _mm_set1_epi8((char)blimit);
+   __m128i li = _mm_set1_epi8((char)limit);
+   __m128i th = _mm_set1_epi8((char)thresh);
+   __m128i p3 = _mm_loadl_epi64((const __m128i*)(s - 4 * pitch));
+   __m128i p2 = _mm_loadl_epi64((const __m128i*)(s - 3 * pitch));
+   __m128i p1 = _mm_loadl_epi64((const __m128i*)(s - 2 * pitch));
+   __m128i p0 = _mm_loadl_epi64((const __m128i*)(s - 1 * pitch));
+   __m128i q0 = _mm_loadl_epi64((const __m128i*)(s + 0 * pitch));
+   __m128i q1 = _mm_loadl_epi64((const __m128i*)(s + 1 * pitch));
+   __m128i q2 = _mm_loadl_epi64((const __m128i*)(s + 2 * pitch));
+   __m128i q3 = _mm_loadl_epi64((const __m128i*)(s + 3 * pitch));
+   __m128i mask, hev, flat;
+   rvp9_lf_mask_hev_sse2(li, bl, th, p3, p2, p1, p0, q0, q1, q2, q3,
+         &mask, &hev);
+   flat = rvp9_lf_flat4_sse2(p3, p2, p1, p0, q0, q1, q2, q3);
+   rvp9_lf_filter8_sse2(mask, hev, flat, p3, &p2, &p1, &p0,
+         &q0, &q1, &q2, q3);
+   _mm_storel_epi64((__m128i*)(s - 3 * pitch), p2);
+   _mm_storel_epi64((__m128i*)(s - 2 * pitch), p1);
+   _mm_storel_epi64((__m128i*)(s - 1 * pitch), p0);
+   _mm_storel_epi64((__m128i*)(s + 0 * pitch), q0);
+   _mm_storel_epi64((__m128i*)(s + 1 * pitch), q1);
+   _mm_storel_epi64((__m128i*)(s + 2 * pitch), q2);
+}
+
+static void rvp9_lpf_horizontal_16_sse2(uint8_t *s, int pitch,
+      uint8_t blimit, uint8_t limit, uint8_t thresh)
+{
+   __m128i bl = _mm_set1_epi8((char)blimit);
+   __m128i li = _mm_set1_epi8((char)limit);
+   __m128i th = _mm_set1_epi8((char)thresh);
+   __m128i r[16], mask, hev, flat, flat2, m5;
+   int k;
+   for (k = 0; k < 16; k++)
+      r[k] = _mm_loadl_epi64((const __m128i*)(s + (k - 8) * pitch));
+   rvp9_lf_mask_hev_sse2(li, bl, th, r[4], r[5], r[6], r[7],
+         r[8], r[9], r[10], r[11], &mask, &hev);
+   flat = rvp9_lf_flat4_sse2(r[4], r[5], r[6], r[7],
+         r[8], r[9], r[10], r[11]);
+   m5 = _mm_max_epu8(rvp9_lf_absd8(r[0], r[7]), rvp9_lf_absd8(r[15], r[8]));
+   m5 = _mm_max_epu8(m5, rvp9_lf_absd8(r[1], r[7]));
+   m5 = _mm_max_epu8(m5, rvp9_lf_absd8(r[14], r[8]));
+   m5 = _mm_max_epu8(m5, rvp9_lf_absd8(r[2], r[7]));
+   m5 = _mm_max_epu8(m5, rvp9_lf_absd8(r[13], r[8]));
+   m5 = _mm_max_epu8(m5, rvp9_lf_absd8(r[3], r[7]));
+   m5 = _mm_max_epu8(m5, rvp9_lf_absd8(r[12], r[8]));
+   flat2 = rvp9_lf_le8(m5, _mm_set1_epi8(1));
+   rvp9_lf_filter16_sse2(mask, hev, flat, flat2, r);
+   for (k = 1; k < 15; k++)
+      _mm_storel_epi64((__m128i*)(s + (k - 8) * pitch), r[k]);
+}
+
+static void rvp9_lpf_vertical_4_sse2(uint8_t *s, int pitch,
+      uint8_t blimit, uint8_t limit, uint8_t thresh)
+{
+   __m128i bl = _mm_set1_epi8((char)blimit);
+   __m128i li = _mm_set1_epi8((char)limit);
+   __m128i th = _mm_set1_epi8((char)thresh);
+   __m128i rows[8], cols[8], mask, hev;
+   int k;
+   for (k = 0; k < 8; k++)
+      rows[k] = _mm_loadl_epi64((const __m128i*)(s - 4 + k * pitch));
+   rvp9_lf_transpose8x8(rows, cols);
+   rvp9_lf_mask_hev_sse2(li, bl, th, cols[0], cols[1], cols[2], cols[3],
+         cols[4], cols[5], cols[6], cols[7], &mask, &hev);
+   rvp9_lf_filter4_sse2(mask, hev, &cols[2], &cols[3], &cols[4], &cols[5]);
+   rvp9_lf_transpose8x8(cols, rows);
+   for (k = 0; k < 8; k++)
+      _mm_storel_epi64((__m128i*)(s - 4 + k * pitch), rows[k]);
+}
+
+static void rvp9_lpf_vertical_8_sse2(uint8_t *s, int pitch,
+      uint8_t blimit, uint8_t limit, uint8_t thresh)
+{
+   __m128i bl = _mm_set1_epi8((char)blimit);
+   __m128i li = _mm_set1_epi8((char)limit);
+   __m128i th = _mm_set1_epi8((char)thresh);
+   __m128i rows[8], cols[8], mask, hev, flat;
+   int k;
+   for (k = 0; k < 8; k++)
+      rows[k] = _mm_loadl_epi64((const __m128i*)(s - 4 + k * pitch));
+   rvp9_lf_transpose8x8(rows, cols);
+   rvp9_lf_mask_hev_sse2(li, bl, th, cols[0], cols[1], cols[2], cols[3],
+         cols[4], cols[5], cols[6], cols[7], &mask, &hev);
+   flat = rvp9_lf_flat4_sse2(cols[0], cols[1], cols[2], cols[3],
+         cols[4], cols[5], cols[6], cols[7]);
+   rvp9_lf_filter8_sse2(mask, hev, flat, cols[0], &cols[1], &cols[2],
+         &cols[3], &cols[4], &cols[5], &cols[6], cols[7]);
+   rvp9_lf_transpose8x8(cols, rows);
+   for (k = 0; k < 8; k++)
+      _mm_storel_epi64((__m128i*)(s - 4 + k * pitch), rows[k]);
+}
+
+static void rvp9_lpf_vertical_16_sse2(uint8_t *s, int pitch,
+      uint8_t blimit, uint8_t limit, uint8_t thresh)
+{
+   __m128i bl = _mm_set1_epi8((char)blimit);
+   __m128i li = _mm_set1_epi8((char)limit);
+   __m128i th = _mm_set1_epi8((char)thresh);
+   __m128i lo[8], hi[8], r[16], mask, hev, flat, flat2, m5;
+   int k;
+   for (k = 0; k < 8; k++)
+   {
+      __m128i row = _mm_loadu_si128((const __m128i*)(s - 8 + k * pitch));
+      lo[k] = row;
+      hi[k] = _mm_srli_si128(row, 8);
+   }
+   rvp9_lf_transpose8x8(lo, r);        /* p7..p0 into r[0..7]  */
+   rvp9_lf_transpose8x8(hi, r + 8);    /* q0..q7 into r[8..15] */
+   rvp9_lf_mask_hev_sse2(li, bl, th, r[4], r[5], r[6], r[7],
+         r[8], r[9], r[10], r[11], &mask, &hev);
+   flat = rvp9_lf_flat4_sse2(r[4], r[5], r[6], r[7],
+         r[8], r[9], r[10], r[11]);
+   m5 = _mm_max_epu8(rvp9_lf_absd8(r[0], r[7]), rvp9_lf_absd8(r[15], r[8]));
+   m5 = _mm_max_epu8(m5, rvp9_lf_absd8(r[1], r[7]));
+   m5 = _mm_max_epu8(m5, rvp9_lf_absd8(r[14], r[8]));
+   m5 = _mm_max_epu8(m5, rvp9_lf_absd8(r[2], r[7]));
+   m5 = _mm_max_epu8(m5, rvp9_lf_absd8(r[13], r[8]));
+   m5 = _mm_max_epu8(m5, rvp9_lf_absd8(r[3], r[7]));
+   m5 = _mm_max_epu8(m5, rvp9_lf_absd8(r[12], r[8]));
+   flat2 = rvp9_lf_le8(m5, _mm_set1_epi8(1));
+   rvp9_lf_filter16_sse2(mask, hev, flat, flat2, r);
+   rvp9_lf_transpose8x8(r, lo);
+   rvp9_lf_transpose8x8(r + 8, hi);
+   for (k = 0; k < 8; k++)
+   {
+      _mm_storel_epi64((__m128i*)(s - 8 + k * pitch), lo[k]);
+      _mm_storel_epi64((__m128i*)(s     + k * pitch), hi[k]);
+   }
+}
+#endif /* RVP9_SSE2 */
+
+#if defined(RVP9_NEON)
+/* NEON translation of the SSE2 loop filter above; the same integer
+ * expressions lane for lane (vabd/vmax/vcle for the masks, vqadd/vqsub
+ * signed-saturating int8 for filter4 with a native arithmetic
+ * vshr_n_s8, u16 sliding sums with vrshrq rounding for the smoothing
+ * taps, vbsl for the cascade blends). */
+
+static void rvp9_lf_mask_hev_neon(uint8x8_t limit, uint8x8_t blimit,
+      uint8x8_t thresh,
+      uint8x8_t p3, uint8x8_t p2, uint8x8_t p1, uint8x8_t p0,
+      uint8x8_t q0, uint8x8_t q1, uint8x8_t q2, uint8x8_t q3,
+      uint8x8_t *mask, uint8x8_t *hev)
+{
+   uint8x8_t m = vmax_u8(vabd_u8(p3, p2), vabd_u8(p2, p1));
+   uint16x8_t t;
+   uint8x8_t in_blimit;
+   m = vmax_u8(m, vabd_u8(p1, p0));
+   m = vmax_u8(m, vabd_u8(q1, q0));
+   m = vmax_u8(m, vabd_u8(q2, q1));
+   m = vmax_u8(m, vabd_u8(q3, q2));
+
+   /* abs(p0-q0)*2 + abs(p1-q1)/2 <= blimit, exact in 16-bit */
+   t = vaddq_u16(vshlq_n_u16(vmovl_u8(vabd_u8(p0, q0)), 1),
+                 vshrq_n_u16(vmovl_u8(vabd_u8(p1, q1)), 1));
+   in_blimit = vmovn_u16(vcleq_u16(t, vmovl_u8(blimit)));
+
+   *mask = vand_u8(vcle_u8(m, limit), in_blimit);
+   *hev  = vcgt_u8(vmax_u8(vabd_u8(p1, p0), vabd_u8(q1, q0)), thresh);
+}
+
+static INLINE uint8x8_t rvp9_lf_flat4_neon(uint8x8_t p3, uint8x8_t p2,
+      uint8x8_t p1, uint8x8_t p0, uint8x8_t q0, uint8x8_t q1,
+      uint8x8_t q2, uint8x8_t q3)
+{
+   uint8x8_t m = vmax_u8(vabd_u8(p1, p0), vabd_u8(q1, q0));
+   m = vmax_u8(m, vabd_u8(p2, p0));
+   m = vmax_u8(m, vabd_u8(q2, q0));
+   m = vmax_u8(m, vabd_u8(p3, p0));
+   m = vmax_u8(m, vabd_u8(q3, q0));
+   return vcle_u8(m, vdup_n_u8(1));
+}
+
+static void rvp9_lf_filter4_neon(uint8x8_t mask, uint8x8_t hev,
+      uint8x8_t *p1, uint8x8_t *p0, uint8x8_t *q0, uint8x8_t *q1)
+{
+   const int8x8_t sb = vdup_n_s8((int8_t)0x80);
+   int8x8_t ps1 = veor_s8(vreinterpret_s8_u8(*p1), sb);
+   int8x8_t ps0 = veor_s8(vreinterpret_s8_u8(*p0), sb);
+   int8x8_t qs0 = veor_s8(vreinterpret_s8_u8(*q0), sb);
+   int8x8_t qs1 = veor_s8(vreinterpret_s8_u8(*q1), sb);
+   int8x8_t filt, work, f1, f2, f3;
+
+   filt = vand_s8(vqsub_s8(ps1, qs1), vreinterpret_s8_u8(hev));
+   work = vqsub_s8(qs0, ps0);
+   filt = vqadd_s8(filt, work);
+   filt = vqadd_s8(filt, work);
+   filt = vqadd_s8(filt, work);
+   filt = vand_s8(filt, vreinterpret_s8_u8(mask));
+
+   f1 = vshr_n_s8(vqadd_s8(filt, vdup_n_s8(4)), 3);
+   f2 = vshr_n_s8(vqadd_s8(filt, vdup_n_s8(3)), 3);
+
+   *q0 = vreinterpret_u8_s8(veor_s8(vqsub_s8(qs0, f1), sb));
+   *p0 = vreinterpret_u8_s8(veor_s8(vqadd_s8(ps0, f2), sb));
+
+   f3 = vshr_n_s8(vqadd_s8(f1, vdup_n_s8(1)), 1);
+   f3 = vbic_s8(f3, vreinterpret_s8_u8(hev));
+
+   *q1 = vreinterpret_u8_s8(veor_s8(vqsub_s8(qs1, f3), sb));
+   *p1 = vreinterpret_u8_s8(veor_s8(vqadd_s8(ps1, f3), sb));
+}
+
+static INLINE uint8x8_t rvp9_lf_r3_neon(uint16x8_t sum)
+{
+   return vmovn_u16(vshrq_n_u16(vaddq_u16(sum, vdupq_n_u16(4)), 3));
+}
+
+static INLINE uint8x8_t rvp9_lf_r4_neon(uint16x8_t sum)
+{
+   return vmovn_u16(vshrq_n_u16(vaddq_u16(sum, vdupq_n_u16(8)), 4));
+}
+
+static void rvp9_lf_filter8_neon(uint8x8_t mask, uint8x8_t hev,
+      uint8x8_t flat, uint8x8_t p3, uint8x8_t *p2, uint8x8_t *p1,
+      uint8x8_t *p0, uint8x8_t *q0, uint8x8_t *q1, uint8x8_t *q2,
+      uint8x8_t q3)
+{
+   uint8x8_t sel = vand_u8(flat, mask);
+   uint8x8_t f_p1 = *p1, f_p0 = *p0, f_q0 = *q0, f_q1 = *q1;
+   uint16x8_t P3 = vmovl_u8(p3),  P2 = vmovl_u8(*p2);
+   uint16x8_t P1 = vmovl_u8(*p1), P0 = vmovl_u8(*p0);
+   uint16x8_t Q0 = vmovl_u8(*q0), Q1 = vmovl_u8(*q1);
+   uint16x8_t Q2 = vmovl_u8(*q2), Q3 = vmovl_u8(q3);
+   uint16x8_t sum;
+   uint8x8_t s_p2, s_p1, s_p0, s_q0, s_q1, s_q2;
+
+   rvp9_lf_filter4_neon(mask, hev, &f_p1, &f_p0, &f_q0, &f_q1);
+
+   sum  = vaddq_u16(vaddq_u16(P3, P3),
+          vaddq_u16(vaddq_u16(P3, P2),
+          vaddq_u16(vaddq_u16(P2, P1), vaddq_u16(P0, Q0))));
+   s_p2 = rvp9_lf_r3_neon(sum);
+   sum  = vsubq_u16(vaddq_u16(sum, vaddq_u16(P1, Q1)), vaddq_u16(P3, P2));
+   s_p1 = rvp9_lf_r3_neon(sum);
+   sum  = vsubq_u16(vaddq_u16(sum, vaddq_u16(P0, Q2)), vaddq_u16(P3, P1));
+   s_p0 = rvp9_lf_r3_neon(sum);
+   sum  = vsubq_u16(vaddq_u16(sum, vaddq_u16(Q0, Q3)), vaddq_u16(P3, P0));
+   s_q0 = rvp9_lf_r3_neon(sum);
+   sum  = vsubq_u16(vaddq_u16(sum, vaddq_u16(Q1, Q3)), vaddq_u16(P2, Q0));
+   s_q1 = rvp9_lf_r3_neon(sum);
+   sum  = vsubq_u16(vaddq_u16(sum, vaddq_u16(Q2, Q3)), vaddq_u16(P1, Q1));
+   s_q2 = rvp9_lf_r3_neon(sum);
+
+   *p2 = vbsl_u8(sel, s_p2, *p2);
+   *p1 = vbsl_u8(sel, s_p1, f_p1);
+   *p0 = vbsl_u8(sel, s_p0, f_p0);
+   *q0 = vbsl_u8(sel, s_q0, f_q0);
+   *q1 = vbsl_u8(sel, s_q1, f_q1);
+   *q2 = vbsl_u8(sel, s_q2, *q2);
+}
+
+static void rvp9_lf_filter16_neon(uint8x8_t mask, uint8x8_t hev,
+      uint8x8_t flat, uint8x8_t flat2, uint8x8_t r[16])
+{
+   uint8x8_t sel = vand_u8(flat2, vand_u8(flat, mask));
+   uint16x8_t W[16], sum;
+   uint8x8_t out[14];
+   int i;
+
+   for (i = 0; i < 16; i++)
+      W[i] = vmovl_u8(r[i]);
+
+   rvp9_lf_filter8_neon(mask, hev, flat, r[4], &r[5], &r[6], &r[7],
+         &r[8], &r[9], &r[10], r[11]);
+
+   sum = vaddq_u16(vshlq_n_u16(W[0], 3), W[1]);
+   sum = vsubq_u16(sum, W[0]);
+   sum = vaddq_u16(sum, W[1]);
+   for (i = 2; i <= 8; i++)
+      sum = vaddq_u16(sum, W[i]);
+   out[0] = rvp9_lf_r4_neon(sum);
+   sum = vsubq_u16(vaddq_u16(sum, vaddq_u16(W[2], W[9])),
+         vaddq_u16(W[0], W[1]));
+   out[1] = rvp9_lf_r4_neon(sum);
+   sum = vsubq_u16(vaddq_u16(sum, vaddq_u16(W[3], W[10])),
+         vaddq_u16(W[0], W[2]));
+   out[2] = rvp9_lf_r4_neon(sum);
+   sum = vsubq_u16(vaddq_u16(sum, vaddq_u16(W[4], W[11])),
+         vaddq_u16(W[0], W[3]));
+   out[3] = rvp9_lf_r4_neon(sum);
+   sum = vsubq_u16(vaddq_u16(sum, vaddq_u16(W[5], W[12])),
+         vaddq_u16(W[0], W[4]));
+   out[4] = rvp9_lf_r4_neon(sum);
+   sum = vsubq_u16(vaddq_u16(sum, vaddq_u16(W[6], W[13])),
+         vaddq_u16(W[0], W[5]));
+   out[5] = rvp9_lf_r4_neon(sum);
+   sum = vsubq_u16(vaddq_u16(sum, vaddq_u16(W[7], W[14])),
+         vaddq_u16(W[0], W[6]));
+   out[6] = rvp9_lf_r4_neon(sum);
+   sum = vsubq_u16(vaddq_u16(sum, vaddq_u16(W[8], W[15])),
+         vaddq_u16(W[0], W[7]));
+   out[7] = rvp9_lf_r4_neon(sum);
+   sum = vsubq_u16(vaddq_u16(sum, vaddq_u16(W[9],  W[15])),
+         vaddq_u16(W[1], W[8]));
+   out[8] = rvp9_lf_r4_neon(sum);
+   sum = vsubq_u16(vaddq_u16(sum, vaddq_u16(W[10], W[15])),
+         vaddq_u16(W[2], W[9]));
+   out[9] = rvp9_lf_r4_neon(sum);
+   sum = vsubq_u16(vaddq_u16(sum, vaddq_u16(W[11], W[15])),
+         vaddq_u16(W[3], W[10]));
+   out[10] = rvp9_lf_r4_neon(sum);
+   sum = vsubq_u16(vaddq_u16(sum, vaddq_u16(W[12], W[15])),
+         vaddq_u16(W[4], W[11]));
+   out[11] = rvp9_lf_r4_neon(sum);
+   sum = vsubq_u16(vaddq_u16(sum, vaddq_u16(W[13], W[15])),
+         vaddq_u16(W[5], W[12]));
+   out[12] = rvp9_lf_r4_neon(sum);
+   sum = vsubq_u16(vaddq_u16(sum, vaddq_u16(W[14], W[15])),
+         vaddq_u16(W[6], W[13]));
+   out[13] = rvp9_lf_r4_neon(sum);
+
+   for (i = 0; i < 14; i++)
+      r[i + 1] = vbsl_u8(sel, out[i], r[i + 1]);
+}
+
+/* 8x8 byte transpose via vtrn cascades */
+static void rvp9_lf_transpose8x8_neon(const uint8x8_t *in, uint8x8_t *out)
+{
+   uint8x8x2_t  b0 = vtrn_u8(in[0], in[1]);
+   uint8x8x2_t  b1 = vtrn_u8(in[2], in[3]);
+   uint8x8x2_t  b2 = vtrn_u8(in[4], in[5]);
+   uint8x8x2_t  b3 = vtrn_u8(in[6], in[7]);
+   uint16x4x2_t c0 = vtrn_u16(vreinterpret_u16_u8(b0.val[0]),
+                              vreinterpret_u16_u8(b1.val[0]));
+   uint16x4x2_t c1 = vtrn_u16(vreinterpret_u16_u8(b0.val[1]),
+                              vreinterpret_u16_u8(b1.val[1]));
+   uint16x4x2_t c2 = vtrn_u16(vreinterpret_u16_u8(b2.val[0]),
+                              vreinterpret_u16_u8(b3.val[0]));
+   uint16x4x2_t c3 = vtrn_u16(vreinterpret_u16_u8(b2.val[1]),
+                              vreinterpret_u16_u8(b3.val[1]));
+   uint32x2x2_t d0 = vtrn_u32(vreinterpret_u32_u16(c0.val[0]),
+                              vreinterpret_u32_u16(c2.val[0]));
+   uint32x2x2_t d1 = vtrn_u32(vreinterpret_u32_u16(c1.val[0]),
+                              vreinterpret_u32_u16(c3.val[0]));
+   uint32x2x2_t d2 = vtrn_u32(vreinterpret_u32_u16(c0.val[1]),
+                              vreinterpret_u32_u16(c2.val[1]));
+   uint32x2x2_t d3 = vtrn_u32(vreinterpret_u32_u16(c1.val[1]),
+                              vreinterpret_u32_u16(c3.val[1]));
+   out[0] = vreinterpret_u8_u32(d0.val[0]);
+   out[1] = vreinterpret_u8_u32(d1.val[0]);
+   out[2] = vreinterpret_u8_u32(d2.val[0]);
+   out[3] = vreinterpret_u8_u32(d3.val[0]);
+   out[4] = vreinterpret_u8_u32(d0.val[1]);
+   out[5] = vreinterpret_u8_u32(d1.val[1]);
+   out[6] = vreinterpret_u8_u32(d2.val[1]);
+   out[7] = vreinterpret_u8_u32(d3.val[1]);
+}
+
+static void rvp9_lpf_horizontal_4_neon(uint8_t *s, int pitch,
+      uint8_t blimit, uint8_t limit, uint8_t thresh)
+{
+   uint8x8_t bl = vdup_n_u8(blimit), li = vdup_n_u8(limit);
+   uint8x8_t th = vdup_n_u8(thresh);
+   uint8x8_t p3 = vld1_u8(s - 4 * pitch), p2 = vld1_u8(s - 3 * pitch);
+   uint8x8_t p1 = vld1_u8(s - 2 * pitch), p0 = vld1_u8(s - 1 * pitch);
+   uint8x8_t q0 = vld1_u8(s),             q1 = vld1_u8(s + 1 * pitch);
+   uint8x8_t q2 = vld1_u8(s + 2 * pitch), q3 = vld1_u8(s + 3 * pitch);
+   uint8x8_t mask, hev;
+   rvp9_lf_mask_hev_neon(li, bl, th, p3, p2, p1, p0, q0, q1, q2, q3,
+         &mask, &hev);
+   rvp9_lf_filter4_neon(mask, hev, &p1, &p0, &q0, &q1);
+   vst1_u8(s - 2 * pitch, p1);
+   vst1_u8(s - 1 * pitch, p0);
+   vst1_u8(s,             q0);
+   vst1_u8(s + 1 * pitch, q1);
+}
+
+static void rvp9_lpf_horizontal_8_neon(uint8_t *s, int pitch,
+      uint8_t blimit, uint8_t limit, uint8_t thresh)
+{
+   uint8x8_t bl = vdup_n_u8(blimit), li = vdup_n_u8(limit);
+   uint8x8_t th = vdup_n_u8(thresh);
+   uint8x8_t p3 = vld1_u8(s - 4 * pitch), p2 = vld1_u8(s - 3 * pitch);
+   uint8x8_t p1 = vld1_u8(s - 2 * pitch), p0 = vld1_u8(s - 1 * pitch);
+   uint8x8_t q0 = vld1_u8(s),             q1 = vld1_u8(s + 1 * pitch);
+   uint8x8_t q2 = vld1_u8(s + 2 * pitch), q3 = vld1_u8(s + 3 * pitch);
+   uint8x8_t mask, hev, flat;
+   rvp9_lf_mask_hev_neon(li, bl, th, p3, p2, p1, p0, q0, q1, q2, q3,
+         &mask, &hev);
+   flat = rvp9_lf_flat4_neon(p3, p2, p1, p0, q0, q1, q2, q3);
+   rvp9_lf_filter8_neon(mask, hev, flat, p3, &p2, &p1, &p0,
+         &q0, &q1, &q2, q3);
+   vst1_u8(s - 3 * pitch, p2);
+   vst1_u8(s - 2 * pitch, p1);
+   vst1_u8(s - 1 * pitch, p0);
+   vst1_u8(s,             q0);
+   vst1_u8(s + 1 * pitch, q1);
+   vst1_u8(s + 2 * pitch, q2);
+}
+
+static void rvp9_lpf_horizontal_16_neon(uint8_t *s, int pitch,
+      uint8_t blimit, uint8_t limit, uint8_t thresh)
+{
+   uint8x8_t bl = vdup_n_u8(blimit), li = vdup_n_u8(limit);
+   uint8x8_t th = vdup_n_u8(thresh);
+   uint8x8_t r[16], mask, hev, flat, flat2, m5;
+   int k;
+   for (k = 0; k < 16; k++)
+      r[k] = vld1_u8(s + (k - 8) * pitch);
+   rvp9_lf_mask_hev_neon(li, bl, th, r[4], r[5], r[6], r[7],
+         r[8], r[9], r[10], r[11], &mask, &hev);
+   flat = rvp9_lf_flat4_neon(r[4], r[5], r[6], r[7],
+         r[8], r[9], r[10], r[11]);
+   m5 = vmax_u8(vabd_u8(r[0], r[7]), vabd_u8(r[15], r[8]));
+   m5 = vmax_u8(m5, vabd_u8(r[1], r[7]));
+   m5 = vmax_u8(m5, vabd_u8(r[14], r[8]));
+   m5 = vmax_u8(m5, vabd_u8(r[2], r[7]));
+   m5 = vmax_u8(m5, vabd_u8(r[13], r[8]));
+   m5 = vmax_u8(m5, vabd_u8(r[3], r[7]));
+   m5 = vmax_u8(m5, vabd_u8(r[12], r[8]));
+   flat2 = vcle_u8(m5, vdup_n_u8(1));
+   rvp9_lf_filter16_neon(mask, hev, flat, flat2, r);
+   for (k = 1; k < 15; k++)
+      vst1_u8(s + (k - 8) * pitch, r[k]);
+}
+
+static void rvp9_lpf_vertical_4_neon(uint8_t *s, int pitch,
+      uint8_t blimit, uint8_t limit, uint8_t thresh)
+{
+   uint8x8_t bl = vdup_n_u8(blimit), li = vdup_n_u8(limit);
+   uint8x8_t th = vdup_n_u8(thresh);
+   uint8x8_t rows[8], cols[8], mask, hev;
+   int k;
+   for (k = 0; k < 8; k++)
+      rows[k] = vld1_u8(s - 4 + k * pitch);
+   rvp9_lf_transpose8x8_neon(rows, cols);
+   rvp9_lf_mask_hev_neon(li, bl, th, cols[0], cols[1], cols[2], cols[3],
+         cols[4], cols[5], cols[6], cols[7], &mask, &hev);
+   rvp9_lf_filter4_neon(mask, hev, &cols[2], &cols[3], &cols[4], &cols[5]);
+   rvp9_lf_transpose8x8_neon(cols, rows);
+   for (k = 0; k < 8; k++)
+      vst1_u8(s - 4 + k * pitch, rows[k]);
+}
+
+static void rvp9_lpf_vertical_8_neon(uint8_t *s, int pitch,
+      uint8_t blimit, uint8_t limit, uint8_t thresh)
+{
+   uint8x8_t bl = vdup_n_u8(blimit), li = vdup_n_u8(limit);
+   uint8x8_t th = vdup_n_u8(thresh);
+   uint8x8_t rows[8], cols[8], mask, hev, flat;
+   int k;
+   for (k = 0; k < 8; k++)
+      rows[k] = vld1_u8(s - 4 + k * pitch);
+   rvp9_lf_transpose8x8_neon(rows, cols);
+   rvp9_lf_mask_hev_neon(li, bl, th, cols[0], cols[1], cols[2], cols[3],
+         cols[4], cols[5], cols[6], cols[7], &mask, &hev);
+   flat = rvp9_lf_flat4_neon(cols[0], cols[1], cols[2], cols[3],
+         cols[4], cols[5], cols[6], cols[7]);
+   rvp9_lf_filter8_neon(mask, hev, flat, cols[0], &cols[1], &cols[2],
+         &cols[3], &cols[4], &cols[5], &cols[6], cols[7]);
+   rvp9_lf_transpose8x8_neon(cols, rows);
+   for (k = 0; k < 8; k++)
+      vst1_u8(s - 4 + k * pitch, rows[k]);
+}
+
+static void rvp9_lpf_vertical_16_neon(uint8_t *s, int pitch,
+      uint8_t blimit, uint8_t limit, uint8_t thresh)
+{
+   uint8x8_t bl = vdup_n_u8(blimit), li = vdup_n_u8(limit);
+   uint8x8_t th = vdup_n_u8(thresh);
+   uint8x8_t lo[8], hi[8], r[16], mask, hev, flat, flat2, m5;
+   int k;
+   for (k = 0; k < 8; k++)
+   {
+      lo[k] = vld1_u8(s - 8 + k * pitch);
+      hi[k] = vld1_u8(s     + k * pitch);
+   }
+   rvp9_lf_transpose8x8_neon(lo, r);
+   rvp9_lf_transpose8x8_neon(hi, r + 8);
+   rvp9_lf_mask_hev_neon(li, bl, th, r[4], r[5], r[6], r[7],
+         r[8], r[9], r[10], r[11], &mask, &hev);
+   flat = rvp9_lf_flat4_neon(r[4], r[5], r[6], r[7],
+         r[8], r[9], r[10], r[11]);
+   m5 = vmax_u8(vabd_u8(r[0], r[7]), vabd_u8(r[15], r[8]));
+   m5 = vmax_u8(m5, vabd_u8(r[1], r[7]));
+   m5 = vmax_u8(m5, vabd_u8(r[14], r[8]));
+   m5 = vmax_u8(m5, vabd_u8(r[2], r[7]));
+   m5 = vmax_u8(m5, vabd_u8(r[13], r[8]));
+   m5 = vmax_u8(m5, vabd_u8(r[3], r[7]));
+   m5 = vmax_u8(m5, vabd_u8(r[12], r[8]));
+   flat2 = vcle_u8(m5, vdup_n_u8(1));
+   rvp9_lf_filter16_neon(mask, hev, flat, flat2, r);
+   rvp9_lf_transpose8x8_neon(r, lo);
+   rvp9_lf_transpose8x8_neon(r + 8, hi);
+   for (k = 0; k < 8; k++)
+   {
+      vst1_u8(s - 8 + k * pitch, lo[k]);
+      vst1_u8(s     + k * pitch, hi[k]);
+   }
+}
+#endif /* RVP9_NEON */
+
 static void rvp9_lpf_horizontal_4(uint8_t *s, int pitch, const uint8_t *blimit,
                             const uint8_t *limit, const uint8_t *thresh) {
   int i;
+
+#if defined(RVP9_SSE2)
+  rvp9_lpf_horizontal_4_sse2(s, pitch, *blimit, *limit, *thresh);
+  (void)i;
+  return;
+#elif defined(RVP9_NEON)
+  rvp9_lpf_horizontal_4_neon(s, pitch, *blimit, *limit, *thresh);
+  (void)i;
+  return;
+#endif
 
 /* loop filter designed to work using chars so that we can make maximum use */
 /* of 8 bit simd instructions. */
@@ -5348,6 +6278,16 @@ static void rvp9_lpf_vertical_4(uint8_t *s, int pitch, const uint8_t *blimit,
                           const uint8_t *limit, const uint8_t *thresh) {
   int i;
 
+#if defined(RVP9_SSE2)
+  rvp9_lpf_vertical_4_sse2(s, pitch, *blimit, *limit, *thresh);
+  (void)i;
+  return;
+#elif defined(RVP9_NEON)
+  rvp9_lpf_vertical_4_neon(s, pitch, *blimit, *limit, *thresh);
+  (void)i;
+  return;
+#endif
+
 /* loop filter designed to work using chars so that we can make maximum use */
 /* of 8 bit simd instructions. */
   for (i = 0; i < 8; ++i) {
@@ -5363,6 +6303,16 @@ static void rvp9_lpf_vertical_4(uint8_t *s, int pitch, const uint8_t *blimit,
 static void rvp9_lpf_horizontal_8(uint8_t *s, int pitch, const uint8_t *blimit,
                             const uint8_t *limit, const uint8_t *thresh) {
   int i;
+
+#if defined(RVP9_SSE2)
+  rvp9_lpf_horizontal_8_sse2(s, pitch, *blimit, *limit, *thresh);
+  (void)i;
+  return;
+#elif defined(RVP9_NEON)
+  rvp9_lpf_horizontal_8_neon(s, pitch, *blimit, *limit, *thresh);
+  (void)i;
+  return;
+#endif
 
 /* loop filter designed to work using chars so that we can make maximum use */
 /* of 8 bit simd instructions. */
@@ -5385,6 +6335,16 @@ static void rvp9_lpf_vertical_8(uint8_t *s, int pitch, const uint8_t *blimit,
                           const uint8_t *limit, const uint8_t *thresh) {
   int i;
 
+#if defined(RVP9_SSE2)
+  rvp9_lpf_vertical_8_sse2(s, pitch, *blimit, *limit, *thresh);
+  (void)i;
+  return;
+#elif defined(RVP9_NEON)
+  rvp9_lpf_vertical_8_neon(s, pitch, *blimit, *limit, *thresh);
+  (void)i;
+  return;
+#endif
+
   for (i = 0; i < 8; ++i) {
     const uint8_t p3 = s[-4], p2 = s[-3], p1 = s[-2], p0 = s[-1];
     const uint8_t q0 = s[0], q1 = s[1], q2 = s[2], q3 = s[3];
@@ -5402,6 +6362,16 @@ static void rvp9_mb_lpf_horizontal_edge_w(uint8_t *s, int pitch,
                                      const uint8_t *limit,
                                      const uint8_t *thresh, int count) {
   int i;
+
+#if defined(RVP9_SSE2)
+  for (i = 0; i < count; i++)
+     rvp9_lpf_horizontal_16_sse2(s + 8 * i, pitch, *blimit, *limit, *thresh);
+  return;
+#elif defined(RVP9_NEON)
+  for (i = 0; i < count; i++)
+     rvp9_lpf_horizontal_16_neon(s + 8 * i, pitch, *blimit, *limit, *thresh);
+  return;
+#endif
 
 /* loop filter designed to work using chars so that we can make maximum use */
 /* of 8 bit simd instructions. */
@@ -5436,6 +6406,16 @@ static void rvp9_mb_lpf_vertical_edge_w(uint8_t *s, int pitch, const uint8_t *bl
                                    int count) {
   int i;
 
+#if defined(RVP9_SSE2)
+  for (i = 0; i < count; i += 8)
+     rvp9_lpf_vertical_16_sse2(s + i * pitch, pitch, *blimit, *limit, *thresh);
+  return;
+#elif defined(RVP9_NEON)
+  for (i = 0; i < count; i += 8)
+     rvp9_lpf_vertical_16_neon(s + i * pitch, pitch, *blimit, *limit, *thresh);
+  return;
+#endif
+
   for (i = 0; i < count; ++i) {
     const uint8_t p3 = s[-4], p2 = s[-3], p1 = s[-2], p0 = s[-1];
     const uint8_t q0 = s[0], q1 = s[1], q2 = s[2], q3 = s[3];
@@ -5467,12 +6447,487 @@ static void rvp9_lpf_vertical_16(uint8_t *s, int pitch, const uint8_t *blimit,
 #define RVP9_FILTER_BITS  7
 #define RVP9_INTERP_EXTEND 4
 
+/* ---- SSE2 / NEON 8-tap convolve (unscaled path, step_q4 == 16) ----
+ * With a 16/16th step the subpel phase is constant across the block, so
+ * each call is a fixed 8-tap FIR. The SIMD paths compute the identical
+ * integer expressions as the scalar loops: pmaddwd on (sample, sample)
+ * x (tap, tap) pairs accumulating in int32, +64, arithmetic >>7, then
+ * saturating packs for the clip; the averaging variant's
+ * ROUND_POWER_OF_TWO(dst + res, 1) is exactly pavgb/vrhadd. Taps and
+ * products fit int16 lanes (|tap| <= 128, samples <= 255). */
+#if defined(RVP9_SSE2)
+static void rvp9_convolve_horiz_sse2(const uint8_t *src, int src_stride,
+      uint8_t *dst, int dst_stride, const int16_t *f, int w, int h, int avg)
+{
+   const __m128i zero = _mm_setzero_si128();
+   const __m128i rnd  = _mm_set1_epi32(64);
+   const __m128i f01  = _mm_set1_epi32(((uint32_t)(uint16_t)f[1] << 16) | (uint16_t)f[0]);
+   const __m128i f23  = _mm_set1_epi32(((uint32_t)(uint16_t)f[3] << 16) | (uint16_t)f[2]);
+   const __m128i f45  = _mm_set1_epi32(((uint32_t)(uint16_t)f[5] << 16) | (uint16_t)f[4]);
+   const __m128i f67  = _mm_set1_epi32(((uint32_t)(uint16_t)f[7] << 16) | (uint16_t)f[6]);
+   int x, y;
+
+   for (y = 0; y < h; y++)
+   {
+      for (x = 0; x + 8 <= w; x += 8)
+      {
+         /* 8 outputs need samples s[x .. x+14] exactly; compose from
+          * two 8-byte loads so not a single byte outside the scalar
+          * footprint is touched (the source can be an exact-bounds
+          * border temp). */
+         __m128i lo = _mm_loadl_epi64((const __m128i*)(src + x));     /* s0..s7  */
+         __m128i hi = _mm_loadl_epi64((const __m128i*)(src + x + 7)); /* s7..s14 */
+         __m128i s0 = _mm_unpacklo_epi8(lo, zero);              /* s0..s7  */
+         __m128i s8 = _mm_srli_si128(
+               _mm_unpacklo_epi8(hi, zero), 2);                 /* s8..s14,0 */
+         __m128i s1 = _mm_or_si128(_mm_srli_si128(s0, 2),
+                                   _mm_slli_si128(s8, 14));     /* s1..s8  */
+         __m128i s2 = _mm_or_si128(_mm_srli_si128(s0, 4),
+                                   _mm_slli_si128(s8, 12));
+         __m128i s3 = _mm_or_si128(_mm_srli_si128(s0, 6),
+                                   _mm_slli_si128(s8, 10));
+         __m128i s4 = _mm_or_si128(_mm_srli_si128(s0, 8),
+                                   _mm_slli_si128(s8, 8));
+         __m128i s5 = _mm_or_si128(_mm_srli_si128(s0, 10),
+                                   _mm_slli_si128(s8, 6));
+         __m128i s6 = _mm_or_si128(_mm_srli_si128(s0, 12),
+                                   _mm_slli_si128(s8, 4));
+         __m128i s7 = _mm_or_si128(_mm_srli_si128(s0, 14),
+                                   _mm_slli_si128(s8, 2));
+         __m128i a_lo, a_hi, r16, r8;
+         a_lo = _mm_add_epi32(
+               _mm_add_epi32(_mm_madd_epi16(_mm_unpacklo_epi16(s0, s1), f01),
+                             _mm_madd_epi16(_mm_unpacklo_epi16(s2, s3), f23)),
+               _mm_add_epi32(_mm_madd_epi16(_mm_unpacklo_epi16(s4, s5), f45),
+                             _mm_madd_epi16(_mm_unpacklo_epi16(s6, s7), f67)));
+         a_hi = _mm_add_epi32(
+               _mm_add_epi32(_mm_madd_epi16(_mm_unpackhi_epi16(s0, s1), f01),
+                             _mm_madd_epi16(_mm_unpackhi_epi16(s2, s3), f23)),
+               _mm_add_epi32(_mm_madd_epi16(_mm_unpackhi_epi16(s4, s5), f45),
+                             _mm_madd_epi16(_mm_unpackhi_epi16(s6, s7), f67)));
+         a_lo = _mm_srai_epi32(_mm_add_epi32(a_lo, rnd), 7);
+         a_hi = _mm_srai_epi32(_mm_add_epi32(a_hi, rnd), 7);
+         r16  = _mm_packs_epi32(a_lo, a_hi);
+         r8   = _mm_packus_epi16(r16, r16);
+         if (avg)
+            r8 = _mm_avg_epu8(r8,
+                  _mm_loadl_epi64((const __m128i*)(dst + x)));
+         _mm_storel_epi64((__m128i*)(dst + x), r8);
+      }
+      if (x + 4 <= w)
+      {
+         /* 4 outputs need s[x .. x+10] exactly: two 8-byte loads at
+          * x and x+3. Only the low four lanes of each shifted vector
+          * are consumed. */
+         __m128i v0 = _mm_unpacklo_epi8(
+               _mm_loadl_epi64((const __m128i*)(src + x)), zero);     /* s0..s7  */
+         __m128i v3 = _mm_unpacklo_epi8(
+               _mm_loadl_epi64((const __m128i*)(src + x + 3)), zero); /* s3..s10 */
+         __m128i s1 = _mm_srli_si128(v0, 2);
+         __m128i s2 = _mm_srli_si128(v0, 4);
+         __m128i s3 = _mm_srli_si128(v0, 6);
+         __m128i s4 = _mm_srli_si128(v0, 8);
+         __m128i s5 = _mm_srli_si128(v3, 4);
+         __m128i s6 = _mm_srli_si128(v3, 6);
+         __m128i s7 = _mm_srli_si128(v3, 8);
+         __m128i a_lo, r16, r8;
+         a_lo = _mm_add_epi32(
+               _mm_add_epi32(_mm_madd_epi16(_mm_unpacklo_epi16(v0, s1), f01),
+                             _mm_madd_epi16(_mm_unpacklo_epi16(s2, s3), f23)),
+               _mm_add_epi32(_mm_madd_epi16(_mm_unpacklo_epi16(s4, s5), f45),
+                             _mm_madd_epi16(_mm_unpacklo_epi16(s6, s7), f67)));
+         a_lo = _mm_srai_epi32(_mm_add_epi32(a_lo, rnd), 7);
+         r16  = _mm_packs_epi32(a_lo, a_lo);
+         r8   = _mm_packus_epi16(r16, r16);
+         if (avg)
+         {
+            int32_t dv;
+            memcpy(&dv, dst + x, 4);
+            r8 = _mm_avg_epu8(r8, _mm_cvtsi32_si128(dv));
+         }
+         {
+            int32_t ov = _mm_cvtsi128_si32(r8);
+            memcpy(dst + x, &ov, 4);
+         }
+         x += 4;
+      }
+      for (; x < w; x++)
+      {
+         int k, sum = 0;
+         for (k = 0; k < 8; k++)
+            sum += src[x + k] * f[k];
+         if (avg)
+            dst[x] = (uint8_t)ROUND_POWER_OF_TWO(dst[x] +
+                  rvp9_clip8(ROUND_POWER_OF_TWO(sum, 7)), 1);
+         else
+            dst[x] = rvp9_clip8(ROUND_POWER_OF_TWO(sum, 7));
+      }
+      src += src_stride;
+      dst += dst_stride;
+   }
+}
+
+static void rvp9_convolve_vert_sse2(const uint8_t *src, int src_stride,
+      uint8_t *dst, int dst_stride, const int16_t *f, int w, int h, int avg)
+{
+   const __m128i zero = _mm_setzero_si128();
+   const __m128i rnd  = _mm_set1_epi32(64);
+   const __m128i f01  = _mm_set1_epi32(((uint32_t)(uint16_t)f[1] << 16) | (uint16_t)f[0]);
+   const __m128i f23  = _mm_set1_epi32(((uint32_t)(uint16_t)f[3] << 16) | (uint16_t)f[2]);
+   const __m128i f45  = _mm_set1_epi32(((uint32_t)(uint16_t)f[5] << 16) | (uint16_t)f[4]);
+   const __m128i f67  = _mm_set1_epi32(((uint32_t)(uint16_t)f[7] << 16) | (uint16_t)f[6]);
+   int x, y;
+
+   for (x = 0; x + 8 <= w; x += 8)
+   {
+      const uint8_t *s = src + x;
+      uint8_t *dp      = dst + x;
+      for (y = 0; y < h; y++)
+      {
+         __m128i r0 = _mm_unpacklo_epi8(_mm_loadl_epi64((const __m128i*)(s + 0*src_stride)), zero);
+         __m128i r1 = _mm_unpacklo_epi8(_mm_loadl_epi64((const __m128i*)(s + 1*src_stride)), zero);
+         __m128i r2 = _mm_unpacklo_epi8(_mm_loadl_epi64((const __m128i*)(s + 2*src_stride)), zero);
+         __m128i r3 = _mm_unpacklo_epi8(_mm_loadl_epi64((const __m128i*)(s + 3*src_stride)), zero);
+         __m128i r4 = _mm_unpacklo_epi8(_mm_loadl_epi64((const __m128i*)(s + 4*src_stride)), zero);
+         __m128i r5 = _mm_unpacklo_epi8(_mm_loadl_epi64((const __m128i*)(s + 5*src_stride)), zero);
+         __m128i r6 = _mm_unpacklo_epi8(_mm_loadl_epi64((const __m128i*)(s + 6*src_stride)), zero);
+         __m128i r7 = _mm_unpacklo_epi8(_mm_loadl_epi64((const __m128i*)(s + 7*src_stride)), zero);
+         __m128i a_lo, a_hi, r16, r8;
+         a_lo = _mm_add_epi32(
+               _mm_add_epi32(_mm_madd_epi16(_mm_unpacklo_epi16(r0, r1), f01),
+                             _mm_madd_epi16(_mm_unpacklo_epi16(r2, r3), f23)),
+               _mm_add_epi32(_mm_madd_epi16(_mm_unpacklo_epi16(r4, r5), f45),
+                             _mm_madd_epi16(_mm_unpacklo_epi16(r6, r7), f67)));
+         a_hi = _mm_add_epi32(
+               _mm_add_epi32(_mm_madd_epi16(_mm_unpackhi_epi16(r0, r1), f01),
+                             _mm_madd_epi16(_mm_unpackhi_epi16(r2, r3), f23)),
+               _mm_add_epi32(_mm_madd_epi16(_mm_unpackhi_epi16(r4, r5), f45),
+                             _mm_madd_epi16(_mm_unpackhi_epi16(r6, r7), f67)));
+         a_lo = _mm_srai_epi32(_mm_add_epi32(a_lo, rnd), 7);
+         a_hi = _mm_srai_epi32(_mm_add_epi32(a_hi, rnd), 7);
+         r16  = _mm_packs_epi32(a_lo, a_hi);
+         r8   = _mm_packus_epi16(r16, r16);
+         if (avg)
+            r8 = _mm_avg_epu8(r8, _mm_loadl_epi64((const __m128i*)dp));
+         _mm_storel_epi64((__m128i*)dp, r8);
+         s  += src_stride;
+         dp += dst_stride;
+      }
+   }
+   if (x + 4 <= w)
+   {
+      const uint8_t *s = src + x;
+      uint8_t *dp      = dst + x;
+      for (y = 0; y < h; y++)
+      {
+         __m128i r0, r1, r2, r3, r4, r5, r6, r7, a_lo, r16, r8;
+         int32_t t;
+#define RVP9_LD4(P) \
+         (memcpy(&t, (P), 4), _mm_unpacklo_epi8(_mm_cvtsi32_si128(t), zero))
+         r0 = RVP9_LD4(s + 0*src_stride);
+         r1 = RVP9_LD4(s + 1*src_stride);
+         r2 = RVP9_LD4(s + 2*src_stride);
+         r3 = RVP9_LD4(s + 3*src_stride);
+         r4 = RVP9_LD4(s + 4*src_stride);
+         r5 = RVP9_LD4(s + 5*src_stride);
+         r6 = RVP9_LD4(s + 6*src_stride);
+         r7 = RVP9_LD4(s + 7*src_stride);
+#undef RVP9_LD4
+         a_lo = _mm_add_epi32(
+               _mm_add_epi32(_mm_madd_epi16(_mm_unpacklo_epi16(r0, r1), f01),
+                             _mm_madd_epi16(_mm_unpacklo_epi16(r2, r3), f23)),
+               _mm_add_epi32(_mm_madd_epi16(_mm_unpacklo_epi16(r4, r5), f45),
+                             _mm_madd_epi16(_mm_unpacklo_epi16(r6, r7), f67)));
+         a_lo = _mm_srai_epi32(_mm_add_epi32(a_lo, rnd), 7);
+         r16  = _mm_packs_epi32(a_lo, a_lo);
+         r8   = _mm_packus_epi16(r16, r16);
+         if (avg)
+         {
+            memcpy(&t, dp, 4);
+            r8 = _mm_avg_epu8(r8, _mm_cvtsi32_si128(t));
+         }
+         t = _mm_cvtsi128_si32(r8);
+         memcpy(dp, &t, 4);
+         s  += src_stride;
+         dp += dst_stride;
+      }
+      x += 4;
+   }
+   for (; x < w; x++)
+   {
+      const uint8_t *s = src + x;
+      uint8_t *dp      = dst + x;
+      for (y = 0; y < h; y++)
+      {
+         int k, sum = 0;
+         for (k = 0; k < 8; k++)
+            sum += s[k * src_stride] * f[k];
+         if (avg)
+            *dp = (uint8_t)ROUND_POWER_OF_TWO(*dp +
+                  rvp9_clip8(ROUND_POWER_OF_TWO(sum, 7)), 1);
+         else
+            *dp = rvp9_clip8(ROUND_POWER_OF_TWO(sum, 7));
+         s  += src_stride;
+         dp += dst_stride;
+      }
+   }
+}
+#endif
+
+#if defined(RVP9_NEON)
+/* NEON translation of the SSE2 kernels: vmlal_lane tap chains
+ * accumulating in int32; vqrshrn_n_s32(sum, 7) is exactly
+ * (sum + 64) >> 7 with int16 saturation, vqmovun the 0..255 clip,
+ * and vrhadd_u8 exactly ROUND_POWER_OF_TWO(a + b, 1). */
+static void rvp9_convolve_horiz_neon(const uint8_t *src, int src_stride,
+      uint8_t *dst, int dst_stride, const int16_t *f, int w, int h, int avg)
+{
+   const int16x4_t flo = vld1_s16(f);
+   const int16x4_t fhi = vld1_s16(f + 4);
+   int x, y;
+
+   for (y = 0; y < h; y++)
+   {
+      for (x = 0; x + 8 <= w; x += 8)
+      {
+         /* Exact scalar footprint (s[x .. x+14]) via two 8-byte
+          * loads; v7 holds s7..s14, t8 rotates it to s8..s14 in lanes
+          * 0..6 (lane 7 is never consumed: vext(v0, t8, k) with k <= 7
+          * reads t8 lanes 0..k-1 <= 6). */
+         int16x8_t v0 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(src + x)));
+         int16x8_t v7 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(src + x + 7)));
+         int16x8_t t8 = vextq_s16(v7, v7, 1);
+         int16x8_t s1, s2, s3, s4, s5, s6, s7;
+         int32x4_t a_lo, a_hi;
+         uint8x8_t r8;
+         s1 = vextq_s16(v0, t8, 1);
+         s2 = vextq_s16(v0, t8, 2);
+         s3 = vextq_s16(v0, t8, 3);
+         s4 = vextq_s16(v0, t8, 4);
+         s5 = vextq_s16(v0, t8, 5);
+         s6 = vextq_s16(v0, t8, 6);
+         s7 = vextq_s16(v0, t8, 7);
+
+         a_lo = vmull_lane_s16(vget_low_s16(v0), flo, 0);
+         a_lo = vmlal_lane_s16(a_lo, vget_low_s16(s1), flo, 1);
+         a_lo = vmlal_lane_s16(a_lo, vget_low_s16(s2), flo, 2);
+         a_lo = vmlal_lane_s16(a_lo, vget_low_s16(s3), flo, 3);
+         a_lo = vmlal_lane_s16(a_lo, vget_low_s16(s4), fhi, 0);
+         a_lo = vmlal_lane_s16(a_lo, vget_low_s16(s5), fhi, 1);
+         a_lo = vmlal_lane_s16(a_lo, vget_low_s16(s6), fhi, 2);
+         a_lo = vmlal_lane_s16(a_lo, vget_low_s16(s7), fhi, 3);
+         a_hi = vmull_lane_s16(vget_high_s16(v0), flo, 0);
+         a_hi = vmlal_lane_s16(a_hi, vget_high_s16(s1), flo, 1);
+         a_hi = vmlal_lane_s16(a_hi, vget_high_s16(s2), flo, 2);
+         a_hi = vmlal_lane_s16(a_hi, vget_high_s16(s3), flo, 3);
+         a_hi = vmlal_lane_s16(a_hi, vget_high_s16(s4), fhi, 0);
+         a_hi = vmlal_lane_s16(a_hi, vget_high_s16(s5), fhi, 1);
+         a_hi = vmlal_lane_s16(a_hi, vget_high_s16(s6), fhi, 2);
+         a_hi = vmlal_lane_s16(a_hi, vget_high_s16(s7), fhi, 3);
+
+         r8 = vqmovun_s16(vcombine_s16(vqrshrn_n_s32(a_lo, 7),
+                                       vqrshrn_n_s32(a_hi, 7)));
+         if (avg)
+            r8 = vrhadd_u8(r8, vld1_u8(dst + x));
+         vst1_u8(dst + x, r8);
+      }
+      if (x + 4 <= w)
+      {
+         /* 4 outputs need s[x .. x+10] exactly */
+         uint8_t tmp[16];
+         int16x8_t v0, v3, s1, s2, s3, s4, s5, s6, s7;
+         int32x4_t a_lo;
+         uint8x8_t r8;
+         memcpy(tmp,     src + x,     8);
+         memcpy(tmp + 8, src + x + 3, 8);
+         v0 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(tmp)));
+         v3 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(tmp + 8)));
+         s1 = vextq_s16(v0, v0, 1);
+         s2 = vextq_s16(v0, v0, 2);
+         s3 = vextq_s16(v0, v0, 3);
+         s4 = vextq_s16(v0, v0, 4);
+         s5 = vextq_s16(v3, v3, 2);
+         s6 = vextq_s16(v3, v3, 3);
+         s7 = vextq_s16(v3, v3, 4);
+         a_lo = vmull_lane_s16(vget_low_s16(v0), flo, 0);
+         a_lo = vmlal_lane_s16(a_lo, vget_low_s16(s1), flo, 1);
+         a_lo = vmlal_lane_s16(a_lo, vget_low_s16(s2), flo, 2);
+         a_lo = vmlal_lane_s16(a_lo, vget_low_s16(s3), flo, 3);
+         a_lo = vmlal_lane_s16(a_lo, vget_low_s16(s4), fhi, 0);
+         a_lo = vmlal_lane_s16(a_lo, vget_low_s16(s5), fhi, 1);
+         a_lo = vmlal_lane_s16(a_lo, vget_low_s16(s6), fhi, 2);
+         a_lo = vmlal_lane_s16(a_lo, vget_low_s16(s7), fhi, 3);
+         {
+            int16x4_t n16 = vqrshrn_n_s32(a_lo, 7);
+            r8 = vqmovun_s16(vcombine_s16(n16, n16));
+         }
+         if (avg)
+         {
+            uint8_t dv[8];
+            memcpy(dv, dst + x, 4);
+            memset(dv + 4, 0, 4);
+            r8 = vrhadd_u8(r8, vld1_u8(dv));
+         }
+         {
+            uint8_t ov[8];
+            vst1_u8(ov, r8);
+            memcpy(dst + x, ov, 4);
+         }
+         x += 4;
+      }
+      for (; x < w; x++)
+      {
+         int k, sum = 0;
+         for (k = 0; k < 8; k++)
+            sum += src[x + k] * f[k];
+         if (avg)
+            dst[x] = (uint8_t)ROUND_POWER_OF_TWO(dst[x] +
+                  rvp9_clip8(ROUND_POWER_OF_TWO(sum, 7)), 1);
+         else
+            dst[x] = rvp9_clip8(ROUND_POWER_OF_TWO(sum, 7));
+      }
+      src += src_stride;
+      dst += dst_stride;
+   }
+}
+
+static void rvp9_convolve_vert_neon(const uint8_t *src, int src_stride,
+      uint8_t *dst, int dst_stride, const int16_t *f, int w, int h, int avg)
+{
+   const int16x4_t flo = vld1_s16(f);
+   const int16x4_t fhi = vld1_s16(f + 4);
+   int x, y;
+
+   for (x = 0; x + 8 <= w; x += 8)
+   {
+      const uint8_t *s = src + x;
+      uint8_t *dp      = dst + x;
+      for (y = 0; y < h; y++)
+      {
+         int16x8_t r0 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(s + 0*src_stride)));
+         int16x8_t r1 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(s + 1*src_stride)));
+         int16x8_t r2 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(s + 2*src_stride)));
+         int16x8_t r3 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(s + 3*src_stride)));
+         int16x8_t r4 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(s + 4*src_stride)));
+         int16x8_t r5 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(s + 5*src_stride)));
+         int16x8_t r6 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(s + 6*src_stride)));
+         int16x8_t r7 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(s + 7*src_stride)));
+         int32x4_t a_lo, a_hi;
+         uint8x8_t r8;
+
+         a_lo = vmull_lane_s16(vget_low_s16(r0), flo, 0);
+         a_lo = vmlal_lane_s16(a_lo, vget_low_s16(r1), flo, 1);
+         a_lo = vmlal_lane_s16(a_lo, vget_low_s16(r2), flo, 2);
+         a_lo = vmlal_lane_s16(a_lo, vget_low_s16(r3), flo, 3);
+         a_lo = vmlal_lane_s16(a_lo, vget_low_s16(r4), fhi, 0);
+         a_lo = vmlal_lane_s16(a_lo, vget_low_s16(r5), fhi, 1);
+         a_lo = vmlal_lane_s16(a_lo, vget_low_s16(r6), fhi, 2);
+         a_lo = vmlal_lane_s16(a_lo, vget_low_s16(r7), fhi, 3);
+         a_hi = vmull_lane_s16(vget_high_s16(r0), flo, 0);
+         a_hi = vmlal_lane_s16(a_hi, vget_high_s16(r1), flo, 1);
+         a_hi = vmlal_lane_s16(a_hi, vget_high_s16(r2), flo, 2);
+         a_hi = vmlal_lane_s16(a_hi, vget_high_s16(r3), flo, 3);
+         a_hi = vmlal_lane_s16(a_hi, vget_high_s16(r4), fhi, 0);
+         a_hi = vmlal_lane_s16(a_hi, vget_high_s16(r5), fhi, 1);
+         a_hi = vmlal_lane_s16(a_hi, vget_high_s16(r6), fhi, 2);
+         a_hi = vmlal_lane_s16(a_hi, vget_high_s16(r7), fhi, 3);
+
+         r8 = vqmovun_s16(vcombine_s16(vqrshrn_n_s32(a_lo, 7),
+                                       vqrshrn_n_s32(a_hi, 7)));
+         if (avg)
+            r8 = vrhadd_u8(r8, vld1_u8(dp));
+         vst1_u8(dp, r8);
+         s  += src_stride;
+         dp += dst_stride;
+      }
+   }
+   if (x + 4 <= w)
+   {
+      const uint8_t *s = src + x;
+      uint8_t *dp      = dst + x;
+      for (y = 0; y < h; y++)
+      {
+         uint8_t tmp[8];
+         int16x8_t r0, r1, r2, r3, r4, r5, r6, r7;
+         int32x4_t a_lo;
+         uint8x8_t r8;
+#define RVP9_NLD4(K) \
+         (memcpy(tmp, s + (K)*src_stride, 4), memset(tmp + 4, 0, 4), \
+          vreinterpretq_s16_u16(vmovl_u8(vld1_u8(tmp))))
+         r0 = RVP9_NLD4(0); r1 = RVP9_NLD4(1);
+         r2 = RVP9_NLD4(2); r3 = RVP9_NLD4(3);
+         r4 = RVP9_NLD4(4); r5 = RVP9_NLD4(5);
+         r6 = RVP9_NLD4(6); r7 = RVP9_NLD4(7);
+#undef RVP9_NLD4
+         a_lo = vmull_lane_s16(vget_low_s16(r0), flo, 0);
+         a_lo = vmlal_lane_s16(a_lo, vget_low_s16(r1), flo, 1);
+         a_lo = vmlal_lane_s16(a_lo, vget_low_s16(r2), flo, 2);
+         a_lo = vmlal_lane_s16(a_lo, vget_low_s16(r3), flo, 3);
+         a_lo = vmlal_lane_s16(a_lo, vget_low_s16(r4), fhi, 0);
+         a_lo = vmlal_lane_s16(a_lo, vget_low_s16(r5), fhi, 1);
+         a_lo = vmlal_lane_s16(a_lo, vget_low_s16(r6), fhi, 2);
+         a_lo = vmlal_lane_s16(a_lo, vget_low_s16(r7), fhi, 3);
+         {
+            int16x4_t n16 = vqrshrn_n_s32(a_lo, 7);
+            r8 = vqmovun_s16(vcombine_s16(n16, n16));
+         }
+         if (avg)
+         {
+            memcpy(tmp, dp, 4);
+            memset(tmp + 4, 0, 4);
+            r8 = vrhadd_u8(r8, vld1_u8(tmp));
+         }
+         vst1_u8(tmp, r8);
+         memcpy(dp, tmp, 4);
+         s  += src_stride;
+         dp += dst_stride;
+      }
+      x += 4;
+   }
+   for (; x < w; x++)
+   {
+      const uint8_t *s = src + x;
+      uint8_t *dp      = dst + x;
+      for (y = 0; y < h; y++)
+      {
+         int k, sum = 0;
+         for (k = 0; k < 8; k++)
+            sum += s[k * src_stride] * f[k];
+         if (avg)
+            *dp = (uint8_t)ROUND_POWER_OF_TWO(*dp +
+                  rvp9_clip8(ROUND_POWER_OF_TWO(sum, 7)), 1);
+         else
+            *dp = rvp9_clip8(ROUND_POWER_OF_TWO(sum, 7));
+         s  += src_stride;
+         dp += dst_stride;
+      }
+   }
+}
+#endif
+
 static void rvp9_convolve_horiz(const uint8_t *src, int src_stride,
       uint8_t *dst, int dst_stride, const int16_t (*xf)[8],
       int x0_q4, int x_step_q4, int w, int h, int avg)
 {
    int x, y;
    src -= RVP9_SUBPEL_TAPS / 2 - 1;
+#if defined(RVP9_SSE2)
+   if (x_step_q4 == 16)
+   {
+      rvp9_convolve_horiz_sse2(src + (x0_q4 >> RVP9_SUBPEL_BITS),
+            src_stride, dst, dst_stride,
+            xf[x0_q4 & RVP9_SUBPEL_MASK], w, h, avg);
+      return;
+   }
+#elif defined(RVP9_NEON)
+   if (x_step_q4 == 16)
+   {
+      rvp9_convolve_horiz_neon(src + (x0_q4 >> RVP9_SUBPEL_BITS),
+            src_stride, dst, dst_stride,
+            xf[x0_q4 & RVP9_SUBPEL_MASK], w, h, avg);
+      return;
+   }
+#endif
    for (y = 0; y < h; y++)
    {
       int x_q4 = x0_q4;
@@ -5500,6 +6955,25 @@ static void rvp9_convolve_vert(const uint8_t *src, int src_stride,
 {
    int x, y;
    src -= src_stride * (RVP9_SUBPEL_TAPS / 2 - 1);
+#if defined(RVP9_SSE2)
+   if (y_step_q4 == 16)
+   {
+      rvp9_convolve_vert_sse2(src +
+            (y0_q4 >> RVP9_SUBPEL_BITS) * src_stride,
+            src_stride, dst, dst_stride,
+            yf[y0_q4 & RVP9_SUBPEL_MASK], w, h, avg);
+      return;
+   }
+#elif defined(RVP9_NEON)
+   if (y_step_q4 == 16)
+   {
+      rvp9_convolve_vert_neon(src +
+            (y0_q4 >> RVP9_SUBPEL_BITS) * src_stride,
+            src_stride, dst, dst_stride,
+            yf[y0_q4 & RVP9_SUBPEL_MASK], w, h, avg);
+      return;
+   }
+#endif
    for (x = 0; x < w; x++)
    {
       int y_q4 = y0_q4;

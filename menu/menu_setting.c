@@ -1451,8 +1451,10 @@ static rarch_setting_t setting_group_setting(
    result.max                       = 0.0;
 
    result.flags                     = 0;
-   result.free_flags                = 0;
-
+   /* Note: free_flags is already zero-initialised by 'result = {0}'
+    * above; do not reset it here, or the SD_FREE_FLAG_MAIN_MENU_GROUP
+    * bit set for top-level groups gets clobbered (breaks the main-menu
+    * / tab titles, left/right handlers). */
 
    result.bind_type                 = 0;
    result.browser_selection_type    = ST_NONE;
@@ -4291,6 +4293,11 @@ static size_t setting_get_string_representation_uint_rgui_aspect_ratio(
             return strlcpy(s,
                   msg_hash_to_str(
                      MENU_ENUM_LABEL_VALUE_RGUI_ASPECT_RATIO_AUTO),
+                  len);
+         case RGUI_ASPECT_RATIO_1_1:
+            return strlcpy(s,
+                  msg_hash_to_str(
+                     MENU_ENUM_LABEL_VALUE_RGUI_ASPECT_RATIO_1_1),
                   len);
       }
    }
@@ -10220,6 +10227,9 @@ enum setting_desc_class
  * that the imperative blocks assign the *left* handler to action_ok
  * as well; that quirk is reproduced faithfully. */
 #define SDESC_FLG_REFRESH      (1 << 3)
+#define SDESC_FLG_DEF_FUNC     (1 << 5) /* default is the return of
+                                           def_resolver(), called at
+                                           list-build time */
 #define SDESC_FLG_DEF_SETTINGS (1 << 4) /* default string is a settings_t
                                            field at def_offset, resolved at
                                            list-build time */
@@ -10255,6 +10265,11 @@ typedef struct setting_desc
    uint32_t                    def_offset;     /* with SDESC_FLG_DEF_SETTINGS:
                                                   offsetof of the settings_t
                                                   field holding the default */
+   change_handler_t            action_change;  /* NULL = none; a change
+                                                  handler poked into the
+                                                  actions tuple after build */
+   int32_t                   (*def_resolver)(void); /* SDESC_FLG_DEF_FUNC:
+                                                  build-time default value */
 } setting_desc_t;
 
 /* Row builders.  Field order must match setting_desc_t. */
@@ -10269,6 +10284,25 @@ typedef struct setting_desc
      0.0f, 0.0f, 0.0f, NULL, (_repr), (ok), \
      (int32_t)(def), 0.0f, (_start), (_select), (_left), (_right), \
      (uint16_t)(cmd), 0, SDESC_BOOL, (dflags), (uint8_t)(_uitype), 0 }
+
+/* _CH variant: like _EX but supplies the trailing change-handler
+ * slot, for toggles that repaint or reinit on change. */
+#define SDESC_BOOL_ROW_CH(field, label, def, sd_flags, dflags, cmd, ok, _repr, _start, _select, _left, _right, _uitype, chg) \
+   { (uint32_t)offsetof(settings_t, bools.field), (sd_flags), \
+     MENU_ENUM_LABEL_##label, MENU_ENUM_LABEL_VALUE_##label, \
+     0.0f, 0.0f, 0.0f, NULL, (_repr), (ok), \
+     (int32_t)(def), 0.0f, (_start), (_select), (_left), (_right), \
+     (uint16_t)(cmd), 0, SDESC_BOOL, (dflags), (uint8_t)(_uitype), 0, \
+     NULL, 0, (chg) }
+
+/* _DF variant: bool default resolved by a function at build time. */
+#define SDESC_BOOL_ROW_DF(field, label, resolver, sd_flags, dflags, cmd, ok, _repr, _start, _select, _left, _right, _uitype) \
+   { (uint32_t)offsetof(settings_t, bools.field), (sd_flags), \
+     MENU_ENUM_LABEL_##label, MENU_ENUM_LABEL_VALUE_##label, \
+     0.0f, 0.0f, 0.0f, NULL, (_repr), (ok), \
+     0, 0.0f, (_start), (_select), (_left), (_right), \
+     (uint16_t)(cmd), 0, SDESC_BOOL, ((dflags) | SDESC_FLG_DEF_FUNC), (uint8_t)(_uitype), 0, \
+     NULL, 0, NULL, (resolver) }
 
 /* _LV variants take the label and value enums as separate tokens for
  * the few registrations whose pair is mismatched. */
@@ -10354,6 +10388,26 @@ typedef struct setting_desc
      (float)(_min), (float)(_max), (float)(_step), NULL, (_repr), (ok), \
      (int32_t)(def), 0.0f, (_start), (_select), (_left), (_right), (uint16_t)(cmd), (int16_t)(offby), SDESC_UINT, (dflags), (uint8_t)(_uitype), 0 }
 
+/* _CH variant: UINT with a change handler in the trailing slot. */
+#define SDESC_UINT_ROW_CH(field, label, def, sd_flags, dflags, cmd, _min, _max, _step, offby, ok, _repr, _uitype, chg) \
+   { (uint32_t)offsetof(settings_t, uints.field), (sd_flags), \
+     MENU_ENUM_LABEL_##label, MENU_ENUM_LABEL_VALUE_##label, \
+     (float)(_min), (float)(_max), (float)(_step), NULL, (_repr), (ok), \
+     (int32_t)(def), 0.0f, NULL, NULL, NULL, NULL, (uint16_t)(cmd), (int16_t)(offby), SDESC_UINT, \
+     (dflags), (uint8_t)(_uitype), 0, \
+     NULL, 0, (chg) }
+
+/* _DF variant: default is resolved by a function at build time
+ * (SDESC_FLG_DEF_FUNC), for the settings whose default depends on
+ * frontend-provided values. */
+#define SDESC_UINT_ROW_DF(field, label, resolver, sd_flags, dflags, cmd, _min, _max, _step, offby, ok, _repr, _uitype) \
+   { (uint32_t)offsetof(settings_t, uints.field), (sd_flags), \
+     MENU_ENUM_LABEL_##label, MENU_ENUM_LABEL_VALUE_##label, \
+     (float)(_min), (float)(_max), (float)(_step), NULL, (_repr), (ok), \
+     0, 0.0f, NULL, NULL, NULL, NULL, (uint16_t)(cmd), (int16_t)(offby), SDESC_UINT, \
+     ((dflags) | SDESC_FLG_DEF_FUNC), (uint8_t)(_uitype), 0, \
+     NULL, 0, NULL, (resolver) }
+
 #define SDESC_INT_ROW_AT(offs, label, def, sd_flags, dflags, cmd, _min, _max, _step, offby, ok, _repr) \
    { (uint32_t)(offs), (sd_flags), \
      MENU_ENUM_LABEL_##label, MENU_ENUM_LABEL_VALUE_##label, \
@@ -10417,6 +10471,30 @@ typedef struct setting_desc
    settings_list_add_desc(list, list_info, settings, \
          tbl, ARRAY_SIZE(tbl), &group_info, &subgroup_info, parent_group)
 
+/* Build-time default resolvers for the latency settings, whose
+ * default comes from a frontend-provided value with a compile-time
+ * fallback. These let the rows carry the default as data. */
+static int32_t settings_def_audio_latency(void)
+{
+   return g_defaults.settings_out_latency
+      ? g_defaults.settings_out_latency : DEFAULT_OUT_LATENCY;
+}
+
+#ifdef HAVE_MICROPHONE
+static int32_t settings_def_microphone_latency(void)
+{
+   return g_defaults.settings_in_latency
+      ? g_defaults.settings_in_latency : DEFAULT_IN_LATENCY;
+}
+#endif
+
+#if defined(__APPLE__) && defined(HAVE_VULKAN)
+static int32_t settings_def_metal_arg_buffers(void)
+{
+   return config_metal_arg_buffers_default() ? 1 : 0;
+}
+#endif
+
 static void settings_list_add_desc(
       rarch_setting_t **list,
       rarch_setting_info_t *list_info,
@@ -10433,6 +10511,9 @@ static void settings_list_add_desc(
    {
       const setting_desc_t *d = &desc[i];
       void *target            = (void*)((uint8_t*)settings + d->value_offset);
+      int32_t eff_def_i       = (d->desc_flags & SDESC_FLG_DEF_FUNC)
+                                 && d->def_resolver
+                              ? d->def_resolver() : d->def_i;
 
       switch (d->type)
       {
@@ -10443,7 +10524,7 @@ static void settings_list_add_desc(
                   (bool*)target,
                   d->name_enum,
                   d->short_enum,
-                  (d->def_i != 0),
+                  (eff_def_i != 0),
                   MENU_ENUM_LABEL_VALUE_OFF,
                   MENU_ENUM_LABEL_VALUE_ON,
                   group_info,
@@ -10480,7 +10561,7 @@ static void settings_list_add_desc(
                   (unsigned int*)target,
                   d->name_enum,
                   d->short_enum,
-                  (unsigned int)d->def_i,
+                  (unsigned int)eff_def_i,
                   group_info,
                   subgroup_info,
                   parent_group,
@@ -10581,6 +10662,8 @@ static void settings_list_add_desc(
          SETTINGS_ACTION_SET(left, &(*list)[list_info->index - 1], d->action_left)
       if (d->action_right)
          SETTINGS_ACTION_SET(right, &(*list)[list_info->index - 1], d->action_right)
+      if (d->action_change)
+         SETTINGS_ACTION_SET(change, &(*list)[list_info->index - 1], d->action_change)
       if (d->repr)
          SETTINGS_ACTION_SET(repr, &(*list)[list_info->index - 1], d->repr)
       if (d->offset_by != 0 && d->type != SDESC_DIR)
@@ -11224,6 +11307,11 @@ static const setting_desc_t configuration_desc_0[] = {
 #include "../settings/settings_def_shader_preset.h"
 };
 
+static const setting_desc_t frontend_log_desc[] = {
+/* GENERATED: rows come from settings/settings_def_frontend_log_level.h in order. */
+#include "../settings/settings_def_frontend_log_level.h"
+};
+
 static const setting_desc_t logging_desc_0[] = {
 /* GENERATED: rows come from settings_def_logging.h in order. */
 #include "../settings/settings_def_logging.h"
@@ -11263,12 +11351,9 @@ static const setting_desc_t cs_desc_2[] = {
 #endif
 
 static const setting_desc_t frame_time_cou_desc_0[] = {
-/* GENERATED: rows come from settings_def_video_frame_time_sample.h in order. */
+/* GENERATED: two adjacent row files, concatenated so the whole
+ * screen is one table and the builder becomes pure data. */
 #include "../settings/settings_def_video_frame_time_sample.h"
-};
-
-static const setting_desc_t frame_time_cou_desc_1[] = {
-/* GENERATED: rows come from settings_def_frame_time_counter.h in order. */
 #include "../settings/settings_def_frame_time_counter.h"
 };
 
@@ -11286,6 +11371,13 @@ static const setting_desc_t cheats_desc_0[] = {
 /* GENERATED: rows come from settings_def_cheats_apply.h in order. */
 #include "../settings/settings_def_cheats_apply.h"
 };
+
+#if defined(__APPLE__) && defined(HAVE_VULKAN)
+static const setting_desc_t metal_argbuf_desc[] = {
+/* GENERATED: rows come from settings_def_metal_arg_buffers.h in order. */
+#include "../settings/settings_def_metal_arg_buffers.h"
+};
+#endif
 
 #if (!defined(RARCH_CONSOLE) && !defined(RARCH_MOBILE)) || (defined(IOS) && TARGET_OS_TV)
 static const setting_desc_t vid_desc_0[] = {
@@ -11577,6 +11669,11 @@ static const setting_desc_t menu_sounds_desc_0[] = {
 #include "../settings/settings_def_menu_sounds.h"
 };
 
+static const setting_desc_t audio_ratectl_desc[] = {
+/* GENERATED: rows come from settings/settings_def_audio_rate_control.h in order. */
+#include "../settings/settings_def_audio_rate_control.h"
+};
+
 static const setting_desc_t audio_en_desc[] = {
 /* GENERATED: rows come from settings_def_audio_enable.h in order. */
 #include "../settings/settings_def_audio_enable.h"
@@ -11590,6 +11687,11 @@ static const setting_desc_t audio_state_desc[] = {
 static const setting_desc_t audio_sync_desc[] = {
 /* GENERATED: rows come from settings_def_audio_sync.h in order. */
 #include "../settings/settings_def_audio_sync.h"
+};
+
+static const setting_desc_t audio_latency_desc[] = {
+/* GENERATED: rows come from settings_def_audio_latency.h in order. */
+#include "../settings/settings_def_audio_latency.h"
 };
 
 static const setting_desc_t audio_rq_desc[] = {
@@ -11639,6 +11741,13 @@ static const setting_desc_t audio_asio_desc[] = {
 #endif
 
 #ifdef HAVE_MICROPHONE
+#ifdef HAVE_MICROPHONE
+static const setting_desc_t microphone_lat_desc[] = {
+/* GENERATED: rows come from settings/settings_def_microphone_latency.h in order. */
+#include "../settings/settings_def_microphone_latency.h"
+};
+#endif
+
 static const setting_desc_t mic_enable_desc[] = {
 /* GENERATED: rows come from settings_def_microphone.h in order. */
 #include "../settings/settings_def_microphone.h"
@@ -11787,6 +11896,13 @@ static const setting_desc_t recording_desc_3[] = {
 #include "../settings/settings_def_recording_video.h"
 };
 
+#ifdef HAVE_RUNAHEAD
+static const setting_desc_t runahead_frames_desc[] = {
+/* GENERATED: rows come from settings/settings_def_run_ahead_frames.h in order. */
+#include "../settings/settings_def_run_ahead_frames.h"
+};
+#endif
+
 static const setting_desc_t frame_throttli_desc_0[] = {
 /* GENERATED: rows come from settings_def_frame_throttle_general.h in order. */
 #include "../settings/settings_def_frame_throttle_general.h"
@@ -11875,6 +11991,27 @@ static const setting_desc_t ovl_desc_0[] = {
 /* GENERATED: rows come from settings_def_overlay_enable.h in order. */
 #include "../settings/settings_def_overlay_enable.h"
 };
+
+#ifdef HAVE_OVERLAY
+static const setting_desc_t ovl_autoload_desc[] = {
+/* GENERATED: rows come from settings/settings_def_overlay_autoload.h in order. */
+#include "../settings/settings_def_overlay_autoload.h"
+};
+#endif
+
+#ifdef HAVE_OVERLAY
+static const setting_desc_t ovl_display_desc_0[] = {
+/* GENERATED: rows come from settings_def_overlay_display.h in order. */
+#include "../settings/settings_def_overlay_display.h"
+};
+#endif
+
+#ifdef HAVE_OVERLAY
+static const setting_desc_t ovl_eightway_desc_0[] = {
+/* GENERATED: rows come from settings_def_overlay_eightway.h in order. */
+#include "../settings/settings_def_overlay_eightway.h"
+};
+#endif
 #endif
 
 #ifdef HAVE_OVERLAY
@@ -12251,6 +12388,11 @@ static const setting_desc_t ai_service_desc_1[] = {
 };
 #endif
 
+static const setting_desc_t menu_scroll_fast_desc[] = {
+/* GENERATED: rows come from settings/settings_def_menu_scroll_fast.h in order. */
+#include "../settings/settings_def_menu_scroll_fast.h"
+};
+
 static const setting_desc_t ui_desc_0[] = {
 /* GENERATED: rows come from settings_def_ui_focus.h in order. */
 #include "../settings/settings_def_ui_focus.h"
@@ -12562,7 +12704,19 @@ static const setting_desc_t privacy_desc_2[] = {
 #include "../settings/settings_def_privacy_location.h"
 };
 
+#ifdef HAVE_OVERLAY
+static const setting_desc_t osk_overlay_desc_0[] = {
+/* GENERATED: rows come from settings_def_osk_overlay.h in order. */
+#include "../settings/settings_def_osk_overlay.h"
+};
+#endif
+
 #if !defined(RARCH_CONSOLE)
+static const setting_desc_t midi_devices_desc_0[] = {
+/* GENERATED: rows come from settings_def_midi_devices.h in order. */
+#include "../settings/settings_def_midi_devices.h"
+};
+
 static const setting_desc_t midi_desc_0[] = {
 /* GENERATED: rows come from settings_def_midi_volume.h in order. */
 #include "../settings/settings_def_midi_volume.h"
@@ -13248,24 +13402,9 @@ static void settings_build_logging(
          SETTINGS_ACTION_SET(right, &(*list)[list_info->index - 1], &setting_bool_action_right_with_refresh)
 
          /* Descriptor holdout: change_handler poke; descriptor slot deferred to the single-source phase. */
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.frontend_log_level,
-               MENU_ENUM_LABEL_FRONTEND_LOG_LEVEL,
-               MENU_ENUM_LABEL_VALUE_FRONTEND_LOG_LEVEL,
-               DEFAULT_FRONTEND_LOG_LEVEL,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         SETTINGS_ACTION_SET(change, &(*list)[list_info->index - 1], frontend_log_level_change_handler)
-         (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_RADIO_BUTTONS;
-         SETTINGS_ACTION_SET(ok, &(*list)[list_info->index - 1], &setting_action_ok_uint)
-         menu_settings_list_current_add_range(list, list_info, 0, 3, 1.0, true, true);
-         SETTINGS_ACTION_SET(repr, &(*list)[list_info->index - 1], &setting_get_string_representation_uint_libretro_log_level)
+         ADD_DESC(frontend_log_desc);
 
-            ADD_DESC(logging_desc_0);
+ADD_DESC(logging_desc_0);
 
          END_SUB_GROUP(list, list_info, parent_group);
 
@@ -13481,29 +13620,6 @@ static void settings_build_cloud_sync(
    }
 }
 
-static void settings_build_frame_time_counter(
-      settings_t *settings, global_t *global,
-      rarch_setting_t **list, rarch_setting_info_t *list_info,
-      const char *parent_group)
-{
-   rarch_setting_group_info_t group_info;
-   rarch_setting_group_info_t subgroup_info;
-   group_info.name    = NULL;
-   subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
-   {
-      START_GROUP(list, list_info, &group_info, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_FRAME_TIME_COUNTER_SETTINGS), parent_group);
-
-      parent_group = msg_hash_to_str(MENU_ENUM_LABEL_FRAME_TIME_COUNTER_SETTINGS);
-
-      START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
-
-            ADD_DESC(frame_time_cou_desc_0);
-            ADD_DESC(frame_time_cou_desc_1);
-
-      GROUP_END();
-   }
-}
 
 static void settings_build_rewind(
       settings_t *settings, global_t *global,
@@ -14096,22 +14212,9 @@ static void settings_build_video(
 #ifdef HAVE_VULKAN
          if (string_is_equal(video_driver_get_ident(), "vulkan"))
          {
-#ifdef __APPLE__
+#if defined(__APPLE__) && defined(HAVE_VULKAN)
             /* Descriptor holdout: runtime default value. */
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.video_use_metal_arg_buffers,
-                  MENU_ENUM_LABEL_VIDEO_USE_METAL_ARG_BUFFERS,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_USE_METAL_ARG_BUFFERS,
-                  config_metal_arg_buffers_default(),
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+                  ADD_DESC(metal_argbuf_desc);
 #endif
 
             ADD_DESC(vid_desc_3);
@@ -14331,7 +14434,7 @@ static void settings_build_video(
             ADD_DESC(vid_desc_20);
          }
 
-#if defined(HAVE_THREADS) && !defined(__PSL1GHT__) && !defined(__PS3__) && !defined(__APPLE__)
+#if defined(HAVE_THREADS) && !defined(__PSL1GHT__) && !defined(__PS3__)
          /* Descriptor holdout: value target outside settings_t. */
          CONFIG_BOOL(
                list, list_info,
@@ -14361,9 +14464,9 @@ static void settings_build_video(
          }
 
          if (video_driver_test_all_flags(GFX_CTX_FLAGS_ADAPTIVE_VSYNC))
-                  ADD_DESC(avsync_desc);
+            ADD_DESC(avsync_desc);
 
-                  ADD_DESC(fdelay_desc);
+         ADD_DESC(fdelay_desc);
 
          /* Unlike all other shader-related menu entries
           * (which appear in the shaders quick menu, and
@@ -14503,61 +14606,15 @@ static void settings_build_audio(
       /* The latency pair stays imperative: defaults come from
        * g_defaults at registration time. */
       /* Descriptor holdout: runtime default value. */
-      CONFIG_UINT(
-            list, list_info,
-            &settings->uints.audio_latency,
-            MENU_ENUM_LABEL_AUDIO_LATENCY,
-            MENU_ENUM_LABEL_VALUE_AUDIO_LATENCY,
-            g_defaults.settings_out_latency ?
-            g_defaults.settings_out_latency : DEFAULT_OUT_LATENCY,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler);
-      SETTINGS_ACTION_SET(ok, &(*list)[list_info->index - 1], &setting_action_ok_uint)
-      menu_settings_list_current_add_range(list, list_info, 0, 512, 1.0, true, true);
-      SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-#ifdef HAVE_MICROPHONE
-      CONFIG_UINT(
-            list, list_info,
-            &settings->uints.microphone_latency,
-            MENU_ENUM_LABEL_MICROPHONE_LATENCY,
-            MENU_ENUM_LABEL_VALUE_MICROPHONE_LATENCY,
-            g_defaults.settings_in_latency ?
-            g_defaults.settings_in_latency : DEFAULT_IN_LATENCY,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler);
-      SETTINGS_ACTION_SET(ok, &(*list)[list_info->index - 1], &setting_action_ok_uint)
-      menu_settings_list_current_add_range(list, list_info, 0, 512, 1.0, true, true);
-      SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-#endif
+      ADD_DESC(audio_latency_desc);
 
             ADD_DESC(audio_rq_desc);
 
             ADD_DESC(audio_fmt_desc);
 
-      CONFIG_FLOAT(
-            list, list_info,
-            &settings->floats.audio_rate_control_delta,
-            MENU_ENUM_LABEL_AUDIO_RATE_CONTROL_DELTA,
-            MENU_ENUM_LABEL_VALUE_AUDIO_RATE_CONTROL_DELTA,
-            DEFAULT_RATE_CONTROL_DELTA,
-            "%.3f",
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler);
-      SETTINGS_ACTION_SET(ok, &(*list)[list_info->index - 1], &setting_action_ok_uint)
-      menu_settings_list_current_add_range(list, list_info, 0.0, 0.020, 0.001, true, true);
-      SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
+      ADD_DESC(audio_ratectl_desc);
 
-            ADD_DESC(audio_skew_desc);
+ADD_DESC(audio_skew_desc);
 
       END_SUB_GROUP(list, list_info, parent_group);
 
@@ -14616,21 +14673,7 @@ static void settings_build_microphone(
       parent_group = msg_hash_to_str(MENU_ENUM_LABEL_SETTINGS);
 
       /* Descriptor holdout: runtime default value. */
-      CONFIG_UINT(
-            list, list_info,
-            &settings->uints.microphone_latency,
-            MENU_ENUM_LABEL_MICROPHONE_LATENCY,
-            MENU_ENUM_LABEL_VALUE_MICROPHONE_LATENCY,
-            g_defaults.settings_in_latency ?
-            g_defaults.settings_in_latency : DEFAULT_IN_LATENCY,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler);
-      SETTINGS_ACTION_SET(ok, &(*list)[list_info->index - 1], &setting_action_ok_uint)
-      menu_settings_list_current_add_range(list, list_info, 0, 512, 1.0, true, true);
-      SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
+      ADD_DESC(microphone_lat_desc);
 
 #ifdef RARCH_MOBILE
             ADD_DESC(mic_block_desc);
@@ -14983,25 +15026,11 @@ static void settings_build_frame_throttling(
       menu_settings_list_current_add_range(list, list_info,
             MENU_RUNAHEAD_MODE_OFF, MENU_RUNAHEAD_MODE_LAST - 1, 1, true, true);
 
-      /* Descriptor holdout: change_handler poke; descriptor slot deferred to the single-source phase. */
-      CONFIG_UINT(
-            list, list_info,
-            &settings->uints.run_ahead_frames,
-            MENU_ENUM_LABEL_RUN_AHEAD_FRAMES,
-            MENU_ENUM_LABEL_VALUE_RUN_AHEAD_FRAMES,
-            1,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler);
-      (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-      SETTINGS_ACTION_SET(ok, &(*list)[list_info->index - 1], &setting_action_ok_uint)
-      (*list)[list_info->index - 1].offset_by = 1;
-      SETTINGS_ACTION_SET(change, &(*list)[list_info->index - 1], runahead_change_handler)
-      menu_settings_list_current_add_range(list, list_info, 1, MAX_RUNAHEAD_FRAMES, 1, true, true);
+#ifdef HAVE_RUNAHEAD
+      ADD_DESC(runahead_frames_desc);
+#endif
 
-            ADD_DESC(frame_throttli_desc_2);
+ADD_DESC(frame_throttli_desc_2);
 
       CONFIG_UINT(
             list, list_info,
@@ -15124,131 +15153,13 @@ static void settings_build_overlay(
       SETTINGS_ACTION_SET(right, &(*list)[list_info->index - 1], &setting_bool_action_right_with_refresh)
       SETTINGS_ACTION_SET(change, &(*list)[list_info->index - 1], overlay_enable_toggle_change_handler)
 
-      CONFIG_BOOL(
-            list, list_info,
-            &settings->bools.input_overlay_enable_autopreferred,
-            MENU_ENUM_LABEL_OVERLAY_AUTOLOAD_PREFERRED,
-            MENU_ENUM_LABEL_VALUE_OVERLAY_AUTOLOAD_PREFERRED,
-            DEFAULT_OVERLAY_ENABLE_AUTOPREFERRED,
-            MENU_ENUM_LABEL_VALUE_OFF,
-            MENU_ENUM_LABEL_VALUE_ON,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler,
-            SD_FLAG_NONE
-            );
-      SETTINGS_ACTION_SET(change, &(*list)[list_info->index - 1], overlay_enable_toggle_change_handler)
+      ADD_DESC(ovl_autoload_desc);
 
       if (video_driver_test_all_flags(GFX_CTX_FLAGS_OVERLAY_BEHIND_MENU_SUPPORTED))
       {
             ADD_DESC(ovl_desc_0);
       }
-      CONFIG_BOOL(
-            list, list_info,
-            &settings->bools.input_overlay_hide_in_menu,
-            MENU_ENUM_LABEL_INPUT_OVERLAY_HIDE_IN_MENU,
-            MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_HIDE_IN_MENU,
-            DEFAULT_OVERLAY_HIDE_IN_MENU,
-            MENU_ENUM_LABEL_VALUE_OFF,
-            MENU_ENUM_LABEL_VALUE_ON,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler,
-            SD_FLAG_NONE
-            );
-      SETTINGS_ACTION_SET(change, &(*list)[list_info->index - 1], overlay_enable_toggle_change_handler)
-
-      CONFIG_BOOL(
-            list, list_info,
-            &settings->bools.input_overlay_hide_when_gamepad_connected,
-            MENU_ENUM_LABEL_INPUT_OVERLAY_HIDE_WHEN_GAMEPAD_CONNECTED,
-            MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_HIDE_WHEN_GAMEPAD_CONNECTED,
-            DEFAULT_OVERLAY_HIDE_WHEN_GAMEPAD_CONNECTED,
-            MENU_ENUM_LABEL_VALUE_OFF,
-            MENU_ENUM_LABEL_VALUE_ON,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler,
-            SD_FLAG_NONE
-            );
-      SETTINGS_ACTION_SET(change, &(*list)[list_info->index - 1], overlay_enable_toggle_change_handler)
-
-      /* Descriptor holdout: poke tail outside the descriptor grammar. */
-      CONFIG_UINT(
-            list, list_info,
-            &settings->uints.input_overlay_show_inputs,
-            MENU_ENUM_LABEL_INPUT_OVERLAY_SHOW_INPUTS,
-            MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_SHOW_INPUTS,
-            DEFAULT_OVERLAY_SHOW_INPUTS,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler
-            );
-      (*list)[list_info->index - 1].ui_type                   = ST_UI_TYPE_UINT_COMBOBOX;
-      SETTINGS_ACTION_SET(ok, &(*list)[list_info->index - 1], &setting_action_ok_uint)
-      SETTINGS_ACTION_SET(left, &(*list)[list_info->index - 1], &setting_uint_action_left_with_refresh)
-      SETTINGS_ACTION_SET(right, &(*list)[list_info->index - 1], &setting_uint_action_right_with_refresh)
-      SETTINGS_ACTION_SET(repr, &(*list)[list_info->index - 1], &setting_get_string_representation_uint_input_overlay_show_inputs)
-      menu_settings_list_current_add_range(list, list_info, 0, OVERLAY_SHOW_INPUT_LAST-1, 1, true, true);
-
-      /* Descriptor holdout: change_handler poke; descriptor slot deferred to the single-source phase. */
-      CONFIG_UINT(
-            list, list_info,
-            &settings->uints.input_overlay_show_inputs_port,
-            MENU_ENUM_LABEL_INPUT_OVERLAY_SHOW_INPUTS_PORT,
-            MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_SHOW_INPUTS_PORT,
-            DEFAULT_OVERLAY_SHOW_INPUTS_PORT,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler
-            );
-      SETTINGS_ACTION_SET(ok, &(*list)[list_info->index - 1], &setting_action_ok_uint)
-      SETTINGS_ACTION_SET(repr, &(*list)[list_info->index - 1], &setting_get_string_representation_uint_input_overlay_show_inputs_port)
-      menu_settings_list_current_add_range(list, list_info, 0, MAX_USERS - 1, 1, true, true);
-
-      CONFIG_BOOL(
-            list, list_info,
-            &settings->bools.input_overlay_show_mouse_cursor,
-            MENU_ENUM_LABEL_INPUT_OVERLAY_SHOW_MOUSE_CURSOR,
-            MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_SHOW_MOUSE_CURSOR,
-            DEFAULT_OVERLAY_SHOW_MOUSE_CURSOR,
-            MENU_ENUM_LABEL_VALUE_OFF,
-            MENU_ENUM_LABEL_VALUE_ON,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler,
-            SD_FLAG_NONE
-            );
-      SETTINGS_ACTION_SET(change, &(*list)[list_info->index - 1], overlay_show_mouse_cursor_change_handler)
-
-      CONFIG_BOOL(
-            list, list_info,
-            &settings->bools.input_overlay_auto_rotate,
-            MENU_ENUM_LABEL_INPUT_OVERLAY_AUTO_ROTATE,
-            MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_AUTO_ROTATE,
-            DEFAULT_OVERLAY_AUTO_ROTATE,
-            MENU_ENUM_LABEL_VALUE_OFF,
-            MENU_ENUM_LABEL_VALUE_ON,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler,
-            SD_FLAG_NONE
-            );
-      SETTINGS_ACTION_SET(change, &(*list)[list_info->index - 1], overlay_enable_toggle_change_handler)
+      ADD_DESC(ovl_display_desc_0);
 
             ADD_DESC(ovl_desc_1);
 
@@ -15256,58 +15167,7 @@ static void settings_build_overlay(
 
             ADD_DESC(ovl_desc_2);
 
-      /* Descriptor holdout: poke tail outside the descriptor grammar. */
-      CONFIG_UINT(
-            list, list_info,
-            &settings->uints.input_overlay_dpad_diagonal_sensitivity,
-            MENU_ENUM_LABEL_INPUT_OVERLAY_DPAD_DIAGONAL_SENSITIVITY,
-            MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_DPAD_DIAGONAL_SENSITIVITY,
-            DEFAULT_OVERLAY_DPAD_DIAGONAL_SENSITIVITY,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler
-            );
-      SETTINGS_ACTION_SET(ok, &(*list)[list_info->index - 1], &setting_action_ok_uint)
-      SETTINGS_ACTION_SET(repr, &(*list)[list_info->index - 1], &setting_get_string_representation_percentage)
-      MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_OVERLAY_SET_EIGHTWAY_DIAGONAL_SENSITIVITY);
-      menu_settings_list_current_add_range(list, list_info, 0, 100, 1, true, true);
-      SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
-
-      CONFIG_UINT(
-            list, list_info,
-            &settings->uints.input_overlay_abxy_diagonal_sensitivity,
-            MENU_ENUM_LABEL_INPUT_OVERLAY_ABXY_DIAGONAL_SENSITIVITY,
-            MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_ABXY_DIAGONAL_SENSITIVITY,
-            DEFAULT_OVERLAY_ABXY_DIAGONAL_SENSITIVITY,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler
-            );
-      SETTINGS_ACTION_SET(ok, &(*list)[list_info->index - 1], &setting_action_ok_uint)
-      SETTINGS_ACTION_SET(repr, &(*list)[list_info->index - 1], &setting_get_string_representation_percentage)
-      MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_OVERLAY_SET_EIGHTWAY_DIAGONAL_SENSITIVITY);
-      menu_settings_list_current_add_range(list, list_info, 0, 100, 1, true, true);
-      SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
-
-      CONFIG_UINT(
-            list, list_info,
-            &settings->uints.input_overlay_analog_recenter_zone,
-            MENU_ENUM_LABEL_INPUT_OVERLAY_ANALOG_RECENTER_ZONE,
-            MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_ANALOG_RECENTER_ZONE,
-            DEFAULT_INPUT_OVERLAY_ANALOG_RECENTER_ZONE,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler
-            );
-      SETTINGS_ACTION_SET(ok, &(*list)[list_info->index - 1], &setting_action_ok_uint)
-      SETTINGS_ACTION_SET(repr, &(*list)[list_info->index - 1], &setting_get_string_representation_percentage)
-      menu_settings_list_current_add_range(list, list_info, 0, 100, 1, true, true);
+      ADD_DESC(ovl_eightway_desc_0);
 
             ADD_DESC(ovl_desc_3);
 
@@ -15336,60 +15196,7 @@ static void settings_build_osk_overlay(
 
       START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
-      /* Descriptor holdout: runtime default value. */
-      CONFIG_PATH(
-            list, list_info,
-            settings->paths.path_osk_overlay,
-            sizeof(settings->paths.path_osk_overlay),
-            MENU_ENUM_LABEL_OSK_OVERLAY_PRESET,
-            MENU_ENUM_LABEL_VALUE_OSK_OVERLAY_PRESET,
-            settings->paths.directory_osk_overlay,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler);
-      MENU_SETTINGS_LIST_CURRENT_ADD_VALUES(list, list_info, "cfg");
-      MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_OVERLAY_INIT);
-
-      /* Descriptor holdout: poke tail outside the descriptor grammar. */
-      CONFIG_BOOL(
-            list, list_info,
-            &settings->bools.input_osk_overlay_auto_scale,
-            MENU_ENUM_LABEL_INPUT_OSK_OVERLAY_AUTO_SCALE,
-            MENU_ENUM_LABEL_VALUE_INPUT_OSK_OVERLAY_AUTO_SCALE,
-            DEFAULT_INPUT_OVERLAY_AUTO_SCALE,
-            MENU_ENUM_LABEL_VALUE_OFF,
-            MENU_ENUM_LABEL_VALUE_ON,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler,
-            SD_FLAG_NONE
-            );
-      SETTINGS_ACTION_SET(ok, &(*list)[list_info->index - 1], &setting_bool_action_left_with_refresh)
-      SETTINGS_ACTION_SET(left, &(*list)[list_info->index - 1], &setting_bool_action_left_with_refresh)
-      SETTINGS_ACTION_SET(right, &(*list)[list_info->index - 1], &setting_bool_action_right_with_refresh)
-      MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_OVERLAY_SET_SCALE_FACTOR);
-      SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
-
-      CONFIG_FLOAT(
-            list, list_info,
-            &settings->floats.input_osk_overlay_opacity,
-            MENU_ENUM_LABEL_OSK_OVERLAY_OPACITY,
-            MENU_ENUM_LABEL_VALUE_OSK_OVERLAY_OPACITY,
-            DEFAULT_INPUT_OVERLAY_OPACITY,
-            "%.2f",
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler);
-      SETTINGS_ACTION_SET(ok, &(*list)[list_info->index - 1], &setting_action_ok_uint)
-      MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_OVERLAY_SET_ALPHA_MOD);
-      menu_settings_list_current_add_range(list, list_info, 0, 1, 0.01, true, true);
-      SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
+            ADD_DESC(osk_overlay_desc_0);
 
       GROUP_END();
 #endif
@@ -15963,22 +15770,9 @@ static void settings_build_user_interface(
 
                      ADD_DESC(ui_desc_12);
       /* Descriptor holdout: poke tail outside the descriptor grammar. */
-      CONFIG_BOOL(
-            list, list_info,
-            &settings->bools.menu_scroll_fast,
-            MENU_ENUM_LABEL_MENU_SCROLL_FAST,
-            MENU_ENUM_LABEL_VALUE_MENU_SCROLL_FAST,
-            DEFAULT_MENU_SCROLL_FAST,
-            MENU_ENUM_LABEL_VALUE_SCROLL_NORMAL,
-            MENU_ENUM_LABEL_VALUE_SCROLL_FAST,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler,
-            SD_FLAG_NONE);
+      ADD_DESC(menu_scroll_fast_desc);
 
-                     ADD_DESC(ui_desc_13);
+ADD_DESC(ui_desc_13);
       GROUP_END();
    }
 }
@@ -17098,40 +16892,7 @@ static void settings_build_midi(
             &group_info, &subgroup_info, parent_group);
 
 #if !defined(RARCH_CONSOLE)
-      /* Descriptor holdout: poke tail outside the descriptor grammar. */
-      CONFIG_STRING(
-            list, list_info,
-            settings->arrays.midi_input,
-            sizeof(settings->arrays.midi_input),
-            MENU_ENUM_LABEL_MIDI_INPUT,
-            MENU_ENUM_LABEL_VALUE_MIDI_INPUT,
-            DEFAULT_MIDI_INPUT,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler);
-      SETTINGS_ACTION_SET(start, &(*list)[list_info->index - 1], setting_string_action_start_midi_device)
-      SETTINGS_ACTION_SET(left, &(*list)[list_info->index - 1], setting_string_action_left_midi_input)
-      SETTINGS_ACTION_SET(right, &(*list)[list_info->index - 1], setting_string_action_right_midi_input)
-      SETTINGS_ACTION_SET(ok, &(*list)[list_info->index - 1], setting_string_action_ok_midi_device)
-
-      CONFIG_STRING(
-            list, list_info,
-            settings->arrays.midi_output,
-            sizeof(settings->arrays.midi_output),
-            MENU_ENUM_LABEL_MIDI_OUTPUT,
-            MENU_ENUM_LABEL_VALUE_MIDI_OUTPUT,
-            DEFAULT_MIDI_OUTPUT,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler);
-      SETTINGS_ACTION_SET(start, &(*list)[list_info->index - 1], setting_string_action_start_midi_device)
-      SETTINGS_ACTION_SET(left, &(*list)[list_info->index - 1], setting_string_action_left_midi_output)
-      SETTINGS_ACTION_SET(right, &(*list)[list_info->index - 1], setting_string_action_right_midi_output)
-      SETTINGS_ACTION_SET(ok, &(*list)[list_info->index - 1], setting_string_action_ok_midi_device)
+            ADD_DESC(midi_devices_desc_0);
 
             ADD_DESC(midi_desc_0);
 #endif
@@ -17322,30 +17083,6 @@ static void settings_build_manual_content_scan(
 }
 
 #ifdef HAVE_MIST
-static void settings_build_steam(
-      settings_t *settings, global_t *global,
-      rarch_setting_t **list, rarch_setting_info_t *list_info,
-      const char *parent_group)
-{
-   rarch_setting_group_info_t group_info;
-   rarch_setting_group_info_t subgroup_info;
-   group_info.name    = NULL;
-   subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
-   {
-      START_GROUP(list, list_info, &group_info,
-            msg_hash_to_str(MENU_ENUM_LABEL_VALUE_STEAM_SETTINGS), parent_group);
-
-      parent_group = msg_hash_to_str(MENU_ENUM_LABEL_VALUE_STEAM_SETTINGS);
-
-      START_SUB_GROUP(list, list_info, "State",
-            &group_info, &subgroup_info, parent_group);
-
-            ADD_DESC(steam_desc_0);
-
-      GROUP_END();
-   }
-}
 #endif
 
 #ifdef HAVE_SMBCLIENT
@@ -17504,7 +17241,11 @@ static const settings_build_entry_t settings_build_registry[] = {
    { SETTINGS_LIST_LOGGING, settings_build_logging, NULL, 0, MSG_UNKNOWN, MSG_UNKNOWN, MSG_UNKNOWN },
    { SETTINGS_LIST_SAVING, settings_build_saving, NULL, 0, MSG_UNKNOWN, MSG_UNKNOWN, MSG_UNKNOWN },
    { SETTINGS_LIST_CLOUD_SYNC, settings_build_cloud_sync, NULL, 0, MSG_UNKNOWN, MSG_UNKNOWN, MSG_UNKNOWN },
-   { SETTINGS_LIST_FRAME_TIME_COUNTER, settings_build_frame_time_counter, NULL, 0, MSG_UNKNOWN, MSG_UNKNOWN, MSG_UNKNOWN },
+   { SETTINGS_LIST_FRAME_TIME_COUNTER, NULL,
+     frame_time_cou_desc_0, (unsigned)ARRAY_SIZE(frame_time_cou_desc_0),
+     MENU_ENUM_LABEL_VALUE_FRAME_TIME_COUNTER_SETTINGS,
+     MSG_UNKNOWN,
+     MENU_ENUM_LABEL_FRAME_TIME_COUNTER_SETTINGS },
    { SETTINGS_LIST_REWIND, settings_build_rewind, NULL, 0, MSG_UNKNOWN, MSG_UNKNOWN, MSG_UNKNOWN },
    { SETTINGS_LIST_CHEATS, NULL,
      cheats_desc_0, (unsigned)ARRAY_SIZE(cheats_desc_0),
@@ -17610,7 +17351,11 @@ static const settings_build_entry_t settings_build_registry[] = {
    { SETTINGS_LIST_MIDI, settings_build_midi, NULL, 0, MSG_UNKNOWN, MSG_UNKNOWN, MSG_UNKNOWN },
    { SETTINGS_LIST_MANUAL_CONTENT_SCAN, settings_build_manual_content_scan, NULL, 0, MSG_UNKNOWN, MSG_UNKNOWN, MSG_UNKNOWN },
 #ifdef HAVE_MIST
-   { SETTINGS_LIST_STEAM, settings_build_steam, NULL, 0, MSG_UNKNOWN, MSG_UNKNOWN, MSG_UNKNOWN },
+   { SETTINGS_LIST_STEAM, NULL,
+     steam_desc_0, (unsigned)ARRAY_SIZE(steam_desc_0),
+     MENU_ENUM_LABEL_VALUE_STEAM_SETTINGS,
+     MSG_UNKNOWN,
+     MENU_ENUM_LABEL_VALUE_STEAM_SETTINGS },
 #endif
 #ifdef HAVE_SMBCLIENT
    { SETTINGS_LIST_SMBCLIENT, settings_build_smbclient, NULL, 0, MSG_UNKNOWN, MSG_UNKNOWN, MSG_UNKNOWN },
@@ -17753,6 +17498,7 @@ static rarch_setting_t *settings_lazy_get(unsigned k)
 }
 
 
+#if defined(RETROARCH_VALIDATION_DUMPS)
 /* --- Stage A of the layout consolidation -------------------------
  * Every descriptor table, registered once with the guards of its
  * add_desc call site, so a setting is constructible by enum without
@@ -17803,6 +17549,7 @@ static const settings_desc_table_t settings_desc_registry[] = {
    { mm_desc_15, (uint16_t)ARRAY_SIZE(mm_desc_15) },
    { mm_desc_16, (uint16_t)ARRAY_SIZE(mm_desc_16) },
    { configuration_desc_0, (uint16_t)ARRAY_SIZE(configuration_desc_0) },
+   { frontend_log_desc, (uint16_t)ARRAY_SIZE(frontend_log_desc) },
    { logging_desc_0, (uint16_t)ARRAY_SIZE(logging_desc_0) },
    { sav_desc_0, (uint16_t)ARRAY_SIZE(sav_desc_0) },
    { saving2_desc_0, (uint16_t)ARRAY_SIZE(saving2_desc_0) },
@@ -17818,9 +17565,11 @@ static const settings_desc_table_t settings_desc_registry[] = {
 #endif
 #endif
    { frame_time_cou_desc_0, (uint16_t)ARRAY_SIZE(frame_time_cou_desc_0) },
-   { frame_time_cou_desc_1, (uint16_t)ARRAY_SIZE(frame_time_cou_desc_1) },
    { rewind_desc_0, (uint16_t)ARRAY_SIZE(rewind_desc_0) },
    { rewind_desc_1, (uint16_t)ARRAY_SIZE(rewind_desc_1) },
+#if defined(__APPLE__) && defined(HAVE_VULKAN)
+   { metal_argbuf_desc, (uint16_t)ARRAY_SIZE(metal_argbuf_desc) },
+#endif
 #if (!defined(RARCH_CONSOLE) && !defined(RARCH_MOBILE)) || (defined(IOS) && TARGET_OS_TV)
    { vid_desc_0, (uint16_t)ARRAY_SIZE(vid_desc_0) },
 #endif
@@ -17908,9 +17657,11 @@ static const settings_desc_table_t settings_desc_registry[] = {
    { vid_desc_21, (uint16_t)ARRAY_SIZE(vid_desc_21) },
    { misc_desc, (uint16_t)ARRAY_SIZE(misc_desc) },
    { video_filter_desc, (uint16_t)ARRAY_SIZE(video_filter_desc) },
+   { audio_ratectl_desc, (uint16_t)ARRAY_SIZE(audio_ratectl_desc) },
    { audio_en_desc, (uint16_t)ARRAY_SIZE(audio_en_desc) },
    { audio_state_desc, (uint16_t)ARRAY_SIZE(audio_state_desc) },
    { audio_sync_desc, (uint16_t)ARRAY_SIZE(audio_sync_desc) },
+   { audio_latency_desc, (uint16_t)ARRAY_SIZE(audio_latency_desc) },
    { audio_rq_desc, (uint16_t)ARRAY_SIZE(audio_rq_desc) },
    { audio_fmt_desc, (uint16_t)ARRAY_SIZE(audio_fmt_desc) },
    { audio_skew_desc, (uint16_t)ARRAY_SIZE(audio_skew_desc) },
@@ -17924,6 +17675,9 @@ static const settings_desc_table_t settings_desc_registry[] = {
 #endif
 #ifdef HAVE_MICROPHONE
    { mic_enable_desc, (uint16_t)ARRAY_SIZE(mic_enable_desc) },
+#ifdef HAVE_MICROPHONE
+   { microphone_lat_desc, (uint16_t)ARRAY_SIZE(microphone_lat_desc) },
+#endif
 #endif
 #ifdef HAVE_MICROPHONE
 #ifdef RARCH_MOBILE
@@ -17970,6 +17724,9 @@ static const settings_desc_table_t settings_desc_registry[] = {
    { recording2_desc_1, (uint16_t)ARRAY_SIZE(recording2_desc_1) },
    { recording_desc_2, (uint16_t)ARRAY_SIZE(recording_desc_2) },
    { recording_desc_3, (uint16_t)ARRAY_SIZE(recording_desc_3) },
+#ifdef HAVE_RUNAHEAD
+   { runahead_frames_desc, (uint16_t)ARRAY_SIZE(runahead_frames_desc) },
+#endif
    { frame_throttli_desc_0, (uint16_t)ARRAY_SIZE(frame_throttli_desc_0) },
    { menu_thr_desc, (uint16_t)ARRAY_SIZE(menu_thr_desc) },
    { frame_throttli_desc_1, (uint16_t)ARRAY_SIZE(frame_throttli_desc_1) },
@@ -17978,6 +17735,9 @@ static const settings_desc_table_t settings_desc_registry[] = {
 #endif
 #ifdef ANDROID
    { frame_throttli_desc_3, (uint16_t)ARRAY_SIZE(frame_throttli_desc_3) },
+#endif
+#ifdef HAVE_OVERLAY
+   { osk_overlay_desc_0, (uint16_t)ARRAY_SIZE(osk_overlay_desc_0) },
 #endif
 #ifdef HAVE_GFX_WIDGETS
    { osn_desc_0, (uint16_t)ARRAY_SIZE(osn_desc_0) },
@@ -18003,6 +17763,15 @@ static const settings_desc_table_t settings_desc_registry[] = {
    { osn_desc_5, (uint16_t)ARRAY_SIZE(osn_desc_5) },
 #ifdef HAVE_OVERLAY
    { ovl_desc_0, (uint16_t)ARRAY_SIZE(ovl_desc_0) },
+#ifdef HAVE_OVERLAY
+   { ovl_autoload_desc, (uint16_t)ARRAY_SIZE(ovl_autoload_desc) },
+#endif
+#ifdef HAVE_OVERLAY
+   { ovl_display_desc_0, (uint16_t)ARRAY_SIZE(ovl_display_desc_0) },
+#endif
+#ifdef HAVE_OVERLAY
+   { ovl_eightway_desc_0, (uint16_t)ARRAY_SIZE(ovl_eightway_desc_0) },
+#endif
 #endif
 #ifdef HAVE_OVERLAY
    { ovl_desc_1, (uint16_t)ARRAY_SIZE(ovl_desc_1) },
@@ -18120,6 +17889,7 @@ static const settings_desc_table_t settings_desc_registry[] = {
 #ifdef HAVE_TRANSLATE
    { ai_service_desc_1, (uint16_t)ARRAY_SIZE(ai_service_desc_1) },
 #endif
+   { menu_scroll_fast_desc, (uint16_t)ARRAY_SIZE(menu_scroll_fast_desc) },
    { ui_desc_0, (uint16_t)ARRAY_SIZE(ui_desc_0) },
    /* ui_desc_1 (3DS display mode) is deliberately absent: its range
     * is computed from the console model at runtime, so the table is
@@ -18246,6 +18016,7 @@ static const settings_desc_table_t settings_desc_registry[] = {
 #endif
    { privacy_desc_2, (uint16_t)ARRAY_SIZE(privacy_desc_2) },
 #if !defined(RARCH_CONSOLE)
+   { midi_devices_desc_0, (uint16_t)ARRAY_SIZE(midi_devices_desc_0) },
    { midi_desc_0, (uint16_t)ARRAY_SIZE(midi_desc_0) },
 #endif
 #ifdef HAVE_MIST
@@ -18271,6 +18042,7 @@ static const setting_desc_t *settings_master_find(enum msg_hash_enums e)
    }
    return NULL;
 }
+#endif /* RETROARCH_VALIDATION_DUMPS */
 
 static rarch_setting_t *menu_setting_new_internal(rarch_setting_info_t *list_info)
 {

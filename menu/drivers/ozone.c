@@ -2988,7 +2988,7 @@ static void ozone_reset_theme_textures(ozone_handle_t *ozone)
                theme_path, OZONE_THEME_TEXTURES_FILES[i],
                sizeof(texpath));
          gfx_display_reset_icon_texture(texpath,
-            &theme->textures[i], TEXTURE_FILTER_LINEAR,
+            &theme->textures[i], gfx_display_texture_filter(),
             NULL, NULL);
       }
    }
@@ -5227,7 +5227,7 @@ static void ozone_context_reset_horizontal_list(ozone_handle_t *ozone)
          /* Load sidebar playlist icons at once */
          gfx_display_reset_icon_texture(
                texturepath, &node->icon,
-               TEXTURE_FILTER_LINEAR, NULL, NULL);
+               gfx_display_texture_filter(), NULL, NULL);
 
          strlcpy(sysname + syslen, "-content.png", sizeof(sysname) - syslen);
          fill_pathname_join_special(
@@ -7151,6 +7151,7 @@ static void ozone_draw_osk(
 {
    char message[2048];
    gfx_display_t *p_disp          = (gfx_display_t*)disp_userdata;
+   input_driver_state_t *input_st = input_state_get_ptr();
    const char *text               = str;
    unsigned text_color            = 0xffffffff;
    float ozone_osk_backdrop[16] = {
@@ -7168,6 +7169,8 @@ static void ozone_draw_osk(
    unsigned bottom_end            = video_height / 2;
    unsigned y_offset              = 0;
    bool draw_placeholder          = !str || !*str;
+   unsigned cursor_line           = 0;
+   int cursor_x                   = -2;
    retro_time_t current_time      = menu_driver_get_current_time();
    const char *line               = NULL;
    const char *next               = NULL;
@@ -7265,6 +7268,32 @@ static void ozone_draw_osk(
       text_color  = ozone_theme_light.text_sublabel_rgba;
    }
 
+   if (!draw_placeholder && input_st->keyboard_line.buffer)
+   {
+      char cursor_message[2048];
+      size_t ptr = input_st->keyboard_line.ptr;
+
+      if (ptr > input_st->keyboard_line.size)
+         ptr = input_st->keyboard_line.size;
+      if (ptr >= sizeof(cursor_message))
+         ptr = sizeof(cursor_message) - 1;
+
+      memcpy(cursor_message, input_st->keyboard_line.buffer, ptr);
+      cursor_message[ptr] = '\0';
+      (ozone->word_wrap)(cursor_message,
+            sizeof(cursor_message),
+            cursor_message,
+            strlen(cursor_message),
+            (video_width - (margin * 2) - (padding * 2)) / ozone->fonts.entries_label.glyph_width,
+            ozone->fonts.entries_label.wideglyph_width,
+            0);
+
+      cursor_line = string_count_occurrences_single_character(cursor_message, '\n');
+      line        = strrchr(cursor_message, '\n');
+      line        = line ? line + 1 : cursor_message;
+      cursor_x    = font_driver_get_message_width(ozone->fonts.entries_label.font, line, strlen(line), 1.0f);
+   }
+
    (ozone->word_wrap)(message,
          sizeof(message),
          text,
@@ -7275,6 +7304,8 @@ static void ozone_draw_osk(
 
    list_size = string_count_occurrences_single_character(message, '\n');
    list_size = (list_size) ? list_size : 1;
+   if (cursor_line >= list_size)
+      cursor_line = list_size - 1;
 
    for (line = message; line; line = next ? next + 1 : NULL)
    {
@@ -7312,37 +7343,29 @@ static void ozone_draw_osk(
             false);
 
       /* Cursor/caret */
-      if (i == list_size - 1)
-      {
-         if (ozone->flags & OZONE_FLAG_OSK_CURSOR)
-         {
-            int cursor_x = draw_placeholder
-                  ? -2
-                  : font_driver_get_message_width(ozone->fonts.entries_label.font, line_buf, _len, 1.0f);
+      if ((i == cursor_line) && (ozone->flags & OZONE_FLAG_OSK_CURSOR))
+         gfx_display_draw_quad(
+               p_disp,
+               userdata,
+               video_width,
+               video_height,
+               margin
+                     + (padding * 2)
+                     + cursor_x,
+               margin
+                     + padding
+                     + y_offset
+                     + ozone->fonts.entries_label.line_height
+                     - ozone->fonts.entries_label.line_ascender
+                     + ozone->dimensions.spacer_3px,
+               ozone->dimensions.spacer_1px,
+               ozone->fonts.entries_label.line_ascender,
+               video_width,
+               video_height,
+               ozone->pure_white,
+               NULL);
 
-            gfx_display_draw_quad(
-                  p_disp,
-                  userdata,
-                  video_width,
-                  video_height,
-                  margin
-                        + (padding * 2)
-                        + cursor_x,
-                  margin
-                        + padding
-                        + y_offset
-                        + ozone->fonts.entries_label.line_height
-                        - ozone->fonts.entries_label.line_ascender
-                        + ozone->dimensions.spacer_3px,
-                  ozone->dimensions.spacer_1px,
-                  ozone->fonts.entries_label.line_ascender,
-                  video_width,
-                  video_height,
-                  ozone->pure_white,
-                  NULL);
-         }
-      }
-      else
+      if (i != list_size - 1)
          y_offset += (ozone->fonts.entries_label.line_height * 2) * scale_factor;
 
       i++;
@@ -7350,7 +7373,6 @@ static void ozone_draw_osk(
 
    /* Keyboard */
    {
-      input_driver_state_t *input_st = input_state_get_ptr();
       gfx_display_draw_keyboard(
             p_disp,
             userdata,
@@ -10144,7 +10166,7 @@ static void ozone_context_reset(void *data, bool is_threaded)
                ozone->png_path, OZONE_TEXTURES_FILES[i],
                sizeof(texpath));
          gfx_display_reset_icon_texture(texpath,
-               &ozone->textures[i], TEXTURE_FILTER_LINEAR,
+               &ozone->textures[i], gfx_display_texture_filter(),
                NULL, NULL);
       }
 
@@ -10168,7 +10190,7 @@ static void ozone_context_reset(void *data, bool is_threaded)
                break;
          }
          gfx_display_reset_icon_texture(texpath,
-               &ozone->tab_textures[i], TEXTURE_FILTER_LINEAR,
+               &ozone->tab_textures[i], gfx_display_texture_filter(),
                NULL, NULL);
       }
 
@@ -10183,7 +10205,7 @@ static void ozone_context_reset(void *data, bool is_threaded)
                ozone->icons_path, ozone_entries_icon_texture_path(i),
                sizeof(texpath));
          gfx_display_reset_icon_texture(texpath,
-               &ozone->icons_textures[i], TEXTURE_FILTER_LINEAR,
+               &ozone->icons_textures[i], gfx_display_texture_filter(),
                NULL, NULL);
       }
 
@@ -12073,10 +12095,14 @@ static void ozone_selection_changed(ozone_handle_t *ozone, bool allow_animation)
          {
             menu_entry_t entry;
             MENU_ENTRY_INITIALIZE(entry);
+            entry.flags |= MENU_ENTRY_FLAG_PATH_ENABLED;
             menu_entry_get(&entry, 0, selection, NULL, true);
 
             if (   (entry.type == FILE_TYPE_IMAGEVIEWER)
-                || (entry.type == FILE_TYPE_IMAGE))
+                || (entry.type == FILE_TYPE_IMAGE)
+                /* WebM files preview like images: the thumbnail
+                 * pipeline decodes their video track */
+                || (image_texture_get_type(entry.path) == IMAGE_TYPE_WEBM))
             {
                ozone_set_thumbnail_content(ozone, "imageviewer");
                update_thumbnails = true;

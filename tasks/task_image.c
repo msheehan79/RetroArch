@@ -29,6 +29,7 @@
 
 #include "../configuration.h"
 #include "../gfx/video_driver.h"
+#include "../gfx/gfx_display.h"
 
 enum image_status_enum
 {
@@ -525,6 +526,9 @@ bool task_push_image_load(const char *fullpath,
       case IMAGE_TYPE_WEBP:
          nbio->type = NBIO_TYPE_WEBP;
          break;
+      case IMAGE_TYPE_WEBM:
+         nbio->type = NBIO_TYPE_WEBM;
+         break;
       default:
          nbio->type = NBIO_TYPE_NONE;
          break;
@@ -592,7 +596,7 @@ static void cb_task_icon_load(retro_task_t *task,
    if (!img || img->width < 1 || img->height < 1 || !img->pixels)
       goto end;
 
-   video_driver_texture_load(img, TEXTURE_FILTER_LINEAR,
+   video_driver_texture_load(img, gfx_display_texture_filter(),
          tag->target);
 
 end:

@@ -164,6 +164,9 @@
 #define DEFAULT_MATERIALUI_THUMBNAIL_BACKGROUND_ENABLE true
 #define DEFAULT_MENU_THUMBNAIL_BACKGROUND_ENABLE false
 
+/* Play the audio track of animated WebM thumbnails (menu preview). */
+#define DEFAULT_MENU_THUMBNAIL_PREVIEW_AUDIO false
+
 #define DEFAULT_SCREEN_BRIGHTNESS 100
 
 #define DEFAULT_CRT_SWITCH_RESOLUTION CRT_SWITCH_NONE
@@ -1621,6 +1624,11 @@
 #else
 #define DEFAULT_MENU_SCALE_FACTOR 1.0f
 #endif
+/* Specifies whether menu images (icons, thumbnails,
+ * wallpapers) are uploaded with mip-mapped filtering.
+ * Keeps images smooth when drawn below their native size,
+ * at the cost of slightly higher video memory usage. */
+#define DEFAULT_MENU_TEXTURE_MIPMAPPING true
 /* Specifies whether display widgets should be scaled
  * automatically using the default menu scale factor */
 #define DEFAULT_MENU_WIDGET_SCALE_AUTO true

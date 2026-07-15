@@ -859,6 +859,7 @@ typedef struct settings
       bool menu_navigation_browser_filter_supported_extensions_enable;
       bool menu_show_advanced_settings;
       bool menu_linear_filter;
+      bool menu_texture_mipmapping;
       bool menu_horizontal_animation;
       bool menu_scroll_fast;
       bool menu_show_online_updater;
@@ -895,6 +896,7 @@ typedef struct settings
       bool menu_materialui_dual_thumbnail_list_view_enable;
       bool menu_materialui_thumbnail_background_enable;
       bool menu_thumbnail_background_enable;
+      bool menu_thumbnail_preview_audio;
       bool menu_rgui_background_filler_thickness_enable;
       bool menu_rgui_border_filler_thickness_enable;
       bool menu_rgui_border_filler_enable;

@@ -5018,13 +5018,40 @@ static void rgui_render_osk(
    {
       int input_str_x, input_str_y;
       int text_cursor_x;
-      unsigned input_str_char_offset = 0;
-      unsigned input_str_length      = (unsigned)utf8len(input_str);
-      const char *input_str_visible  = NULL;
+      unsigned input_str_char_offset        = 0;
+      unsigned input_str_length             = (unsigned)utf8len(input_str);
+      unsigned input_str_cursor             = input_str_length;
+      static const char *last_cursor_buffer = NULL;
+      static size_t last_cursor_ptr         = 0;
+      static retro_time_t last_cursor_time  = 0;
+      retro_time_t current_time             = menu_driver_get_current_time();
+      size_t cursor_ptr                     = input_str_cursor;
+      const char *input_str_visible         = NULL;
+
+      if (input_str && input_st->keyboard_line.buffer)
+      {
+         size_t ptr         = input_st->keyboard_line.ptr;
+         const char *cursor = input_st->keyboard_line.buffer;
+         const char *end;
+
+         input_str_cursor   = 0;
+
+         if (ptr > input_st->keyboard_line.size)
+            ptr = input_st->keyboard_line.size;
+         cursor_ptr = ptr;
+         end = cursor + ptr;
+
+         while (cursor < end && *cursor)
+         {
+            utf8_walk(&cursor);
+            input_str_cursor++;
+         }
+      }
 
       if (input_str_length > input_str_max_length)
       {
-         input_str_char_offset       = input_str_length - input_str_max_length;
+         input_str_char_offset       = (input_str_cursor > input_str_max_length)
+            ? input_str_cursor - input_str_max_length : 0;
          input_str_length            = input_str_max_length;
       }
 
@@ -5038,10 +5065,19 @@ static void rgui_render_osk(
 
       /* Draw text cursor */
       text_cursor_x                  = osk_x + input_offset_x
-                                       + (input_str_length * rgui->font_width_stride);
+                                       + ((input_str_cursor - input_str_char_offset)
+                                             * rgui->font_width_stride);
 
-      rgui_blit_symbol(rgui, fb_width, text_cursor_x, input_str_y, RGUI_SYMBOL_TEXT_CURSOR,
-            rgui->colors.normal_color, rgui->colors.shadow_color);
+      if ((last_cursor_buffer != input_st->keyboard_line.buffer) || (last_cursor_ptr != cursor_ptr))
+      {
+         last_cursor_buffer = input_st->keyboard_line.buffer;
+         last_cursor_ptr    = cursor_ptr;
+         last_cursor_time   = current_time;
+      }
+
+      if (!(((current_time - last_cursor_time) / 500000) & 1))
+         rgui_blit_symbol(rgui, fb_width, text_cursor_x, input_str_y, RGUI_SYMBOL_TEXT_CURSOR,
+               rgui->colors.normal_color, rgui->colors.shadow_color);
    }
 
    /* Draw keyboard 'keys' */
@@ -6476,6 +6512,10 @@ static bool rgui_set_aspect_ratio(
 #endif
          }
          break;
+      case RGUI_ASPECT_RATIO_1_1:
+         rgui->frame_buf.width = RGUI_ROUND_FB_WIDTH(rgui->frame_buf.height);
+         base_term_width       = rgui->frame_buf.width;
+         break;
       default:
          /* 4:3 */
          if (rgui->frame_buf.height == 240)
@@ -6578,6 +6618,10 @@ static bool rgui_set_aspect_ratio(
                   RGUI_MIN_FB_WIDTH : base_term_width;
             break;
 
+         case RGUI_ASPECT_RATIO_1_1:
+            rgui->frame_buf.height = rgui->frame_buf.width;
+            base_term_width        = rgui->frame_buf.width;
+            break;
          default:
             /* 4:3 */
             rgui->frame_buf.height = (unsigned)(
@@ -8078,6 +8122,9 @@ static void rgui_frame(void *data, video_frame_info_t *video_info)
          case RGUI_ASPECT_RATIO_5_3:
          case RGUI_ASPECT_RATIO_5_3_CENTRE:
             default_fb_width = 400;
+            break;
+         case RGUI_ASPECT_RATIO_1_1:
+            default_fb_width = 240;
             break;
          default:
             /* 4:3 */
