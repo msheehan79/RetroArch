@@ -36,7 +36,7 @@
 
 #include <retro_timers.h>
 #include <retro_atomic.h>
-#include <pthread.h>
+#include <rthreads/rthreads.h>
 #include <compat/apple_compat.h>
 #include <string/stdstring.h>
 
@@ -331,7 +331,7 @@ static void cocoa_gl_gfx_ctx_get_video_size_ts(void *data,
       unsigned *width, unsigned *height)
 {
    size_t packed;
-   if (pthread_main_np() != 0)
+   if (sthread_is_main_thread())
       cocoa_gl_gfx_ctx_publish_size();
    packed  = retro_atomic_load_acquire_size(&cocoa_gl_backing_size);
    *width  = (unsigned)((packed >> 16) & 0xFFFF);
@@ -419,6 +419,11 @@ static void cocoa_gl_gfx_ctx_swap_buffers(void *data)
    cocoa_ctx_data_t *cocoa_ctx = (cocoa_ctx_data_t*)data;
    if (!(--cocoa_ctx->fast_forward_skips < 0))
       return;
+   /* -[GLKView display] presents and resizes the drawable to the view's
+    * layer bounds; the resize mutates CALayer state, so this must run on
+    * the main thread. The iOS GL/GLES backends are forced non-threaded
+    * (video_driver_render_context_is_main_thread_only), so swap_buffers is
+    * always on the main thread here and this is safe. */
    if (glk_view)
       [glk_view display];
    cocoa_ctx->fast_forward_skips =

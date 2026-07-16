@@ -16,11 +16,11 @@
 
 #import <AvailabilityMacros.h>
 #include <sys/stat.h>
-#include <pthread.h>
 #include <dispatch/dispatch.h>
 #include <CoreFoundation/CoreFoundation.h>
 
 #include <retro_atomic.h>
+#include <rthreads/rthreads.h>
 #include <compat/apple_compat.h>
 #include <string/stdstring.h>
 #include <defines/cocoa_defines.h>
@@ -932,7 +932,7 @@ void cocoa_main_thread_sync(void (*func)(void *userdata), void *userdata)
    CFArrayRef modes;
    const void *mode_entries[2];
 
-   if (pthread_main_np() != 0)
+   if (sthread_is_main_thread())
    {
       func(userdata);
       return;
@@ -967,6 +967,32 @@ void cocoa_main_thread_sync(void (*func)(void *userdata), void *userdata)
 #endif
 }
 
+/* One condvar-wait iteration for a caller that may be the main thread and
+ * must let the worker's cocoa_main_thread_sync() blocks drain.  On the main
+ * thread: a bounded timed wait, pumping the private trampoline runloop mode
+ * on timeout so those marshaled blocks run (otherwise the worker blocks
+ * waiting for the main thread while the main thread blocks on the reply ->
+ * deadlock).  Off the main thread: returns false so the caller performs a
+ * plain blocking scond_wait().  Pumping ONLY the private mode keeps draw
+ * observers, timers and input sources from running reentrantly under the
+ * wait.  'lock' is held on entry and on return.  Shares the trampoline mode
+ * string with cocoa_main_thread_sync() above -- single source of truth. */
+bool cocoa_main_thread_cond_wait_pump(scond_t *cond, slock_t *lock);
+bool cocoa_main_thread_cond_wait_pump(scond_t *cond, slock_t *lock)
+{
+   if (!sthread_is_main_thread())
+      return false;
+   if (!scond_wait_timeout(cond, lock, 1000))
+   {
+      slock_unlock(lock);
+      CFRunLoopRunInMode(
+            CFSTR("com.libretro.RetroArch.MainThreadTrampoline"),
+            0.001, false);
+      slock_lock(lock);
+   }
+   return true;
+}
+
 #ifdef OSX
 static void cocoa_show_mouse_mainthread_show(void *userdata)
 {
@@ -997,7 +1023,7 @@ bool cocoa_has_focus(void *data)
      * publishing from NSApplication did-become/resign-active
      * notifications; kept out of this validation patch. */
     static retro_atomic_size_t focus_state;
-    if (pthread_main_np() != 0)
+    if (sthread_is_main_thread())
     {
        size_t v = [NSApp isActive] ? 2 : 1;
        retro_atomic_store_release_size(&focus_state, v);
