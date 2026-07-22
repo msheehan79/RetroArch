@@ -749,6 +749,12 @@ static void wl_registry_handle_global(void *data, struct wl_registry *reg,
    else if (string_is_equal(interface, wp_viewporter_interface.name) && found++)
       wl->viewporter = (struct wp_viewporter*)wl_registry_bind(reg,
             id, &wp_viewporter_interface, MIN(version, 1));
+   else if (string_is_equal(interface, wp_presentation_interface.name) && found++)
+   {
+      wl->presentation = (struct wp_presentation*)wl_registry_bind(reg,
+         id, &wp_presentation_interface, MIN(version, 2));
+      wp_presentation_add_listener(wl->presentation, &presentation_listener, wl);
+   }
    else if (string_is_equal(interface, wp_fractional_scale_manager_v1_interface.name) && found++)
       wl->fractional_scale_manager = (struct wp_fractional_scale_manager_v1*)
          wl_registry_bind(reg, id, &wp_fractional_scale_manager_v1_interface, MIN(version, 1));
@@ -837,6 +843,10 @@ static void wl_registry_handle_global(void *data, struct wl_registry *reg,
       wl->xdg_toplevel_tag_manager = (struct xdg_toplevel_tag_manager_v1*)
          wl_registry_bind(
             reg, id, &xdg_toplevel_tag_manager_v1_interface, MIN(version, 1));
+   else if (string_is_equal(interface, wp_tearing_control_manager_v1_interface.name) && found++)
+      wl->tearing_control_manager = (struct wp_tearing_control_manager_v1*)
+         wl_registry_bind(
+            reg, id, &wp_tearing_control_manager_v1_interface, MIN(version, 1));
 
    if (found > 1)
    RARCH_LOG("[Wayland] Registered interface %s at version %u.\n",

@@ -73,6 +73,21 @@ static VkInstance                    cached_instance_vk;
 static VkDevice                      cached_device_vk;
 static retro_vulkan_destroy_device_t cached_destroy_device_vk;
 
+#ifdef __APPLE__
+/* On Apple platforms the Vulkan implementation is provided by MoltenVK
+ * (loaded dynamically, either directly or through the Vulkan loader).
+ * The version string is captured once, when the physical device is
+ * selected, and cached here so that the System Information menu can
+ * report it without needing a live Vulkan context. Empty until a
+ * context has been brought up at least once. */
+static char                          moltenvk_version_str[64];
+
+const char *vulkan_get_moltenvk_version(void)
+{
+   return moltenvk_version_str;
+}
+#endif
+
 #if 0
 #define WSI_HARDENING_TEST
 #endif
@@ -629,6 +644,32 @@ static bool vulkan_context_init_gpu(gfx_ctx_vulkan_data_t *vk)
    }
 
    free(gpus);
+
+#ifdef __APPLE__
+   /* Capture the MoltenVK version from the selected physical device.
+    * MoltenVK encodes its version into VkPhysicalDeviceProperties's
+    * driverVersion field as a decimal (major * 10000 + minor * 100 +
+    * patch) and derives the string it logs to the console the exact same
+    * way, so decode it identically here. This uses only core Vulkan 1.0
+    * data that is always populated; the legacy vkGetVersionStringsMVK
+    * entry point is no longer vended through the Vulkan loader, and the
+    * VK_KHR_driver_properties driverInfo string is not reliably filled
+    * for a standalone query. */
+   if (!moltenvk_version_str[0] && vk->context.gpu)
+   {
+      VkPhysicalDeviceProperties props;
+      unsigned dv, major, minor, patch;
+      vkGetPhysicalDeviceProperties(vk->context.gpu, &props);
+      dv    = (unsigned)props.driverVersion;
+      major = dv / 10000;
+      minor = (dv % 10000) / 100;
+      patch = dv % 100;
+      snprintf(moltenvk_version_str, sizeof(moltenvk_version_str),
+            "%u.%u.%u", major, minor, patch);
+      RARCH_LOG("[Vulkan] MoltenVK version: %s.\n", moltenvk_version_str);
+   }
+#endif
+
    return true;
 }
 

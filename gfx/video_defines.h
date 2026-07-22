@@ -315,11 +315,32 @@ struct font_glyph
    int advance_y;
 };
 
+/* Coverage bit depth of a font atlas. A8 is the default; A16 is
+ * produced when a higher-precision atlas was requested (HDR output)
+ * and the renderer supports it, with samples stored as native-endian
+ * uint16_t in 'buffer'. Consumers must check 'format' before
+ * interpreting the buffer or sizing uploads. */
+enum font_atlas_format
+{
+   FONT_ATLAS_FORMAT_A8 = 0,
+   FONT_ATLAS_FORMAT_A16
+};
+
 struct font_atlas
 {
-   uint8_t *buffer; /* Alpha channel. */
+   uint8_t *buffer; /* Coverage samples; layout per 'format'. */
    unsigned width;
    unsigned height;
+   /* Dirty region in pixels, covering every glyph cell updated since
+    * the consumer last cleared the dirty flag; x1/y1 are exclusive
+    * and the values are only meaningful while dirty is set.
+    * Consumers may upload just this region (or any superset of it,
+    * such as the full-width row band) instead of the whole atlas. */
+   unsigned dirty_x0;
+   unsigned dirty_y0;
+   unsigned dirty_x1;
+   unsigned dirty_y1;
+   enum font_atlas_format format;
    bool dirty;
 };
 

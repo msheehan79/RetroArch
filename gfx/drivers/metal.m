@@ -238,7 +238,8 @@ typedef NS_ENUM(NSUInteger, ViewportResetMode) {
  * caller supplies the source explicitly: the shader-chain's last-pass RT
  * if a preset is active, or the raw frame texture for the no-shader path. */
 - (void)hdrComposite:(const HDRUniforms *)uniforms
-          fromSource:(id<MTLTexture>)source;
+          fromSource:(id<MTLTexture>)source
+            rotation:(unsigned)rotation;
 
 /* HDR-specific setters exposed for the poke interface. */
 - (void)setHDRPaperWhiteNits:(float)nits;
@@ -867,6 +868,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
       _hdrUniforms.HDR10           = 1.0f;
       _hdrUniforms.HDRMode         = 0u;
       _hdrUniforms.PaperWhiteNits  = 200.0f;
+      _hdrUniforms.Rotation        = 0u;
       _hdrShaderEmitsHDR10 = false;
       _hdrShaderEmitsHDR16 = false;
 #endif
@@ -1634,6 +1636,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
  * encoder), opens the drawable, runs both passes, leaves _rce = nil. */
 - (void)hdrComposite:(const HDRUniforms *)uniforms
           fromSource:(id<MTLTexture>)source
+            rotation:(unsigned)rotation
 {
    if (!_hdrEnabled || !uniforms)
       return;
@@ -1684,6 +1687,9 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
                                             (float)_viewport.y,
                                             (float)_viewport.width,
                                             (float)_viewport.height);
+      /* Core content rotation.  Nonzero only for the no-shader source;
+       * the slang path pre-rotates via mvp_last_pass. */
+      local.Rotation     = rotation & 3u;
 
       id<MTLRenderCommandEncoder> cre = [_commandBuffer renderCommandEncoderWithDescriptor:rpd];
       cre.label = @"HDR composite (core)";
@@ -1734,6 +1740,8 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
                                               (float)drawable.texture.width,
                                               (float)drawable.texture.height);
       menuUni.BrightnessNits = uniforms->PaperWhiteNits;
+      /* The menu / OSD overlay is never rotated. */
+      menuUni.Rotation       = 0u;
       if (scRGB)
       {
          /* scRGB menu pass.  Force InverseTonemap=1 to bypass the
@@ -3069,6 +3077,8 @@ gfx_display_ctx_driver_t gfx_display_ctx_metal = {
    struct font_atlas *_atlas;
 
    NSUInteger _stride;
+   /* Bytes per atlas coverage sample (1 for A8, 2 for A16) */
+   size_t _esz;
    id<MTLBuffer> _buffer;
    id<MTLTexture> _texture;
 
@@ -3109,14 +3119,29 @@ gfx_display_ctx_driver_t gfx_display_ctx_metal = {
 
       _driver  = driver;
       _context = driver.context;
-      if (!font_renderer_create_default(
-               &_font_driver,
-               &_font_data, font_path, font_size))
-         return nil;
+      {
+         /* When outputting HDR (scRGB or HDR10), ask the font
+          * renderer for a higher-precision coverage atlas; same
+          * policy as the d3d12 and vulkan drivers. */
+         enum font_atlas_format prev_fmt =
+               font_renderer_get_preferred_atlas_format();
+         if (_context.hdrEnabled)
+            font_renderer_set_preferred_atlas_format(FONT_ATLAS_FORMAT_A16);
+         if (!font_renderer_create_default(
+                  &_font_driver,
+                  &_font_data, font_path, font_size))
+         {
+            font_renderer_set_preferred_atlas_format(prev_fmt);
+            return nil;
+         }
+         font_renderer_set_preferred_atlas_format(prev_fmt);
+      }
 
       _uniforms.projectionMatrix = matrix_proj_ortho(0, 1, 0, 1);
       _atlas  = _font_driver->get_atlas(_font_data);
-      _stride = MTL_ALIGN_BUFFER(_atlas->width);
+      _esz    = (_atlas->format == FONT_ATLAS_FORMAT_A16)
+            ? sizeof(uint16_t) : sizeof(uint8_t);
+      _stride = MTL_ALIGN_BUFFER(_atlas->width * _esz);
 
       /* Allocate an uninitialized managed buffer and fill it through
        * .contents. This collapses two previous branches (fast path
@@ -3129,9 +3154,10 @@ gfx_display_ctx_driver_t gfx_display_ctx_metal = {
                                              options:PLATFORM_METAL_RESOURCE_STORAGE_MODE];
       {
          size_t i;
+         size_t row_bytes   = (size_t)_atlas->width * _esz;
          uint8_t       *dst = (uint8_t *)_buffer.contents;
          const uint8_t *src = (const uint8_t *)_atlas->buffer;
-         if (_stride == _atlas->width)
+         if (_stride == row_bytes)
          {
             memcpy(dst, src, (size_t)_stride * _atlas->height);
          }
@@ -3139,9 +3165,9 @@ gfx_display_ctx_driver_t gfx_display_ctx_metal = {
          {
             for (i = 0; i < _atlas->height; i++)
             {
-               memcpy(dst, src, _atlas->width);
+               memcpy(dst, src, row_bytes);
                dst += _stride;
-               src += _atlas->width;
+               src += row_bytes;
             }
          }
       }
@@ -3149,7 +3175,10 @@ gfx_display_ctx_driver_t gfx_display_ctx_metal = {
       [_buffer didModifyRange:NSMakeRange(0, _buffer.length)];
 #endif
 
-      MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR8Unorm
+      MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
+                                        (_atlas->format == FONT_ATLAS_FORMAT_A16)
+                                              ? MTLPixelFormatR16Unorm
+                                              : MTLPixelFormatR8Unorm
                                                                                     width:_atlas->width
                                                                                    height:_atlas->height
                                                                                 mipmapped:NO];
@@ -3197,7 +3226,10 @@ gfx_display_ctx_driver_t gfx_display_ctx_metal = {
       psd.sampleCount                = 1;
       psd.vertexDescriptor           = vd;
       psd.vertexFunction             = [_context.library newFunctionWithName:@"sprite_vertex"];
-      psd.fragmentFunction           = [_context.library newFunctionWithName:@"sprite_fragment_a8"];
+      psd.fragmentFunction           = [_context.library newFunctionWithName:
+            (_atlas->format == FONT_ATLAS_FORMAT_A16)
+                  ? @"sprite_fragment_a16"
+                  : @"sprite_fragment_a8"];
 
       if (!psd.vertexFunction || !psd.fragmentFunction)
          return NO;
@@ -3223,9 +3255,12 @@ gfx_display_ctx_driver_t gfx_display_ctx_metal = {
       unsigned row;
       for (row = glyph->atlas_offset_y; row < (glyph->atlas_offset_y + glyph->height); row++)
       {
-         uint8_t *src = _atlas->buffer + row * _atlas->width + glyph->atlas_offset_x;
-         uint8_t *dst = (uint8_t *)_buffer.contents + row * _stride + glyph->atlas_offset_x;
-         memcpy(dst, src, glyph->width);
+         uint8_t *src = _atlas->buffer
+               + ((size_t)row * _atlas->width + glyph->atlas_offset_x) * _esz;
+         uint8_t *dst = (uint8_t *)_buffer.contents
+               + (size_t)row * _stride
+               + (size_t)glyph->atlas_offset_x * _esz;
+         memcpy(dst, src, (size_t)glyph->width * _esz);
       }
 
 #if !defined(HAVE_COCOATOUCH)
@@ -3247,8 +3282,9 @@ gfx_display_ctx_driver_t gfx_display_ctx_metal = {
 
 - (int)getWidthForMessage:(const char *)msg length:(NSUInteger)length scale:(float)scale
 {
-   NSUInteger i;
-   int delta_x = 0;
+   const char *walk     = msg;
+   const char *walk_end = msg + length;
+   int delta_x          = 0;
    const struct font_glyph* glyph_q;
 
    /* Validate font data before use - can become invalid during
@@ -3257,12 +3293,21 @@ gfx_display_ctx_driver_t gfx_display_ctx_metal = {
       return 0;
 
    glyph_q = _font_driver->get_glyph(_font_data, '?');
+   /* The fallback glyph can itself have just been rasterized after
+    * eviction; pair its lookup with an update like every other
+    * lookup so its cell is not stranded when an unrelated glyph
+    * clears the dirty flag. */
+   if (glyph_q)
+      [self updateGlyph:glyph_q];
 
-   for (i = 0; i < length; i++)
+   /* Decode UTF-8 exactly like the render path does; walking bytes
+    * here made the measured width of multi-byte text disagree with
+    * what is actually drawn, skewing right/center alignment. */
+   while (walk < walk_end)
    {
       const struct font_glyph *glyph;
-      /* Do something smarter here ... */
-      if (!(glyph = _font_driver->get_glyph(_font_data, (uint8_t)msg[i])))
+      uint32_t code = utf8_walk(&walk);
+      if (!(glyph = _font_driver->get_glyph(_font_data, code)))
          if (!(glyph = glyph_q))
             continue;
 
@@ -3370,6 +3415,10 @@ static INLINE void write_quad6(SpriteVertex *pv,
    SpriteVertex *v = (SpriteVertex *)_range.data;
    v              += _vertices;
    glyph_q         = _font_driver->get_glyph(_font_data, '?');
+   /* Pair the fallback-glyph lookup with an update like every other
+    * lookup, in case '?' was just (re)rasterized after eviction. */
+   if (glyph_q)
+      [self updateGlyph:glyph_q];
 
    while (msg < msg_end)
    {
@@ -4314,10 +4363,17 @@ static void metal_pull_cached_frame_cb(void *userdata,
       if (hdrOn)
       {
          const HDRUniforms *u  = _context.currentHDRUniforms;
+         unsigned          rot = 0;
          id<MTLTexture>    src = _frameView.shaderOutputTexture;
          if (!src)
-            src                = _frameView.frameTexture;
-         [_context hdrComposite:u fromSource:src];
+         {
+            /* Raw frame texture: unrotated content, so the composite
+             * rotates the sampling.  The slang last pass (src != nil)
+             * already rendered rotated via mvp_last_pass. */
+            src = _frameView.frameTexture;
+            rot = retroarch_get_rotation() & 3;
+         }
+         [_context hdrComposite:u fromSource:src rotation:rot];
       }
 
       [self _endFrame];

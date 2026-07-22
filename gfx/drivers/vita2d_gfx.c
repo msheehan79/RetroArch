@@ -2485,10 +2485,24 @@ static void vita2d_font_render_line(
         uint8_t *tex32         = vita2d_texture_get_datap(font->texture);
         const uint8_t *frame32 = font->atlas->buffer;
         unsigned int pitch     = font->atlas->width;
+        /* Copy only the dirty rectangle tracked by the font
+         * renderers, one row at a time */
+        unsigned int x0        = font->atlas->dirty_x0;
+        unsigned int y0        = font->atlas->dirty_y0;
+        unsigned int x1        = font->atlas->dirty_x1;
+        unsigned int y1        = font->atlas->dirty_y1;
 
-        for (j = 0; j < font->atlas->height; j++)
-           for (k = 0; k < font->atlas->width; k++)
-              tex32[k + j*stride] = frame32[k + j * pitch];
+        if (x1 <= x0 || y1 <= y0 || x1 > pitch || y1 > font->atlas->height)
+        {
+           x0 = 0;
+           y0 = 0;
+           x1 = pitch;
+           y1 = font->atlas->height;
+        }
+
+        for (j = y0; j < y1; j++)
+           memcpy(tex32 + x0 + j * stride,
+                  frame32 + x0 + j * pitch, x1 - x0);
 
          font->atlas->dirty = false;
       }
@@ -2660,7 +2674,6 @@ static void *vita2d_gfx_init(const video_info_t *video,
 {
    unsigned temp_width                    = PSP_FB_WIDTH;
    unsigned temp_height                   = PSP_FB_HEIGHT;
-   vita2d_video_mode_data video_mode_data = {0};
    vita_video_t *vita                     = (vita_video_t *)
 	   calloc(1, sizeof(vita_video_t));
 
@@ -2681,7 +2694,6 @@ static void *vita2d_gfx_init(const video_info_t *video,
    else
       vita->format    = SCE_GXM_TEXTURE_FORMAT_R5G6B5;
 
-   video_mode_data    = video_mode_data;
    temp_width         = video_mode_data.width;
    temp_height        = video_mode_data.height;
 
@@ -2752,7 +2764,6 @@ static bool vita2d_frame(void *data, const void *frame,
    vita_video_t *vita                     = (vita_video_t *)data;
    unsigned temp_width                    = PSP_FB_WIDTH;
    unsigned temp_height                   = PSP_FB_HEIGHT;
-   vita2d_video_mode_data video_mode_data = {0};
 #ifdef HAVE_MENU
    bool menu_is_alive                     = (video_info->menu_st_flags & MENU_ST_FLAG_ALIVE) ? true : false;
 #endif
@@ -2812,7 +2823,6 @@ static bool vita2d_frame(void *data, const void *frame,
    if (vita->should_resize)
       vita2d_update_viewport(vita);
 
-   video_mode_data = video_mode_data;
    temp_width      = video_mode_data.width;
    temp_height     = video_mode_data.height;
 
@@ -2971,7 +2981,6 @@ static void vita2d_set_projection(vita_video_t *vita,
 
 static void vita2d_update_viewport(vita_video_t* vita)
 {
-   vita2d_video_mode_data video_mode_data = video_mode_data;
    unsigned temp_width  = video_mode_data.width;
    unsigned temp_height = video_mode_data.height;
    bool is_rotated      = (vita->rotation == ORIENTATION_VERTICAL)
@@ -3484,7 +3493,6 @@ static void vita2d_overlay_vertex_geom(void *data, unsigned image,
 
    if (o)
    {
-      vita2d_video_mode_data video_mode_data = video_mode_data;
       o->w = w * video_mode_data.width  / o->width;
       o->h = h * video_mode_data.height / o->height;
       o->x = video_mode_data.width  * (1 - w) / 2 + x;

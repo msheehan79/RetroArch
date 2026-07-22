@@ -632,7 +632,6 @@ FONTS
 #include "../gfx/font_driver.c"
 
 #if defined(HAVE_STB_FONT)
-#include "../gfx/drivers_font_renderer/stb_unicode.c"
 #include "../gfx/drivers_font_renderer/stb.c"
 #endif
 
@@ -1619,7 +1618,6 @@ XML
 ============================================================ */
 #include "../libretro-common/formats/xml/rxml.c"
 #include "../libretro-common/formats/logiqx_dat/logiqx_dat.c"
-#include "../deps/yxml/yxml.c"
 
 /*============================================================
  AUDIO UTILS

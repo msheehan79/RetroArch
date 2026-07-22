@@ -22,6 +22,11 @@
 #include <retro_common_api.h>
 #include <retro_miscellaneous.h>
 #include <lists/string_list.h>
+/* task_image_detach_video_stream takes enum image_type_enum: the enum
+ * must be a complete type here or a TU that includes this header first
+ * (griffin concatenates via runloop.h) declares it with prototype
+ * scope and the definition in task_image.c then conflicts. */
+#include <formats/image.h>
 
 #include <queues/task_queue.h>
 #include <gfx/scaler/scaler.h>
@@ -194,6 +199,20 @@ bool task_push_pl_manager_clean_playlist(const playlist_config_t *playlist_confi
 bool task_push_image_load(const char *fullpath,
       bool supports_rgba, unsigned upscale_threshold,
       retro_task_callback_t cb, void *userdata);
+
+/* For an image-load task whose file is a video (WEBM/MP4): take
+ * ownership of the decoder stream the still-frame decode left open,
+ * positioned just past the first displayed frame, together with the
+ * nbio handle whose buffer the stream borrows.  Only valid during the
+ * task's completion callback (the task owns both until then and frees
+ * them right after).  On success the caller must eventually close the
+ * stream with image_transfer_anim_stream_free(*stream, *type) and then
+ * release the buffer with nbio_free(*nbio_owner), in that order.
+ * Returns false (and takes nothing) for non-image tasks, non-video
+ * images, or when no stream is held. */
+bool task_image_detach_video_stream(retro_task_t *task,
+      void **stream, enum image_type_enum *type,
+      void **nbio_owner, void **buf, size_t *len);
 
 /* Async icon/texture loading.  generation_ptr must point to a static
  * variable in the calling module (not a heap struct field). */

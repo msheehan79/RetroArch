@@ -2012,6 +2012,7 @@ static const struct
    char s_519cd5f8[48];
    char s_43ac80a0[13];
    char s_6959ce80[18];
+   char s_886631ec[20];
    char s_ebe994b4[14];
    char s_1c62c301[8];
    char s_a8bb35b6[10];
@@ -2418,7 +2419,7 @@ static const struct
    char s_042502c4[55];
    char s_90ae9a9f[101];
    char s_81b79d5b_0[500];
-   char s_81b79d5b_1[37];
+   char s_81b79d5b_1[95];
    char s_c9235dab[55];
    char s_330be970_0[500];
    char s_330be970_1[109];
@@ -6427,6 +6428,7 @@ static const struct
    "Syst\303\250me d'exploitation de l'interface frontale",
    "Version Git ",
    "Version de Lakka ",
+   "Version de MoltenVK",
    "Alimentation ",
    "Charg\303\251",
    "En charge",
@@ -6859,11 +6861,12 @@ static const struct
    "Utiliser le r\303\251\303\251chantillonneur \303\240 virgule fixe (entier) plut\303\264t que cel"
    "ui \303\240 virgule flottante lorsqu'un c\305\223ur g\303\251n\303\250re un signal audio 16 bits"
    ". Cela \303\251vite la conversion aller-retour entre entier et virgule flottante et produit une "
-   "sortie identique au bit pr\303\250s sur toutes les plateformes, ce qui am\303\251liore le d\303"
-   "\251terminisme pour le jeu en r\303\251seau. Cette option n'a pas d'effet sur les c\305\223urs q"
-   "ui g\303\251n\303\250rent un signal audio \303\240 virgule flottante et utilise la conversion "
-   "\303\240 virgule flottante lorsqu'u",
-   "n filtre DSP incompatible est actif.",
+   "sortie identique au bit pr\303\250s sur toutes les plateformes, garantissant ainsi la reproducti"
+   "bilit\303\251 de la sortie audio d'une ex\303\251cution \303\240 l'autre et d'un syst\303\250me "
+   "\303\240 l'autre. Cette option n'a pas d'effet sur les c\305\223urs qui g\303\251n\303\250rent u"
+   "n signal audio \303\240 virgule flotta",
+   "nte et utilise la conversion \303\240 virgule flottante lorsqu'un filtre DSP incompatible est ac"
+   "tif.",
    "Les filtres audio DSP sont conserv\303\251s dans ce dossier.",
    "Format d'\303\251chantillon demand\303\251 par le pilote audio au p\303\251riph\303\251rique de "
    "sortie. 'Float' correspond \303\240 un nombre \303\240 virgule flottante 32\302\240bits, 'Int16'"
@@ -9435,7 +9438,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_fr_blob_check[
-      (sizeof(msg_hash_fr_blob) == (214009u
+      (sizeof(msg_hash_fr_blob) == (214087u
 #ifdef ANDROID
        + 373u
 #endif
@@ -11837,6 +11840,7 @@ static const uint32_t msg_hash_fr_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_SYSTEM_INFO_FRONTEND_OS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_SYSTEM_INFO_GIT_VERSION,
    (uint32_t)MENU_ENUM_LABEL_VALUE_SYSTEM_INFO_LAKKA_VERSION,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_SYSTEM_INFO_MOLTENVK_VERSION,
    (uint32_t)MENU_ENUM_LABEL_VALUE_SYSTEM_INFO_POWER_SOURCE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_SYSTEM_INFO_POWER_SOURCE_CHARGED,
    (uint32_t)MENU_ENUM_LABEL_VALUE_SYSTEM_INFO_POWER_SOURCE_CHARGING,

@@ -29,6 +29,7 @@
 #include <file/file_path.h>
 #include <lists/file_list.h>
 #include <streams/file_stream.h>
+#include <file/nbio.h>
 #include <formats/image.h>
 
 #include "gfx_display.h"
@@ -299,7 +300,9 @@ static void gfx_thumbnail_init_fade(
  * been opened (file buffer only). */
 static uint64_t gfx_thumb_anim_mem_need(uint64_t file_len, uint64_t px)
 {
-   return file_len + px * 4 * 2 + (px * 3 / 2) * 24 + (1 << 20);
+   /* px * 4 * 3: the stream's decode canvas plus the two ping-pong
+    * upload buffers of the threaded animation path. */
+   return file_len + px * 4 * 3 + (px * 3 / 2) * 24 + (1 << 20);
 }
 
 /* Admission: scale with the heap when the platform reports free
@@ -319,7 +322,12 @@ enum gfx_thumb_anim_job_status
    GFX_THUMB_JOB_QUEUED = 0,   /* linked in the FIFO, not started      */
    GFX_THUMB_JOB_RUNNING,      /* worker is decoding into job->frame   */
    GFX_THUMB_JOB_READY,        /* frame decoded, awaiting upload       */
-   GFX_THUMB_JOB_FINISHED      /* loops exhausted or stream error      */
+   GFX_THUMB_JOB_FINISHED,     /* loops exhausted or stream error      */
+   GFX_THUMB_JOB_IDLE          /* not owned by the worker, no pending
+                                  frame (fresh, or consumed).  QUEUED
+                                  stays 0 so the calloc'd preview-audio
+                                  job, which is enqueued immediately,
+                                  keeps its meaning. */
 };
 
 typedef struct gfx_thumb_anim_job
@@ -382,6 +390,12 @@ static bool gfx_thumbnail_anim_job_step(gfx_thumb_anim_job_t *job)
    enum image_type_enum type = (enum image_type_enum)job->type;
    int duration_ms           = 0;
    size_t i, n;
+   /* Ask the stream to emit the upload order directly: the video
+    * streams bake it in their blit, which removes the per-pixel R/B
+    * swizzle pass below; WEBP always emits R,G,B,A and keeps the
+    * fallback conversion. */
+   bool native_order         = image_transfer_anim_stream_set_argb(
+         job->stream, type, job->use_rgba ? 0 : 1);
 
    if (!(frame = image_transfer_anim_stream_next(job->stream, type,
          &duration_ms)))
@@ -398,7 +412,10 @@ static bool gfx_thumbnail_anim_job_step(gfx_thumb_anim_job_t *job)
    }
 
    n = (size_t)job->width * job->height;
-   if (job->use_rgba)
+   if (job->use_rgba || native_order)
+      /* Frame is already in the upload order (RGBA requested, or the
+       * stream honoured the ARGB request); the copy just decouples the
+       * upload buffer from the decoder's canvas. */
       memcpy(job->frame, frame, n * sizeof(uint32_t));
    else
    {
@@ -626,6 +643,15 @@ static void gfx_thumbnail_anim_close(gfx_thumbnail_t *thumbnail)
       free(job);
       thumbnail->anim_job = NULL;
    }
+   if (thumbnail->anim_job2)
+   {
+      gfx_thumb_anim_job_t *job = (gfx_thumb_anim_job_t*)thumbnail->anim_job2;
+      gfx_thumbnail_anim_job_release(job);
+      free(job->frame);
+      free(job);
+      thumbnail->anim_job2 = NULL;
+   }
+   thumbnail->anim_job_upload = 0;
 #endif
 #if defined(GFX_THUMB_PREVIEW_AUDIO)
    if (thumbnail->anim_audio_job)
@@ -644,10 +670,17 @@ static void gfx_thumbnail_anim_close(gfx_thumbnail_t *thumbnail)
    if (thumbnail->anim)
       image_transfer_anim_stream_free(thumbnail->anim,
             (enum image_type_enum)thumbnail->anim_type);
-   if (thumbnail->anim_buf)
+   /* Stream first, buffer second: the stream borrows the buffer.
+    * An adopted animation's buffer lives inside the nbio handle
+    * (possibly as a file mapping) and is released with it; only the
+    * open-by-path fallback malloc's anim_buf. */
+   if (thumbnail->anim_nbio)
+      nbio_free(thumbnail->anim_nbio);
+   else if (thumbnail->anim_buf)
       free(thumbnail->anim_buf);
    thumbnail->anim            = NULL;
    thumbnail->anim_buf        = NULL;
+   thumbnail->anim_nbio       = NULL;
    thumbnail->anim_buf_len    = 0;
    thumbnail->anim_next_us    = 0;
    thumbnail->anim_loops_left = 0;
@@ -655,13 +688,18 @@ static void gfx_thumbnail_anim_close(gfx_thumbnail_t *thumbnail)
    thumbnail->flags          &= ~GFX_THUMB_FLAG_ANIM_ACTIVE;
 }
 
-static void gfx_thumbnail_anim_open(gfx_thumbnail_t *thumbnail,
-      const char *path)
+/* Install an open animation stream on the thumbnail, applying the
+ * frame-count and memory admission checks.  'buf' is the container
+ * bytes the stream borrows: when 'nbio_owner' is non-NULL it owns
+ * 'buf' (released with nbio_free), otherwise 'buf' is a malloc'd
+ * block this thumbnail takes over (released with free).  Ownership of
+ * stream/buf/nbio_owner transfers in every outcome; on rejection they
+ * are released and the static thumbnail stays.  Returns true when the
+ * animation was installed. */
+static bool gfx_thumbnail_anim_install(gfx_thumbnail_t *thumbnail,
+      void *stream, enum image_type_enum type,
+      void *buf, size_t len, void *nbio_owner)
 {
-   enum image_type_enum type;
-   int64_t len              = 0;
-   void *buf                = NULL;
-   void *stream             = NULL;
    unsigned anim_w          = 0;
    unsigned anim_h          = 0;
    int num_frames           = 0;
@@ -671,32 +709,6 @@ static void gfx_thumbnail_anim_open(gfx_thumbnail_t *thumbnail,
     * thumbnail before install; make the invariant local so a future
     * second call site cannot leak or double-borrow a live decoder. */
    gfx_thumbnail_anim_close(thumbnail);
-
-   if (string_is_empty(path))
-      return;
-
-   /* Cheap gate: only container types with an animation decoder */
-   type = image_texture_get_type(path);
-   if (   (type != IMAGE_TYPE_WEBP)
-       && (type != IMAGE_TYPE_WEBM)
-       && (type != IMAGE_TYPE_MP4))
-      return;
-
-   /* Gate on the file's size before reading it: rejecting after the
-    * read would itself be the allocation spike the cap exists to
-    * prevent. */
-   {
-      int64_t fsz = path_get_size(path);
-      if ((fsz <= 0) || !gfx_thumb_anim_mem_ok((uint64_t)fsz, 0))
-         return;
-   }
-   if (!filestream_read_file(path, &buf, &len))
-      return;
-   if (len <= 0)
-      goto fail;
-
-   if (!(stream = image_transfer_anim_stream_new(buf, (size_t)len, type)))
-      goto fail;   /* still image or malformed: keep static thumbnail */
 
    image_transfer_anim_stream_get_info(stream, type,
          &anim_w, &anim_h, &num_frames, &loop_count);
@@ -710,7 +722,8 @@ static void gfx_thumbnail_anim_open(gfx_thumbnail_t *thumbnail,
 
    thumbnail->anim            = stream;
    thumbnail->anim_buf        = buf;
-   thumbnail->anim_buf_len    = (size_t)len;
+   thumbnail->anim_nbio       = nbio_owner;
+   thumbnail->anim_buf_len    = len;
    thumbnail->anim_type       = (uint8_t)type;
    thumbnail->anim_loops_left = (loop_count == 0) ? -1 : loop_count;
    thumbnail->anim_next_us    = 0;   /* first advance establishes timing */
@@ -753,12 +766,62 @@ static void gfx_thumbnail_anim_open(gfx_thumbnail_t *thumbnail,
       }
    }
 #endif
-   return;
+   return true;
 
 fail:
-   if (stream)
-      image_transfer_anim_stream_free(stream, type);
-   free(buf);
+   image_transfer_anim_stream_free(stream, type);
+   if (nbio_owner)
+      nbio_free(nbio_owner);
+   else
+      free(buf);
+   return false;
+}
+
+static void gfx_thumbnail_anim_open(gfx_thumbnail_t *thumbnail,
+      const char *path)
+{
+   enum image_type_enum type;
+   int64_t len              = 0;
+   void *buf                = NULL;
+   void *stream             = NULL;
+
+   gfx_thumbnail_anim_close(thumbnail);
+
+   if (string_is_empty(path))
+      return;
+
+   /* Cheap gate: only container types with an animation decoder */
+   type = image_texture_get_type(path);
+   if (   (type != IMAGE_TYPE_WEBP)
+       && (type != IMAGE_TYPE_WEBM)
+       && (type != IMAGE_TYPE_MP4))
+      return;
+
+   /* Gate on the file's size before reading it: rejecting after the
+    * read would itself be the allocation spike the cap exists to
+    * prevent. */
+   {
+      int64_t fsz = path_get_size(path);
+      if ((fsz <= 0) || !gfx_thumb_anim_mem_ok((uint64_t)fsz, 0))
+         return;
+   }
+   if (!filestream_read_file(path, &buf, &len))
+      return;
+   if (len <= 0)
+   {
+      free(buf);
+      return;
+   }
+
+   if (!(stream = image_transfer_anim_stream_new(buf, (size_t)len, type)))
+   {
+      /* still image or malformed: keep static thumbnail */
+      free(buf);
+      return;
+   }
+
+   gfx_thumbnail_anim_install(thumbnail, stream, type,
+         buf, (size_t)len, NULL);
 }
 
 /* Uploads one final-format animation frame as the thumbnail's texture.
@@ -837,6 +900,8 @@ void gfx_thumbnail_animate(gfx_thumbnail_t *thumbnail)
    int64_t now;
    int64_t decode_start;
    int duration_ms                    = 0;
+   bool sync_use_rgba                 = false;
+   bool sync_native_order             = false;
    enum image_type_enum type;
 
    if (   !thumbnail
@@ -884,76 +949,152 @@ void gfx_thumbnail_animate(gfx_thumbnail_t *thumbnail)
    }
 #endif
 
-   if ((thumbnail->anim_next_us != 0) && (now < thumbnail->anim_next_us))
-      return;
-
 #ifdef HAVE_THREADS
    /* Threaded path: decode happens on the shared worker; this thread
     * only inspects job state, uploads READY frames, and re-enqueues.
     * A frame that is not ready when due is simply uploaded on a later
-    * vsync - the menu never blocks on the decoder. */
+    * vsync - the menu never blocks on the decoder.
+    *
+    * Two jobs ping-pong over the stream so decoding runs one displayed
+    * frame ahead of the display clock: while the due frame waits in
+    * one job, the other is already decoding its successor.  A shown
+    * frame preceded by a burst of hidden frames (a VP9 alt-ref chain,
+    * an H.264 reorder run) then has a whole extra display interval to
+    * decode before it is late, where the single job started it only
+    * after the previous upload.  A job is enqueued only while its
+    * sibling is not QUEUED or RUNNING, so stream access stays strictly
+    * serialised in enqueue order - the decoded frame sequence is
+    * identical to the single-job scheme by construction - and the
+    * loop counter threads soundly from the job that just finished
+    * decoding (via thumbnail->anim_loops_left) into the next enqueue. */
    if (gfx_thumbnail_anim_worker_init())
    {
-      gfx_thumb_anim_job_t *job = (gfx_thumb_anim_job_t*)thumbnail->anim_job;
-      int status;
+      gfx_thumb_anim_job_t *ju = (gfx_thumb_anim_job_t*)
+            (thumbnail->anim_job_upload ? thumbnail->anim_job2
+                                        : thumbnail->anim_job);
+      gfx_thumb_anim_job_t *jo = (gfx_thumb_anim_job_t*)
+            (thumbnail->anim_job_upload ? thumbnail->anim_job
+                                        : thumbnail->anim_job2);
+      int su, so;
 
-      if (!job)
+      if (!ju || !jo)
       {
          unsigned anim_w = 0, anim_h = 0;
          int num_frames = 0, loop_count = 0;
+         gfx_thumb_anim_job_t *j0 = NULL;
+         gfx_thumb_anim_job_t *j1 = NULL;
 
          image_transfer_anim_stream_get_info(thumbnail->anim, type,
                &anim_w, &anim_h, &num_frames, &loop_count);
-         if (!(job = (gfx_thumb_anim_job_t*)calloc(1, sizeof(*job))))
-            return;
-         if (!(job->frame = (uint32_t*)malloc(
-               (size_t)anim_w * anim_h * sizeof(uint32_t))))
+         j0 = (gfx_thumb_anim_job_t*)calloc(1, sizeof(*j0));
+         j1 = (gfx_thumb_anim_job_t*)calloc(1, sizeof(*j1));
+         if (j0)
+            j0->frame = (uint32_t*)malloc(
+                  (size_t)anim_w * anim_h * sizeof(uint32_t));
+         if (j1)
+            j1->frame = (uint32_t*)malloc(
+                  (size_t)anim_w * anim_h * sizeof(uint32_t));
+         if (!j0 || !j1 || !j0->frame || !j1->frame)
          {
-            free(job);
+            /* Retry on a later vsync; the pair is all or nothing. */
+            if (j0)
+               free(j0->frame);
+            if (j1)
+               free(j1->frame);
+            free(j0);
+            free(j1);
             return;
          }
-         job->stream     = thumbnail->anim;
-         job->type       = thumbnail->anim_type;
-         job->width      = anim_w;
-         job->height     = anim_h;
-         job->loops_left = thumbnail->anim_loops_left;
-         job->use_rgba   =
+         j0->stream     = thumbnail->anim;
+         j1->stream     = thumbnail->anim;
+         j0->type       = thumbnail->anim_type;
+         j1->type       = thumbnail->anim_type;
+         j0->width      = anim_w;
+         j1->width      = anim_w;
+         j0->height     = anim_h;
+         j1->height     = anim_h;
+         j0->loops_left = thumbnail->anim_loops_left;
+         j0->use_rgba   =
                (video_driver_get_disp_flags() & VIDEO_FLAG_USE_RGBA)
                      ? true : false;
-         thumbnail->anim_job = job;
-         gfx_thumbnail_anim_job_enqueue(job);
+         j1->status     = GFX_THUMB_JOB_IDLE;
+         thumbnail->anim_job        = j0;
+         thumbnail->anim_job2       = j1;
+         thumbnail->anim_job_upload = 0;
+         gfx_thumbnail_anim_job_enqueue(j0);
          return;
       }
 
       slock_lock(gfx_thumb_worker_lock);
-      status = job->status;
+      su = ju->status;
+      so = jo->status;
       slock_unlock(gfx_thumb_worker_lock);
 
-      if (status == GFX_THUMB_JOB_FINISHED)
+      /* Decode-ahead: the due-side job holds its frame, its sibling is
+       * consumed - start the sibling on the following frame now, ahead
+       * of the display clock.  ju's decode is complete, so its
+       * loops_left is the current decode-side value to thread on. */
+      if (su == GFX_THUMB_JOB_READY && so == GFX_THUMB_JOB_IDLE)
       {
-         /* Finished: keep the last frame's texture, release the
-          * decoder and file buffer */
+         thumbnail->anim_loops_left = ju->loops_left;
+         jo->loops_left             = ju->loops_left;
+         jo->use_rgba               =
+               (video_driver_get_disp_flags() & VIDEO_FLAG_USE_RGBA)
+                     ? true : false;
+         gfx_thumbnail_anim_job_enqueue(jo);
+      }
+
+      if ((thumbnail->anim_next_us != 0) && (now < thumbnail->anim_next_us))
+         return;
+
+      if (su == GFX_THUMB_JOB_FINISHED)
+      {
+         /* Decode exhausted the final loop (or errored): the last
+          * uploaded frame's texture stays, release the decoder and
+          * file buffer.  The sibling holds only an already-shown
+          * frame at this point, so nothing is dropped. */
          gfx_thumbnail_anim_close(thumbnail);
          return;
       }
-      if (status != GFX_THUMB_JOB_READY)
+      if (su != GFX_THUMB_JOB_READY)
          return;   /* still decoding; try again next vsync */
 
       /* READY and not queued: the worker holds no reference, so the
        * frame buffer can be read without the lock. */
-      gfx_thumbnail_anim_upload(thumbnail, job->frame,
-            job->width, job->height, job->use_rgba);
-      gfx_thumbnail_anim_schedule(thumbnail, job->duration_ms, now);
+      gfx_thumbnail_anim_upload(thumbnail, ju->frame,
+            ju->width, ju->height, ju->use_rgba);
+      gfx_thumbnail_anim_schedule(thumbnail, ju->duration_ms, now);
 
-      /* Pipeline the next frame right away (the format snapshot is
-       * refreshed in case the video driver changed underneath us). */
-      job->use_rgba =
-            (video_driver_get_disp_flags() & VIDEO_FLAG_USE_RGBA)
-                  ? true : false;
-      gfx_thumbnail_anim_job_enqueue(job);
+      slock_lock(gfx_thumb_worker_lock);
+      ju->status = GFX_THUMB_JOB_IDLE;   /* consumed */
+      so         = jo->status;
+      slock_unlock(gfx_thumb_worker_lock);
+      thumbnail->anim_job_upload ^= 1;
+
+      /* Keep the worker fed: if the sibling already banked the next
+       * frame, the just-consumed job can start on the one after it
+       * immediately (sibling's decode is complete, so its loops_left
+       * is current).  If the sibling is still QUEUED/RUNNING, the
+       * READY branch above banks this job on a later poll. */
+      if (so == GFX_THUMB_JOB_READY)
+      {
+         thumbnail->anim_loops_left = jo->loops_left;
+         ju->loops_left             = jo->loops_left;
+         ju->use_rgba               =
+               (video_driver_get_disp_flags() & VIDEO_FLAG_USE_RGBA)
+                     ? true : false;
+         gfx_thumbnail_anim_job_enqueue(ju);
+      }
       return;
    }
 #endif
+
+   /* Synchronous path (no worker thread): nothing to do until the
+    * next frame is due.  The threaded path above keeps polling before
+    * the due time so it can bank the following frame; here the decode
+    * happens in-line at upload time, so an early poll has no work. */
+   if ((thumbnail->anim_next_us != 0) && (now < thumbnail->anim_next_us))
+      return;
 
    /* Per-vsync decode budget (window resets after ~one 60 Hz frame) */
    if (now - p_gfx_thumb->anim_budget_start_us > 15000)
@@ -965,6 +1106,14 @@ void gfx_thumbnail_animate(gfx_thumbnail_t *thumbnail)
       return;   /* try again next frame; animation just runs slower */
 
    decode_start = now;
+
+   /* Sample the upload format once and ask the stream to emit it
+    * directly (video streams bake the order in their blit); WEBP is
+    * not honoured and takes the swizzle fallback below. */
+   sync_use_rgba     = (video_driver_get_disp_flags()
+         & VIDEO_FLAG_USE_RGBA) ? true : false;
+   sync_native_order = image_transfer_anim_stream_set_argb(
+         thumbnail->anim, type, sync_use_rgba ? 0 : 1);
 
    if (!(frame = image_transfer_anim_stream_next(thumbnail->anim, type,
          &duration_ms)))
@@ -989,9 +1138,10 @@ void gfx_thumbnail_animate(gfx_thumbnail_t *thumbnail)
       }
    }
 
-   /* Upload the frame; the stream emits memory-order R,G,B,A, which
-    * matches the RGBA texture path. If the display pipeline expects
-    * ARGB words instead, swap into a shared scratch buffer first. */
+   /* Upload the frame.  The stream already emitted the upload order
+    * when the request above was honoured; otherwise (WEBP) it emits
+    * memory-order R,G,B,A and an ARGB pipeline needs the swap into
+    * the shared scratch buffer. */
    {
       static uint32_t *swap_scratch = NULL;
       static size_t swap_scratch_px = 0;
@@ -1000,13 +1150,12 @@ void gfx_thumbnail_animate(gfx_thumbnail_t *thumbnail)
       int num_frames                = 0;
       int loop_count                = 0;
       const uint32_t *pixels        = frame;
-      bool use_rgba                 =
-            (video_driver_get_disp_flags() & VIDEO_FLAG_USE_RGBA) ? true : false;
+      bool use_rgba                 = sync_use_rgba;
 
       image_transfer_anim_stream_get_info(thumbnail->anim, type,
             &anim_w, &anim_h, &num_frames, &loop_count);
 
-      if (!use_rgba)
+      if (!use_rgba && !sync_native_order)
       {
          size_t i, n = (size_t)anim_w * anim_h;
          if (swap_scratch_px < n)
@@ -1101,9 +1250,31 @@ static void gfx_thumbnail_handle_upload(
    /* If the file is an animation, open a streaming decoder for it;
     * frames are advanced by gfx_thumbnail_animate() while the
     * entry is on-screen. On failure the static image just uploaded
-    * remains as-is. */
-   gfx_thumbnail_anim_open(thumbnail_tag->thumbnail,
-         thumbnail_tag->path);
+    * remains as-is.
+    *
+    * For WEBM/MP4 the load task's still-frame decode already opened,
+    * pre-scanned, and advanced a stream past the first displayed
+    * frame; adopt it - together with the nbio handle whose buffer it
+    * borrows - instead of re-reading the file from disk and repeating
+    * the open on this (the main) thread.  The animation then resumes
+    * at the second displayed frame, which the static texture just
+    * uploaded precedes.  The path-based open remains for animated
+    * WEBP and any load where no stream was held. */
+   {
+      void *vstream               = NULL;
+      void *nbio_owner            = NULL;
+      void *vbuf                  = NULL;
+      size_t vlen                 = 0;
+      enum image_type_enum vtype  = IMAGE_TYPE_NONE;
+
+      if (task_image_detach_video_stream(task, &vstream, &vtype,
+            &nbio_owner, &vbuf, &vlen))
+         gfx_thumbnail_anim_install(thumbnail_tag->thumbnail,
+               vstream, vtype, vbuf, vlen, nbio_owner);
+      else
+         gfx_thumbnail_anim_open(thumbnail_tag->thumbnail,
+               thumbnail_tag->path);
+   }
 
 end:
    /* Clean up */

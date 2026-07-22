@@ -207,21 +207,29 @@ static void webm_expand_8888_to_2101010(uint32_t *dst, unsigned stride,
    }
 }
 
-static void webm_blit_i420(uint32_t *dst, unsigned w, unsigned h,
+static void webm_blit_yuv(uint32_t *dst, unsigned w, unsigned h,
       const uint8_t *y, int ys, const uint8_t *u, const uint8_t *v, int uvs,
-      unsigned matrix)
+      unsigned matrix, int cvsh)
 {
    const int16_t *k = webm_yuv_coefs(matrix, h);
    unsigned i, j;
    for (j = 0; j < h; j++)
    {
       const uint8_t *yr = y + j * ys;
-      const uint8_t *ur = u + (j >> 1) * uvs;
-      const uint8_t *vr = v + (j >> 1) * uvs;
+      const uint8_t *ur = u + (j >> cvsh) * uvs;
+      const uint8_t *vr = v + (j >> cvsh) * uvs;
       uint32_t *dr      = dst + j * w;
       for (i = 0; i < w; i++)
          dr[i] = webm_yuv_px(yr[i], ur[i >> 1], vr[i >> 1], k);
    }
+}
+
+/* 4:2:0: two luma rows share a chroma row. */
+static void webm_blit_i420(uint32_t *dst, unsigned w, unsigned h,
+      const uint8_t *y, int ys, const uint8_t *u, const uint8_t *v, int uvs,
+      unsigned matrix)
+{
+   webm_blit_yuv(dst, w, h, y, ys, u, v, uvs, matrix, 1);
 }
 
 /* -------------------------------------------------------------------- */
@@ -439,8 +447,9 @@ static int webm_decode_packet(webm_player_t *p, const rwebm_packet *pkt)
          return 1;
       {
          const rwebm_track *ct = rwebm_get_track(p->webm, p->vtrack);
-         webm_blit_i420(p->fb, (unsigned)w, (unsigned)h, y, ys, u, v, uvs,
-            ct ? ct->matrix_coefficients : 0);
+         webm_blit_yuv(p->fb, (unsigned)w, (unsigned)h, y, ys, u, v, uvs,
+            ct ? ct->matrix_coefficients : 0,
+               (ch < h) ? 1 : 0);
          if (p->pix10)
             webm_expand_8888_to_2101010(p->fb, p->width,
                (unsigned)w, (unsigned)h);
@@ -474,8 +483,9 @@ static int webm_drain_h264(webm_player_t *p)
       return 1;
    {
       const rwebm_track *ct = rwebm_get_track(p->webm, p->vtrack);
-      webm_blit_i420(p->fb, (unsigned)w, (unsigned)h, y, ys, u, v, uvs,
-         ct ? ct->matrix_coefficients : 0);
+      webm_blit_yuv(p->fb, (unsigned)w, (unsigned)h, y, ys, u, v, uvs,
+         ct ? ct->matrix_coefficients : 0,
+         (ch < h) ? 1 : 0);
       if (p->pix10)
          webm_expand_8888_to_2101010(p->fb, p->width,
             (unsigned)w, (unsigned)h);
@@ -911,33 +921,33 @@ void WEBM_CORE_PREFIX(retro_run)(void)
       p->play_ns += p->frame_ns;
       if (!p->eof)
       {
-         const uint32_t *frame = NULL;
+         int have = 0;
          while (!p->eof
                && p->vpts_ns + p->frame_ns / 2 <= p->play_ns)
          {
             int dur_ms = 0;
-            const uint32_t *fr = rmp4_video_stream_next(p->mp4vs, &dur_ms);
-            if (!fr)
+            /* Pass-over frames are consumed without colour
+             * conversion; only the frame actually presented is
+             * rendered, below.  In fast variable-rate stretches this
+             * saves a full-resolution blit per dropped frame. */
+            if (rmp4_video_stream_skip(p->mp4vs, &dur_ms) != 1)
             {
                p->eof = 1;
                break;
             }
-            frame       = fr;
+            have        = 1;
             p->vpts_ns += (int64_t)dur_ms * 1000000;
             p->vshown++;
          }
-         if (frame)
+         if (have)
          {
-            /* The stream glue emits memory-order R,G,B,A (its texture
-             * consumers upload that directly); the video callback
-             * wants XRGB8888 words, so swizzle during the copy. */
-            size_t n = (size_t)p->width * p->height, px;
-            for (px = 0; px < n; px++)
-            {
-               uint32_t c = frame[px];
-               p->fb[px]  = (c & 0xFF00FF00u)
-                     | ((c & 0xFF) << 16) | ((c >> 16) & 0xFF);
-            }
+            /* The stream emits XRGB8888 words directly (selected at
+             * open via rmp4_video_stream_set_argb), so the copy into
+             * the core's framebuffer is verbatim. */
+            const uint32_t *frame = rmp4_video_stream_render(p->mp4vs);
+            if (frame)
+               memcpy(p->fb, frame,
+                     (size_t)p->width * p->height * sizeof(uint32_t));
          }
       }
       WEBM_CORE_PREFIX(video_cb)(p->fb, p->width, p->height,
@@ -1128,6 +1138,11 @@ static bool webm_load_mp4(webm_player_t *p)
             "[webm] No supported (H.264/VP9/VP8) MP4 video track.\n");
       return false;
    }
+   /* The video callback consumes XRGB8888 words; have the stream's
+    * blit emit that order directly (the swap is baked at the blit's
+    * interleave stage at no per-frame cost), so the per-frame copy
+    * below needs no per-pixel swizzle. */
+   rmp4_video_stream_set_argb(p->mp4vs, 1);
    rmp4_video_stream_get_info(p->mp4vs, &w, &h, &nframes, &loops);
    if (!w || !h)
       return false;
