@@ -1341,7 +1341,12 @@ static size_t setting_get_string_representation_st_bind(rarch_setting_t *setting
    keybind      = (const struct retro_keybind*)setting->value.target.keybind;
    auto_bind    = (const struct retro_keybind*)
       input_config_get_bind_auto(index_offset, keybind->id);
-   return input_config_get_bind_string(settings, s, keybind, auto_bind, len);
+   if (keybind->id >= RARCH_BIND_LIST_END)
+      return input_config_get_bind_string(settings, s, keybind, auto_bind,
+            NULL, NULL, len);
+   return input_config_get_bind_string(settings, s, keybind, auto_bind,
+         &input_config_bind_labels[index_offset][keybind->id],
+         &input_autoconf_bind_labels[index_offset][keybind->id], len);
 }
 
 static int setting_action_action_ok(
@@ -6032,6 +6037,26 @@ static bool setting_action_input_device_index_prevent(
    return false;
 }
 
+/* Hands 'p' to whichever other player currently holds 'p_new', so that
+ * moving a player onto an occupied pad index exchanges the two rather
+ * than leaving both players reading the same physical device. Two
+ * players on one pad makes a single controller drive two libretro
+ * ports, and autoconfiguration cannot undo it: reallocate_port_if_needed()
+ * only ever transposes input_joypad_index[], which preserves a
+ * duplicate instead of resolving it. */
+static void setting_action_input_device_index_swap(
+      settings_t *settings, unsigned player, unsigned p, unsigned p_new)
+{
+   unsigned i;
+   for (i = 0; i < MAX_USERS; i++)
+   {
+      if (i == player)
+         continue;
+      if (settings->uints.input_joypad_index[i] == p_new)
+         settings->uints.input_joypad_index[i] = p;
+   }
+}
+
 static int setting_action_left_input_device_index(
       rarch_setting_t *setting, size_t idx, bool wraparound)
 {
@@ -6051,6 +6076,9 @@ static int setting_action_left_input_device_index(
 
    if (setting_action_input_device_index_prevent(setting, settings, *p, p_new))
       return 0;
+
+   setting_action_input_device_index_swap(settings,
+         (unsigned)setting->index_offset, *p, p_new);
 
    *p = p_new;
 
@@ -8514,6 +8542,9 @@ static int setting_action_right_input_device_index(
    if (setting_action_input_device_index_prevent(setting, settings, *p, p_new))
       return 0;
 
+   setting_action_input_device_index_swap(settings,
+         (unsigned)setting->index_offset, *p, p_new);
+
    *p = p_new;
 
    settings->flags |= SETTINGS_FLG_MODIFIED;
@@ -9189,6 +9220,16 @@ static void general_write_handler(rarch_setting_t *setting)
             if (video_st && video_st->poke && video_st->poke->set_hdr_paper_white_nits)
                video_st->poke->set_hdr_paper_white_nits(video_st->data,
                      settings->floats.video_hdr_paper_white_nits);
+         }
+         break;
+      case MENU_ENUM_LABEL_VIDEO_HDR_MAX_NITS:
+         {
+            settings->flags                      |= SETTINGS_FLG_MODIFIED;
+            settings->floats.video_hdr_max_nits   = roundf(*setting->value.target.fraction);
+            /* No driver poke: nothing in the frontend's own HDR composition
+             * uses a peak value yet - its inverse tonemap is called with paper
+             * white for both arguments, which makes it an identity. This is
+             * read by cores through GET_HDR_MAX_NITS. */
          }
          break;
       case MENU_ENUM_LABEL_VIDEO_HDR_EXPAND_GAMUT:

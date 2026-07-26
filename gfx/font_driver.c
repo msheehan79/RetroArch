@@ -292,14 +292,14 @@ static bool font_init_first(
          }
          break;
 #endif
-#ifdef HAVE_VITA2D
-      case FONT_DRIVER_RENDER_VITA2D:
+#ifdef HAVE_GXM
+      case FONT_DRIVER_RENDER_GXM:
          {
-            void *data = vita2d_vita_font.init(
+            void *data = gxm_font.init(
                   video_data, font_path, font_size, is_threaded);
             if (data)
             {
-               *font_driver = &vita2d_vita_font;
+               *font_driver = &gxm_font;
                *font_handle = data;
                return true;
             }

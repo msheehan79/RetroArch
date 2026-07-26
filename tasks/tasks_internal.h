@@ -196,23 +196,33 @@ bool task_push_core_restore(const char *backup_path,
 bool task_push_pl_manager_reset_cores(const playlist_config_t *playlist_config);
 bool task_push_pl_manager_clean_playlist(const playlist_config_t *playlist_config);
 
+/* downscale_cap: if non-zero, the decoded image is capped to this many
+ * pixels on its longest side before upload, preserving aspect ratio.
+ * The sidebar thumbnail and the fullscreen view share one texture -
+ * going fullscreen only raises a flag, it never re-requests the image
+ * - so the cap has to be what the larger view can use, i.e. the
+ * display size.  0 disables it, for callers whose image is already
+ * display-sized (wallpaper) or drawn at a fixed small size (icons). */
 bool task_push_image_load(const char *fullpath,
       bool supports_rgba, unsigned upscale_threshold,
+      unsigned downscale_cap,
       retro_task_callback_t cb, void *userdata);
 
 /* For an image-load task whose file is a video (WEBM/MP4): take
  * ownership of the decoder stream the still-frame decode left open,
  * positioned just past the first displayed frame, together with the
- * nbio handle whose buffer the stream borrows.  Only valid during the
+ * data_transfer whose buffer the stream borrows (its fill may still
+ * be in flight; the adopter pumps it on).  Only valid during the
  * task's completion callback (the task owns both until then and frees
  * them right after).  On success the caller must eventually close the
  * stream with image_transfer_anim_stream_free(*stream, *type) and then
- * release the buffer with nbio_free(*nbio_owner), in that order.
- * Returns false (and takes nothing) for non-image tasks, non-video
- * images, or when no stream is held. */
+ * release the buffer with data_transfer_free(*xfer_owner), in that
+ * order.  Returns false (and takes nothing) for non-image tasks,
+ * non-video images, or when no stream is held. */
+struct data_transfer;
 bool task_image_detach_video_stream(retro_task_t *task,
       void **stream, enum image_type_enum *type,
-      void **nbio_owner, void **buf, size_t *len);
+      struct data_transfer **xfer_owner, void **buf, size_t *len);
 
 /* Async icon/texture loading.  generation_ptr must point to a static
  * variable in the calling module (not a heap struct field). */
@@ -232,7 +242,8 @@ bool task_push_dbscan(
 #endif
 
 bool task_push_manual_content_scan(
-      bool do_menu_refresh);
+      bool do_menu_refresh,
+      retro_task_callback_t user_cb);
 
 #ifdef HAVE_OVERLAY
 bool task_push_overlay_load_default(
@@ -241,6 +252,23 @@ bool task_push_overlay_load_default(
       bool is_osk,
       void *user_data);
 #endif
+
+/* Open a streaming applier for the patch a load would apply, resolved
+ * with patch_content's own selection rules.  NULL means "no streamable
+ * patch": load and call patch_content as before.  See task_patch.c. */
+struct patch_stream;
+struct patch_stream *patch_content_stream_open(
+      bool is_ips_pref,
+      bool is_bps_pref,
+      bool is_ups_pref,
+      bool is_xdelta_pref,
+      const char *name_ips,
+      const char *name_bps,
+      const char *name_ups,
+      const char *name_xdelta,
+      size_t src_len,
+      void **patch_data,
+      const char **patch_path);
 
 bool patch_content(
       bool is_ips_pref,
@@ -340,6 +368,13 @@ bool task_push_menu_explore_init(const char *directory_playlist,
       const char *directory_database);
 bool menu_explore_init_in_progress(void *data);
 void menu_explore_wait_for_init_task(void);
+
+/* Menu database info tasks
+ * (cache accessors with database types live in database_info.h) */
+void menu_dbinfo_cache_free(void);
+bool menu_dbinfo_load_in_progress(void *data);
+void menu_dbinfo_wait_for_task(void);
+bool task_push_dbinfo_load(const char *path, const char *query);
 #endif
 
 extern const char* const input_builtin_autoconfs[];
