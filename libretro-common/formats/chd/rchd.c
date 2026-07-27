@@ -69,7 +69,12 @@
  *   image does not cost this file its C89 conformance
  *   cdzl, cdlz, cdfl, cdzs   with the CD framing, ECC rebuild and
  *                            subchannel interleave
- *   avhu                     audio/video, FLAC audio mode only
+ *   avhu                     audio/video, and the same decoder serves
+ *                            compression enum 3 of versions below 5,
+ *                            which is the same codec under its earlier
+ *                            name. FLAC audio mode verified; the two
+ *                            older audio modes are written but have
+ *                            never run.
  *
  * ENTRY TYPES
  *   compressed, uncompressed, mini, self-reference, parent-reference,
@@ -96,13 +101,14 @@
  *   avhu audio modes     the raw-delta and Huffman-delta modes are
  *                        written but have never decoded a real stream:
  *                        every hunk of the only A/V image to hand
- *                        states FLAC. They are the whole of what
- *                        separates this codec from the pre-version-5
- *                        one, so an image of that era would settle
- *                        both.
- *   Pre-v5 A/V video     believed to work unchanged -- the two codecs
- *                        agree in every particular compared -- but no
- *                        image using it is to hand, so it is untested.
+ *                        states FLAC. They are the audio the codec used
+ *                        before version 5 added FLAC, so an image from
+ *                        that era, or one converted from it, would
+ *                        settle both.
+ *   Pre-v5 A/V           compression enum 3 is accepted and decoded as
+ *                        avhu, on the argument that version 5 renamed
+ *                        the codec rather than replacing it. Untested:
+ *                        no image with that enum is to hand.
  *   SHA-1 verification   the header's digests are parsed and exposed,
  *                        never checked against the data. A caller that
  *                        wants to know an image is intact has to do it.
@@ -126,6 +132,26 @@
 #include <formats/rchd.h>
 #include <encodings/huffman.h>
 #include <encodings/crc32.h>
+
+/* Which codecs are built in.
+ *
+ * A build system that selects this reader states these; one that only
+ * defines HAVE_RCHD gets a reader that opens an image and refuses every
+ * compressed hunk in it, which is a confusing way to fail. Griffin
+ * builds reach here from a platform makefile rather than from
+ * Makefile.common, so the defaults are here rather than there. */
+#if !defined(HAVE_RCHD_DEFLATE) && !defined(HAVE_RCHD_LZMA) \
+ && !defined(HAVE_RCHD_FLAC) && !defined(HAVE_RCHD_ZSTD) \
+ && !defined(RCHD_NO_DEFAULT_CODECS)
+#define HAVE_RCHD_DEFLATE 1
+#define HAVE_RCHD_LZMA    1
+#if defined(HAVE_FLAC) || defined(HAVE_RFLAC)
+#define HAVE_RCHD_FLAC    1
+#endif
+#if defined(HAVE_ZSTD) || defined(HAVE_RZSTD)
+#define HAVE_RCHD_ZSTD    1
+#endif
+#endif
 
 #ifdef HAVE_RCHD_DEFLATE
 #include <encodings/deflate.h>
@@ -2502,6 +2528,19 @@ static int rchd_build_tracks(rchd_t *chd)
       t->pregap  = rchd_meta_uint(m->data, m->length, "PREGAP:");
       t->postgap = rchd_meta_uint(m->data, m->length, "POSTGAP:");
 
+      /* PGTYPE says whether those pregap frames are in the file. A type
+       * beginning with V is virtual: the disc has the pregap, the image
+       * does not store it. Absent, treat it as stored, which is what a
+       * track carrying a pregap without saying otherwise means. */
+      {
+         char pg[32];
+
+         if (rchd_meta_field(m->data, m->length, "PGTYPE:", pg, sizeof(pg)))
+            t->pregap_stored = (pg[0] != 'V');
+         else
+            t->pregap_stored = 1;
+      }
+
       if (!t->frames)
          return RCHD_ERROR_DATA;
 
@@ -2735,12 +2774,18 @@ static int rchd_read_step_bytes(rchd_t *chd, rchd_request_t *req)
       if ((err = rchd_cache_alloc(chd)) != RCHD_OK)
          return err;
 
-      if (chd->cached != hunk)
+      /* Resolve before consulting the cache, and key the cache on what
+       * was decoded rather than on what was asked for.
+       *
+       * A self-reference is a hunk saying "the same bytes as hunk N".
+       * Keyed on the request, two hunks referring to the same N both
+       * miss and N is decoded twice. Keyed on N, the second one hits. */
+      if ((err = rchd_resolve_self(chd, hunk, &src_hunk)) != RCHD_OK)
+         return err;
+
+      if (chd->cached != src_hunk)
       {
          const rchd_map_entry_t *e;
-
-         if ((err = rchd_resolve_self(chd, hunk, &src_hunk)) != RCHD_OK)
-            return err;
          e = &chd->map[src_hunk];
 
          /* A parent reference is the parent's data at a unit position,
@@ -2767,7 +2812,7 @@ static int rchd_read_step_bytes(rchd_t *chd, rchd_request_t *req)
                   return err;
                break;
             }
-            chd->cached = hunk;
+            chd->cached = src_hunk;
          }
          else
          {
@@ -2796,7 +2841,7 @@ static int rchd_read_step_bytes(rchd_t *chd, rchd_request_t *req)
                      != e->crc)
                return RCHD_ERROR_CRC;
 
-            chd->cached = hunk;
+            chd->cached = src_hunk;
          }
       }
 
