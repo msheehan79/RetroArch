@@ -221,3 +221,232 @@ jobs:
           test -x patch_stream_test
           timeout 900 ./patch_stream_test
           echo "[pass] patch_stream_test"
+
+      - name: Build and run task_file_transfer_test (ASan + UBSan, TSan)
+        shell: bash
+        working-directory: samples/tasks/file_transfer
+        run: |
+          set -eu
+          # Oracle for tasks/task_file_transfer.c, compiled from the
+          # tree so it exercises the shipping translation unit.  The
+          # handler is a switch whose states advance at most one step
+          # per tick, so what matters is how many ticks a load takes,
+          # whether every input reaches a terminal at all, and what a
+          # caller reading task_get_progress() sees on the way - a
+          # test that only checks the bytes passes on every defect
+          # below.  Lanes run to a tick cap rather than looping, so a
+          # task that never finishes reports instead of hanging CI.
+          #
+          # Pinned here: a NULL path and a parse callback that
+          # returns success without setting is_finished, both of
+          # which once left the task running forever with no flag set
+          # (a per-frame call under the regular queue, a hot spin on
+          # the worker thread under the threaded one); progress
+          # reaching 100 on every completion path, not just the
+          # single-tick one; the tick that opens the file also
+          # reading, which one byte either side of the threshold used
+          # to decide; a file truncated underneath an in-flight fill
+          # cancelling rather than parsing a buffer whose tail was
+          # never written; and every audio type reaching the mixer
+          # arm, since M4A and OPUS were once absent from that switch
+          # while both push paths set them, so those sounds loaded
+          # and silently did not play.
+          #
+          # Two lanes guard the 256 MiB prefix cap that cancelled
+          # every large non-faststart video.  The real-demuxer lane
+          # pins the premise the cap got wrong: a genuine h264 MP4
+          # (real ftyp/mdat/moov, real coded frames) is written with
+          # a ~300 MiB free box pushing moov to EOF - a valid file,
+          # the layout most cameras produce - and the real rmp4, via
+          # image_transfer's avail-aware open, must answer need_more
+          # on a 1 MiB prefix and decode real frames once fully
+          # resident.  Anyone restoring a prefix ceiling on the
+          # "a still only needs a few per cent" argument is refuted
+          # by that lane directly.  The task lane pins the
+          # mechanism: a still ready only at EOF, over a 300 MiB
+          # file, must finish uncancelled with every byte resident.
+          # On the capped tree it stops at exactly 268435456 and
+          # cancels - no thumbnail, no animation - and the oracle
+          # exits non-zero.
+          #
+          # The conc lane runs disjoint handles on many threads at
+          # once.  data_transfer synchronises nothing by design and
+          # the task layer gives one handle to one task, so it is not
+          # looking for contention on a shared handle - it checks
+          # that the spine keeps no hidden static state, which a
+          # sanitizer build can answer and inspection cannot.
+          make clean all SANITIZER=address,undefined
+          test -x task_file_transfer_test
+          ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
+             UBSAN_OPTIONS=print_stacktrace=1 timeout 600 \
+             ./task_file_transfer_test
+          ASAN_OPTIONS=detect_leaks=1 timeout 600 \
+             ./task_file_transfer_test conc
+          echo "[pass] task_file_transfer_test (ASan)"
+          make clean all SANITIZER=thread
+          TSAN_OPTIONS=halt_on_error=1 timeout 600 \
+             ./task_file_transfer_test
+          TSAN_OPTIONS=halt_on_error=1 timeout 600 \
+             ./task_file_transfer_test conc
+          echo "[pass] task_file_transfer_test (TSan)"
+
+      - name: Build and run image_decode_slice_test (ASan + UBSan)
+        shell: bash
+        working-directory: samples/tasks/image_decode_slice
+        run: |
+          set -eu
+          # Oracle for the shared decode window in tasks/task_image.c,
+          # compiled from the tree so it exercises the shipping
+          # translation unit.  The clock is the test's instrument: the
+          # sample provides cpu_features_get_time_usec() itself,
+          # advancing a fixed quantum per observation, so the decode
+          # loops are budget-bound deterministically and the cost of a
+          # gather is readable as the fake-clock delta across
+          # task_queue_check() - no wall-clock measurement, no
+          # flakiness.
+          #
+          # The regression it pins has two faces, both verified to
+          # fail it: the pre-window code, where eight concurrent
+          # decodes each took a full frame_duration per gather (~8
+          # frames of decode in one gather), and the subtler
+          # period == allowance variant of the window itself, where a
+          # task that spends its whole allowance has aged the window a
+          # full period and the next task in the same gather resets
+          # it - the multiplication surviving a fix that reads
+          # correct.  That variant passed inspection and failed
+          # simulation, which is why this oracle asserts on measured
+          # gather cost rather than on the code's shape.
+          #
+          # It also checks the decode itself end to end - dimensions
+          # and a pixel spot-check on every delivered image - so the
+          # budget rework cannot silently break what it budgets.
+          make clean all
+          test -x image_decode_slice_test
+          timeout 600 ./image_decode_slice_test
+          echo "[pass] image_decode_slice_test"
+          make clean all SANITIZER=address,undefined
+          ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
+             UBSAN_OPTIONS=print_stacktrace=1 timeout 600 \
+             ./image_decode_slice_test
+          echo "[pass] image_decode_slice_test (ASan)"
+
+      - name: Build and run save_state_io_test (ASan + UBSan, TSan)
+        shell: bash
+        working-directory: samples/tasks/save_state
+        run: |
+          set -eu
+          # Oracle for the file I/O in tasks/task_save.c, compiled
+          # from the tree so it exercises the shipping translation
+          # unit.  As in image_decode_slice, the clock is the test's
+          # instrument: the sample provides
+          # cpu_features_get_time_usec() itself, advancing a fixed
+          # step per observation, so the tick budget is assertable
+          # exactly rather than measured against a wall clock.  Step 0
+          # is a budget that never expires; step >= the budget is one
+          # that expires on first observation.
+          #
+          # The throughput regression it pins: both handlers used to
+          # transfer exactly one SAVE_STATE_CHUNK per queue tick,
+          # which caps a save at chunk * tick_rate (~6 MB/s) whatever
+          # the device can do - a 16 MB state took 164 ticks, 2.7s at
+          # 60Hz, while one 100 KB write costs ~62us of a 16667us
+          # frame.  A tick is now bounded by time and transfers as
+          # many quanta as fit.  Because a time budget is only an
+          # improvement if it cannot be worse than the fixed count it
+          # replaced, the exhausted-budget lane asserts the fallback
+          # directly: with a clock that spends the budget on its first
+          # observation the handler must still transfer exactly one
+          # quantum per tick and still produce a correct file.  That
+          # is the old behaviour reached through the new code, and it
+          # is what the slowest supported storage gets.
+          #
+          # The rest are the defects the audit turned up, each
+          # verified to fail this oracle on the pre-fix tree:
+          #
+          #  - The rastate block walker looped on 'input < stop', so
+          #    it could enter the body with one byte left and read the
+          #    block length out of input[4..7] - six bytes past the
+          #    end.  content_deserialize_state had the same shape one
+          #    level up, reading seven bytes of magic and input[7] for
+          #    the version with no length check at all.  Savestates
+          #    are shared, synced and recovered off failing media, and
+          #    the load handler's own short-read path produces exactly
+          #    this buffer, so this is a format parser on hostile
+          #    input.  ASan reports both for any state truncated to
+          #    9..15 bytes.
+          #
+          #  - A block's declared 32-bit length was never checked
+          #    against the bytes actually remaining and was then
+          #    passed to core_unserialize as the size of the buffer at
+          #    that offset.  The stub core here reads every byte it is
+          #    told the buffer holds before judging the size, exactly
+          #    as a real core does, so ASan - not the stub's own
+          #    opinion - is what catches an over-long block.  A stub
+          #    that checked size first would pass against the unfixed
+          #    walker.
+          #
+          #  - That length was also assembled as input[7] << 24 on an
+          #    int, undefined for every top byte >= 0x80, i.e. every
+          #    length at or above 2 GB - the range a corrupt length
+          #    lands in, and the value the bound check is asked to
+          #    trust.  UBSan is the assertion.
+          #
+          #  - A failed core_serialize left data NULL and size 0, at
+          #    which point every test in the save handler read as
+          #    success and the task reported COMPLETED.  The file had
+          #    already been opened and truncated, so the user was told
+          #    the save succeeded and the slot held zero bytes.
+          #
+          #  - A failed open was a bare return: not errored, not
+          #    finished, so the queue re-entered the task every tick
+          #    and it retried forever.  Save tasks are
+          #    TASK_TYPE_BLOCKING, so that one task held the single
+          #    blocking slot for the rest of the session - no state
+          #    could be saved or loaded again without a restart.  The
+          #    exclusion rule that makes it severe is itself pinned,
+          #    together with the cleanup the refusal path owes (the
+          #    task, its title, the state struct and the caller's
+          #    serialized buffer), which is why leak detection is on.
+          #
+          # The undo-snapshot lane is the one that needs the counting
+          # allocator (-Wl,--wrap=malloc in the sample's Makefile).
+          # content_load_state_cb retakes the undo snapshot on every
+          # state load, and that capture used to free its destination
+          # and malloc a new one each time; it now keeps the outgoing
+          # allocation as a spare and swaps the two.  Pointer identity
+          # cannot see the difference - a state-sized block is mmap'd,
+          # munmap hands the region back, and the next request of the
+          # same size is usually given the same address - so a run of
+          # captures looks identical either way while only one of them
+          # pays the first-touch faults.  Counting state-sized malloc
+          # calls is the discriminator: eight captures allocate two
+          # buffers after the change and eight before it.
+          #
+          # The conc lane runs the same round-trip under a threaded
+          # queue, where the transfer loop executes on the worker
+          # while content_deserialize_state and the undo bookkeeping
+          # stay on the gathering thread.  It is one task at a time by
+          # design, not by simplification: TASK_TYPE_BLOCKING means
+          # the frontend cannot produce concurrent save tasks, so a
+          # lane that pushed them would be asserting against a
+          # configuration that cannot occur.  What it asks TSan is
+          # whether a loop that newly carries a deadline across
+          # iterations kept any of it shared.
+          make clean all
+          test -x save_state_io_test
+          timeout 300 ./save_state_io_test
+          timeout 300 ./save_state_io_test conc
+          echo "[pass] save_state_io_test"
+          make clean all SANITIZER=address,undefined
+          ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
+             UBSAN_OPTIONS=print_stacktrace=1 timeout 300 \
+             ./save_state_io_test
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1 \
+             timeout 300 ./save_state_io_test conc
+          echo "[pass] save_state_io_test (ASan)"
+          make clean all SANITIZER=thread
+          TSAN_OPTIONS=halt_on_error=1 timeout 300 \
+             ./save_state_io_test
+          TSAN_OPTIONS=halt_on_error=1 timeout 300 \
+             ./save_state_io_test conc
+          echo "[pass] save_state_io_test (TSan)"

@@ -10,6 +10,17 @@
  * header interpretation (VBR duration estimates and gapless
  * delay/padding trimming are the caller's concern), and encoding.
  *
+ * Two interfaces share the decode core.  The original pull interface
+ * (rmp3_init_memory / rmp3_read_s16 / rmp3_read_f32 /
+ * rmp3_seek_to_frame) decodes a complete memory-resident file.  The
+ * stream interface (rmp3_stream_new and the rmp3_stream_* calls at
+ * the bottom of this file) is a push API in the same shape as
+ * rflac's: the caller feeds spans as it has them, sets an s16 or f32
+ * output block, and calls rmp3_stream_process until END after
+ * rmp3_stream_set_eof; a span may end mid-frame, and the unconsumed
+ * tail is carried internally so nothing is decoded twice or lost.
+ * audio_transfer's MP3 arm runs on the stream interface.
+ *
  * Known, and left alone deliberately: the fixed-point kernels rely on
  * signed integers wrapping, which the standard leaves undefined.  A
  * valid stream never reaches it - the format bounds the values so the
@@ -2622,42 +2633,42 @@ static uint32_t rmp3_decode_next_frame(rmp3* pMP3)
  * frame is converted in place (the decoder state has already advanced
  * past it, so re-decoding is not an option); every later frame is
  * synthesised natively in the new format. */
-static void rmp3_set_output_mode(rmp3* pMP3, uint32_t f32)
+/* The two pipelines keep their persistent decoder state in different
+ * formats: float for the float pipeline, Q28 fixed point for the s16
+ * pipeline (the storage is shared through unions).  Convert the QMF
+ * and IMDCT overlap histories so decoding continues seamlessly in the
+ * new format.  Shared by the pull and streaming APIs, whose format
+ * switches are the same operation on different bookkeeping. */
+static void rmp3d_convert_state(rmp3dec *dec, uint32_t f32)
 {
-   uint32_t total;
    int i;
-   if (pMP3->f32_mode == f32)
-      return;
-   pMP3->f32_mode = f32;
-
-   /* The two pipelines keep their persistent decoder state in
-    * different formats: float for the float pipeline, Q28 fixed point
-    * for the s16 pipeline (the storage is shared through unions).
-    * Convert the QMF and IMDCT overlap histories so decoding continues
-    * seamlessly in the new format. */
+   float   *of = &dec->mdct_overlap.f[0][0];
+   int32_t *oq = &dec->mdct_overlap.q[0][0];
+   if (f32)
    {
-      float   *of = &pMP3->decoder.mdct_overlap.f[0][0];
-      int32_t *oq = &pMP3->decoder.mdct_overlap.q[0][0];
-      if (f32)
-      {
-         for (i = 0; i < 15*2*32; i++)
-            pMP3->decoder.qmf_state.f[i] =
-                  pMP3->decoder.qmf_state.q[i] * (1.0f / (float)(1 << RMP3D_QBITS));
-         for (i = 0; i < 2*9*32; i++)
-            of[i] = oq[i] * (1.0f / (float)(1 << RMP3D_QBITS));
-      }
-      else
-      {
-         for (i = 0; i < 15*2*32; i++)
-            pMP3->decoder.qmf_state.q[i] =
-                  rmp3d_float_to_q(pMP3->decoder.qmf_state.f[i]);
-         for (i = 0; i < 2*9*32; i++)
-            oq[i] = rmp3d_float_to_q(of[i]);
-      }
+      for (i = 0; i < 15*2*32; i++)
+         dec->qmf_state.f[i] =
+               dec->qmf_state.q[i] * (1.0f / (float)(1 << RMP3D_QBITS));
+      for (i = 0; i < 2*9*32; i++)
+         of[i] = oq[i] * (1.0f / (float)(1 << RMP3D_QBITS));
    }
+   else
+   {
+      for (i = 0; i < 15*2*32; i++)
+         dec->qmf_state.q[i] =
+               rmp3d_float_to_q(dec->qmf_state.f[i]);
+      for (i = 0; i < 2*9*32; i++)
+         oq[i] = rmp3d_float_to_q(of[i]);
+   }
+}
 
-   total = (pMP3->framesConsumed + pMP3->framesRemaining)
-         * pMP3->frameChannels;
+/* Convert 'total' samples of a buffered frame between the two formats,
+ * in place.  The decoder state has already advanced past the frame, so
+ * re-decoding is not an option; conversion is what keeps a buffered
+ * frame playable across a format switch. */
+static void rmp3d_convert_frames(rmp3_frame_buf *fb, uint32_t total,
+      uint32_t f32)
+{
    if (total == 0)
       return;
 
@@ -2667,7 +2678,7 @@ static void rmp3_set_output_mode(rmp3* pMP3, uint32_t f32)
        * backwards only clobbers s16 slots that are already consumed. */
       uint32_t i = total;
       while (i-- > 0)
-         pMP3->frames.f32[i] = pMP3->frames.s16[i] * (1.0f / 32768.0f);
+         fb->f32[i] = fb->s16[i] * (1.0f / 32768.0f);
    }
    else
    {
@@ -2676,17 +2687,28 @@ static void rmp3_set_output_mode(rmp3* pMP3, uint32_t f32)
       uint32_t i;
       for (i = 0; i < total; i++)
       {
-         float s = pMP3->frames.f32[i] * 32768.0f;
+         float s = fb->f32[i] * 32768.0f;
          int   v;
-         if (s >  32767.0f) { pMP3->frames.s16[i] =  32767; continue; }
-         if (s < -32768.0f) { pMP3->frames.s16[i] = -32768; continue; }
+         if (s >  32767.0f) { fb->s16[i] =  32767; continue; }
+         if (s < -32768.0f) { fb->s16[i] = -32768; continue; }
          v  = (int)(s + .5f);
          v -= (v < 0); /* round half away from zero, as rmp3d_scale_pcm */
          if (v >  32767) v =  32767;
          if (v < -32768) v = -32768;
-         pMP3->frames.s16[i] = (int16_t)v;
+         fb->s16[i] = (int16_t)v;
       }
    }
+}
+
+static void rmp3_set_output_mode(rmp3* pMP3, uint32_t f32)
+{
+   if (pMP3->f32_mode == f32)
+      return;
+   pMP3->f32_mode = f32;
+   rmp3d_convert_state(&pMP3->decoder, f32);
+   rmp3d_convert_frames(&pMP3->frames,
+         (pMP3->framesConsumed + pMP3->framesRemaining)
+         * pMP3->frameChannels, f32);
 }
 
 uint32_t rmp3_init_memory(rmp3* pMP3, const void* pData, size_t dataSize)
@@ -2856,4 +2878,374 @@ uint32_t rmp3_seek_to_frame(rmp3* pMP3, uint64_t frameIndex)
    if (frameIndex == 0)
       return 1;
    return rmp3_read_f32(pMP3, frameIndex, NULL) == frameIndex;
+}
+
+/* --- STREAMING API -----------------------------------------------------
+ *
+ * rmp3_init_memory wants the whole file addressable: it keeps a borrowed
+ * pointer and a cursor into it, and seeking re-scans from the front.  A
+ * caller reading from storage has no such buffer, and building one costs
+ * the file in memory to play a few kilobytes of it at a time.
+ *
+ * MPEG audio needs far less than that.  A frame is self-contained apart
+ * from the bit reservoir, which the decoder already carries between
+ * frames, so all a decode needs resident is one frame - at most 1044
+ * bytes plus padding at 320kbps, and free-format streams aside, never
+ * more than a couple of kilobytes.  What was missing was a way to hand
+ * frames over as they arrive rather than pointing at all of them at
+ * once.
+ *
+ * Same shape as rvorbis and rflac: point it at input, point it at
+ * output, and step it.  Input is consumed rather than borrowed, so a
+ * window may slide freely; what is not consumed must be presented again
+ * at the head of the next window.
+ */
+
+#define RMP3_STREAM_HOLD  4096   /* comfortably one frame plus a header */
+
+struct rmp3_stream
+{
+   rmp3dec        dec;
+
+   const uint8_t *in;
+   size_t         in_size;
+   size_t         in_pos;
+
+   /* One destination or the other, the same way the pull API's two
+    * reads are one decoder: whichever set_out_* ran last names the
+    * pipeline, and f32_mode says which. */
+   int16_t       *out;
+   float         *outf;
+   size_t         out_frames;
+   size_t         out_pos;
+   uint32_t       f32_mode;
+
+   /* A frame straddling two windows is reassembled here rather than
+    * asking the caller to guarantee alignment it cannot know. */
+   uint8_t        hold[RMP3_STREAM_HOLD];
+   size_t         hold_len;
+   uint64_t       in_total;    /* bytes ever taken in                  */
+   uint64_t       frame_off;   /* where the last decoded frame began   */
+   uint64_t       frames_in;   /* MPEG frames consumed since reset     */
+
+   /* One decoded frame, drained across as many calls as the caller's
+    * output takes to accept it; held in whichever format the synthesis
+    * ran in, converted in place if the caller switches. */
+   rmp3_frame_buf pcm;
+   unsigned       pending;
+   unsigned       drained;
+
+   unsigned       channels;
+   unsigned       rate;
+   int            started;
+   int            eof_in;
+};
+
+rmp3_stream_t *rmp3_stream_new(void)
+{
+   rmp3_stream_t *s = (rmp3_stream_t*)calloc(1, sizeof(*s));
+   if (!s)
+      return NULL;
+   memset(&s->dec, 0, sizeof(s->dec));
+   return s;
+}
+
+void rmp3_stream_free(rmp3_stream_t *s)
+{
+   free(s);
+}
+
+void rmp3_stream_set_in(rmp3_stream_t *s, const void *in, size_t in_size)
+{
+   if (!s)
+      return;
+   s->in      = (const uint8_t*)in;
+   s->in_size = in ? in_size : 0;
+   s->in_pos  = 0;
+}
+
+/* Selecting a pipeline is the same operation as the pull API's reads
+ * perform: convert the decoder's persistent filter state, and whatever
+ * of the last decoded frame has not been drained, so decoding
+ * continues seamlessly in the new format.  A parse-only call selects
+ * nothing - a walk in the middle of a decode must not disturb the
+ * pipeline the decode is in. */
+static void rmp3_stream_set_mode(rmp3_stream_t *s, uint32_t f32)
+{
+   if (s->f32_mode == f32)
+      return;
+   s->f32_mode = f32;
+   rmp3d_convert_state(&s->dec, f32);
+   rmp3d_convert_frames(&s->pcm,
+         (uint32_t)s->pending * s->channels, f32);
+}
+
+void rmp3_stream_set_out_s16(rmp3_stream_t *s, int16_t *out, size_t out_frames)
+{
+   if (!s)
+      return;
+   /* A null destination, or no room in it, means parse-only: frames are
+    * located and counted, nothing is decoded. */
+   s->out        = out;
+   s->outf       = NULL;
+   s->out_frames = out ? out_frames : 0;
+   s->out_pos    = 0;
+   if (out && out_frames)
+      rmp3_stream_set_mode(s, 0);
+}
+
+void rmp3_stream_set_out_f32(rmp3_stream_t *s, float *out, size_t out_frames)
+{
+   if (!s)
+      return;
+   s->out        = NULL;
+   s->outf       = out;
+   s->out_frames = out ? out_frames : 0;
+   s->out_pos    = 0;
+   if (out && out_frames)
+      rmp3_stream_set_mode(s, 1);
+}
+
+int rmp3_stream_info(const rmp3_stream_t *s, unsigned *channels, unsigned *rate)
+{
+   if (!s || !s->started)
+      return 0;
+   if (channels)
+      *channels = s->channels;
+   if (rate)
+      *rate = s->rate;
+   return 1;
+}
+
+uint64_t rmp3_stream_frames_in(const rmp3_stream_t *s)
+{
+   return s ? s->frames_in : 0;
+}
+
+uint64_t rmp3_stream_frame_offset(const rmp3_stream_t *s)
+{
+   return s ? s->frame_off : 0;
+}
+
+void rmp3_stream_set_eof(rmp3_stream_t *s)
+{
+   if (s)
+      s->eof_in = 1;
+}
+
+void rmp3_stream_reset(rmp3_stream_t *s)
+{
+   if (!s)
+      return;
+   memset(&s->dec, 0, sizeof(s->dec));
+   s->in       = NULL;
+   s->in_size  = 0;
+   s->in_pos   = 0;
+   s->hold_len = 0;
+   s->pending  = 0;
+   s->drained  = 0;
+   s->in_total = 0;
+   s->frame_off = 0;
+   s->frames_in = 0;
+   /* A reset re-points input, so whatever the previous run reached says
+    * nothing about the new one. */
+   s->eof_in   = 0;
+}
+
+int rmp3_stream_process(rmp3_stream_t *s, size_t *read, size_t *wrote)
+{
+   size_t w0;
+   int    ret = RMP3_STREAM_OK;
+
+   if (!s)
+      return RMP3_STREAM_ERROR;
+   w0 = s->out_pos;
+
+   for (;;)
+   {
+      rmp3dec_frame_info info;
+      const uint8_t     *src;
+      size_t             avail;
+      int                samples;
+      int                parse_only =
+            ((!s->out && !s->outf) || !s->out_frames);
+
+      /* Hand over what the last frame produced before decoding another:
+       * one frame is up to 1152 PCM frames and a caller's buffer may be
+       * smaller than that. */
+      if (s->pending > s->drained)
+      {
+         unsigned take = s->pending - s->drained;
+         size_t   room = s->out_frames - s->out_pos;
+         if (!parse_only)
+         {
+            if ((size_t)take > room)
+               take = (unsigned)room;
+            if (s->f32_mode)
+               memcpy(s->outf + s->out_pos * (size_t)s->channels,
+                     s->pcm.f32 + (size_t)s->drained * (size_t)s->channels,
+                     (size_t)take * (size_t)s->channels * sizeof(float));
+            else
+               memcpy(s->out + s->out_pos * (size_t)s->channels,
+                     s->pcm.s16 + (size_t)s->drained * (size_t)s->channels,
+                     (size_t)take * (size_t)s->channels * sizeof(int16_t));
+            s->out_pos += take;
+         }
+         s->drained += take;
+         if (s->drained < s->pending)
+         {
+            ret = RMP3_STREAM_OK;   /* output full, frame not spent */
+            break;
+         }
+         s->pending = s->drained = 0;
+      }
+
+      if (!parse_only && s->out_pos >= s->out_frames)
+      {
+         ret = RMP3_STREAM_OK;
+         break;
+      }
+
+      /* Top the hold up so a frame split across windows is whole. */
+      if (s->hold_len < RMP3_STREAM_HOLD)
+      {
+         size_t take = RMP3_STREAM_HOLD - s->hold_len;
+         if (take > s->in_size - s->in_pos)
+            take = s->in_size - s->in_pos;
+         if (take)
+         {
+            memcpy(s->hold + s->hold_len, s->in + s->in_pos, take);
+            s->hold_len += take;
+            s->in_pos   += take;
+            s->in_total += take;
+         }
+      }
+
+      src   = s->hold;
+      avail = s->hold_len;
+
+      if (!avail)
+      {
+         ret = RMP3_STREAM_NEED_IN;
+         break;
+      }
+
+      /* Do not decode a partly-filled hold.  Handed fewer bytes than a
+       * frame occupies, the frame finder reports the bytes it scanned
+       * as bytes to skip - it cannot tell the head of a frame that has
+       * not all arrived from junk - and acting on that discards the
+       * frame.  So wait until the hold is full, or until the caller
+       * says nothing more is coming and a short tail is all there is. */
+      if (s->hold_len < RMP3_STREAM_HOLD && !s->eof_in)
+      {
+         ret = RMP3_STREAM_NEED_IN;
+         break;
+      }
+
+      /* Where in the stream whatever is decoded next begins: the hold
+       * always starts at a frame boundary once one has been found, so
+       * this is the offset a caller would seek back to. */
+      s->frame_off = s->in_total - (uint64_t)s->hold_len;
+
+      memset(&info, 0, sizeof(info));
+      samples = rmp3dec_decode_frame(&s->dec, src, (int)avail,
+            parse_only ? NULL : (void*)&s->pcm, &info,
+            (int)s->f32_mode);
+
+      if (!samples && !info.frame_bytes)
+      {
+         /* A full hold with no frame in it is a stream this cannot
+          * make progress on; short of that, more input is wanted. */
+         ret = (s->eof_in && s->hold_len < RMP3_STREAM_HOLD)
+            ? RMP3_STREAM_END : RMP3_STREAM_NEED_IN;
+         break;
+      }
+
+      /* A located frame fills in the header fields whether or not it
+       * went on to produce samples; junk that was merely scanned past
+       * leaves them clear.  That distinction is what separates a frame
+       * consumed from bytes discarded, and only the former advances the
+       * stream's position. */
+      if (info.hz)
+         s->frames_in++;
+
+      if (info.frame_bytes > 0)
+      {
+         size_t used = (size_t)info.frame_bytes;
+         if (used > s->hold_len)
+            used = s->hold_len;
+         memmove(s->hold, s->hold + used, s->hold_len - used);
+         s->hold_len -= used;
+      }
+
+      if (samples > 0)
+      {
+         if (!s->started)
+         {
+            s->channels = (unsigned)info.channels;
+            s->rate     = (unsigned)info.hz;
+            s->started  = 1;
+         }
+         /* A malformed stream that changes channel count partway is
+          * adapted to the stream's own layout - mono duplicated,
+          * stereo averaged, the same arithmetic the pull API's reads
+          * apply - so the interleave stays consistent.  A rate change
+          * likewise decodes through at the stream's stated rate, which
+          * is all the pull API ever did with one. */
+         else if (!parse_only
+               && (unsigned)info.channels != s->channels)
+         {
+            if (s->channels == 2)
+            {
+               /* Widening in place: pair 2i,2i+1 overlays sample i,
+                * so walking backwards reads each source before its
+                * slots are clobbered. */
+               int i = samples;
+               if (s->f32_mode)
+                  while (i-- > 0)
+                     s->pcm.f32[2*i] = s->pcm.f32[2*i + 1]
+                                     = s->pcm.f32[i];
+               else
+                  while (i-- > 0)
+                     s->pcm.s16[2*i] = s->pcm.s16[2*i + 1]
+                                     = s->pcm.s16[i];
+            }
+            else
+            {
+               /* Narrowing in place: sample i overlays half of the
+                * pair 2i,2i+1, which is behind the read position
+                * walking forwards. */
+               int i;
+               if (s->f32_mode)
+                  for (i = 0; i < samples; i++)
+                     s->pcm.f32[i] = (s->pcm.f32[2*i]
+                           + s->pcm.f32[2*i + 1]) * 0.5f;
+               else
+                  for (i = 0; i < samples; i++)
+                     s->pcm.s16[i] = (int16_t)(((int32_t)s->pcm.s16[2*i]
+                           + (int32_t)s->pcm.s16[2*i + 1]) >> 1);
+            }
+         }
+
+         if (parse_only)
+         {
+            /* One frame per call while counting, so the offset reported
+             * alongside it belongs to that frame and not to whichever
+             * of a batch happened to come first.  Building a seek index
+             * is the reason to walk a stream without decoding it, and
+             * an index of frame positions needs them one at a time. */
+            s->out_pos += (size_t)samples;
+            ret = RMP3_STREAM_OK;
+            break;
+         }
+         s->pending = (unsigned)samples;
+         s->drained = 0;
+      }
+   }
+
+   if (read)
+      *read = s->in_pos;
+   if (wrote)
+      *wrote = s->out_pos - w0;
+   return ret;
 }
