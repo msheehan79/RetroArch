@@ -202,10 +202,10 @@ static const gfx_ctx_driver_t *gfx_ctx_gl_drivers[] = {
 #ifdef HAVE_OSMESA
    &gfx_ctx_osmesa,
 #endif
-#if (defined(EMSCRIPTEN) && defined(HAVE_EGL))
+#if (defined(__EMSCRIPTEN__) && defined(HAVE_EGL))
    &gfx_ctx_emscripten,
 #endif
-#ifdef EMSCRIPTEN
+#ifdef __EMSCRIPTEN__
    &gfx_ctx_emscripten_webgl,
 #endif
    &gfx_ctx_null,
@@ -491,6 +491,9 @@ const video_driver_t *video_drivers[] = {
 #if defined(HAVE_SDL2) && !(defined(HAVE_COCOA) || defined(HAVE_COCOA_METAL))
    &video_sdl2,
 #endif
+#if defined(HAVE_SDL3) && !(defined(HAVE_COCOA) || defined(HAVE_COCOA_METAL))
+   &video_sdl3,
+#endif
 #ifdef HAVE_SDL_DINGUX
 #if defined(RS90) || defined(MIYOO)
    &video_sdl_rs90,
@@ -547,6 +550,9 @@ const video_driver_t *video_drivers[] = {
 #endif
 #ifdef HAVE_NETWORK_VIDEO
    &video_network,
+#endif
+#ifdef HAVE_HUB75
+   &video_hub75,
 #endif
    &video_null,
    NULL,

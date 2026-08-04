@@ -4050,7 +4050,7 @@ static bool gl2_frame(void *data, const void *frame,
             frame_count, &gl->tex_info, &feedback_info,
             video_scale_integer);
 
-#ifdef EMSCRIPTEN
+#ifdef __EMSCRIPTEN__
    /* Workaround for a chromium-specific bug */
    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);
@@ -4178,6 +4178,21 @@ static bool gl2_frame(void *data, const void *frame,
       glDisableVertexAttribArray(0);
       glDisableVertexAttribArray(1);
       glUseProgram(0);
+
+      /* Restore the aspect-correct viewport the composite just
+       * clobbered. glViewport is context state, not per-FBO, and this
+       * driver only re-establishes it on resize (and, for hardware
+       * cores, in the HW_RENDER_FBO_INIT block above) -- so without
+       * this the next frame draws into the offscreen with the full
+       * window viewport still latched and the image is stretched to
+       * fill, ignoring the aspect ratio. Same save/restore convention
+       * as the fullscreen branch of gl2_draw_texture.
+       *
+       * The glcore driver has the same shape here but is unaffected:
+       * its filter chain re-runs glViewport on the final pass every
+       * frame (shader_gl3.cpp), so the leak never survives to a draw.
+       * The gl2 GLSL path has no equivalent choke point. */
+      glViewport(gl->vp.x, gl->vp.y, gl->vp.width, gl->vp.height);
    }
 
    /* Screenshots. */
@@ -4210,7 +4225,7 @@ static bool gl2_frame(void *data, const void *frame,
         gl->ctx_driver->swap_buffers(gl->ctx_data);
 
  /* Emscripten has to do black frame insertion in its main loop */
-#ifndef EMSCRIPTEN
+#ifndef __EMSCRIPTEN__
    /* Disable BFI during fast forward, slow-motion,
     * and pause to prevent flicker. */
    if (

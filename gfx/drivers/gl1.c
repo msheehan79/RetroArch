@@ -2293,6 +2293,15 @@ static bool gl1_frame(void *data, const void *frame,
       glEnd();
 
       gl1->scrgb.UseProgram(0);
+
+      /* Restore the aspect-correct viewport the composite just
+       * clobbered. glViewport is context state, not per-FBO, and
+       * gl1_frame only establishes it under GL1_FLAG_SHOULD_RESIZE --
+       * so without this the next frame blits into the offscreen with
+       * the full window viewport still latched and the image is
+       * stretched to fill, ignoring the aspect ratio. Same convention
+       * as the fullscreen menu-texture branch above. */
+      glViewport(gl1->vp.x, gl1->vp.y, gl1->vp.width, gl1->vp.height);
    }
 #endif
 
@@ -2313,7 +2322,7 @@ static bool gl1_frame(void *data, const void *frame,
       gl1->ctx_driver->swap_buffers(gl1->ctx_data);
 
  /* Emscripten has to do black frame insertion in its main loop */
-#ifndef EMSCRIPTEN
+#ifndef __EMSCRIPTEN__
    /* Disable BFI during fast forward, slow-motion,
     * and pause to prevent flicker. */
    if (
