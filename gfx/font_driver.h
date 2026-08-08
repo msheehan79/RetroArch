@@ -51,7 +51,8 @@ typedef struct font_renderer
 
 typedef struct font_renderer_driver
 {
-   void *(*init)(const char *font_path, float font_size);
+   void *(*init)(const char *font_path, float font_size,
+         enum font_atlas_format fmt);
 
    struct font_atlas *(*get_atlas)(void *data);
 
@@ -67,7 +68,7 @@ typedef struct font_renderer_driver
    void (*get_line_metrics)(void* data, struct font_line_metrics **metrics);
 } font_renderer_driver_t;
 
-typedef struct
+typedef struct font_data
 {
    const font_renderer_t *renderer;
    void *renderer_data;
@@ -100,19 +101,18 @@ static INLINE void font_unbind(font_data_impl_t *font_data)
    font_driver_bind_block(font_data->font, NULL);
 }
 
-/* font_path can be NULL for default font. */
-/* Video drivers that want higher-precision glyph coverage (HDR
- * output) set the preferred atlas format before creating their
- * fonts; renderers consult it when allocating the atlas. The hint is
- * process-global, so callers set it around font creation and restore
- * it afterwards. Renderers without 16-bit support ignore it. */
-void font_renderer_set_preferred_atlas_format(enum font_atlas_format fmt);
-enum font_atlas_format font_renderer_get_preferred_atlas_format(void);
+/* font_path can be NULL for default font.
+ *
+ * @fmt is the glyph coverage precision the caller wants in the atlas.
+ * Video drivers producing HDR output ask for FONT_ATLAS_FORMAT_A16;
+ * everything else passes FONT_ATLAS_FORMAT_A8. Renderers without
+ * 16-bit support ignore it. */
 
 int font_renderer_create_default(
       const font_renderer_driver_t **drv,
       void **handle,
-      const char *font_path, unsigned font_size);
+      const char *font_path, unsigned font_size,
+      enum font_atlas_format fmt);
 
 void font_driver_render_msg(void *data,
       const char *msg, size_t msg_len,
@@ -138,50 +138,27 @@ font_data_t *font_driver_init_first(
       float font_size,
       bool threading_hint,
       bool is_threaded,
-      enum font_driver_render_api api);
+      const font_renderer_t *backend);
 
 void font_driver_init_osd(
       void *video_data,
       const video_info_t *video_info,
-      bool threading_hint,
       bool is_threaded,
-      enum font_driver_render_api api);
+      const font_renderer_t *backend);
 
-void font_driver_free_osd(void);
+/* Frees the OSD font only if it was built against @video_data. Use
+ * this from any teardown that may run out of order with respect to the
+ * next init. */
+void font_driver_free_osd_for(void *video_data);
 
 int font_driver_get_line_height(font_data_t *font, float scale);
 int font_driver_get_line_ascender(font_data_t *font, float scale);
 int font_driver_get_line_descender(font_data_t *font, float scale);
 int font_driver_get_line_centre_offset(font_data_t *font, float scale);
 
-extern font_renderer_t gl2_raster_font;
-extern font_renderer_t gl3_raster_font;
-extern font_renderer_t gl1_raster_font;
-extern font_renderer_t ps2_font;
-extern font_renderer_t gxm_font;
-extern font_renderer_t ctr_font;
-extern font_renderer_t wiiu_font;
-extern font_renderer_t vulkan_raster_font;
-extern font_renderer_t metal_raster_font;
-extern font_renderer_t d3d8_font;
-extern font_renderer_t d3d9_font;
-extern font_renderer_t d3d9_cg_font;
-extern font_renderer_t d3d10_font;
-extern font_renderer_t d3d11_font;
-extern font_renderer_t d3d12_font;
-extern font_renderer_t caca_font;
-extern font_renderer_t gdi_font;
-extern font_renderer_t vga_font;
-extern font_renderer_t sixel_font;
-extern font_renderer_t switch_font;
-extern font_renderer_t rsx_font;
-extern font_renderer_t sdl2_raster_font;
-extern font_renderer_t sdl3_raster_font;
-
 extern font_renderer_driver_t stb_font_renderer;
 extern font_renderer_driver_t freetype_font_renderer;
 extern font_renderer_driver_t coretext_font_renderer;
-extern font_renderer_driver_t bitmap_font_renderer;
 
 RETRO_END_DECLS
 

@@ -3269,22 +3269,6 @@ static void gfx_display_metal_scissor_end(void *data,
       [md.display clearScissorRect];
 }
 
-gfx_display_ctx_driver_t gfx_display_ctx_metal = {
-   gfx_display_metal_draw,
-   gfx_display_metal_draw_pipeline,
-   gfx_display_metal_blend_begin,
-   gfx_display_metal_blend_end,
-   gfx_display_metal_get_default_mvp,
-   gfx_display_metal_get_default_vertices,
-   gfx_display_metal_get_default_tex_coords,
-   FONT_DRIVER_RENDER_METAL_API,
-   GFX_VIDEO_DRIVER_METAL,
-   "metal",
-   false,
-   gfx_display_metal_scissor_begin,
-   gfx_display_metal_scissor_end
-};
-
 /*
  * FONT DRIVER
  */
@@ -3343,18 +3327,12 @@ gfx_display_ctx_driver_t gfx_display_ctx_metal = {
          /* When outputting HDR (scRGB or HDR10), ask the font
           * renderer for a higher-precision coverage atlas; same
           * policy as the d3d12 and vulkan drivers. */
-         enum font_atlas_format prev_fmt =
-               font_renderer_get_preferred_atlas_format();
-         if (_context.hdrEnabled)
-            font_renderer_set_preferred_atlas_format(FONT_ATLAS_FORMAT_A16);
          if (!font_renderer_create_default(
                   &_font_driver,
-                  &_font_data, font_path, font_size))
-         {
-            font_renderer_set_preferred_atlas_format(prev_fmt);
+                  &_font_data, font_path, font_size,
+                  _context.hdrEnabled
+                  ? FONT_ATLAS_FORMAT_A16 : FONT_ATLAS_FORMAT_A8))
             return nil;
-         }
-         font_renderer_set_preferred_atlas_format(prev_fmt);
       }
 
       _uniforms.projectionMatrix = matrix_proj_ortho(0, 1, 0, 1);
@@ -3895,18 +3873,6 @@ static bool metal_get_line_metrics(void *data,
    return false;
 }
 
-font_renderer_t metal_raster_font = {
-   metal_raster_font_init,
-   metal_raster_font_free,
-   metal_raster_font_render_msg,
-   "metal",
-   metal_raster_font_get_glyph,
-   NULL, /* bind_block  */
-   NULL, /* flush_block */
-   metal_raster_font_get_message_width,
-   metal_get_line_metrics
-};
-
 /*
  * VIDEO DRIVER
  */
@@ -4223,11 +4189,6 @@ static void metal_pull_cached_frame_cb(void *userdata,
       /* Overlay view */
       _overlay = [[Overlay alloc] initWithContext:_context];
 
-      font_driver_init_osd((__bridge void *)self,
-            video,
-            false,
-            video->is_threaded,
-            FONT_DRIVER_RENDER_METAL_API);
 
       /* Tell Context to allocate HDR offscreen + readback textures and
        * compile its composite/tonemap pipelines.  By this point the CAMetalLayer's
@@ -4300,7 +4261,6 @@ static void metal_pull_cached_frame_cb(void *userdata,
       free(_viewport);
       _viewport = nil;
    }
-   font_driver_free_osd();
 
    /* Tear down the GPU list we published to the frontend.  We clear
     * the slot first so any later code paths (e.g. the menu cbs) that
@@ -6628,7 +6588,6 @@ static void metal_get_poke_interface(void *data,
 }
 
 #ifdef HAVE_OVERLAY
-
 static void metal_overlay_enable(void *data, bool state)
 {
    MetalDriver *md = (__bridge MetalDriver *)data;
@@ -6690,12 +6649,23 @@ static void metal_get_overlay_interface(void *data,
 {
    *iface = &metal_overlay_interface;
 }
-
 #endif
 
 #ifdef HAVE_GFX_WIDGETS
 static bool metal_widgets_enabled(void *data) { return true; }
 #endif
+
+static font_renderer_t metal_raster_font = {
+   metal_raster_font_init,
+   metal_raster_font_free,
+   metal_raster_font_render_msg,
+   "metal",
+   metal_raster_font_get_glyph,
+   NULL, /* bind_block  */
+   NULL, /* flush_block */
+   metal_raster_font_get_message_width,
+   metal_get_line_metrics
+};
 
 video_driver_t video_metal = {
    metal_init,
@@ -6724,5 +6694,22 @@ video_driver_t video_metal = {
    metal_widgets_enabled,
 #endif
    NULL, /* invalidate_hw_render_cache */
-   metal_read_viewport_hdr
+   metal_read_viewport_hdr,
+   &metal_raster_font
+};
+
+gfx_display_ctx_driver_t gfx_display_ctx_metal = {
+   gfx_display_metal_draw,
+   gfx_display_metal_draw_pipeline,
+   gfx_display_metal_blend_begin,
+   gfx_display_metal_blend_end,
+   gfx_display_metal_get_default_mvp,
+   gfx_display_metal_get_default_vertices,
+   gfx_display_metal_get_default_tex_coords,
+   &metal_raster_font,
+   GFX_VIDEO_DRIVER_METAL,
+   "metal",
+   false,
+   gfx_display_metal_scissor_begin,
+   gfx_display_metal_scissor_end
 };

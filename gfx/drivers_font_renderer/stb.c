@@ -1278,6 +1278,8 @@ static void rtt_render_glyph(const rtt_font_t *f, void *dst,
 /* ==================== end cleanroom TrueType ==================== */
 
 
+#include "../bitmapfont.h"
+
 #define STB_ATLAS_ROWS 16
 #define STB_ATLAS_COLS 16
 #define STB_ATLAS_SIZE (STB_ATLAS_ROWS * STB_ATLAS_COLS)
@@ -1315,7 +1317,82 @@ typedef struct
    unsigned usage_counter;
    float scale_factor;
    struct font_line_metrics line_metrics; /* float alignment */
+   /* No usable TTF was found, so the atlas holds the built-in 5x10
+    * glyphs instead. All 256 are rasterised up front, nothing is
+    * evicted, and get_glyph never reaches the TrueType path. */
+   bool builtin;
 } stb_font_renderer_t;
+
+/* Built-in fallback: the 5x10 bitmap in bitmap.h, scaled to the
+ * requested size. Used when no TrueType font can be found, so that
+ * on-screen text still appears on a system with no fonts installed
+ * and no assets downloaded. STB_ATLAS_SIZE is 256, which is exactly
+ * the number of glyphs the bitmap holds, so the existing slot array
+ * carries them and no separate allocation is needed. */
+static bool font_renderer_stb_init_builtin(
+      stb_font_renderer_t *self, float font_size)
+{
+   unsigned i, scale;
+
+   if (!(scale = (unsigned)roundf(font_size / FONT_HEIGHT)))
+      scale = 1;
+
+   self->atlas.width  = (1 + (FONT_WIDTH  * scale)) * STB_ATLAS_COLS;
+   self->atlas.height = (1 + (FONT_HEIGHT * scale)) * STB_ATLAS_ROWS;
+   self->atlas.format = FONT_ATLAS_FORMAT_A8;
+
+   if (!(self->atlas.buffer = (uint8_t*)calloc(
+               (size_t)self->atlas.width * self->atlas.height, 1)))
+      return false;
+
+   for (i = 0; i < STB_ATLAS_SIZE; i++)
+   {
+      stb_atlas_slot_t *slot = &self->atlas_slots[i];
+      unsigned ax            = (i % STB_ATLAS_COLS) * (1 + (scale * FONT_WIDTH));
+      unsigned ay            = (i / STB_ATLAS_COLS) * (1 + (scale * FONT_HEIGHT));
+      unsigned x, y;
+
+      for (y = 0; y < FONT_HEIGHT; y++)
+      {
+         for (x = 0; x < FONT_WIDTH; x++)
+         {
+            unsigned px    = x + y * FONT_WIDTH;
+            uint8_t  col   = (bitmap_bin[FONT_OFFSET(i) + (px >> 3)]
+                              & (1 << (px & 7))) ? 0xff : 0;
+            uint8_t *dst   = self->atlas.buffer
+                           + (ax + x * scale)
+                           + (size_t)(ay + y * scale) * self->atlas.width;
+            unsigned xo, yo;
+
+            for (yo = 0; yo < scale; yo++)
+               for (xo = 0; xo < scale; xo++)
+                  dst[xo + (size_t)yo * self->atlas.width] = col;
+         }
+      }
+
+      slot->charcode              = i;
+      slot->last_used             = 1;
+      slot->glyph.width           = FONT_WIDTH  * scale;
+      slot->glyph.height          = FONT_HEIGHT * scale;
+      slot->glyph.atlas_offset_x  = ax;
+      slot->glyph.atlas_offset_y  = ay;
+      slot->glyph.draw_offset_x   = 0;
+      slot->glyph.draw_offset_y   = 1 - FONT_HEIGHT_BASELINE_OFFSET * (int)scale;
+      slot->glyph.advance_x       = FONT_WIDTH_STRIDE * scale;
+      slot->glyph.advance_y       = 0;
+
+      slot->next                  = self->uc_map[STB_HASH(i)];
+      self->uc_map[STB_HASH(i)]   = slot;
+   }
+
+   self->line_metrics.ascender  = (float)FONT_HEIGHT_BASELINE_OFFSET * scale;
+   self->line_metrics.descender = (float)(FONT_HEIGHT
+         - FONT_HEIGHT_BASELINE_OFFSET) * scale;
+   self->line_metrics.height    = (float)FONT_HEIGHT_STRIDE * scale;
+   self->atlas.dirty            = true;
+   self->builtin                = true;
+   return true;
+}
 
 static struct font_atlas *font_renderer_stb_get_atlas(void *data)
 {
@@ -1416,6 +1493,19 @@ static const struct font_glyph *font_renderer_stb_get_glyph(
    map_id                               = STB_HASH(charcode);
    atlas_slot                           = self->uc_map[map_id];
 
+   if (self->builtin)
+   {
+      /* Every glyph the built-in font has is already in the atlas, so
+       * a miss means the codepoint is simply not representable. */
+      while (atlas_slot)
+      {
+         if (atlas_slot->charcode == charcode)
+            return &atlas_slot->glyph;
+         atlas_slot = atlas_slot->next;
+      }
+      return NULL;
+   }
+
    while (atlas_slot)
    {
       if (atlas_slot->charcode == charcode)
@@ -1492,8 +1582,9 @@ static const struct font_glyph *font_renderer_stb_get_glyph(
    return &atlas_slot->glyph;
 }
 
-static bool font_renderer_stb_create_atlas(
-      stb_font_renderer_t *self, float font_size)
+static bool font_renderer_stb_create_atlas_fmt(
+      stb_font_renderer_t *self, float font_size,
+      enum font_atlas_format fmt)
 {
    unsigned i, x, y;
    stb_atlas_slot_t* slot = NULL;
@@ -1517,7 +1608,7 @@ static bool font_renderer_stb_create_atlas(
    self->atlas.height             = (self->max_glyph_height + STB_ATLAS_PADDING) * STB_ATLAS_ROWS;
    /* Higher-precision coverage when the video driver asked for it
     * (HDR output); the atlas then stores uint16_t samples. */
-   self->atlas.format             = font_renderer_get_preferred_atlas_format();
+   self->atlas.format             = fmt;
 
    /* Pass the two dimensions separately so the C library's calloc overflow
     * check applies, rather than pre-multiplying into a single argument. */
@@ -1550,7 +1641,8 @@ static bool font_renderer_stb_create_atlas(
    return true;
 }
 
-static void *font_renderer_stb_init(const char *font_path, float font_size)
+static void *font_renderer_stb_init(const char *font_path, float font_size,
+      enum font_atlas_format fmt)
 {
    int ascent, descent, line_gap;
    stb_font_renderer_t *self =
@@ -1575,6 +1667,14 @@ static void *font_renderer_stb_init(const char *font_path, float font_size)
    }
    else
 #endif
+   if (!font_path || !*font_path)
+   {
+      /* get_default_font() found no TrueType font. */
+      if (!font_renderer_stb_init_builtin(self, -font_size))
+         goto error;
+      return self;
+   }
+   else
    {
       int64_t len = 0;
       /* filestream_read_file() opens the file and returns 0 if it
@@ -1617,7 +1717,7 @@ static void *font_renderer_stb_init(const char *font_path, float font_size)
    self->line_metrics.descender = 0.5f + ((float)(-descent) * self->scale_factor);
    self->line_metrics.height    = 0.5f + (float)(ascent - descent + line_gap) * self->scale_factor;
 
-   if (!font_renderer_stb_create_atlas(self, font_size))
+   if (!font_renderer_stb_create_atlas_fmt(self, font_size, fmt))
       goto error;
 
    return self;
@@ -1681,7 +1781,10 @@ static const char *font_renderer_stb_get_default_font(void)
       if (path_is_valid(*p))
          return *p;
 
-   return NULL;
+   /* No TrueType font on this system. Returning "" rather than NULL
+    * keeps this renderer in play: init() then builds the atlas from
+    * the built-in bitmap glyphs. */
+   return "";
 #endif
 }
 
