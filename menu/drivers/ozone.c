@@ -6238,22 +6238,18 @@ border_iterate:
          /* Playlist manager icons */
          else if (ozone->depth == 3 && e->enum_idx == MENU_ENUM_LABEL_PLAYLIST_MANAGER_SETTINGS)
          {
-            if (string_is_equal(e->rich_label,
-                msg_hash_to_str(MENU_ENUM_LABEL_VALUE_HISTORY_TAB)))
+            if (string_is_equal(e->rich_label, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_HISTORY_TAB)))
                texture = icons_tex[OZONE_ENTRIES_ICONS_TEXTURE_HISTORY];
-            else if (string_is_equal(e->rich_label,
-               msg_hash_to_str(MENU_ENUM_LABEL_VALUE_FAVORITES_TAB)))
+            else if (string_is_equal(e->rich_label, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_FAVORITES_TAB)))
                texture = icons_tex[OZONE_ENTRIES_ICONS_TEXTURE_FAVORITES];
 #ifdef HAVE_IMAGEVIEWER
-            else if (string_is_equal(e->rich_label,
-               msg_hash_to_str(MENU_ENUM_LABEL_VALUE_IMAGES_TAB)))
+            else if (string_is_equal(e->rich_label, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_IMAGES_TAB)))
                texture = icons_tex[OZONE_TAB_TEXTURE_IMAGE];
 #endif
             else if (string_is_equal(e->rich_label, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_MUSIC_TAB)))
                texture = icons_tex[OZONE_TAB_TEXTURE_MUSIC];
 #if defined(HAVE_FFMPEG) || defined(HAVE_MPV)
-            else if (string_is_equal(e->rich_label,
-               msg_hash_to_str(MENU_ENUM_LABEL_VALUE_VIDEO_TAB)))
+            else if (string_is_equal(e->rich_label, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_VIDEO_TAB)))
                texture = icons_tex[OZONE_TAB_TEXTURE_VIDEO];
 #endif
             else if (i < ozone->horizontal_list.size)
@@ -6266,8 +6262,8 @@ border_iterate:
                {
                   char playlist_file_noext[NAME_MAX_LENGTH];
                   fill_pathname(playlist_file_noext,
-                  ozone->horizontal_list.list[offset].path, "",
-                  sizeof(playlist_file_noext));
+                        ozone->horizontal_list.list[offset].path, "",
+                        sizeof(playlist_file_noext));
                   if (string_is_equal(playlist_file_noext, e->rich_label))
                      break;
                }
@@ -6313,10 +6309,26 @@ border_iterate:
             }
             else if (ozone->depth == 2 && e->type == FILE_TYPE_PLAYLIST_COLLECTION)
             {
-               ozone_node_t *sidebar_node = (ozone_node_t*)
+               ozone_node_t *sidebar_node = NULL;
+               unsigned offset            = old_list ? ozone->entries_old[i].entry_idx : selection_buf->list[i].entry_idx;
+
+               /* Search for sorted icon order */
+               if (settings->bools.ozone_sort_after_truncate_playlist_name)
+               {
+                  for (offset = 0; offset < ozone->horizontal_list.size; offset++)
+                  {
+                     char playlist_file_noext[NAME_MAX_LENGTH];
+                     fill_pathname(playlist_file_noext,
+                           ozone->horizontal_list.list[offset].path, "",
+                           sizeof(playlist_file_noext));
+                     if (string_is_equal(playlist_file_noext, e->rich_label))
+                        break;
+                  }
+               }
+
+               sidebar_node = (ozone_node_t*)
                      (ozone->horizontal_list.size)
-                        ? (ozone_node_t*)file_list_get_userdata_at_offset(
-                              &ozone->horizontal_list, old_list ? ozone->entries_old[i].entry_idx : selection_buf->list[i].entry_idx)
+                        ? (ozone_node_t*)file_list_get_userdata_at_offset(&ozone->horizontal_list, offset)
                         : NULL;
 
                if (sidebar_node && sidebar_node->icon)
@@ -7358,20 +7370,26 @@ OZONE_NOINLINE static void ozone_draw_osk(
 
    if (!draw_placeholder && input_st->keyboard_line.buffer)
    {
+      char cursor_src[2048];
       char cursor_message[2048];
       size_t ptr = input_st->keyboard_line.ptr;
 
       if (ptr > input_st->keyboard_line.size)
          ptr = input_st->keyboard_line.size;
-      if (ptr >= sizeof(cursor_message))
-         ptr = sizeof(cursor_message) - 1;
+      if (ptr >= sizeof(cursor_src))
+         ptr = sizeof(cursor_src) - 1;
 
-      memcpy(cursor_message, input_st->keyboard_line.buffer, ptr);
-      cursor_message[ptr] = '\0';
+      /* word_wrap()/word_wrap_wideglyph() require
+       * non-overlapping source and destination buffers
+       * (in-place use aborts under fortified strlcpy on
+       * macOS and corrupts wide glyphs in the wideglyph
+       * variant), so stage the source separately */
+      memcpy(cursor_src, input_st->keyboard_line.buffer, ptr);
+      cursor_src[ptr] = '\0';
       (ozone->word_wrap)(cursor_message,
             sizeof(cursor_message),
-            cursor_message,
-            strlen(cursor_message),
+            cursor_src,
+            ptr,
             (video_width - (margin * 2) - (padding * 2)) / ozone->fonts.entries_label.glyph_width,
             ozone->fonts.entries_label.wideglyph_width,
             0);
@@ -7603,6 +7621,9 @@ OZONE_NOINLINE static void ozone_draw_messagebox(
       height                = slice_new_h;
       margin                = slice_margin;
 
+      if (dispctx && dispctx->blend_begin)
+         dispctx->blend_begin(userdata);
+
       gfx_display_draw_texture_slice(
             p_disp,
             userdata,
@@ -7622,6 +7643,9 @@ OZONE_NOINLINE static void ozone_draw_messagebox(
             ozone->icons_textures[OZONE_ENTRIES_ICONS_TEXTURE_DIALOG_SLICE],
             mymat
             );
+
+      if (dispctx && dispctx->blend_end)
+         dispctx->blend_end(userdata);
    }
 
    for (i = 0; i < line_count; i++)
@@ -9820,8 +9844,6 @@ static void ozone_free(void *data)
    }
 
    gfx_display_deinit_white_texture();
-
-   font_driver_bind_block(NULL, NULL);
 }
 
 static void ozone_update_thumbnail_image(void *data)
@@ -9937,6 +9959,10 @@ static bool ozone_init_font(
       font_data->glyph_width     = glyph_width;
 
    font_data->wideglyph_width    = 100;
+   /* Kept so the derived metrics can be recomputed if the font is
+    * rebuilt - a language switch picks a different face. */
+   font_data->wideglyph_str      = wideglyph_str;
+   font_data->metrics_generation = font_driver_get_generation();
 
    if (wideglyph_str)
    {
@@ -9947,9 +9973,10 @@ static bool ozone_init_font(
          font_data->wideglyph_width = wideglyph_width * 100 / glyph_width;
    }
 
-   font_data->line_height        = font_driver_get_line_height(font_data->font, 1.0f);
-   font_data->line_ascender      = font_driver_get_line_ascender(font_data->font, 1.0f);
-   font_data->line_centre_offset = font_driver_get_line_centre_offset(font_data->font, 1.0f);
+   font_data->line_height        = (int)roundf(font_data->font->metrics.height);
+   font_data->line_ascender      = (int)roundf(font_data->font->metrics.ascender);
+   font_data->line_centre_offset = (int)roundf((font_data->font->metrics.ascender
+         - font_data->font->metrics.descender) * 0.5f);
 
    return true;
 }
@@ -10046,6 +10073,7 @@ static void ozone_set_layout(
    const char *path_menu_font                       = settings->paths.path_menu_ozone_font;
    char tmp_dir[DIR_MAX_LENGTH];
    char font_path[PATH_MAX_LENGTH];
+   char default_font_path[PATH_MAX_LENGTH];
    bool font_inited                                 = false;
    float scale_factor                               = ozone->last_scale_factor;
    float padding_factor                             = settings->floats.ozone_padding_factor;
@@ -10111,25 +10139,17 @@ static void ozone_set_layout(
    ozone->pointer_active_delta = CURSOR_ACTIVE_DELTA * scale_factor;
 
    /* Initialise fonts */
-   switch (*msg_hash_get_uint(MSG_HASH_USER_LANGUAGE))
    {
-      case RETRO_LANGUAGE_ARABIC:
-      case RETRO_LANGUAGE_PERSIAN:
-         fill_pathname_join_special(tmp_dir, path_directory_assets, "pkg", sizeof(tmp_dir));
-         fill_pathname_join_special(font_path, tmp_dir, "fallback-font.ttf", sizeof(font_path));
-         break;
-      case RETRO_LANGUAGE_CHINESE_SIMPLIFIED:
-      case RETRO_LANGUAGE_CHINESE_TRADITIONAL:
-         fill_pathname_join_special(tmp_dir, path_directory_assets, "pkg", sizeof(tmp_dir));
-         fill_pathname_join_special(font_path, tmp_dir, "chinese-fallback-font.ttf", sizeof(font_path));
-         break;
-      case RETRO_LANGUAGE_KOREAN:
-         fill_pathname_join_special(tmp_dir, path_directory_assets, "pkg", sizeof(tmp_dir));
-         fill_pathname_join_special(font_path, tmp_dir, "korean-fallback-font.ttf", sizeof(font_path));
-         break;
-      default:
-         fill_pathname_join_special(font_path, ozone->assets_path, "bold.ttf", sizeof(font_path));
-         break;
+      const char *lang_font = font_driver_language_font_file();
+
+      fill_pathname_join_special(tmp_dir, path_directory_assets, "pkg", sizeof(tmp_dir));
+      fill_pathname_join_special(default_font_path, ozone->assets_path, "bold.ttf",
+            sizeof(default_font_path));
+
+      if (lang_font)
+         fill_pathname_join_special(font_path, tmp_dir, lang_font, sizeof(font_path));
+      else
+         strlcpy(font_path, default_font_path, sizeof(font_path));
    }
 
    if (path_menu_font && *path_menu_font)
@@ -10140,25 +10160,17 @@ static void ozone_set_layout(
    if (!(((ozone->flags & OZONE_FLAG_HAS_ALL_ASSETS) > 0) && font_inited))
       ozone->flags &= ~OZONE_FLAG_HAS_ALL_ASSETS;
 
-   switch (*msg_hash_get_uint(MSG_HASH_USER_LANGUAGE))
    {
-      case RETRO_LANGUAGE_ARABIC:
-      case RETRO_LANGUAGE_PERSIAN:
-         fill_pathname_join_special(tmp_dir, path_directory_assets, "pkg", sizeof(tmp_dir));
-         fill_pathname_join_special(font_path, tmp_dir, "fallback-font.ttf", sizeof(font_path));
-         break;
-      case RETRO_LANGUAGE_CHINESE_SIMPLIFIED:
-      case RETRO_LANGUAGE_CHINESE_TRADITIONAL:
-         fill_pathname_join_special(tmp_dir, path_directory_assets, "pkg", sizeof(tmp_dir));
-         fill_pathname_join_special(font_path, tmp_dir, "chinese-fallback-font.ttf", sizeof(font_path));
-         break;
-      case RETRO_LANGUAGE_KOREAN:
-         fill_pathname_join_special(tmp_dir, path_directory_assets, "pkg", sizeof(tmp_dir));
-         fill_pathname_join_special(font_path, tmp_dir, "korean-fallback-font.ttf", sizeof(font_path));
-         break;
-      default:
-         fill_pathname_join_special(font_path, ozone->assets_path, "regular.ttf", sizeof(font_path));
-         break;
+      const char *lang_font = font_driver_language_font_file();
+
+      fill_pathname_join_special(tmp_dir, path_directory_assets, "pkg", sizeof(tmp_dir));
+      fill_pathname_join_special(default_font_path, ozone->assets_path, "regular.ttf",
+            sizeof(default_font_path));
+
+      if (lang_font)
+         fill_pathname_join_special(font_path, tmp_dir, lang_font, sizeof(font_path));
+      else
+         strlcpy(font_path, default_font_path, sizeof(font_path));
    }
 
    if (path_menu_font && *path_menu_font)
@@ -10195,6 +10207,32 @@ static void ozone_set_layout(
          is_threaded, font_path, FONT_SIZE_FOOTER * scale_factor * font_scale_factor_global * font_scale_factor_footer);
    if (!(((ozone->flags & OZONE_FLAG_HAS_ALL_ASSETS) > 0) && font_inited))
       ozone->flags &= ~OZONE_FLAG_HAS_ALL_ASSETS;
+
+   /* Mark every font as following the menu language, so a language
+    * change can rebuild them in place instead of asking for a
+    * restart. The title takes the bold face, the rest the regular
+    * one; both are overridden by an explicit menu font setting, in
+    * which case there is nothing to re-resolve. */
+   if (!(path_menu_font && *path_menu_font))
+   {
+      char bold_path[PATH_MAX_LENGTH];
+
+      fill_pathname_join_special(bold_path, ozone->assets_path,
+            "bold.ttf", sizeof(bold_path));
+
+      font_driver_set_language_font(ozone->fonts.title.font,
+            tmp_dir, bold_path);
+      font_driver_set_language_font(ozone->fonts.sidebar.font,
+            tmp_dir, default_font_path);
+      font_driver_set_language_font(ozone->fonts.entries_label.font,
+            tmp_dir, default_font_path);
+      font_driver_set_language_font(ozone->fonts.entries_sublabel.font,
+            tmp_dir, default_font_path);
+      font_driver_set_language_font(ozone->fonts.time.font,
+            tmp_dir, default_font_path);
+      font_driver_set_language_font(ozone->fonts.footer.font,
+            tmp_dir, default_font_path);
+   }
 
    /* Cache footer text labels
     * > Fonts have been (re)initialised, so need
@@ -12418,12 +12456,24 @@ static void ozone_frame(void *data, video_frame_info_t *video_info)
       goto ctx_destroyed;
 
    /* Clear text */
-   font_bind(&ozone->fonts.footer);
-   font_bind(&ozone->fonts.title);
-   font_bind(&ozone->fonts.time);
-   font_bind(&ozone->fonts.entries_label);
-   font_bind(&ozone->fonts.entries_sublabel);
-   font_bind(&ozone->fonts.sidebar);
+   font_driver_bind_block(ozone->fonts.footer.font,
+         &ozone->fonts.footer.raster_block);
+   ozone->fonts.footer.raster_block.carr.coords.vertices = 0;
+   font_driver_bind_block(ozone->fonts.title.font,
+         &ozone->fonts.title.raster_block);
+   ozone->fonts.title.raster_block.carr.coords.vertices = 0;
+   font_driver_bind_block(ozone->fonts.time.font,
+         &ozone->fonts.time.raster_block);
+   ozone->fonts.time.raster_block.carr.coords.vertices = 0;
+   font_driver_bind_block(ozone->fonts.entries_label.font,
+         &ozone->fonts.entries_label.raster_block);
+   ozone->fonts.entries_label.raster_block.carr.coords.vertices = 0;
+   font_driver_bind_block(ozone->fonts.entries_sublabel.font,
+         &ozone->fonts.entries_sublabel.raster_block);
+   ozone->fonts.entries_sublabel.raster_block.carr.coords.vertices = 0;
+   font_driver_bind_block(ozone->fonts.sidebar.font,
+         &ozone->fonts.sidebar.raster_block);
+   ozone->fonts.sidebar.raster_block.carr.coords.vertices = 0;
 
    /* Single-click playlist button hold delay */
    if (ozone->animations.list_alpha == 0.0f && ozone->draw_entry_delay)
@@ -12737,12 +12787,12 @@ static void ozone_frame(void *data, video_frame_info_t *video_info)
    }
 
    /* Unbind fonts */
-   font_unbind(&ozone->fonts.footer);
-   font_unbind(&ozone->fonts.title);
-   font_unbind(&ozone->fonts.time);
-   font_unbind(&ozone->fonts.entries_label);
-   font_unbind(&ozone->fonts.entries_sublabel);
-   font_unbind(&ozone->fonts.sidebar);
+   font_driver_bind_block(ozone->fonts.footer.font, NULL);
+   font_driver_bind_block(ozone->fonts.title.font, NULL);
+   font_driver_bind_block(ozone->fonts.time.font, NULL);
+   font_driver_bind_block(ozone->fonts.entries_label.font, NULL);
+   font_driver_bind_block(ozone->fonts.entries_sublabel.font, NULL);
+   font_driver_bind_block(ozone->fonts.sidebar.font, NULL);
 
    if (video_st->current_video && video_st->current_video->set_viewport)
       video_st->current_video->set_viewport(

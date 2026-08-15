@@ -8934,16 +8934,24 @@ static void general_write_handler(rarch_setting_t *setting)
      case MENU_ENUM_LABEL_INPUT_POLL_TYPE_BEHAVIOR:
          core_set_poll_type(*setting->value.target.integer);
          break;
-#if defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__) && defined(HAVE_MENU)
       case MENU_ENUM_LABEL_USER_LANGUAGE:
+#if defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__) && defined(HAVE_MENU)
          /* The native Win32 menubar bakes translated strings at
           * menu-creation time (popup headers in particular have no
           * resource ID and so are not walked by win32_localize_menu
           * afterwards). Rebuild the whole menubar so every string -
           * including popup headers - reflects the new language. */
          win32_menubar_rebuild();
-         break;
 #endif
+         /* Arabic and Persian, Chinese and Korean each want a
+          * different face. Rebuild the fonts that follow the language
+          * where they stand: each font_data_t keeps its address, so
+          * nothing holding one has to be told, and the generation bump
+          * makes the derived metrics recompute on the next frame.
+          * A context reset would do it too, at the cost of tearing
+          * down video, audio and input to change a typeface. */
+         font_driver_reload_fonts();
+         break;
       case MENU_ENUM_LABEL_VIDEO_SCALE_INTEGER:
          {
             video_driver_state_t *video_st       = video_state_get_ptr();
@@ -11605,14 +11613,14 @@ static const setting_desc_t vid_desc_15[] = {
 };
 #endif
 
-#if (defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)) || (defined(HAVE_COCOA_METAL) && !defined(HAVE_COCOATOUCH))
+#if (defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)) || (defined(HAVE_COCOA_METAL) && !defined(HAVE_COCOATOUCH)) || defined(HAVE_SDL3)
 static const setting_desc_t vid_desc_16[] = {
 /* GENERATED: rows come from settings_def_video_window_save_position.h in order. */
 #include "../settings/settings_def_video_window_save_position.h"
 };
 #endif
 
-#if !((defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)) || (defined(HAVE_COCOA_METAL) && !defined(HAVE_COCOATOUCH)))
+#if !((defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)) || (defined(HAVE_COCOA_METAL) && !defined(HAVE_COCOATOUCH)) || defined(HAVE_SDL3))
 static const setting_desc_t vid_desc_17[] = {
 /* GENERATED: rows come from settings_def_video_window_custom_size.h in order. */
 #include "../settings/settings_def_video_window_custom_size.h"
@@ -11703,6 +11711,13 @@ static const setting_desc_t avsync_desc[] = {
 /* GENERATED: rows come from settings_def_video_adaptive_vsync.h in order. */
 #include "../settings/settings_def_video_adaptive_vsync.h"
 };
+
+#if defined(HAVE_OPENGL_CORE) && defined(HAVE_SLANG)
+static const setting_desc_t glspirv_desc[] = {
+/* GENERATED: rows come from settings_def_video_gl_direct_spirv.h in order. */
+#include "../settings/settings_def_video_gl_direct_spirv.h"
+};
+#endif
 
 static const setting_desc_t fdelay_desc[] = {
 /* GENERATED: rows come from settings_def_frame_delay.h in order. */
@@ -14453,7 +14468,8 @@ static void settings_build_video(
             ADD_DESC(vid_desc_15);
 #endif
 #if (defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)) ||  \
-    (defined(HAVE_COCOA_METAL) && !defined(HAVE_COCOATOUCH))
+    (defined(HAVE_COCOA_METAL) && !defined(HAVE_COCOATOUCH)) ||     \
+    defined(HAVE_SDL3)
             ADD_DESC(vid_desc_16);
 #else
             ADD_DESC(vid_desc_17);
@@ -14569,6 +14585,15 @@ static void settings_build_video(
 
          if (video_driver_test_all_flags(GFX_CTX_FLAGS_ADAPTIVE_VSYNC))
             ADD_DESC(avsync_desc);
+
+#if defined(HAVE_OPENGL_CORE) && defined(HAVE_SLANG)
+         /* GL_ARB_gl_spirv is an OpenGL (Core) driver feature; the entry
+          * would be inert under any other video driver. */
+         if (string_is_equal(settings->arrays.video_driver, "glcore"))
+         {
+            ADD_DESC(glspirv_desc);
+         }
+#endif
 
          ADD_DESC(fdelay_desc);
 
@@ -17740,10 +17765,10 @@ static const settings_desc_table_t settings_desc_registry[] = {
 #if defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)
    { vid_desc_15, (uint16_t)ARRAY_SIZE(vid_desc_15) },
 #endif
-#if (defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)) ||   (defined(HAVE_COCOA_METAL) && !defined(HAVE_COCOATOUCH))
+#if (defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)) ||   (defined(HAVE_COCOA_METAL) && !defined(HAVE_COCOATOUCH)) || defined(HAVE_SDL3)
    { vid_desc_16, (uint16_t)ARRAY_SIZE(vid_desc_16) },
 #endif
-#if !((defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)) ||   (defined(HAVE_COCOA_METAL) && !defined(HAVE_COCOATOUCH)))
+#if !((defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)) ||   (defined(HAVE_COCOA_METAL) && !defined(HAVE_COCOATOUCH)) || defined(HAVE_SDL3))
    { vid_desc_17, (uint16_t)ARRAY_SIZE(vid_desc_17) },
 #endif
    { video2_desc_0, (uint16_t)ARRAY_SIZE(video2_desc_0) },
@@ -17770,6 +17795,9 @@ static const settings_desc_table_t settings_desc_registry[] = {
    { vid_desc_20, (uint16_t)ARRAY_SIZE(vid_desc_20) },
    { sync_desc, (uint16_t)ARRAY_SIZE(sync_desc) },
    { avsync_desc, (uint16_t)ARRAY_SIZE(avsync_desc) },
+#if defined(HAVE_OPENGL_CORE) && defined(HAVE_SLANG)
+   { glspirv_desc, (uint16_t)ARRAY_SIZE(glspirv_desc) },
+#endif
    { fdelay_desc, (uint16_t)ARRAY_SIZE(fdelay_desc) },
 #if defined(HAVE_CG) || defined(HAVE_GLSL) || defined(HAVE_SLANG) || defined(HAVE_HLSL)
    { sdelay_desc, (uint16_t)ARRAY_SIZE(sdelay_desc) },

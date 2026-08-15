@@ -7373,6 +7373,7 @@ MSG_HASH(MENU_ENUM_SUBLABEL_##T, sub)
 #define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
 MSG_HASH(MENU_ENUM_LABEL_VALUE_##T, us)
 #include "../settings/settings_def_video_adaptive_vsync.h"
+#include "../settings/settings_def_video_gl_direct_spirv.h"
 #undef S_BOOL
 #undef S_BOOL_NS
 #undef S_UINT
@@ -25374,7 +25375,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LANG_ARABIC,
-   "Arabic - العربية (Restart required)"
+   "Arabic - العربية"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LANG_ASTURIAN,
@@ -25406,11 +25407,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LANG_CHINESE_SIMPLIFIED,
-   "Chinese (Simplified) - 简体中文 (Restart required)"
+   "Chinese (Simplified) - 简体中文"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LANG_CHINESE_TRADITIONAL,
-   "Chinese (Traditional) - 繁體中文 (Restart required)"
+   "Chinese (Traditional) - 繁體中文"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LANG_CROATIAN,
@@ -25518,7 +25519,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LANG_KOREAN,
-   "Korean - 한국어 (Restart required)"
+   "Korean - 한국어"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LANG_LATIN,
@@ -25550,7 +25551,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LANG_PERSIAN,
-   "Persian - فارسی (Restart required)"
+   "Persian - فارسی"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LANG_POLISH,
@@ -25606,7 +25607,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LANG_THAI,
-   "Thai - ภาษาไทย (Restart required)"
+   "Thai - ภาษาไทย"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LANG_TURKISH,
@@ -36149,11 +36150,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SMB_CLIENT_SUBDIR,
-   "SMB Sub directory (optional)"
+   "SMB Sub directory"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_SMB_CLIENT_SUBDIR,
-   "Sub directory path on the share."
+   "Sub directory path on the share. Optional."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SMB_CLIENT_USERNAME,
@@ -36161,7 +36162,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_SMB_CLIENT_USERNAME,
-   "Username for authentication."
+   "Username for authentication. This is optional when guest access is enabled on the server. Windows 10 and above: guest access is disabled by default, so a username is required here."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SMB_CLIENT_PASSWORD,
@@ -36169,7 +36170,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_SMB_CLIENT_PASSWORD,
-   "Password for authentication."
+   "Password for authentication. This is optional when guest access is enabled on the server. Windows 10 and above: guest access is disabled by default, so a password is required here."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SMB_CLIENT_WORKGROUP,
@@ -36177,7 +36178,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_SMB_CLIENT_WORKGROUP,
-   "Workgroup or domain name."
+   "Workgroup or domain name. Optional in some setups."
    )
 /* GENERATED REGION: SMB client authentication group (see settings_def_smb_client_auth.h). */
 #define SETTINGS_DEF_STRINGS_PASS

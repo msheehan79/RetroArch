@@ -100,6 +100,11 @@
 #include "play_feature_delivery/play_feature_delivery.h"
 #endif
 
+#if defined(ANDROID) && defined(HAVE_SAF)
+bool android_get_vfs_authorized_locations(
+      struct retro_vfs_authorized_locations *locations);
+#endif
+
 #ifdef HAVE_PRESENCE
 #include "network/presence.h"
 #endif
@@ -1504,8 +1509,11 @@ bool runloop_environment_cb(unsigned cmd, void *data)
                return true;
             }
 
-            RARCH_DBG("[Environ] GET_VARIABLE: %s = \"%s\"\n",
-                  var->key, var->value);
+            /* Log initial environment gets here and handle
+             * runtime logging in 'core_option_manager.c' */
+            if (runloop_st->core_options->log)
+               RARCH_DBG("[Environ] GET_VARIABLE: %s = \"%s\"\n",
+                     var->key, var->value);
          }
          break;
 
@@ -1770,10 +1778,11 @@ bool runloop_environment_cb(unsigned cmd, void *data)
 
             if (runloop_st->core_options && core_options_display)
             {
-               RARCH_DBG("[Environ] SET_CORE_OPTIONS_DISPLAY: %s = %s\n",
-                     core_options_display->key,
-                     core_options_display->visible ? "visible" : "hidden");
-               core_option_manager_set_visible(
+               if (runloop_st->core_options->log)
+                  RARCH_DBG("[Environ] SET_CORE_OPTIONS_DISPLAY: %s = %s\n",
+                        core_options_display->key,
+                        core_options_display->visible ? "visible" : "hidden");
+               core_option_manager_set_display(
                      runloop_st->core_options,
                      core_options_display->key,
                      core_options_display->visible);
@@ -3191,6 +3200,16 @@ bool runloop_environment_cb(unsigned cmd, void *data)
             return false;
          }
          break;
+      }
+
+      case RETRO_ENVIRONMENT_GET_VFS_AUTHORIZED_LOCATIONS:
+      {
+#if defined(ANDROID) && defined(HAVE_SAF)
+         return android_get_vfs_authorized_locations(
+               (struct retro_vfs_authorized_locations*)data);
+#else
+         return false;
+#endif
       }
 
       case RETRO_ENVIRONMENT_GET_LED_INTERFACE:
@@ -8194,29 +8213,32 @@ end:
               || (runloop_st->flags & RUNLOOP_FLAG_PAUSED)))
       {
          const retro_time_t end_frame_time  = cpu_features_get_time_usec();
-         const retro_time_t to_sleep_ms     = (
+         const retro_time_t to_sleep_us     = (
                (  runloop_st->frame_limit_last_time
                 + frame_limit_min)
-               - end_frame_time) / 1000;
+               - end_frame_time);
+#if defined(__EMSCRIPTEN__) && !defined(EMSCRIPTEN_ASYNCIFY) && !defined(PROXY_TO_PTHREAD)
+         /* Emscripten paces through a deferred main loop timeout that
+          * is expressed in whole milliseconds, so it cannot act on a
+          * sub-millisecond remainder. Keep the old truncation there. */
+         const retro_time_t to_sleep        = to_sleep_us / 1000;
+#else
+         const retro_time_t to_sleep        = to_sleep_us;
+#endif
 
-         if (to_sleep_ms > 0)
+         if (to_sleep > 0)
          {
-            unsigned               sleep_ms = (unsigned)to_sleep_ms;
-
             /* Combat jitter a bit. */
             runloop_st->frame_limit_last_time += frame_limit_min;
 
-            if (sleep_ms > 0)
-            {
 #if defined(__EMSCRIPTEN__) && !defined(EMSCRIPTEN_ASYNCIFY) && !defined(PROXY_TO_PTHREAD)
-               platform_emscripten_deferred_sleep(sleep_ms);
+            platform_emscripten_deferred_sleep((int)to_sleep);
 #else
 #if defined(HAVE_COCOATOUCH)
-               if (!(uico_state_get_ptr()->flags & UICO_ST_FLAG_IS_ON_FOREGROUND))
+            if (!(uico_state_get_ptr()->flags & UICO_ST_FLAG_IS_ON_FOREGROUND))
 #endif
-                  retro_sleep(sleep_ms);
+               retro_sleep_us((unsigned)to_sleep_us);
 #endif
-            }
 
             return 1;
          }

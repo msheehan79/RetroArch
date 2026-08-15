@@ -2389,6 +2389,13 @@ static void materialui_refresh_playlist_icon_list(
    if (!dir_playlist || !*dir_playlist)
       goto end;
 
+   /* This walk stays synchronous deliberately (see menu_dirwalk,
+    * which the interactive displaylist walks route through): it
+    * runs only at driver init and on RESET_HORIZONTAL_LIST, over
+    * the playlist directory, and the icon array it feeds has no
+    * refresh channel a deferred completion could use - while a
+    * pending walk here would share (and be superseded out of)
+    * menu_dirwalk's single slot by the first displaylist build. */
    file_list = dir_list_new_special(dir_playlist,
          DIR_LIST_COLLECTIONS, NULL, false);
 
@@ -2929,24 +2936,28 @@ static void materialui_render_messagebox(
       if (input && line->buffer
             && ((menu_driver_get_current_time() / 500000) & 1))
       {
+         char cursor_src[MENU_LABEL_MAX_LENGTH];
          char cursor_msg[MENU_LABEL_MAX_LENGTH];
          size_t len = (size_t)(input - msg + 1);
          size_t ptr = line->ptr;
 
          if (ptr > line->size)
             ptr = line->size;
-         if (len < sizeof(cursor_msg))
+         if (len < sizeof(cursor_src))
          {
-            if (ptr >= sizeof(cursor_msg) - len)
-               ptr = sizeof(cursor_msg) - len - 1;
+            if (ptr >= sizeof(cursor_src) - len)
+               ptr = sizeof(cursor_src) - len - 1;
 
-            memcpy(cursor_msg, msg, len);
-            memcpy(cursor_msg + len, line->buffer, ptr);
-            cursor_msg[len + ptr] = '\0';
+            /* word_wrap()/word_wrap_wideglyph() require
+             * non-overlapping source and destination
+             * buffers, so stage the source separately */
+            memcpy(cursor_src, msg, len);
+            memcpy(cursor_src + len, line->buffer, ptr);
+            cursor_src[len + ptr] = '\0';
 
             (mui->word_wrap)(
                   cursor_msg, sizeof(cursor_msg),
-                  cursor_msg, strlen(cursor_msg),
+                  cursor_src, len + ptr,
                   usable_width / (int)mui->font_data.list.glyph_width,
                   mui->font_data.list.wideglyph_width, 0);
 
@@ -8376,9 +8387,15 @@ static void materialui_frame(void *data, video_frame_info_t *video_info)
       goto ctx_destroyed;
 
    /* Clear text */
-   font_bind(&mui->font_data.title);
-   font_bind(&mui->font_data.list);
-   font_bind(&mui->font_data.hint);
+   font_driver_bind_block(mui->font_data.title.font,
+         &mui->font_data.title.raster_block);
+   mui->font_data.title.raster_block.carr.coords.vertices = 0;
+   font_driver_bind_block(mui->font_data.list.font,
+         &mui->font_data.list.raster_block);
+   mui->font_data.list.raster_block.carr.coords.vertices = 0;
+   font_driver_bind_block(mui->font_data.hint.font,
+         &mui->font_data.hint.raster_block);
+   mui->font_data.hint.raster_block.carr.coords.vertices = 0;
 
    /* Single-click playlist button hold delay */
    if (mui->transition_alpha_lock && mui->draw_entry_delay)
@@ -8628,9 +8645,9 @@ static void materialui_frame(void *data, video_frame_info_t *video_info)
    mui->flags &= ~MUI_FLAG_FIRST_FRAME;
 
    /* Unbind fonts */
-   font_unbind(&mui->font_data.title);
-   font_unbind(&mui->font_data.list);
-   font_unbind(&mui->font_data.hint);
+   font_driver_bind_block(mui->font_data.title.font, NULL);
+   font_driver_bind_block(mui->font_data.list.font, NULL);
+   font_driver_bind_block(mui->font_data.hint.font, NULL);
 
    if (video_st->current_video && video_st->current_video->set_viewport)
       video_st->current_video->set_viewport(
@@ -9306,7 +9323,9 @@ static void materialui_init_font(gfx_display_t *p_disp,
    bool video_is_threaded, const char *str_latin)
 {
    char tmp_dir[DIR_MAX_LENGTH];
+   char pkg_dir[DIR_MAX_LENGTH];
    char fontpath[PATH_MAX_LENGTH];
+   char default_fontpath[PATH_MAX_LENGTH];
    const char *wideglyph_str = msg_hash_get_wideglyph_str();
    settings_t *settings      = config_get_ptr();
    const char *dir_assets    = settings->paths.directory_assets;
@@ -9321,37 +9340,28 @@ static void materialui_init_font(gfx_display_t *p_disp,
       font_data->font = NULL;
    }
 
-   switch (*msg_hash_get_uint(MSG_HASH_USER_LANGUAGE))
    {
-      case RETRO_LANGUAGE_ARABIC:
-      case RETRO_LANGUAGE_PERSIAN:
-         fill_pathname_join_special(tmp_dir,
-               settings->paths.directory_assets, "pkg", sizeof(tmp_dir));
-         fill_pathname_join_special(fontpath, tmp_dir, "fallback-font.ttf",
+      const char *lang_font = font_driver_language_font_file();
+
+      fill_pathname_join_special(pkg_dir,
+            settings->paths.directory_assets, "pkg", sizeof(pkg_dir));
+      fill_pathname_join_special(tmp_dir, dir_assets, "glui", sizeof(tmp_dir));
+      fill_pathname_join_special(default_fontpath, tmp_dir, FILE_PATH_TTF_FONT,
+            sizeof(default_fontpath));
+
+      if (lang_font)
+         fill_pathname_join_special(fontpath, pkg_dir, lang_font,
                sizeof(fontpath));
-         break;
-      case RETRO_LANGUAGE_CHINESE_SIMPLIFIED:
-      case RETRO_LANGUAGE_CHINESE_TRADITIONAL:
-         fill_pathname_join_special(tmp_dir,
-               settings->paths.directory_assets, "pkg", sizeof(tmp_dir));
-         fill_pathname_join_special(fontpath, tmp_dir, "chinese-fallback-font.ttf",
-               sizeof(fontpath));
-         break;
-      case RETRO_LANGUAGE_KOREAN:
-         fill_pathname_join_special(tmp_dir,
-               settings->paths.directory_assets, "pkg", sizeof(tmp_dir));
-         fill_pathname_join_special(fontpath, tmp_dir, "korean-fallback-font.ttf",
-               sizeof(fontpath));
-         break;
-      default:
-         fill_pathname_join_special(tmp_dir, dir_assets, "glui", sizeof(tmp_dir));
-         fill_pathname_join_special(fontpath, tmp_dir, FILE_PATH_TTF_FONT,
-               sizeof(fontpath));
-         break;
+      else
+         strlcpy(fontpath, default_fontpath, sizeof(fontpath));
    }
 
    font_data->font = gfx_display_font_file(p_disp,
          fontpath, font_size, video_is_threaded);
+
+   /* Follow the menu language, so a language change can rebuild this
+    * where it stands instead of asking for a restart. */
+   font_driver_set_language_font(font_data->font, pkg_dir, default_fontpath);
 
    if (font_data->font)
    {
@@ -9363,6 +9373,10 @@ static void materialui_init_font(gfx_display_t *p_disp,
          font_data->glyph_width     = (unsigned)char_width;
 
       font_data->wideglyph_width    = 100;
+      /* Kept so the derived metrics can be recomputed if the font is
+       * rebuilt - a language switch picks a different face. */
+      font_data->wideglyph_str      = wideglyph_str;
+      font_data->metrics_generation = font_driver_get_generation();
 
       if (wideglyph_str)
       {
@@ -9374,9 +9388,10 @@ static void materialui_init_font(gfx_display_t *p_disp,
       }
 
       /* Get line metrics */
-      font_data->line_height        = font_driver_get_line_height(font_data->font, 1.0f);
-      font_data->line_ascender      = font_driver_get_line_ascender(font_data->font, 1.0f);
-      font_data->line_centre_offset = font_driver_get_line_centre_offset(font_data->font, 1.0f);
+      font_data->line_height        = (int)roundf(font_data->font->metrics.height);
+      font_data->line_ascender      = (int)roundf(font_data->font->metrics.ascender);
+      font_data->line_centre_offset = (int)roundf((font_data->font->metrics.ascender
+            - font_data->font->metrics.descender) * 0.5f);
    }
 }
 
@@ -9685,8 +9700,6 @@ static void materialui_free(void *data)
    video_coord_array_free(&mui->font_data.hint.raster_block.carr);
 
    gfx_display_deinit_white_texture();
-
-   font_driver_bind_block(NULL, NULL);
 
    materialui_free_playlist_icon_list(mui);
 

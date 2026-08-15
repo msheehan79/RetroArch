@@ -4517,44 +4517,9 @@ static void metal_pull_cached_frame_cb(void *userdata,
          gfx_widgets_frame(video_info);
 #endif
 
-      /* Render on-screen message: optional background quad + text. */
+      /* Render on-screen message */
       if (msg && *msg)
-      {
-         settings_t *settings    = config_get_ptr();
-         bool msg_bgcolor_enable = settings->bools.video_msg_bgcolor_enable;
-
-         if (msg_bgcolor_enable)
-         {
-            int msg_width         = font_driver_get_message_width(NULL,
-                  msg, strlen(msg), 1.0f);
-            float font_size       = settings->floats.video_font_size;
-            unsigned bgcolor_red  = settings->uints.video_msg_bgcolor_red;
-            unsigned bgcolor_green= settings->uints.video_msg_bgcolor_green;
-            unsigned bgcolor_blue = settings->uints.video_msg_bgcolor_blue;
-            float bgcolor_opacity = settings->floats.video_msg_bgcolor_opacity;
-            float x               = settings->floats.video_msg_pos_x;
-            float y               = 1.0f - settings->floats.video_msg_pos_y;
-            float bg_w            = msg_width / (float)_viewport->full_width;
-            float bg_h            = font_size / (float)_viewport->full_height;
-            float x2              = 0.005f; /* extend background around text */
-            float y2              = 0.005f;
-            float r               = bgcolor_red   / 255.0f;
-            float g               = bgcolor_green / 255.0f;
-            float b               = bgcolor_blue  / 255.0f;
-            float a               = bgcolor_opacity;
-
-            y                    -= bg_h;
-            x                    -= x2;
-            y                    -= y2;
-            bg_w                 += x2;
-            bg_h                 += y2;
-
-            [_context resetRenderViewport:kFullscreenViewport];
-            [_context drawQuadX:x y:y w:bg_w h:bg_h r:r g:g b:b a:a];
-         }
-
          font_driver_render_msg(data, msg, strlen(msg), NULL, NULL);
-      }
 
       /* End-of-frame HDR composite.  Menu / overlay / OSD / widgets have
        * rendered into the BGRA8 SDR overlay offscreen (_sdrOverlayTex);
@@ -5300,15 +5265,7 @@ typedef struct MTLALIGN(16)
       memset(&_engine.pass[i].feedback, 0, sizeof(_engine.pass[i].feedback));
    }
 
-   /* Default to the rotated projection matrix. Under a TATE rotation the
-    * final pass swaps width/height (below), which makes its target size
-    * differ from the viewport and sends it down the FBO-allocation branch
-    * rather than the direct-to-screen 'else' that assigns the rotated
-    * matrix -- so without this default the last pass would render with the
-    * unrotated matrix and the image would keep its orientation while only
-    * the aspect ratio changed (issue #19142). This mirrors the D3D11 driver,
-    * which initialises mvp_last_pass to the rotated mvp. */
-   _engine.mvp_last_pass = _context.uniforms->projectionMatrix;
+   _engine.mvp_last_pass = _context.uniformsNoRotate->projectionMatrix;
    int rot = retroarch_get_rotation();
    
    width  = (NSUInteger)_size.width;

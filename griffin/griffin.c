@@ -412,6 +412,12 @@ VIDEO SHADERS
 #include "../gfx/drivers_shader/glslang_util.c"
 #endif
 
+/* Must mirror the guard on shader_gl3.cpp in griffin_cpp.cpp exactly:
+ * that is the only consumer of spirv_opengl_lower(). */
+#if defined(HAVE_OPENGL_CORE) && defined(HAVE_SLANG)
+#include "../gfx/drivers_shader/spirv_opengl.c"
+#endif
+
 #ifdef HAVE_CG
 #ifdef HAVE_OPENGL
 #include "../gfx/drivers_shader/shader_gl_cg.c"
@@ -977,6 +983,13 @@ AUDIO
 #include "../input/drivers/sdl3_input.c"
 #include "../gfx/drivers/sdl3_gfx.c"
 #include "../gfx/common/sdl3_common.c"
+#include "../audio/drivers/sdl3_audio.c"
+#if defined(HAVE_OPENGL) || defined(HAVE_OPENGL1) || defined(HAVE_OPENGL_CORE) || defined(HAVE_OPENGLES)
+#include "../gfx/drivers_context/sdl3_gl_ctx.c"
+#endif
+#if defined(HAVE_VULKAN)
+#include "../gfx/drivers_context/sdl3_vk_ctx.c"
+#endif
 #elif defined(HAVE_SDL2)
 #include "../audio/drivers/sdl_audio.c"
 #include "../input/drivers/sdl_input.c"
@@ -1181,6 +1194,7 @@ FILE
 #ifndef __WINRT__
 #include "../libretro-common/vfs/vfs_implementation.c"
 #endif
+#include "../libretro-common/vfs/vfs_hybrid.c"
 
 #ifdef HAVE_CDROM
 #include "../libretro-common/cdrom/cdrom.c"
@@ -1404,6 +1418,7 @@ DATA RUNLOOP
 #include "../tasks/task_content_prefetch.c"
 #include "../tasks/task_image.c"
 #include "../tasks/task_file_transfer.c"
+#include "../tasks/task_nbio_slice.c"
 #include "../tasks/task_playlist_manager.c"
 #include "../tasks/task_core_backup.c"
 #ifdef HAVE_TRANSLATE
@@ -1472,6 +1487,7 @@ MENU
 #include "../menu/cbs/menu_cbs_label.c"
 #include "../menu/cbs/menu_cbs_sublabel.c"
 #include "../menu/menu_displaylist.c"
+#include "../menu/menu_dirwalk.c"
 #include "../menu/menu_contentless_cores.c"
 #ifdef HAVE_LIBRETRODB
 #include "../menu/menu_explore.c"
@@ -1534,7 +1550,7 @@ DEPENDENCIES
 #define GRIFFIN_HAVE_R7Z_LZMA 1
 #include "../libretro-common/formats/7z/r7z_lzma.c"
 
-#ifdef HAVE_ZSTD
+#if defined(HAVE_ZSTD) || defined(HAVE_RZSTD)
 #include "../libretro-common/formats/libchdr/libchdr_zstd.c"
 #endif
 #endif  /* !HAVE_RCHD */
