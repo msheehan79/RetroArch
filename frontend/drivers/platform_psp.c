@@ -70,6 +70,7 @@
 
 #if defined(HAVE_VITAGLES)
 #include "../../gfx/drivers_context/vita_pib/include/pib.h"
+#include <compat/strl.h>
 #endif
 
 #ifndef VITA
@@ -93,8 +94,8 @@ static void frontend_psp_get_env_settings(int *argc, char *argv[],
 #endif
 
 #ifdef VITA
-   strlcpy(eboot_path, "app0:/", sizeof(eboot_path));
-   strlcpy(user_path, "ux0:/data/retroarch/", sizeof(user_path));
+   strlcpy_lit(eboot_path, "app0:/", sizeof(eboot_path));
+   strlcpy_lit(user_path, "ux0:/data/retroarch/", sizeof(user_path));
 
    strlcpy(g_defaults.dirs[DEFAULT_DIR_PORT], eboot_path,
       sizeof(g_defaults.dirs[DEFAULT_DIR_PORT]));
@@ -151,7 +152,7 @@ static void frontend_psp_get_env_settings(int *argc, char *argv[],
       user_path[5] = '\0';
    }
    else
-      strlcpy(user_path, "ms0:/", sizeof(user_path));
+      strlcpy_lit(user_path, "ms0:/", sizeof(user_path));
    strlcat(user_path, "PSP/RETROARCH", sizeof(user_path));
    RARCH_LOG("[PSP]: Using %s for user data.\n", user_path);
 
@@ -610,8 +611,6 @@ frontend_ctx_driver_t frontend_ctx_psp = {
    NULL,                         /* detach_console */
    NULL,                         /* get_lakka_version */
    NULL,                         /* set_screen_brightness */
-   NULL,                         /* watch_path_for_changes */
-   NULL,                         /* check_for_path_changes */
    NULL,                         /* set_sustained_performance_mode */
    NULL,                         /* get_cpu_model_name */
 #ifdef VITA

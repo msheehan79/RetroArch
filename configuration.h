@@ -597,6 +597,8 @@ typedef struct settings
       bool audio_enable_menu_bgm;
       bool audio_enable_menu_scroll;
       bool audio_sync;
+      bool audio_threaded_pipeline;
+      bool audio_thread_priority;
       bool audio_rate_control;
       bool audio_fastforward_mute;
       bool audio_fastforward_speedup;
@@ -699,6 +701,7 @@ typedef struct settings
       bool menu_battery_level_enable;
       bool menu_core_enable;
       bool menu_show_sublabels;
+      bool menu_show_sublabels_current_selection_only;
       bool menu_show_confirm;
       bool menu_dynamic_wallpaper_enable;
       bool menu_mouse_enable;

@@ -22,6 +22,7 @@
 #include <retro_inline.h>
 #include <string/stdstring.h>
 #include <retro_math.h>
+#include <memalign.h>
 #include <retro_timers.h>
 #include <time/rtime.h>
 
@@ -72,6 +73,7 @@
 #include "../command.h"
 #include "../configuration.h"
 #include "video_shader_parse.h"
+#include <compat/strl.h>
 
 #define TIME_TO_FPS(last_time, new_time, frames) ((1000000.0f * (frames)) / ((new_time) - (last_time)))
 
@@ -750,11 +752,22 @@ void *video_driver_get_ptr(void)
 {
    video_driver_state_t *video_st         = &video_driver_st;
 #ifdef HAVE_THREADS
-   if (  VIDEO_DRIVER_IS_THREADED_INTERNAL(video_st)
-       && (video_st->flags & VIDEO_FLAG_THREAD_WRAPPER_ACTIVE))
-      return video_thread_get_ptr(video_st);
-#endif
+   /* Gate the unwrap on the wrapper's presence alone.
+    *
+    * VIDEO_DRIVER_IS_THREADED_INTERNAL() answers whether this session
+    * should be using threaded video, which is not the same question as
+    * whether the wrapper is installed right now: a core setting
+    * SET_HW_RENDER turns it false while the previous session's wrapper
+    * is still up, and video_st->data is the thread_video_t* for as long
+    * as that is the case. Returning it raw hands callers a wrapper
+    * handle to cast to the concrete driver type.
+    *
+    * video_thread_get_ptr() already falls back to video_st->data when
+    * the wrapper is absent, so this is a no-op in every other state. */
+   return video_thread_get_ptr(video_st);
+#else
    return video_st->data;
+#endif
 }
 
 
@@ -860,33 +873,36 @@ const char *hw_render_context_name(
 
 static enum retro_hw_context_type hw_render_context_type(const char *s)
 {
-   size_t _len = strlen(s) + 1;
+   /* Every test here is an exact match against a fixed name, so
+    * string_is_equal() says what is meant and carries no length of
+    * its own - the driver set is decided at build time, and on a
+    * build with none of them a cached length has no reader. */
 #ifdef HAVE_OPENGL_CORE
-   if (_len >= 7 && memcmp(s, "glcore", 7) == 0)
+   if (string_is_equal(s, "glcore"))
       return RETRO_HW_CONTEXT_OPENGL_CORE;
 #endif
 #ifdef HAVE_OPENGL
-   if (_len >= 3 && memcmp(s, "gl", 3) == 0)
+   if (string_is_equal(s, "gl"))
       return RETRO_HW_CONTEXT_OPENGL;
 #endif
 #ifdef HAVE_VULKAN
-   if (_len >= 7 && memcmp(s, "vulkan", 7) == 0)
+   if (string_is_equal(s, "vulkan"))
       return RETRO_HW_CONTEXT_VULKAN;
 #endif
 #if defined(HAVE_D3D9) && defined(HAVE_HLSL)
-   if (_len >= 10 && memcmp(s, "d3d9_hlsl", 10) == 0)
+   if (string_is_equal(s, "d3d9_hlsl"))
       return RETRO_HW_CONTEXT_D3D9;
 #endif
 #ifdef HAVE_D3D10
-   if (_len >= 6 && memcmp(s, "d3d10", 6) == 0)
+   if (string_is_equal(s, "d3d10"))
       return RETRO_HW_CONTEXT_D3D10;
 #endif
 #ifdef HAVE_D3D11
-   if (_len >= 6 && memcmp(s, "d3d11", 6) == 0)
+   if (string_is_equal(s, "d3d11"))
       return RETRO_HW_CONTEXT_D3D11;
 #endif
 #ifdef HAVE_D3D12
-   if (_len >= 6 && memcmp(s, "d3d12", 6) == 0)
+   if (string_is_equal(s, "d3d12"))
       return RETRO_HW_CONTEXT_D3D12;
 #endif
    return RETRO_HW_CONTEXT_NONE;
@@ -920,6 +936,26 @@ struct string_list* video_driver_get_gpu_api_devices(enum gfx_ctx_api api)
    }
 
    return NULL;
+}
+
+const char *pixel_format_name(enum retro_pixel_format pix_fmt)
+{
+   switch (pix_fmt)
+   {
+      case RETRO_PIXEL_FORMAT_0RGB1555:
+         return "0RGB1555";
+      case RETRO_PIXEL_FORMAT_XRGB8888:
+         return "XRGB8888";
+      case RETRO_PIXEL_FORMAT_RGB565:
+         return "RGB565";
+      case RETRO_PIXEL_FORMAT_XRGB2101010:
+         return "XRGB2101010";
+      case RETRO_PIXEL_FORMAT_HDR10_2101010:
+         return "HDR10_2101010";
+      case RETRO_PIXEL_FORMAT_UNKNOWN:
+      default:
+         return "UNKNOWN";
+   }
 }
 
 
@@ -1303,7 +1339,7 @@ static void recording_dump_frame(
       vp.full_width               = 0;
       vp.full_height              = 0;
 
-      if (vid && vid->viewport_info)
+      if (vid && vid->viewport_info && video_st->data)
          vid->viewport_info(video_st->data, &vp);
 
       if (!vp.width || !vp.height)
@@ -1755,6 +1791,12 @@ bool video_driver_is_threaded(void)
    video_driver_state_t *video_st                 = &video_driver_st;
    return VIDEO_DRIVER_IS_THREADED_INTERNAL(video_st);
 }
+
+bool video_driver_thread_wrapper_active(void)
+{
+   video_driver_state_t *video_st                 = &video_driver_st;
+   return (video_st->flags & VIDEO_FLAG_THREAD_WRAPPER_ACTIVE) != 0;
+}
 #endif
 
 bool *video_driver_get_threaded(void)
@@ -1776,8 +1818,7 @@ const char *video_driver_get_ident(void)
    if (!vid)
       return NULL;
 #ifdef HAVE_THREADS
-   if (  VIDEO_DRIVER_IS_THREADED_INTERNAL(video_st)
-       && (video_st->flags & VIDEO_FLAG_THREAD_WRAPPER_ACTIVE))
+   if (video_st->flags & VIDEO_FLAG_THREAD_WRAPPER_ACTIVE)
    {
       const thread_video_t *thr   = (const thread_video_t*)video_st->data;
       if (!thr || !thr->driver)
@@ -1837,7 +1878,7 @@ void video_driver_filter_free(void)
 #ifdef _3DS
       linearFree(video_st->state_buffer);
 #else
-      free(video_st->state_buffer);
+      memalign_free(video_st->state_buffer);
 #endif
    }
    video_st->state_buffer    = NULL;
@@ -1907,12 +1948,14 @@ void video_driver_init_filter(enum retro_pixel_format colfmt_int,
    video_st->state_out_bpp   = (video_st->flags & VIDEO_FLAG_STATE_OUT_RGB32)
       ? sizeof(uint32_t) : sizeof(uint16_t);
 
-   /* TODO: Aligned output. */
+   /* Every softfilter writes this with vector stores and the video
+    * driver reads it back for upload, so start it on a cache line:
+    * with the usual pitches every row then begins on one too. */
 #ifdef _3DS
    buf = linearMemAlign(
          width * height * video_st->state_out_bpp, 0x80);
 #else
-   buf = malloc(
+   buf = memalign_alloc(64,
          width * height * video_st->state_out_bpp);
 #endif
    if (!buf)
@@ -1949,6 +1992,7 @@ void video_driver_free_internal(void)
    input_driver_state_t *input_st = input_state_get_ptr();
    video_driver_state_t *video_st = &video_driver_st;
    const video_driver_t *vid      = video_st->current_video;
+   bool had_data                  = (video_st->data != NULL);
 #ifdef HAVE_THREADS
    bool is_threaded               = VIDEO_DRIVER_IS_THREADED_INTERNAL(video_st);
 #endif
@@ -2006,11 +2050,26 @@ void video_driver_free_internal(void)
     * already up cannot take the live font with it. Under threaded
     * video the wrapper does this from CMD_FREE, so we don't need to
     * check HAVE_THREADS here. */
+   /* Anything still waiting out its frames has to go now: the context
+    * that owns its atlas is about to, and there will be no further
+    * frame to age it against. */
+   font_driver_free_pending(true);
+
    if (vid && vid->font_backend)
       font_driver_free_osd_for(video_st->data);
 
    if (video_st->data && vid && vid->free)
       vid->free(video_st->data);
+
+   /* The handle dies with the instance that owns it, but
+    * current_video keeps pointing at a live vtable, so anything that
+    * still reaches the driver through video_st->data between here and
+    * the next init reads freed memory. Input drivers do exactly that:
+    * a pointer or mouse event arriving while the window is being torn
+    * down runs video_driver_get_viewport_info(), which calls
+    * viewport_info(video_st->data, ...), and every GL, Vulkan and D3D
+    * implementation dereferences that argument on entry. */
+   video_st->data = NULL;
 
    /* The poke interface is a pointer into the driver's static vtable, so
     * unlike video_st->data it survives free "working" - and
@@ -2044,7 +2103,7 @@ void video_driver_free_internal(void)
       return;
 #endif
 
-   if (video_st->data)
+   if (had_data)
       video_monitor_compute_fps_statistics(video_st->frame_time_count);
 }
 
@@ -2118,7 +2177,7 @@ bool video_driver_set_rotation(unsigned rotation)
 {
    video_driver_state_t *video_st   = &video_driver_st;
    const video_driver_t *vid        = video_st->current_video;
-   if (!vid || !vid->set_rotation)
+   if (!vid || !vid->set_rotation || !video_st->data)
       return false;
    vid->set_rotation(video_st->data, rotation);
    return true;
@@ -2156,7 +2215,7 @@ void *video_driver_read_frame_raw(unsigned *width,
 {
    video_driver_state_t *video_st = &video_driver_st;
    const video_driver_t *vid      = video_st->current_video;
-   if (vid && vid->read_frame_raw)
+   if (vid && vid->read_frame_raw && video_st->data)
       return vid->read_frame_raw(video_st->data, width,
             height, pitch);
    return NULL;
@@ -2176,7 +2235,7 @@ void video_driver_get_output_size(unsigned *width, unsigned *height)
 {
    video_driver_state_t *video_st = &video_driver_st;
 #ifdef HAVE_THREADS
-   bool is_threaded = VIDEO_DRIVER_IS_THREADED_INTERNAL(video_st);
+   bool is_threaded = video_driver_thread_wrapper_active();
    if (is_threaded && video_st->display_lock)
    {
       slock_lock(video_st->display_lock);
@@ -2198,7 +2257,7 @@ void video_driver_set_output_size(unsigned width, unsigned height)
 {
    video_driver_state_t *video_st = &video_driver_st;
 #ifdef HAVE_THREADS
-   bool is_threaded = VIDEO_DRIVER_IS_THREADED_INTERNAL(video_st);
+   bool is_threaded = video_driver_thread_wrapper_active();
    if (is_threaded && video_st->display_lock)
    {
       slock_lock(video_st->display_lock);
@@ -3301,7 +3360,7 @@ bool video_driver_get_viewport_info(struct video_viewport *viewport)
    const video_driver_t *vid       = video_st->current_video;
    if (!viewport)
       return false;
-   if (!vid || !vid->viewport_info)
+   if (!vid || !vid->viewport_info || !video_st->data)
    {
       /* Some video drivers don't implement viewport_info (gdi,
        * caca, sixel, network, fpga, vg, ps2, xenon360, xshm at
@@ -3384,11 +3443,12 @@ bool video_driver_texture_load(void *data,
    if (!id || !poke || !poke->load_texture)
       return false;
    /* Only use the threaded path when the thread wrapper is
-    * fully active. During reinit, video_st->threaded may
-    * already reflect the new setting while video_st->data
-    * still points to the real driver, not thread_video_t. */
-   threaded = VIDEO_DRIVER_IS_THREADED_INTERNAL(video_st)
-         && (video_st->flags & VIDEO_FLAG_THREAD_WRAPPER_ACTIVE);
+    * installed. Whether the session should be running threaded
+    * video is a different question, and answers false from
+    * SET_HW_RENDER until the video driver is reinitialised - a
+    * window in which video_st->data is still thread_video_t* and
+    * the wrapper's thread still owns the render context. */
+   threaded = video_driver_thread_wrapper_active();
 
    /* GPU-native fast path: upload BCn blocks directly when the driver can
     * sample the format. This works under threading too -- the threaded flag
@@ -3433,8 +3493,7 @@ bool video_driver_texture_unload(uintptr_t *id)
    if (!poke || !poke->unload_texture)
       return false;
    poke->unload_texture(video_st->data,
-         VIDEO_DRIVER_IS_THREADED_INTERNAL(video_st)
-         && (video_st->flags & VIDEO_FLAG_THREAD_WRAPPER_ACTIVE),
+         video_driver_thread_wrapper_active(),
          *id);
    *id = 0;
    return true;
@@ -3602,10 +3661,23 @@ void video_driver_cached_frame_publish(
 {
    cached_frame_lock_acquire();
    if (data)
-      frame_cache_data = data;
-   frame_cache_width   = width;
-   frame_cache_height  = height;
-   frame_cache_pitch   = pitch;
+      frame_cache_data    = data;
+   else if (   width  != frame_cache_width
+            || height != frame_cache_height
+            || pitch  != frame_cache_pitch)
+      /* A duped frame carries no pixels, so the pointer retained above
+       * still describes the buffer the *previous* frame arrived in.
+       * Publishing new dimensions alongside it would leave a tuple that
+       * describes more pixels than that buffer holds, and a later replay
+       * reads height * pitch bytes straight off the end of it. Drop the
+       * pointer instead: the dimensions stay live for the viewport and
+       * aspect-ratio consumers, and a replay with no data re-presents
+       * the frame the driver already has. */
+      frame_cache_data    = NULL;
+
+   frame_cache_width      = width;
+   frame_cache_height     = height;
+   frame_cache_pitch      = pitch;
    cached_frame_lock_release();
 }
 
@@ -3711,8 +3783,11 @@ void video_driver_build_info(video_frame_info_t *video_info)
    dispgfx_widget_t *p_dispwidget          = dispwidget_get_ptr();
 #endif
 #ifdef HAVE_THREADS
+   /* Cached so the unlock at the end of this function pairs with the
+    * lock taken here whatever happens in between. Keyed on the wrapper,
+    * which is what makes video_st->width/height shared state. */
    bool is_threaded                        =
-         VIDEO_DRIVER_IS_THREADED_INTERNAL(video_st);
+         video_driver_thread_wrapper_active();
    if (is_threaded && video_st->display_lock)
       slock_lock(video_st->display_lock);
 #endif
@@ -3789,8 +3864,7 @@ void video_driver_build_info(video_frame_info_t *video_info)
    video_info->width                       = video_st->width;
    video_info->height                      = video_st->height;
 #ifdef HAVE_THREADS
-   if (  VIDEO_DRIVER_IS_THREADED_INTERNAL(video_st)
-       && (video_st->flags & VIDEO_FLAG_THREAD_WRAPPER_ACTIVE))
+   if (is_threaded)
       video_thread_get_scale(video_st,
             &video_info->scale_width, &video_info->scale_height);
    else
@@ -3873,12 +3947,15 @@ void video_driver_build_info(video_frame_info_t *video_info)
    video_info->disp_userdata                 = disp_get_ptr();
 
 #ifdef HAVE_THREADS
-   if (  VIDEO_DRIVER_IS_THREADED_INTERNAL(video_st)
-       && (video_st->flags & VIDEO_FLAG_THREAD_WRAPPER_ACTIVE))
-      video_info->userdata                   = video_thread_get_ptr(video_st);
-   else
+   /* Keyed off the wrapper alone: this hands the menu and widget frame
+    * callbacks the pointer they cast to the concrete driver type, and
+    * video_st->data is a thread_video_t* for as long as the wrapper is
+    * installed - including after SET_HW_RENDER has already turned the
+    * session's threading mode false. */
+   video_info->userdata                      = video_thread_get_ptr(video_st);
+#else
+   video_info->userdata                      = video_st->data;
 #endif
-      video_info->userdata                   = video_st->data;
 
 #ifdef HAVE_THREADS
    if (is_threaded && video_st->display_lock)
@@ -5070,8 +5147,17 @@ void video_driver_frame(const void *data, unsigned width,
 
          if ((video_st->frame_count % memory_update_interval) == 0)
          {
+            /* Both are snapshots of a machine that moves underneath
+             * them, and a platform with no accounting of its own has to
+             * probe for the free figure, so the pair can disagree.
+             * Subtracting unsigned without checking turned any such
+             * disagreement into a number in the trillions of MB. */
+            uint64_t free_memory;
             last_total_memory = mem_stats_total();
-            last_used_memory  = last_total_memory - mem_stats_free();
+            free_memory       = mem_stats_free();
+            last_used_memory  = (last_total_memory > free_memory)
+                              ? (last_total_memory - free_memory)
+                              : 0;
          }
 
          if (_len > 0)
@@ -5352,28 +5438,21 @@ void video_driver_frame(const void *data, unsigned width,
 
    if (render_frame && video_info.statistics_show)
    {
+      struct retro_system_av_info *av_info   = &video_st->av_info;
+      audio_driver_state_t *audio_st         = audio_state_get_ptr();
       audio_statistics_t audio_stats;
       double stddev                          = 0.0;
-      float font_size_scale                  = (float)video_info.font_size / 100;
-      float scale                            = ((float)video_info.height / 480)
-            * 0.50f * (DEFAULT_FONT_SIZE / video_info.font_size);
-      struct retro_system_av_info *av_info   = &video_st->av_info;
-      unsigned red                           = 235;
-      unsigned green                         = 235;
-      unsigned blue                          = 235;
-      unsigned alpha                         = 255;
-      /* Clamp scale */
-      if (scale < font_size_scale)
-         scale                               = font_size_scale;
-      if (scale > 1.00f)
-         scale                               =  1.00f;
+      float font_size_ratio                  = (float)(DEFAULT_FONT_SIZE / video_info.font_size);
+      float scale                            = (float)video_info.height / (video_info.font_size * 30)
+            * 0.50f * font_size_ratio;
 
-      if (scale > font_size_scale)
-      {
-         scale *= 100;
-         scale  = ceil(scale);
-         scale /= 100;
-      }
+      /* Divide scale evenly to maintain size and readability in small screens */
+      if (font_size_ratio && scale < 0.20f)
+         scale                               = 0.25f;
+      else if (scale < 0.55f)
+         scale                               = 0.50f;
+      else
+         scale                               = 1.00f;
 
       audio_stats.samples                    = 0;
       audio_stats.average_buffer_saturation  = 0.0f;
@@ -5381,45 +5460,44 @@ void video_driver_frame(const void *data, unsigned width,
       audio_stats.close_to_underrun          = 0.0f;
       audio_stats.close_to_blocking          = 0.0f;
 
+      audio_compute_buffer_statistics(&audio_stats);
       video_monitor_fps_statistics(NULL, &stddev, NULL);
 
-      video_info.osd_stat_params.x           = 0.008f;
-      video_info.osd_stat_params.y           = 0.960f;
+      video_info.osd_stat_params.x           = 0.001f;
+      video_info.osd_stat_params.y           = 0.970f;
       video_info.osd_stat_params.text_align  = TEXT_ALIGN_LEFT;
       video_info.osd_stat_params.scale       = scale;
       video_info.osd_stat_params.full_screen = true;
-      video_info.osd_stat_params.drop_x      = (video_info.font_size / DEFAULT_FONT_SIZE) * 3;
-      video_info.osd_stat_params.drop_y      = (video_info.font_size / DEFAULT_FONT_SIZE) * -3;
-      video_info.osd_stat_params.drop_mod    = 0.1f;
-      video_info.osd_stat_params.drop_alpha  = 0.9f;
-      video_info.osd_stat_params.color       = COLOR_ABGR(
-            alpha, blue, green, red);
+      video_info.osd_stat_params.drop_x      = 2;
+      video_info.osd_stat_params.drop_y      = -2;
+      video_info.osd_stat_params.drop_mod    = 0.0f;
+      video_info.osd_stat_params.drop_alpha  = 1.0f;
+      video_info.osd_stat_params.color       = COLOR_ABGR(255,
+            (int)(settings->floats.video_msg_color_b * 255.0f),
+            (int)(settings->floats.video_msg_color_g * 255.0f),
+            (int)(settings->floats.video_msg_color_r * 255.0f));
       video_info.osd_stat_params.color_hp    = NULL;
 
-      audio_compute_buffer_statistics(&audio_stats);
-
       {
-         /* TODO/FIXME - localize */
-         size_t __len = snprintf(video_info.stat_text,
-                        sizeof(video_info.stat_text),
+         size_t __len = snprintf(video_info.stat_text, sizeof(video_info.stat_text),
                "CORE AV_INFO\n"
-               " Size:        %u x %u\n"
-               " - Base:      %u x %u\n"
-               " - Max:       %u x %u\n"
-               " Aspect:      %3.3f\n"
-               " FPS:         %3.2f\n"
-               " Sample Rate: %6.2f\n"
-               " Sample Format: %s\n"
-               "VIDEO: %s\n"
-               " Viewport:    %u x %u\n"
-               " - Scale:     %u x %u\n"
-               " - Scale X/Y: %2.2f / %2.2f\n"
-               " Refresh:    %6.2f hz\n"
-               " Frame Rate:%7.2f fps\n"
-               " Frame Time: %6.2f ms\n"
-               " - Deviation:%6.2f %%\n"
-               " Frames:   %8" PRIu64"\n"
-               " - Dropped:   %5u\n"
+               " Size:       %ux%u\n"
+               " -Base:      %ux%u\n"
+               " -Max:       %ux%u\n"
+               " Aspect:     %3.5f\n"
+               " FPS:        %3.4f\n"
+               " SampleRate: %.0f\n"
+               " -Format:    %s\n"
+               "VIDEO: %s %s\n"
+               " Viewport:   %ux%u\n"
+               " Scale:      %ux%u\n"
+               " Scale X/Y:  %2.2f/%2.2f\n"
+               " Refresh:  %7.2f hz\n"
+               " FrameRate:%7.2f fps\n"
+               " FrameTime:%7.2f ms\n"
+               " -Deviation:%6.2f %%\n"
+               " Frames:  %8" PRIu64"\n"
+               " -Dropped:  %6u\n"
                ,
                frame_cache_width,
                frame_cache_height,
@@ -5430,8 +5508,9 @@ void video_driver_frame(const void *data, unsigned width,
                av_info->geometry.aspect_ratio,
                av_info->timing.fps,
                av_info->timing.sample_rate,
-               audio_state_get_ptr()->stat_core_is_float ? "float" : "int16",
+               (audio_st->stat_core_is_float) ? "FLOAT" : "INT16",
                vid->ident,
+               pixel_format_name(video_st->pix_fmt),
                video_info.width,
                video_info.height,
                video_info.scale_width,
@@ -5450,45 +5529,47 @@ void video_driver_frame(const void *data, unsigned width,
          /* Split from the block above: a single concatenated format
           * literal exceeded the 509-byte minimum ISO C90 guarantees
           * (-Werror=overlength-strings in the C89 lane). */
-         __len += snprintf(video_info.stat_text + __len,
-               sizeof(video_info.stat_text) - __len,
-               "AUDIO: %s\n"
-               " Saturation: %6.2f %%\n"
-               " Deviation:  %6.2f %%\n"
-               " Underrun:   %6.2f %%\n"
-               " Blocking:   %6.2f %%\n"
-               " Samples:  %8d\n"
-               " Sample Format: %s\n"
-               " Resampling: %s\n"
+         __len += snprintf(video_info.stat_text + __len, sizeof(video_info.stat_text) - __len,
+               "AUDIO: %s %s\n"
+               " SampleRate: %u %s\n"
                ,
-               audio_state_get_ptr()->current_audio->ident,
-               audio_stats.average_buffer_saturation,
-               audio_stats.std_deviation_percentage,
-               audio_stats.close_to_underrun,
-               audio_stats.close_to_blocking,
-               audio_stats.samples,
-               audio_state_get_ptr()->stat_frontend_is_float ? "float" : "int16",
-               (audio_state_get_ptr()->src_ratio_orig == 1.0) ? "no" : "yes");
+               audio_st->current_audio->ident,
+               (audio_st->stat_frontend_is_float) ? "FLOAT" : "INT16",
+               settings->uints.audio_output_sample_rate,
+               (audio_st->src_ratio_orig == 1.0) ? "" : "R");
 
-         /* TODO/FIXME - localize */
-         __len += strlcpy(video_info.stat_text + __len, "LATENCY\n",
+         if (audio_st->rate_control_delta)
+            __len += snprintf(video_info.stat_text + __len, sizeof(video_info.stat_text) - __len,
+                  " Saturation:%6.2f %%\n"
+                  " Deviation: %6.2f %%\n"
+                  " Underrun:  %6.2f %%\n"
+                  " Blocking:  %6.2f %%\n"
+                  " Samples: %8d\n"
+                  ,
+                  audio_stats.average_buffer_saturation,
+                  audio_stats.std_deviation_percentage,
+                  audio_stats.close_to_underrun,
+                  audio_stats.close_to_blocking,
+                  audio_stats.samples);
+
+         __len += strlcpy_lit(video_info.stat_text + __len, "LATENCY\n",
                sizeof(video_info.stat_text) - __len);
 
          __len += snprintf(video_info.stat_text + __len, sizeof(video_info.stat_text) - __len,
-               " Core:        %5.2f ms\n",
+               " Core:       %5.2f ms\n",
                runloop_st->core_run_time / 1000.0f);
 
          if (video_info.scanline_sync)
             __len += snprintf(video_info.stat_text + __len, sizeof(video_info.stat_text) - __len,
-                  " Scanline:    %5d\n",
+                  " Scanline:   %5d\n",
                   video_st->scanline[SCANLINE_NEXT]);
 
          if (video_st->frame_delay_target > 0)
             __len += snprintf(video_info.stat_text + __len, sizeof(video_info.stat_text) - __len,
-                  " Frame Delay: %2u.00 ms\n"
-                  " - Target:    %2u.00 ms\n"
-                  " - Idle:      %5.2f ms\n"
-                  " - Reserve:   %5.2f ms\n",
+                  " Frame Delay:%2u.00 ms\n"
+                  " -Target:    %2u.00 ms\n"
+                  " -Idle:      %5.2f ms\n"
+                  " -Reserve:   %5.2f ms\n",
                   video_st->frame_delay_effective,
                   video_st->frame_delay_target,
                   (1000.0f / video_info.refresh_rate) - video_st->frame_delay_effective - (runloop_st->core_run_time / 1000.0f),
@@ -5496,18 +5577,15 @@ void video_driver_frame(const void *data, unsigned width,
 
          if (video_info.runahead && !video_info.runahead_second_instance)
             __len += snprintf(video_info.stat_text + __len, sizeof(video_info.stat_text) - __len,
-                  " Run-Ahead:   %2u frames\n"
-                  " - Single Instance\n",
+                  " Run-Ahead: %u SinInst\n",
                   video_info.runahead_frames);
          else if (video_info.runahead && video_info.runahead_second_instance)
             __len += snprintf(video_info.stat_text + __len, sizeof(video_info.stat_text) - __len,
-                  " Run-Ahead:   %2u frames\n"
-                  " - Second Instance\n",
+                  " Run-Ahead: %u SecInst\n",
                   video_info.runahead_frames);
          else if (video_info.preemptive_frames)
             __len += snprintf(video_info.stat_text + __len, sizeof(video_info.stat_text) - __len,
-                  " Run-Ahead:   %2u frames\n"
-                  " - Preemptive Frames\n",
+                  " Run-Ahead: %u Preempt\n",
                   video_info.runahead_frames);
 
          /* Tracked length of stat_text; consumed by driver frame()
@@ -5538,6 +5616,14 @@ void video_driver_frame(const void *data, unsigned width,
          video_driver_modify_disp_flags(VIDEO_FLAG_ACTIVE, 0);
       else
          video_driver_modify_disp_flags(0, VIDEO_FLAG_ACTIVE);
+
+      /* A frame has gone out, so fonts retired while it was being
+       * built are one frame closer to being safe to release. Inside
+       * this block rather than after it: render_frame is false when
+       * the frame limiter skips, and a counter aged by a frame that
+       * was never handed to the driver would release an atlas the
+       * GPU could still be reading. */
+      font_driver_free_pending(false);
    }
 
    video_st->frame_count++;

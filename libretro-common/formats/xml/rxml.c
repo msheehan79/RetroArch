@@ -25,7 +25,6 @@
 #include <stdint.h>
 
 #include <retro_inline.h>
-#include <streams/file_stream.h>
 
 #include <formats/rxml.h>
 
@@ -438,6 +437,11 @@ RXML_COLD static int rxml_ref_emit(struct rxml_parser *ps, const unsigned char *
 
    if (ch <= 0x7F)
       return rxml_acc_ch(ps, (unsigned char)ch);
+   /* The multi-byte forms below write ps->acc directly, so they carry
+    * the accumulator's invariant themselves: a deferred run has to be
+    * folded in before anything can land after it. */
+   if (ps->txt_direct && !rxml_acc_promote(ps))
+      return 0;
    if (!rxml_acc_reserve(ps, 4))
       return 0;
    if (ch <= 0x7FF)
@@ -1839,60 +1843,30 @@ rxml_document_t *rxml_load_document_string_opts(const char *str,
    return rxml_parse_owned(buf, len, opts, err);
 }
 
-rxml_document_t *rxml_load_document_owned(char *buf, size_t len)
+rxml_document_t *rxml_load_document_owned_opts(char *buf, size_t len,
+      unsigned opts, rxml_parse_error_t *err)
 {
+   if (err)
+   {
+      err->offset = 0;
+      err->line   = err->col = 0;
+   }
    if (!buf)
       return NULL;
    /* The contract mirrors the tail of rxml_load_document: the caller
     * hands over a NUL-terminated heap buffer and rxml_parse_owned
     * either gives it to the document or frees it on failure. */
-   return rxml_parse_owned(buf, len, 0, NULL);
+   return rxml_parse_owned(buf, len, opts, err);
+}
+
+rxml_document_t *rxml_load_document_owned(char *buf, size_t len)
+{
+   return rxml_load_document_owned_opts(buf, len, 0, NULL);
 }
 
 rxml_document_t *rxml_load_document_string(const char *str)
 {
    return rxml_load_document_string_opts(str, 0, NULL);
-}
-
-rxml_document_t *rxml_load_document(const char *path)
-{
-   char *memory_buffer     = NULL;
-   int64_t len             = 0;
-   RFILE *file             = filestream_open(path,
-         RETRO_VFS_FILE_ACCESS_READ,
-         RETRO_VFS_FILE_ACCESS_HINT_NONE);
-   if (!file)
-      return NULL;
-
-   len                     = filestream_get_size(file);
-   /* filestream_get_size returns -1 on error.  Pre-patch this
-    * flowed through (size_t)(len + 1) as malloc(0) on 64-bit
-    * (returning a tiny non-NULL block) or as a wrapped value on
-    * 32-bit; either way memory_buffer[len] = '\0' wrote far
-    * out-of-bounds.  Reject negative sizes and any size that
-    * would not fit in size_t on this platform. */
-   if (len < 0 || (uint64_t)len >= (uint64_t)((size_t)-1))
-      goto error;
-   memory_buffer           = (char*)malloc((size_t)(len + 1));
-   if (!memory_buffer)
-      goto error;
-
-   memory_buffer[len]      = '\0';
-   if (filestream_read(file, memory_buffer, len) != len)
-      goto error;
-
-   filestream_close(file);
-   file                    = NULL;
-
-   /* The document takes the buffer: the tree points into it, and
-    * rxml_parse_owned frees it on failure. */
-   return rxml_parse_owned(memory_buffer, (size_t)len, 0, NULL);
-
-error:
-   free(memory_buffer);
-   if (file)
-      filestream_close(file);
-   return NULL;
 }
 
 void rxml_free_document(rxml_document_t *doc)

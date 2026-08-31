@@ -284,6 +284,7 @@ OBJ += \
        $(LIBRETRO_COMM_DIR)/lists/file_list.o \
        $(LIBRETRO_COMM_DIR)/lists/dir_list.o \
        $(LIBRETRO_COMM_DIR)/file/retro_dirent.o \
+       $(LIBRETRO_COMM_DIR)/file/file_watch.o \
        $(LIBRETRO_COMM_DIR)/streams/stdin_stream.o \
        $(LIBRETRO_COMM_DIR)/streams/file_stream.o \
        $(LIBRETRO_COMM_DIR)/streams/file_stream_transforms.o \
@@ -299,6 +300,7 @@ endif
 
 OBJ += \
        $(LIBRETRO_COMM_DIR)/lists/string_list.o \
+       $(LIBRETRO_COMM_DIR)/string/rstrtod.o \
        $(LIBRETRO_COMM_DIR)/string/stdstring.o \
        $(LIBRETRO_COMM_DIR)/memmap/memalign.o \
        $(LIBRETRO_COMM_DIR)/memmap/memcpy_nt.o
@@ -407,6 +409,7 @@ OBJ += \
        playlist.o \
        $(LIBRETRO_COMM_DIR)/features/features_cpu.o \
        $(LIBRETRO_COMM_DIR)/memory/mem_stats.o \
+       $(LIBRETRO_COMM_DIR)/memory/mempool.o \
        verbosity.o \
        $(LIBRETRO_COMM_DIR)/playlists/label_sanitization.o \
        $(LIBRETRO_COMM_DIR)/time/rtime.o \
@@ -714,6 +717,7 @@ else ifeq ($(HAVE_BUILTINMBEDTLS), 1)
                      deps/mbedtls/ripemd160.o \
                      deps/mbedtls/rsa.o \
                      deps/mbedtls/sha1.o \
+                     deps/mbedtls/sha_alt.o \
                      deps/mbedtls/sha256.o \
                      deps/mbedtls/sha512.o \
                      deps/mbedtls/threading.o \
@@ -1116,6 +1120,7 @@ endif
 ifeq ($(HAVE_MENU_COMMON), 1)
    OBJ += menu/menu_setting.o \
           menu/menu_driver.o \
+          menu/menu_str.o \
           menu/cbs/menu_cbs_ok.o \
           menu/cbs/menu_cbs_cancel.o \
           menu/cbs/menu_cbs_select.o \
@@ -1976,7 +1981,17 @@ ifneq ($(HAVE_BUILTINSPIRV_CROSS), 0)
    OBJ += $(DEPS_DIR)/SPIRV-Cross/spirv_msl.o
    OBJ += $(DEPS_DIR)/SPIRV-Cross/spirv_parser.o
    OBJ += $(DEPS_DIR)/SPIRV-Cross/spirv_cross_parsed_ir.o
+   OBJ += $(DEPS_DIR)/SPIRV-Cross/spirv_cross_c.o
+   # The C API translation unit compiles its backend wrappers only
+   # when these are defined truthy.
+   DEFINES += -DSPIRV_CROSS_C_API_GLSL=1
+   DEFINES += -DSPIRV_CROSS_C_API_HLSL=1
+   DEFINES += -DSPIRV_CROSS_C_API_MSL=1
+   DEFINES += -DSPIRV_CROSS_C_API_CPP=0
+   DEFINES += -DSPIRV_CROSS_C_API_REFLECT=0
 else
+   # slang_process.c is C: the header path must reach the C compiler too.
+   CFLAGS   += $(SPIRV_CROSS_CFLAGS)
    CXXFLAGS += $(SPIRV_CROSS_CFLAGS)
    LIBS     += $(SPIRV_CROSS_LIBS)
 endif
@@ -2277,7 +2292,8 @@ ifeq ($(HAVE_RPNG), 1)
    DEFINES += -DHAVE_RPNG
    OBJ += $(LIBRETRO_COMM_DIR)/formats/png/rpng.o \
           $(LIBRETRO_COMM_DIR)/formats/png/rpng_apng.o \
-          $(LIBRETRO_COMM_DIR)/formats/png/rpng_encode.o
+          $(LIBRETRO_COMM_DIR)/formats/png/rpng_encode.o \
+          $(LIBRETRO_COMM_DIR)/file/rpng_file.o
 endif
 
 ifeq ($(HAVE_RJPEG), 1)
@@ -2349,12 +2365,13 @@ ifeq ($(HAVE_WEBMPLAYER), 1)
 endif
 
 OBJ += $(LIBRETRO_COMM_DIR)/formats/bmp/rbmp_encode.o \
+       $(LIBRETRO_COMM_DIR)/file/rbmp_file.o \
        $(LIBRETRO_COMM_DIR)/formats/json/rjson.o \
        $(LIBRETRO_COMM_DIR)/formats/image_transfer.o \
        $(LIBRETRO_COMM_DIR)/formats/audio_transfer.o \
        $(LIBRETRO_COMM_DIR)/formats/data_transfer.o \
        $(LIBRETRO_COMM_DIR)/memmap/memmap.o \
-       $(LIBRETRO_COMM_DIR)/formats/m3u/m3u_file.o
+       $(LIBRETRO_COMM_DIR)/formats/m3u/rm3u.o
 
 # Video4Linux 2
 
@@ -2934,7 +2951,6 @@ endif
          deps/libsmb2/lib/krb5-wrapper.o \
          deps/libsmb2/lib/libsmb2.o \
          deps/libsmb2/lib/md4c.o \
-         deps/libsmb2/lib/md5.o \
          deps/libsmb2/lib/ntlmssp.o \
          deps/libsmb2/lib/pdu.o \
          deps/libsmb2/lib/sha1.o \

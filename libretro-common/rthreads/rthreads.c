@@ -63,6 +63,24 @@
 #include <sys/time.h>
 #endif
 
+/* sthread_setname */
+#if defined(__linux__) && !defined(USE_WIN32_THREADS) && !defined(GEKKO) && !defined(_3DS)
+#include <sys/prctl.h>
+#endif
+
+#if defined(__ANDROID__)
+#include <sys/resource.h>
+#include <unistd.h>
+#endif
+
+#if (defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__) \
+      || defined(__NetBSD__) || defined(__OpenBSD__)) \
+      && !defined(USE_WIN32_THREADS) && !defined(GEKKO) && !defined(_3DS) \
+      && !defined(__ANDROID__)
+#include <sched.h>
+#define RTHREADS_HAVE_SCHEDPARAM 1
+#endif
+
 #if defined(PS2)
 #include <ps2sdkapi.h>
 #endif
@@ -279,6 +297,67 @@ sthread_t *sthread_create_with_priority(void (*thread_func)(void*), void *userda
    free(data);
    free(thread);
    return NULL;
+}
+
+bool sthread_raise_current_priority(void)
+{
+#if defined(USE_WIN32_THREADS)
+   return SetThreadPriority(GetCurrentThread(),
+         THREAD_PRIORITY_TIME_CRITICAL) != 0;
+#elif defined(__ANDROID__)
+   /* Bionic lets an app move its own threads into the audio band
+    * without privilege; -16 is ANDROID_PRIORITY_AUDIO. */
+   return setpriority(PRIO_PROCESS, gettid(), -16) == 0;
+#elif defined(RTHREADS_HAVE_SCHEDPARAM)
+   /* Real-time round-robin at a middling priority: above every
+    * time-shared thread, below anything the system runs at the top of
+    * the band. Distributions that grant the audio group an rtprio
+    * limit allow this without root; where it is refused the thread
+    * simply keeps its default, which is the caller's contract. */
+   struct sched_param sp;
+   int lo  = sched_get_priority_min(SCHED_RR);
+   int hi  = sched_get_priority_max(SCHED_RR);
+   memset(&sp, 0, sizeof(sp));
+   if (lo < 0 || hi < lo)
+      return false;
+   sp.sched_priority = lo + (hi - lo) / 2;
+   return pthread_setschedparam(pthread_self(), SCHED_RR, &sp) == 0;
+#else
+   return false;
+#endif
+}
+
+void sthread_setname(const char *name)
+{
+#if defined(__linux__) && !defined(USE_WIN32_THREADS) && !defined(GEKKO) && !defined(_3DS)
+   /* prctl rather than pthread_setname_np: it is available on every
+    * bionic and glibc version we build against, and takes the name as
+    * a plain buffer, so the caller cannot be rejected outright for
+    * overrunning the kernel's 16-byte limit. Copied rather than passed
+    * through so an over-long name truncates instead of failing. */
+   char buf[16];
+   size_t i;
+   if (!name)
+      return;
+   for (i = 0; i < sizeof(buf) - 1 && name[i]; i++)
+      buf[i] = name[i];
+   buf[i] = '\0';
+   prctl(PR_SET_NAME, buf, 0, 0, 0);
+#elif defined(__APPLE__)
+   if (!name)
+      return;
+   pthread_setname_np(name);
+#elif defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
+   if (!name)
+      return;
+   pthread_set_name_np(pthread_self(), name);
+#elif defined(__NetBSD__)
+   if (!name)
+      return;
+   pthread_setname_np(pthread_self(), "%s", (void*)name);
+#else
+   (void)name;
+#endif
 }
 
 int sthread_detach(sthread_t *thread)

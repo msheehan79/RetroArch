@@ -17,6 +17,7 @@
 #include "../include/vulkan/vk_sdk_platform.h"
 #include "shader_vulkan.h"
 #include "glslang_util.h"
+#include <string>
 #include <vector>
 #include <memory>
 #include <functional>
@@ -415,77 +416,93 @@ struct Texture
    glslang_filter_chain_address address;
 };
 
-class DeferredDisposer
+struct deferred_disposes;
+
+/* A host-visible, host-coherent VkBuffer with its backing memory.
+ * Zero-initialized = empty; slang_buffer_free() is safe on any state. */
+struct slang_buffer
 {
-   public:
-      DeferredDisposer(std::vector<std::function<void ()>> &calls) : calls(calls) {}
-
-      void defer(std::function<void ()> func)
-      {
-         calls.push_back(std::move(func));
-      }
-
-   private:
-      std::vector<std::function<void ()>> &calls;
+   VkDevice device;
+   VkBuffer buffer;
+   VkDeviceMemory memory;
+   size_t size;
+   void *mapped;
 };
 
-class Buffer
+static bool slang_buffer_init(struct slang_buffer *buf,
+      VkDevice device, const VkPhysicalDeviceMemoryProperties &mem_props,
+      size_t len, VkBufferUsageFlags usage);
+static void *slang_buffer_map(struct slang_buffer *buf);
+static void slang_buffer_unmap(struct slang_buffer *buf);
+static void slang_buffer_free(struct slang_buffer *buf);
+
+/* An immutable LUT texture with its staging buffer (freed after
+ * upload) and its semantic id.  Zero-initialized = empty;
+ * slang_static_texture_free() is safe on any state. */
+struct slang_static_texture
 {
-   public:
-      Buffer(VkDevice device,
-            const VkPhysicalDeviceMemoryProperties &mem_props,
-            size_t len, VkBufferUsageFlags usage);
-      ~Buffer();
-
-      size_t get_size() const { return size; }
-      void *map();
-      void unmap();
-
-      const VkBuffer &get_buffer() const { return buffer; }
-
-      Buffer(Buffer&&) = delete;
-      void operator=(Buffer&&) = delete;
-
-   private:
-      VkDevice device;
-      VkBuffer buffer;
-      VkDeviceMemory memory;
-      size_t size;
-      void *mapped = nullptr;
+   VkDevice device;
+   VkImage image;
+   VkImageView view;
+   VkDeviceMemory memory;
+   struct slang_buffer buffer;
+   char *id;
+   Texture texture;
 };
 
-class StaticTexture
+/* Takes ownership of *staging, which is zeroed. */
+static bool slang_static_texture_init(struct slang_static_texture *tex,
+      const char *id,
+      VkDevice device,
+      VkImage image,
+      VkImageView view,
+      VkDeviceMemory memory,
+      struct slang_buffer *staging,
+      unsigned width, unsigned height,
+      bool linear,
+      bool mipmap,
+      glslang_filter_chain_address address)
 {
-   public:
-      StaticTexture(std::string id,
-            VkDevice device,
-            VkImage image,
-            VkImageView view,
-            VkDeviceMemory memory,
-            std::unique_ptr<Buffer> buffer,
-            unsigned width, unsigned height,
-            bool linear,
-            bool mipmap,
-            glslang_filter_chain_address address);
-      ~StaticTexture();
+   tex->device            = device;
+   tex->image             = image;
+   tex->view              = view;
+   tex->memory            = memory;
+   tex->buffer            = *staging;
+   memset(staging, 0, sizeof(*staging));
+   if (!(tex->id = strdup(id)))
+      return false;
 
-      StaticTexture(StaticTexture&&) = delete;
-      void operator=(StaticTexture&&) = delete;
+   tex->texture.filter         = GLSLANG_FILTER_CHAIN_NEAREST;
+   tex->texture.mip_filter     = GLSLANG_FILTER_CHAIN_NEAREST;
+   tex->texture.address        = address;
+   tex->texture.texture.image  = image;
+   tex->texture.texture.view   = view;
+   tex->texture.texture.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+   tex->texture.texture.width  = width;
+   tex->texture.texture.height = height;
 
-      void release_staging_buffer() { buffer.reset(); }
-      void set_id(std::string name) { id = std::move(name); }
-      const std::string &get_id() const { return id; }
-      const Texture &get_texture() const { return texture; }
+   if (linear)
+      tex->texture.filter      = GLSLANG_FILTER_CHAIN_LINEAR;
+   if (mipmap && linear)
+      tex->texture.mip_filter  = GLSLANG_FILTER_CHAIN_LINEAR;
+   return true;
+}
 
-   private:
-      VkDevice device;
-      VkImage image;
-      VkImageView view;
-      VkDeviceMemory memory;
-      std::unique_ptr<Buffer> buffer;
-      std::string id;
-      Texture texture;
-};
+static void slang_static_texture_free(struct slang_static_texture *tex)
+{
+   slang_buffer_free(&tex->buffer);
+   if (tex->view != VK_NULL_HANDLE)
+      vkDestroyImageView(tex->device, tex->view, nullptr);
+   if (tex->image != VK_NULL_HANDLE)
+      vkDestroyImage(tex->device, tex->image, nullptr);
+   if (tex->memory != VK_NULL_HANDLE)
+      vkFreeMemory(tex->device, tex->memory, nullptr);
+   free(tex->id);
+   tex->view   = VK_NULL_HANDLE;
+   tex->image  = VK_NULL_HANDLE;
+   tex->memory = VK_NULL_HANDLE;
+   tex->id     = NULL;
+}
 
 /* Recycle pool for framebuffer device-memory allocations.
  *
@@ -582,6 +599,82 @@ struct FramebufferMemoryPool
    }
 };
 
+/* One queued disposal: the resources a replaced framebuffer instance
+ * held.  Replacing a framebuffer is the only operation that ever defers
+ * work, so the queue holds plain records of this shape instead of
+ * type-erased callables. */
+struct deferred_fb_dispose
+{
+   VkDevice device;
+   FramebufferMemoryPool *pool;
+   VkFramebuffer framebuffer;
+   VkImageView view;
+   VkImageView fb_view;
+   VkImage image;
+   VkDeviceMemory memory;
+   size_t memory_size;
+   uint32_t memory_type;
+   /* VK_NULL_HANDLE unless the format changed with the resize. */
+   VkRenderPass render_pass;
+};
+
+/* Per-sync-index queue of pending disposals. */
+struct deferred_disposes
+{
+   struct deferred_fb_dispose *calls;
+   size_t size;
+   size_t cap;
+};
+
+static void deferred_fb_dispose_run(const struct deferred_fb_dispose *c)
+{
+   if (c->framebuffer != VK_NULL_HANDLE)
+      vkDestroyFramebuffer(c->device, c->framebuffer, nullptr);
+   if (c->view != VK_NULL_HANDLE)
+      vkDestroyImageView(c->device, c->view, nullptr);
+   if (c->fb_view != VK_NULL_HANDLE)
+      vkDestroyImageView(c->device, c->fb_view, nullptr);
+   /* The image must be destroyed before its memory becomes reusable;
+    * the pool only ever hands out blocks whose image is already gone. */
+   if (c->image != VK_NULL_HANDLE)
+      vkDestroyImage(c->device, c->image, nullptr);
+   if (c->memory != VK_NULL_HANDLE)
+   {
+      if (c->pool)
+         c->pool->release(c->device, c->memory, c->memory_size,
+               c->memory_type);
+      else
+         vkFreeMemory(c->device, c->memory, nullptr);
+   }
+   if (c->render_pass != VK_NULL_HANDLE)
+      vkDestroyRenderPass(c->device, c->render_pass, nullptr);
+}
+
+static void deferred_disposes_run_clear(struct deferred_disposes *d)
+{
+   size_t i;
+   for (i = 0; i < d->size; i++)
+      deferred_fb_dispose_run(&d->calls[i]);
+   d->size = 0;
+}
+
+static bool deferred_disposes_push(struct deferred_disposes *d,
+      const struct deferred_fb_dispose *call)
+{
+   if (d->size == d->cap)
+   {
+      size_t new_cap                        = d->cap ? d->cap * 2 : 4;
+      struct deferred_fb_dispose *new_calls = (struct deferred_fb_dispose*)
+         realloc(d->calls, new_cap * sizeof(*new_calls));
+      if (!new_calls)
+         return false;
+      d->calls = new_calls;
+      d->cap   = new_cap;
+   }
+   d->calls[d->size++] = *call;
+   return true;
+}
+
 class Framebuffer
 {
    public:
@@ -594,7 +687,7 @@ class Framebuffer
       Framebuffer(Framebuffer&&) = delete;
       void operator=(Framebuffer&&) = delete;
 
-      bool set_size(DeferredDisposer &disposer, const Size2D &size, VkFormat format = VK_FORMAT_UNDEFINED);
+      bool set_size(struct deferred_disposes *disposer, const Size2D &size, VkFormat format = VK_FORMAT_UNDEFINED);
 
       const Size2D &get_size() const { return size; }
       VkFormat get_format() const { return format; }
@@ -648,8 +741,8 @@ struct CommonResources
          const VkPhysicalDeviceMemoryProperties &memory_properties);
    ~CommonResources();
 
-   std::unique_ptr<Buffer> vbo;
-   std::unique_ptr<Buffer> ubo;
+   struct slang_buffer vbo = {};
+   struct slang_buffer ubo = {};
    uint8_t *ubo_mapped          = nullptr;
    size_t ubo_sync_index_stride = 0;
    size_t ubo_offset            = 0;
@@ -660,10 +753,11 @@ struct CommonResources
    std::vector<Texture> original_history;
    std::vector<Texture> fb_feedback;
    std::vector<Texture> pass_outputs;
-   std::vector<std::unique_ptr<StaticTexture>> luts;
+   struct slang_static_texture *luts = nullptr;
+   size_t num_luts = 0;
 
-   std::unordered_map<std::string, slang_texture_semantic_map> texture_semantic_map;
-   std::unordered_map<std::string, slang_texture_semantic_map> texture_semantic_uniform_map;
+   slang_texture_semantic_name_map texture_semantic_map        = {};
+   slang_texture_semantic_name_map texture_semantic_uniform_map = {};
    std::unique_ptr<video_shader> shader_preset;
 
    VkDevice device;
@@ -733,7 +827,7 @@ class Pass
       bool init_feedback();
 
       void build_commands(
-            DeferredDisposer &disposer,
+            struct deferred_disposes *disposer,
             VkCommandBuffer cmd,
             const Texture &original,
             const Texture &source,
@@ -812,7 +906,11 @@ class Pass
             VkDescriptorImageInfo *image_infos, VkWriteDescriptorSet *writes,
             unsigned &write_count);
 
-      slang_reflection reflection;
+      /* Plain C struct: must be explicitly zero-initialized, since the
+       * first build() and a teardown before any build() both run
+       * slang_reflection_free() on it.  The previous C++ type had a
+       * default constructor doing this implicitly. */
+      slang_reflection reflection = {};
       void build_semantics(VkDescriptorSet set, uint8_t *buffer,
             const float *mvp, const Texture &original, const Texture &source);
       void build_semantic_vec4(uint8_t *data, slang_semantic semantic,
@@ -924,8 +1022,9 @@ struct vulkan_filter_chain
 #endif /* VULKAN_HDR_SWAPCHAIN */
 
       void set_pass_name(unsigned pass, const char *name);
+      /* Takes ownership of *texture, which is zeroed. */
+      bool add_static_texture(struct slang_static_texture *texture);
 
-      void add_static_texture(std::unique_ptr<StaticTexture> texture);
       void add_parameter(unsigned pass, unsigned parameter_index, const std::string &id);
       void release_staging_buffers();
 
@@ -944,7 +1043,8 @@ struct vulkan_filter_chain
       VkPipelineCache cache;
       std::vector<std::unique_ptr<Pass>> passes;
       std::vector<vulkan_filter_chain_pass_info> pass_info;
-      std::vector<std::vector<std::function<void ()>>> deferred_calls;
+      struct deferred_disposes *deferred_calls;
+      unsigned num_deferred;
       CommonResources common;
       VkFormat original_format;
 
@@ -973,7 +1073,7 @@ struct vulkan_filter_chain
       bool init_history();
       bool init_feedback();
       bool init_alias();
-      void update_history(DeferredDisposer &disposer, VkCommandBuffer cmd);
+      void update_history(struct deferred_disposes *disposer, VkCommandBuffer cmd);
       void clear_history_and_feedback(VkCommandBuffer cmd);
       void update_feedback_info();
       void update_history_info();
@@ -1060,7 +1160,8 @@ static VkFormat glslang_format_to_vk(glslang_format fmt)
    return VK_FORMAT_UNDEFINED;
 }
 
-static std::unique_ptr<StaticTexture> vulkan_filter_chain_load_lut(
+static bool vulkan_filter_chain_load_lut(
+      struct slang_static_texture *out,
       VkCommandBuffer cmd,
       const struct vulkan_filter_chain_create_info *info,
       vulkan_filter_chain *chain,
@@ -1070,7 +1171,7 @@ static std::unique_ptr<StaticTexture> vulkan_filter_chain_load_lut(
    texture_image image;
    VkBufferImageCopy region;
    VkImageCreateInfo image_info;
-   std::unique_ptr<Buffer> buffer;
+   struct slang_buffer buffer          = {};
    VkMemoryRequirements mem_reqs;
    VkImageViewCreateInfo view_info;
    VkMemoryAllocateInfo alloc;
@@ -1151,12 +1252,12 @@ static std::unique_ptr<StaticTexture> vulkan_filter_chain_load_lut(
       goto error;
    }
 
-   buffer                                =
-      std::unique_ptr<Buffer>(new Buffer(info->device, *info->memory_properties,
-               image.width * image.height * sizeof(uint32_t), VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
-   ptr                                   = buffer->map();
+   slang_buffer_init(&buffer, info->device, *info->memory_properties,
+         image.width * image.height * sizeof(uint32_t),
+         VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+   ptr                                   = slang_buffer_map(&buffer);
    memcpy(ptr, image.pixels, image.width * image.height * sizeof(uint32_t));
-   buffer->unmap();
+   slang_buffer_unmap(&buffer);
 
    VULKAN_IMAGE_LAYOUT_TRANSITION_LEVELS(cmd,
          tex,
@@ -1188,7 +1289,7 @@ static std::unique_ptr<StaticTexture> vulkan_filter_chain_load_lut(
    region.imageExtent.depth               = 1;
 
    vkCmdCopyBufferToImage(cmd,
-         buffer->get_buffer(),
+         buffer.buffer,
          tex,
          shader->mipmap
          ? VK_IMAGE_LAYOUT_GENERAL
@@ -1261,11 +1362,13 @@ static std::unique_ptr<StaticTexture> vulkan_filter_chain_load_lut(
    image_texture_free(&image);
    image.pixels = nullptr;
 
-   return std::unique_ptr<StaticTexture>(new StaticTexture(shader->id, info->device,
-            tex, view, memory, std::move(buffer), image.width, image.height,
+   if (!slang_static_texture_init(out, shader->id, info->device,
+            tex, view, memory, &buffer, image.width, image.height,
             shader->filter != RARCH_FILTER_NEAREST,
             image_info.mipLevels > 1,
-            rarch_wrap_to_address(shader->wrap)));
+            rarch_wrap_to_address(shader->wrap)))
+      goto error;
+   return true;
 
 error:
    if (image.pixels)
@@ -1276,7 +1379,8 @@ error:
       vkDestroyImageView(info->device, view, nullptr);
    if (memory != VK_NULL_HANDLE)
       vkFreeMemory(info->device, memory, nullptr);
-   return {};
+   slang_buffer_free(&buffer);
+   return false;
 }
 
 static bool vulkan_filter_chain_load_luts(
@@ -1312,9 +1416,10 @@ static bool vulkan_filter_chain_load_luts(
 
    for (i = 0; i < shader->luts; i++)
    {
-      std::unique_ptr<StaticTexture> image =
-         vulkan_filter_chain_load_lut(cmd, info, chain, &shader->lut[i]);
-      if (!image)
+      struct slang_static_texture image;
+      memset(&image, 0, sizeof(image));
+      if (!vulkan_filter_chain_load_lut(&image, cmd, info, chain,
+               &shader->lut[i]))
       {
          RARCH_ERR("[Vulkan] Failed to load LUT \"%s\".\n", shader->lut[i].path);
          vkEndCommandBuffer(cmd);
@@ -1322,8 +1427,13 @@ static bool vulkan_filter_chain_load_luts(
             vkFreeCommandBuffers(info->device, info->command_pool, 1, &cmd);
          return false;
       }
-
-      chain->add_static_texture(std::move(image));
+      if (!chain->add_static_texture(&image))
+      {
+         slang_static_texture_free(&image);
+         vkEndCommandBuffer(cmd);
+         vkFreeCommandBuffers(info->device, info->command_pool, 1, &cmd);
+         return false;
+      }
    }
 
    if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
@@ -1377,6 +1487,8 @@ vulkan_filter_chain::vulkan_filter_chain(
      gpu(info.gpu),
      memory_properties(*info.memory_properties),
      cache(info.pipeline_cache),
+     deferred_calls(nullptr),
+     num_deferred(0),
      common(info.device, *info.memory_properties),
      original_format(info.original_format)
 {
@@ -1388,7 +1500,11 @@ vulkan_filter_chain::vulkan_filter_chain(
 
 vulkan_filter_chain::~vulkan_filter_chain()
 {
+   unsigned i;
    flush();
+   for (i = 0; i < num_deferred; i++)
+      free(deferred_calls[i].calls);
+   free(deferred_calls);
 }
 
 void vulkan_filter_chain::set_swapchain_info(
@@ -1400,17 +1516,43 @@ void vulkan_filter_chain::set_swapchain_info(
 
 void vulkan_filter_chain::set_num_sync_indices(unsigned num_indices)
 {
+   unsigned i;
    execute_deferred();
-   deferred_calls.resize(num_indices);
+   /* Every queue is empty now; only capacity storage remains. */
+   for (i = num_indices; i < num_deferred; i++)
+      free(deferred_calls[i].calls);
+   if (!num_indices)
+   {
+      free(deferred_calls);
+      deferred_calls = nullptr;
+   }
+   else
+   {
+      struct deferred_disposes *new_calls = (struct deferred_disposes*)
+         realloc(deferred_calls, num_indices * sizeof(*new_calls));
+      if (!new_calls)
+      {
+         /* Growth failed: keep the old, still-valid block and count.
+          * (The vector this replaces terminated the process here.) */
+         RARCH_ERR("[Vulkan] Failed to size deferred-disposal queues.\n");
+         return;
+      }
+      for (i = num_deferred; i < num_indices; i++)
+      {
+         new_calls[i].calls = nullptr;
+         new_calls[i].size  = 0;
+         new_calls[i].cap   = 0;
+      }
+      deferred_calls = new_calls;
+   }
+   num_deferred = num_indices;
 }
 
 void vulkan_filter_chain::notify_sync_index(unsigned index)
 {
    unsigned i;
-   auto &calls = deferred_calls[index];
-   for (auto &call : calls)
-      call();
-   calls.clear();
+   if (index < num_deferred)
+      deferred_disposes_run_clear(&deferred_calls[index]);
 
    current_sync_index = index;
 
@@ -1429,18 +1571,15 @@ bool vulkan_filter_chain::update_swapchain_info(
 void vulkan_filter_chain::release_staging_buffers()
 {
    unsigned i;
-   for (i = 0; i < common.luts.size(); i++)
-      common.luts[i]->release_staging_buffer();
+   for (i = 0; i < common.num_luts; i++)
+      slang_buffer_free(&common.luts[i].buffer);
 }
 
 void vulkan_filter_chain::execute_deferred()
 {
-   for (auto &calls : deferred_calls)
-   {
-      for (auto &call : calls)
-         call();
-      calls.clear();
-   }
+   unsigned i;
+   for (i = 0; i < num_deferred; i++)
+      deferred_disposes_run_clear(&deferred_calls[i]);
 }
 
 void vulkan_filter_chain::flush()
@@ -1514,7 +1653,7 @@ void vulkan_filter_chain::build_offscreen_passes(VkCommandBuffer cmd,
    update_history_info();
    update_feedback_info();
 
-   DeferredDisposer disposer(deferred_calls[current_sync_index]);
+   struct deferred_disposes *disposer = &deferred_calls[current_sync_index];
    const Texture original = {
       input_texture,
       passes.front()->get_source_filter(),
@@ -1556,7 +1695,7 @@ void vulkan_filter_chain::build_offscreen_passes(VkCommandBuffer cmd,
    }
 }
 
-void vulkan_filter_chain::update_history(DeferredDisposer &disposer,
+void vulkan_filter_chain::update_history(struct deferred_disposes *disposer,
       VkCommandBuffer cmd)
 {
    VkImageLayout src_layout = input_texture.layout;
@@ -1629,8 +1768,7 @@ void vulkan_filter_chain::end_frame(VkCommandBuffer cmd)
     * the history and dispatch the copy earlier. */
    if (!original_history.empty())
    {
-      DeferredDisposer disposer(deferred_calls[current_sync_index]);
-      update_history(disposer, cmd);
+      update_history(&deferred_calls[current_sync_index], cmd);
    }
 }
 
@@ -1640,7 +1778,7 @@ void vulkan_filter_chain::build_viewport_pass(
    unsigned i;
    Texture source;
 
-   DeferredDisposer disposer(deferred_calls[current_sync_index]);
+   struct deferred_disposes *disposer = &deferred_calls[current_sync_index];
    const Texture original = {
       input_texture,
       passes.front()->get_source_filter(),
@@ -1690,7 +1828,7 @@ bool vulkan_filter_chain::init_history()
    for (i = 0; i < passes.size(); i++)
    {
       size_t _y = passes[i]->get_reflection().semantic_textures[
-               SLANG_TEXTURE_SEMANTIC_ORIGINAL_HISTORY].size();
+               SLANG_TEXTURE_SEMANTIC_ORIGINAL_HISTORY].size;
       required_images = MAX(required_images, _y);
    }
 
@@ -1744,10 +1882,10 @@ bool vulkan_filter_chain::init_feedback()
       for (auto &pass : passes)
       {
          const slang_reflection &r = pass->get_reflection();
-         auto          &feedbacks  = r.semantic_textures[
-            SLANG_TEXTURE_SEMANTIC_PASS_FEEDBACK];
+         const slang_texture_semantic_array &feedbacks =
+            r.semantic_textures[SLANG_TEXTURE_SEMANTIC_PASS_FEEDBACK];
 
-         if (i < feedbacks.size() && feedbacks[i].texture)
+         if (i < feedbacks.size && feedbacks.data[i].texture)
          {
             use_feedback  = true;
             use_feedbacks = true;
@@ -1780,8 +1918,8 @@ bool vulkan_filter_chain::init_alias()
 {
    unsigned i;
 
-   common.texture_semantic_map.clear();
-   common.texture_semantic_uniform_map.clear();
+   slang_texture_semantic_name_map_free(&common.texture_semantic_map);
+   slang_texture_semantic_name_map_free(&common.texture_semantic_uniform_map);
 
    for (i = 0; i < (unsigned)passes.size(); i++)
    {
@@ -1789,39 +1927,39 @@ bool vulkan_filter_chain::init_alias()
       if (name.empty())
          continue;
 
-      if (!slang_set_unique_map(
-               common.texture_semantic_map, name,
-               slang_texture_semantic_map{ SLANG_TEXTURE_SEMANTIC_PASS_OUTPUT, i }))
+      if (!slang_texture_semantic_name_map_set_unique(
+               &common.texture_semantic_map, name.c_str(), NULL,
+               SLANG_TEXTURE_SEMANTIC_PASS_OUTPUT, i))
          return false;
 
-      if (!slang_set_unique_map(
-               common.texture_semantic_uniform_map, name + "Size",
-               slang_texture_semantic_map{ SLANG_TEXTURE_SEMANTIC_PASS_OUTPUT, i }))
+      if (!slang_texture_semantic_name_map_set_unique(
+               &common.texture_semantic_uniform_map, name.c_str(), "Size",
+               SLANG_TEXTURE_SEMANTIC_PASS_OUTPUT, i))
          return false;
 
-      if (!slang_set_unique_map(
-               common.texture_semantic_map, name + "Feedback",
-               slang_texture_semantic_map{ SLANG_TEXTURE_SEMANTIC_PASS_FEEDBACK, i }))
+      if (!slang_texture_semantic_name_map_set_unique(
+               &common.texture_semantic_map, name.c_str(), "Feedback",
+               SLANG_TEXTURE_SEMANTIC_PASS_FEEDBACK, i))
          return false;
 
-      if (!slang_set_unique_map(
-               common.texture_semantic_uniform_map, name + "FeedbackSize",
-               slang_texture_semantic_map{ SLANG_TEXTURE_SEMANTIC_PASS_FEEDBACK, i }))
+      if (!slang_texture_semantic_name_map_set_unique(
+               &common.texture_semantic_uniform_map, name.c_str(), "FeedbackSize",
+               SLANG_TEXTURE_SEMANTIC_PASS_FEEDBACK, i))
          return false;
    }
 
-   for (i = 0; i < (unsigned)common.luts.size(); i++)
+   for (i = 0; i < (unsigned)common.num_luts; i++)
    {
-      if (!slang_set_unique_map(
-               common.texture_semantic_map,
-               common.luts[i]->get_id(),
-               slang_texture_semantic_map{ SLANG_TEXTURE_SEMANTIC_USER, i }))
+      if (!slang_texture_semantic_name_map_set_unique(
+               &common.texture_semantic_map,
+               common.luts[i].id, NULL,
+               SLANG_TEXTURE_SEMANTIC_USER, i))
          return false;
 
-      if (!slang_set_unique_map(
-               common.texture_semantic_uniform_map,
-               common.luts[i]->get_id() + "Size",
-               slang_texture_semantic_map{ SLANG_TEXTURE_SEMANTIC_USER, i }))
+      if (!slang_texture_semantic_name_map_set_unique(
+               &common.texture_semantic_uniform_map,
+               common.luts[i].id, "Size",
+               SLANG_TEXTURE_SEMANTIC_USER, i))
          return false;
    }
 
@@ -1869,7 +2007,7 @@ void vulkan_filter_chain::set_num_passes(unsigned num_passes)
    for (i = 0; i < num_passes; i++)
    {
       passes.emplace_back(new Pass(device, memory_properties,
-               cache, (unsigned)deferred_calls.size(), i + 1 == num_passes));
+               cache, num_deferred, i + 1 == num_passes));
       passes.back()->set_common_resources(&common);
       passes.back()->set_pass_number(i);
    }
@@ -1895,7 +2033,7 @@ bool vulkan_filter_chain::init_ubo()
    unsigned i;
    VkPhysicalDeviceProperties props;
 
-   common.ubo.reset();
+   slang_buffer_free(&common.ubo);
    common.ubo_offset            = 0;
 
    vkGetPhysicalDeviceProperties(gpu, &props);
@@ -1914,12 +2052,12 @@ bool vulkan_filter_chain::init_ubo()
    common.ubo_sync_index_stride = common.ubo_offset;
 
    if (common.ubo_offset != 0)
-      common.ubo                = std::unique_ptr<Buffer>(new Buffer(device,
-               memory_properties, common.ubo_offset * deferred_calls.size(),
-               VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT));
+      slang_buffer_init(&common.ubo, device,
+            memory_properties, common.ubo_offset * num_deferred,
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
 
-   if (common.ubo)
-      common.ubo_mapped         = static_cast<uint8_t*>(common.ubo->map());
+   if (common.ubo.buffer != VK_NULL_HANDLE)
+      common.ubo_mapped         = static_cast<uint8_t*>(slang_buffer_map(&common.ubo));
    else
       common.ubo_mapped         = nullptr;
    return true;
@@ -2008,23 +2146,29 @@ bool vulkan_filter_chain::compile_full_pass(unsigned pass_idx,
    }
 
    /* ---- Extract parameters ---- */
-   for (unsigned j = 0; j < output.meta.parameters.size(); j++)
+   for (size_t j = 0; j < output.meta.num_parameters; j++)
    {
-      auto &meta_param = output.meta.parameters[j];
+      const glslang_parameter *meta_param = &output.meta.parameters[j];
 
       if (shader->num_parameters >= GFX_MAX_PARAMETERS)
       {
          RARCH_ERR("[Vulkan] Exceeded maximum number of parameters (%u).\n",
                GFX_MAX_PARAMETERS);
+         glslang_output_free(&output);
          return false;
       }
 
       video_shader_parameter *itr = NULL;
       {
          unsigned k;
+         size_t mid_len = strlen(meta_param->id);
          for (k = 0; k < shader->num_parameters; k++)
          {
-            if (meta_param.id == shader->parameters[k].id)
+            /* Gate the memcmp behind two byte loads; the scan is
+             * O(n^2) across Mega Bezel-scale parameter counts. */
+            const char *sid = shader->parameters[k].id;
+            if (sid[0] == meta_param->id[0] && sid[mid_len] == '\0'
+                  && !memcmp(sid, meta_param->id, mid_len))
             {
                itr = &shader->parameters[k];
                break;
@@ -2034,45 +2178,46 @@ bool vulkan_filter_chain::compile_full_pass(unsigned pass_idx,
 
       if (itr)
       {
-         if (   meta_param.desc    != itr->desc
-             || meta_param.initial != itr->initial
-             || meta_param.minimum != itr->minimum
-             || meta_param.maximum != itr->maximum
-             || meta_param.step    != itr->step)
+         if (   strcmp(meta_param->desc, itr->desc)
+             || meta_param->initial != itr->initial
+             || meta_param->minimum != itr->minimum
+             || meta_param->maximum != itr->maximum
+             || meta_param->step    != itr->step)
          {
             RARCH_ERR("[Vulkan] Duplicate parameters found for \"%s\","
                   " but arguments do not match.\n", itr->id);
+            glslang_output_free(&output);
             return false;
          }
          add_parameter(pass_idx,
-               (unsigned)(itr - shader->parameters), meta_param.id);
+               (unsigned)(itr - shader->parameters), meta_param->id);
       }
       else
       {
          video_shader_parameter *param =
             &shader->parameters[shader->num_parameters];
-         strlcpy(param->id, meta_param.id.c_str(), sizeof(param->id));
-         strlcpy(param->desc, meta_param.desc.c_str(), sizeof(param->desc));
-         param->initial = meta_param.initial;
-         param->minimum = meta_param.minimum;
-         param->maximum = meta_param.maximum;
-         param->step    = meta_param.step;
-         add_parameter(pass_idx, shader->num_parameters, meta_param.id);
+         strlcpy(param->id, meta_param->id, sizeof(param->id));
+         strlcpy(param->desc, meta_param->desc, sizeof(param->desc));
+         param->initial = meta_param->initial;
+         param->minimum = meta_param->minimum;
+         param->maximum = meta_param->maximum;
+         param->step    = meta_param->step;
+         add_parameter(pass_idx, shader->num_parameters, meta_param->id);
          shader->num_parameters++;
       }
    }
 
    /* ---- Set SPIRV on the pass ---- */
    set_shader(pass_idx, VK_SHADER_STAGE_VERTEX_BIT,
-         output.vertex.data(), output.vertex.size());
+         output.vertex, output.vertex_len);
    set_shader(pass_idx, VK_SHADER_STAGE_FRAGMENT_BIT,
-         output.fragment.data(), output.fragment.size());
+         output.fragment, output.fragment_len);
 
    set_frame_count_period(pass_idx, pass->frame_count_mod);
 
    /* ---- Pass name ---- */
-   if (!output.meta.name.empty())
-      set_pass_name(pass_idx, output.meta.name.c_str());
+   if (output.meta.name[0])
+      set_pass_name(pass_idx, output.meta.name);
    if (*pass->alias)
       set_pass_name(pass_idx, pass->alias);
 
@@ -2081,7 +2226,10 @@ bool vulkan_filter_chain::compile_full_pass(unsigned pass_idx,
    {
       alias_initialized = false;
       if (!init_alias_early())
+      {
+         glslang_output_free(&output);
          return false;
+      }
    }
 
    /* ---- Pass info (scale, filter, format) ---- */
@@ -2213,6 +2361,7 @@ bool vulkan_filter_chain::compile_full_pass(unsigned pass_idx,
    }
 
    set_pass_info(pass_idx, p_info);
+   glslang_output_free(&output);
 
    /* ---- Vulkan pipeline creation ---- */
    return init_single_pass(pass_idx);
@@ -2265,12 +2414,6 @@ void vulkan_filter_chain::set_input_texture(
       const vulkan_filter_chain_texture &texture)
 {
    input_texture = texture;
-}
-
-void vulkan_filter_chain::add_static_texture(
-      std::unique_ptr<StaticTexture> texture)
-{
-   common.luts.push_back(std::move(texture));
 }
 
 void vulkan_filter_chain::set_frame_count(uint64_t count)
@@ -2379,56 +2522,31 @@ void vulkan_filter_chain::set_pass_name(unsigned pass, const char *name)
    passes[pass]->set_name(name);
 }
 
-StaticTexture::StaticTexture(std::string id,
-      VkDevice device,
-      VkImage image,
-      VkImageView view,
-      VkDeviceMemory memory,
-      std::unique_ptr<Buffer> buffer,
-      unsigned width, unsigned height,
-      bool linear,
-      bool mipmap,
-      glslang_filter_chain_address address)
-   : device(device),
-     image(image),
-     view(view),
-     memory(memory),
-     buffer(std::move(buffer)),
-     id(std::move(id))
+bool vulkan_filter_chain::add_static_texture(
+      struct slang_static_texture *texture)
 {
-   texture.filter         = GLSLANG_FILTER_CHAIN_NEAREST;
-   texture.mip_filter     = GLSLANG_FILTER_CHAIN_NEAREST;
-   texture.address        = address;
-   texture.texture.image  = image;
-   texture.texture.view   = view;
-   texture.texture.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-   texture.texture.width  = width;
-   texture.texture.height = height;
-
-   if (linear)
-      texture.filter      = GLSLANG_FILTER_CHAIN_LINEAR;
-   if (mipmap && linear)
-      texture.mip_filter  = GLSLANG_FILTER_CHAIN_LINEAR;
+   struct slang_static_texture *new_luts = (struct slang_static_texture*)
+      realloc(common.luts, (common.num_luts + 1) * sizeof(*new_luts));
+   if (!new_luts)
+      return false;
+   common.luts                        = new_luts;
+   common.luts[common.num_luts++]     = *texture;
+   memset(texture, 0, sizeof(*texture));
+   return true;
 }
 
-StaticTexture::~StaticTexture()
-{
-   if (view != VK_NULL_HANDLE)
-      vkDestroyImageView(device, view, nullptr);
-   if (image != VK_NULL_HANDLE)
-      vkDestroyImage(device, image, nullptr);
-   if (memory != VK_NULL_HANDLE)
-      vkFreeMemory(device, memory, nullptr);
-}
 
-Buffer::Buffer(VkDevice device,
-      const VkPhysicalDeviceMemoryProperties &mem_props,
-      size_t len, VkBufferUsageFlags usage) :
-   device(device), size(len)
+static bool slang_buffer_init(struct slang_buffer *buf,
+      VkDevice device, const VkPhysicalDeviceMemoryProperties &mem_props,
+      size_t len, VkBufferUsageFlags usage)
 {
    VkBufferCreateInfo info;
    VkMemoryRequirements mem_reqs;
    VkMemoryAllocateInfo alloc;
+
+   buf->device = device;
+   buf->size   = len;
+   buf->mapped = nullptr;
 
    info.sType                 = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
    info.pNext                 = NULL;
@@ -2438,14 +2556,14 @@ Buffer::Buffer(VkDevice device,
    info.sharingMode           = VK_SHARING_MODE_EXCLUSIVE;
    info.queueFamilyIndexCount = 0;
    info.pQueueFamilyIndices   = NULL;
-   if (vkCreateBuffer(device, &info, nullptr, &buffer) != VK_SUCCESS)
+   if (vkCreateBuffer(device, &info, nullptr, &buf->buffer) != VK_SUCCESS)
    {
-      buffer = VK_NULL_HANDLE;
-      memory = VK_NULL_HANDLE;
-      return;
+      buf->buffer = VK_NULL_HANDLE;
+      buf->memory = VK_NULL_HANDLE;
+      return false;
    }
 
-   vkGetBufferMemoryRequirements(device, buffer, &mem_reqs);
+   vkGetBufferMemoryRequirements(device, buf->buffer, &mem_reqs);
 
    alloc.sType                = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
    alloc.pNext                = NULL;
@@ -2455,46 +2573,51 @@ Buffer::Buffer(VkDevice device,
          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
          | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-   if (vkAllocateMemory(device, &alloc, NULL, &memory) != VK_SUCCESS)
+   if (vkAllocateMemory(device, &alloc, NULL, &buf->memory) != VK_SUCCESS)
    {
-      memory = VK_NULL_HANDLE;
-      return;
+      buf->memory = VK_NULL_HANDLE;
+      return false;
    }
 
-   vulkan_debug_mark_memory(device, memory);
-   vkBindBufferMemory(device, buffer, memory, 0);
+   vulkan_debug_mark_memory(device, buf->memory);
+   vkBindBufferMemory(device, buf->buffer, buf->memory, 0);
+   return true;
 }
 
-void *Buffer::map()
+static void *slang_buffer_map(struct slang_buffer *buf)
 {
-   if (!mapped)
+   if (!buf->mapped)
    {
-      if (vkMapMemory(device, memory, 0, size, 0, &mapped) != VK_SUCCESS)
+      if (vkMapMemory(buf->device, buf->memory, 0, buf->size, 0,
+               &buf->mapped) != VK_SUCCESS)
          return nullptr;
    }
-   return mapped;
+   return buf->mapped;
 }
 
-void Buffer::unmap()
+static void slang_buffer_unmap(struct slang_buffer *buf)
 {
-   if (mapped)
-      vkUnmapMemory(device, memory);
-   mapped = nullptr;
+   if (buf->mapped)
+      vkUnmapMemory(buf->device, buf->memory);
+   buf->mapped = nullptr;
 }
 
-Buffer::~Buffer()
+static void slang_buffer_free(struct slang_buffer *buf)
 {
-   if (mapped)
-      unmap();
-   if (memory != VK_NULL_HANDLE)
-      vkFreeMemory(device, memory, nullptr);
-   if (buffer != VK_NULL_HANDLE)
-      vkDestroyBuffer(device, buffer, nullptr);
+   if (buf->mapped)
+      slang_buffer_unmap(buf);
+   if (buf->memory != VK_NULL_HANDLE)
+      vkFreeMemory(buf->device, buf->memory, nullptr);
+   if (buf->buffer != VK_NULL_HANDLE)
+      vkDestroyBuffer(buf->device, buf->buffer, nullptr);
+   buf->buffer = VK_NULL_HANDLE;
+   buf->memory = VK_NULL_HANDLE;
 }
 
 Pass::~Pass()
 {
    clear_vk();
+   slang_reflection_free(&reflection);
 }
 
 void Pass::add_parameter(unsigned index, const std::string &id)
@@ -2641,8 +2764,9 @@ bool Pass::init_pipeline_layout()
    /* Semantic textures. */
    for (auto &semantic : reflection.semantic_textures)
    {
-      for (auto &texture : semantic)
+      for (size_t ti = 0; ti < semantic.size; ti++)
       {
+         const slang_texture_semantic_meta &texture = semantic.data[ti];
          VkShaderStageFlags stages = 0;
 
          if (!texture.texture)
@@ -2928,13 +3052,12 @@ CommonResources::CommonResources(VkDevice device,
       1.0f, +1.0f, 1.0f, 1.0f,
    };
 
-   vbo                          =
-      std::unique_ptr<Buffer>(new Buffer(device,
-               memory_properties, sizeof(vbo_data), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT));
+   slang_buffer_init(&vbo, device,
+         memory_properties, sizeof(vbo_data), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
 
-   ptr                          = vbo->map();
+   ptr                          = slang_buffer_map(&vbo);
    memcpy(ptr, vbo_data, sizeof(vbo_data));
-   vbo->unmap();
+   slang_buffer_unmap(&vbo);
 
    info.sType                   = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
    info.pNext                   = NULL;
@@ -3036,12 +3159,19 @@ CommonResources::CommonResources(VkDevice device,
 
 CommonResources::~CommonResources()
 {
+   slang_texture_semantic_name_map_free(&texture_semantic_map);
+   slang_texture_semantic_name_map_free(&texture_semantic_uniform_map);
    for (auto &i : samplers)
       for (auto &j : i)
          for (auto &k : j)
             if (k != VK_NULL_HANDLE)
                vkDestroySampler(device, k, nullptr);
    framebuffer_pool.drain(device);
+   slang_buffer_free(&vbo);
+   slang_buffer_free(&ubo);
+   for (size_t i = 0; i < num_luts; i++)
+      slang_static_texture_free(&luts[i]);
+   free(luts);
 }
 
 void Pass::allocate_buffers()
@@ -3081,7 +3211,7 @@ bool Pass::build()
 {
    unsigned i;
    unsigned j = 0;
-   std::unordered_map<std::string, slang_semantic_map> semantic_map;
+   slang_semantic_name_map semantic_map = {};
 
    framebuffer.reset();
    fb_feedback.reset();
@@ -3099,21 +3229,39 @@ bool Pass::build()
 
    for (i = 0; i < parameters.size(); i++)
    {
-      if (!slang_set_unique_map(
-               semantic_map, parameters[i].id,
-               slang_semantic_map{ SLANG_SEMANTIC_FLOAT_PARAMETER, j }))
+      if (!slang_semantic_name_map_set_unique(
+               &semantic_map, parameters[i].id.c_str(), NULL,
+               SLANG_SEMANTIC_FLOAT_PARAMETER, j))
+      {
+         slang_semantic_name_map_free(&semantic_map);
          return false;
+      }
       j++;
    }
 
-   reflection                              = slang_reflection{};
+   slang_reflection_free(&reflection);
+   if (!slang_reflection_init(&reflection))
+   {
+      slang_semantic_name_map_free(&semantic_map);
+      return false;
+   }
    reflection.pass_number                  = pass_number;
    reflection.texture_semantic_map         = &common->texture_semantic_map;
    reflection.texture_semantic_uniform_map = &common->texture_semantic_uniform_map;
    reflection.semantic_map                 = &semantic_map;
 
-   if (!slang_reflect_spirv(vertex_shader, fragment_shader, &reflection))
-      return false;
+   {
+      bool refl_ok = slang_reflect_spirv(
+            vertex_shader.data(), vertex_shader.size(),
+            fragment_shader.data(), fragment_shader.size(),
+            &reflection);
+      /* The parameter map is only needed during reflection; the
+       * reflection keeps a dangling pointer otherwise. */
+      slang_semantic_name_map_free(&semantic_map);
+      reflection.semantic_map = NULL;
+      if (!refl_ok)
+         return false;
+   }
 
    {
       auto &g = reflection.semantics[SLANG_SEMANTIC_GYROSCOPE];
@@ -3128,7 +3276,7 @@ bool Pass::build()
    /* Filter out parameters which we will never use anyways. */
    filtered_parameters.clear();
 
-   for (i = 0; i < reflection.semantic_float_parameters.size(); i++)
+   for (i = 0; i < reflection.num_float_parameters; i++)
    {
       if (reflection.semantic_float_parameters[i].uniform ||
           reflection.semantic_float_parameters[i].push_constant)
@@ -3143,12 +3291,12 @@ void Pass::set_semantic_texture(VkDescriptorSet set,
       VkDescriptorImageInfo *image_infos, VkWriteDescriptorSet *writes,
       unsigned &write_count)
 {
-   if (reflection.semantic_textures[semantic][0].texture
+   if (reflection.semantic_textures[semantic].data[0].texture
          && texture.texture.view != VK_NULL_HANDLE)
    {
       if (write_count >= VULKAN_MAX_DESCRIPTOR_WRITES)
          vulkan_flush_descriptor_writes(device, writes, &write_count);
-      VULKAN_PASS_SET_TEXTURE_BATCHED(set, common->samplers[texture.filter][texture.mip_filter][texture.address], reflection.semantic_textures[semantic][0].binding, texture.texture.view, texture.texture.layout, image_infos, writes, write_count);
+      VULKAN_PASS_SET_TEXTURE_BATCHED(set, common->samplers[texture.filter][texture.mip_filter][texture.address], reflection.semantic_textures[semantic].data[0].binding, texture.texture.view, texture.texture.layout, image_infos, writes, write_count);
    }
 }
 
@@ -3158,36 +3306,39 @@ void Pass::set_semantic_texture_array(VkDescriptorSet set,
       VkDescriptorImageInfo *image_infos, VkWriteDescriptorSet *writes,
       unsigned &write_count)
 {
-   if (index < reflection.semantic_textures[semantic].size() &&
-         reflection.semantic_textures[semantic][index].texture &&
+   if (index < reflection.semantic_textures[semantic].size &&
+         reflection.semantic_textures[semantic].data[index].texture &&
          texture.texture.view != VK_NULL_HANDLE)
    {
       if (write_count >= VULKAN_MAX_DESCRIPTOR_WRITES)
          vulkan_flush_descriptor_writes(device, writes, &write_count);
-      VULKAN_PASS_SET_TEXTURE_BATCHED(set, common->samplers[texture.filter][texture.mip_filter][texture.address],  reflection.semantic_textures[semantic][index].binding, texture.texture.view, texture.texture.layout, image_infos, writes, write_count);
+      VULKAN_PASS_SET_TEXTURE_BATCHED(set, common->samplers[texture.filter][texture.mip_filter][texture.address],  reflection.semantic_textures[semantic].data[index].binding, texture.texture.view, texture.texture.layout, image_infos, writes, write_count);
    }
 }
 
 void Pass::build_semantic_texture_array_vec4(uint8_t *data, slang_texture_semantic semantic,
       unsigned index, unsigned width, unsigned height)
 {
-   auto &refl = reflection.semantic_textures[semantic];
+   const slang_texture_semantic_array &arr =
+      reflection.semantic_textures[semantic];
+   const slang_texture_semantic_meta *refl;
 
-   if (index >= refl.size())
+   if (index >= arr.size)
       return;
+   refl = &arr.data[index];
 
-   if (data && refl[index].uniform)
+   if (data && refl->uniform)
    {
-      float *_data = reinterpret_cast<float *>(data + refl[index].ubo_offset);
+      float *_data = reinterpret_cast<float *>(data + refl->ubo_offset);
       _data[0]     = (float)(width);
       _data[1]     = (float)(height);
       _data[2]     = 1.0f / (float)(width);
       _data[3]     = 1.0f / (float)(height);
    }
 
-   if (refl[index].push_constant)
+   if (refl->push_constant)
    {
-      float *_data = reinterpret_cast<float *>(push.buffer.data() + (refl[index].push_constant_offset >> 2));
+      float *_data = reinterpret_cast<float *>(push.buffer.data() + (refl->push_constant_offset >> 2));
       _data[0]     = (float)(width);
       _data[1]     = (float)(height);
       _data[2]     = 1.0f / (float)(width);
@@ -3449,10 +3600,10 @@ void Pass::build_semantics(VkDescriptorSet set, uint8_t *buffer,
             batch_image_infos, batch_writes, batch_count);
 
    /* LUTs. */
-   for (i = 0; i < common->luts.size(); i++)
+   for (i = 0; i < common->num_luts; i++)
       build_semantic_texture_array(set, buffer,
             SLANG_TEXTURE_SEMANTIC_USER, i,
-            common->luts[i]->get_texture(),
+            common->luts[i].texture,
             batch_image_infos, batch_writes, batch_count);
 
    /* Flush all batched descriptor writes in a single driver call. */
@@ -3460,7 +3611,7 @@ void Pass::build_semantics(VkDescriptorSet set, uint8_t *buffer,
 }
 
 void Pass::build_commands(
-      DeferredDisposer &disposer,
+      struct deferred_disposes *disposer,
       VkCommandBuffer cmd,
       const Texture &original,
       const Texture &source,
@@ -3498,7 +3649,7 @@ void Pass::build_commands(
       VULKAN_SET_UNIFORM_BUFFER(device,
             sets[sync_index],
             reflection.ubo_binding,
-            common->ubo->get_buffer(),
+            common->ubo.buffer,
             ubo_offset + sync_index * common->ubo_sync_index_stride,
             reflection.ubo_size);
    }
@@ -3555,7 +3706,7 @@ void Pass::build_commands(
    {
       VkDeviceSize offset = final_pass ? 16 * sizeof(float) : 0;
       vkCmdBindVertexBuffers(cmd, 0, 1,
-            &common->vbo->get_buffer(),
+            &common->vbo.buffer,
             &offset);
    }
 
@@ -3845,7 +3996,7 @@ error:
    return false;
 }
 
-bool Framebuffer::set_size(DeferredDisposer &disposer, const Size2D &size, VkFormat format)
+bool Framebuffer::set_size(struct deferred_disposes *disposer, const Size2D &size, VkFormat format)
 {
    Size2D old_size               = this->size;
    VkFormat old_format           = this->format;
@@ -3890,33 +4041,26 @@ bool Framebuffer::set_size(DeferredDisposer &disposer, const Size2D &size, VkFor
    /* The replaced resources can still be referenced by an in-flight
     * command buffer. Defer their destruction together, including memory. */
    {
-      /* Copy the pool pointer to a local: the callback must not capture
-       * 'this', since the Framebuffer may be destroyed before it runs. The
-       * pool is chain-scoped and outlives every drain point. */
-      VkDevice d                   = device;
-      FramebufferMemoryPool *pool  = mem_pool;
-      disposer.defer([=]
-      {
-         if (old_framebuffer != VK_NULL_HANDLE)
-            vkDestroyFramebuffer(d, old_framebuffer, nullptr);
-         if (old_view != VK_NULL_HANDLE)
-            vkDestroyImageView(d, old_view, nullptr);
-         if (old_fb_view != VK_NULL_HANDLE)
-            vkDestroyImageView(d, old_fb_view, nullptr);
-         /* The image must be destroyed before its memory becomes reusable;
-          * the pool only ever hands out blocks whose image is already gone. */
-         if (old_image != VK_NULL_HANDLE)
-            vkDestroyImage(d, old_image, nullptr);
-         if (old_memory != VK_NULL_HANDLE)
-         {
-            if (pool)
-               pool->release(d, old_memory, old_memory_size, old_memory_type);
-            else
-               vkFreeMemory(d, old_memory, nullptr);
-         }
-         if (format_changed && old_render_pass != VK_NULL_HANDLE)
-            vkDestroyRenderPass(d, old_render_pass, nullptr);
-      });
+      /* The pool pointer is copied into the record: the record must not
+       * reference 'this', since the Framebuffer may be destroyed before
+       * the queue drains. The pool is chain-scoped and outlives every
+       * drain point. */
+      struct deferred_fb_dispose call;
+      call.device      = device;
+      call.pool        = mem_pool;
+      call.framebuffer = old_framebuffer;
+      call.view        = old_view;
+      call.fb_view     = old_fb_view;
+      call.image       = old_image;
+      call.memory      = old_memory;
+      call.memory_size = old_memory_size;
+      call.memory_type = old_memory_type;
+      call.render_pass = format_changed ? old_render_pass : VK_NULL_HANDLE;
+      /* On queue failure the resources must NOT be destroyed here - an
+       * in-flight command buffer can still reference them; leaking is
+       * the safe direction. (The vector terminated the process here.) */
+      if (!deferred_disposes_push(disposer, &call))
+         RARCH_ERR("[Vulkan] Failed to defer framebuffer disposal, leaking replaced resources.\n");
    }
 
    return true;
@@ -4000,7 +4144,10 @@ vulkan_filter_chain_t *vulkan_filter_chain_create_from_preset(
       const char *path, glslang_filter_chain_filter filter)
 {
    unsigned i;
+   glslang_output output;
    std::unique_ptr<video_shader> shader{ new video_shader() };
+
+   glslang_output_init(&output);
 
    if (!shader)
       return nullptr;
@@ -4033,7 +4180,6 @@ vulkan_filter_chain_t *vulkan_filter_chain_create_from_preset(
 
    for (i = 0; i < shader->passes; i++)
    {
-      glslang_output output;
       struct vulkan_filter_chain_pass_info pass_info;
       const video_shader_pass *pass      = &shader->pass[i];
       const video_shader_pass *next_pass =
@@ -4057,10 +4203,10 @@ vulkan_filter_chain_t *vulkan_filter_chain_create_from_preset(
          goto error;
       }
 
-      for (unsigned j = 0; j < output.meta.parameters.size(); j++)
+      for (size_t j = 0; j < output.meta.num_parameters; j++)
       {
          unsigned k;
-         auto &meta_param = output.meta.parameters[j];
+         const glslang_parameter *meta_param = &output.meta.parameters[j];
          video_shader_parameter *itr = NULL;
 
          if (shader->num_parameters >= GFX_MAX_PARAMETERS)
@@ -4069,13 +4215,19 @@ vulkan_filter_chain_t *vulkan_filter_chain_create_from_preset(
             goto error;
          }
 
-         /* Find existing parameter with matching id. */
-         for (k = 0; k < shader->num_parameters; k++)
+         /* Find existing parameter with matching id.  Gated memcmp:
+          * O(n^2) across Mega Bezel-scale parameter counts. */
          {
-            if (meta_param.id == shader->parameters[k].id)
+            size_t mid_len = strlen(meta_param->id);
+            for (k = 0; k < shader->num_parameters; k++)
             {
-               itr = &shader->parameters[k];
-               break;
+               const char *sid = shader->parameters[k].id;
+               if (sid[0] == meta_param->id[0] && sid[mid_len] == '\0'
+                     && !memcmp(sid, meta_param->id, mid_len))
+               {
+                  itr = &shader->parameters[k];
+                  break;
+               }
             }
          }
 
@@ -4083,46 +4235,46 @@ vulkan_filter_chain_t *vulkan_filter_chain_create_from_preset(
          {
             /* Allow duplicate #pragma parameter, but
              * only if they are exactly the same. */
-            if (   meta_param.desc    != itr->desc
-                || meta_param.initial != itr->initial
-                || meta_param.minimum != itr->minimum
-                || meta_param.maximum != itr->maximum
-                || meta_param.step    != itr->step)
+            if (   strcmp(meta_param->desc, itr->desc)
+                || meta_param->initial != itr->initial
+                || meta_param->minimum != itr->minimum
+                || meta_param->maximum != itr->maximum
+                || meta_param->step    != itr->step)
             {
                RARCH_ERR("[Vulkan] Duplicate parameters found for \"%s\", but arguments do not match.\n",
                      itr->id);
                goto error;
             }
-            chain->add_parameter(i, (unsigned)(itr - shader->parameters), meta_param.id);
+            chain->add_parameter(i, (unsigned)(itr - shader->parameters), meta_param->id);
          }
          else
          {
             video_shader_parameter *param = &shader->parameters[shader->num_parameters];
-            strlcpy(param->id, meta_param.id.c_str(), sizeof(param->id));
-            strlcpy(param->desc, meta_param.desc.c_str(), sizeof(param->desc));
-            param->initial = meta_param.initial;
-            param->minimum = meta_param.minimum;
-            param->maximum = meta_param.maximum;
-            param->step    = meta_param.step;
-            chain->add_parameter(i, shader->num_parameters, meta_param.id);
+            strlcpy(param->id, meta_param->id, sizeof(param->id));
+            strlcpy(param->desc, meta_param->desc, sizeof(param->desc));
+            param->initial = meta_param->initial;
+            param->minimum = meta_param->minimum;
+            param->maximum = meta_param->maximum;
+            param->step    = meta_param->step;
+            chain->add_parameter(i, shader->num_parameters, meta_param->id);
             shader->num_parameters++;
          }
       }
 
       chain->set_shader(i,
             VK_SHADER_STAGE_VERTEX_BIT,
-            output.vertex.data(),
-            output.vertex.size());
+            output.vertex,
+            output.vertex_len);
 
       chain->set_shader(i,
             VK_SHADER_STAGE_FRAGMENT_BIT,
-            output.fragment.data(),
-            output.fragment.size());
+            output.fragment,
+            output.fragment_len);
 
       chain->set_frame_count_period(i, pass->frame_count_mod);
 
-      if (!output.meta.name.empty())
-         chain->set_pass_name(i, output.meta.name.c_str());
+      if (output.meta.name[0])
+         chain->set_pass_name(i, output.meta.name);
 
       /* Preset overrides. */
       if (*pass->alias)
@@ -4273,6 +4425,7 @@ vulkan_filter_chain_t *vulkan_filter_chain_create_from_preset(
       }
 
       chain->set_pass_info(i, pass_info);
+      glslang_output_free(&output);
    }
    }   /* include cache scope: freed here, and on any error exit above */
 
@@ -4316,6 +4469,7 @@ vulkan_filter_chain_t *vulkan_filter_chain_create_from_preset(
    return chain.release();
 
 error:
+   glslang_output_free(&output);
    return nullptr;
 }
 

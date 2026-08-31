@@ -25,7 +25,8 @@
 #include <lists/string_list.h>
 #include <file/file_path.h>
 #include <formats/logiqx_dat.h>
-#include <formats/m3u_file.h>
+#include <formats/rm3u.h>
+#include <formats/rm3u_stream.h>
 #include <encodings/crc32.h>
 #include <streams/interface_stream.h>
 #include <streams/file_stream.h>
@@ -172,6 +173,7 @@ enum db_state_flags_enum
    DB_STATE_FLAG_SIZE_CHECKED             = (1 << 4)
 };
 
+#ifdef HAVE_LIBRETRODB
 /* Ceiling on the crc and serial indexes a single scan may hold.
  *
  * Taken as a share of what is actually free rather than from a
@@ -216,6 +218,7 @@ static size_t task_database_index_budget(void)
 
    return (size_t)share;
 }
+#endif
 
 typedef struct database_state_handle
 {
@@ -405,9 +408,9 @@ static void task_database_scan_console_output(const char *label, const char *db_
       unsigned green  = FOREGROUND_GREEN;
       unsigned yellow = FOREGROUND_RED | FOREGROUND_GREEN;
       unsigned reset  = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE;
-      size_t _len     = strlcpy(string, " ", sizeof(string));
+      size_t _len     = strlcpy_lit(string, " ", sizeof(string));
       _len += strlcpy(string + _len, prefix, sizeof(string) - _len);
-      _len += strlcpy(string + _len, " ",    sizeof(string) - _len);
+      _len += strlcpy_lit(string + _len, " ",    sizeof(string) - _len);
       SetConsoleTextAttribute(con, (add) ? green : (db_name) ? yellow : red);
       WriteConsole(con, string, _len, NULL, NULL);
       SetConsoleTextAttribute(con, reset);
@@ -424,18 +427,18 @@ static void task_database_scan_console_output(const char *label, const char *db_
          _len += strlcpy(string + _len, green, sizeof(string) - _len);
       else
          _len += strlcpy(string + _len, (db_name) ? yellow : red, sizeof(string) - _len);
-      _len    += strlcpy(string + _len, " ",    sizeof(string) - _len);
+      _len    += strlcpy_lit(string + _len, " ",    sizeof(string) - _len);
       _len    += strlcpy(string + _len, prefix, sizeof(string) - _len);
-      _len    += strlcpy(string + _len, " ",    sizeof(string) - _len);
+      _len    += strlcpy_lit(string + _len, " ",    sizeof(string) - _len);
       strlcpy(string + _len, reset,  sizeof(string) - _len);
       fputs(string, stdout);
    }
 #endif
    else
    {
-      size_t _len     = strlcpy(string, " ", sizeof(string));
+      size_t _len     = strlcpy_lit(string, " ", sizeof(string));
       _len += strlcpy(string + _len, prefix, sizeof(string) - _len);
-      strlcpy(string + _len, " ", sizeof(string) - _len);
+      strlcpy_lit(string + _len, " ", sizeof(string) - _len);
       fputs(string, stdout);
    }
 
@@ -663,26 +666,26 @@ static void task_database_iterate_m3u(
    char first_matched_db[NAME_MAX_LENGTH];
    char first_matched_crc[128];
    char collapsed_title[NAME_MAX_LENGTH];
-   m3u_file_t *m3u_file = NULL;
+   rm3u_t *m3u = NULL;
 
    first_matched_db[0] = '\0';
    first_matched_crc[0] = '\0';
    collapsed_title[0] = '\0';
 
    /* Open M3U file */
-   if (!(m3u_file = m3u_file_init(m3u_path)))
+   if (!(m3u = rm3u_load_filestream(m3u_path)))
    {
       RARCH_ERR("[Scanner] Failed to open M3U file: \"%s\".\n", m3u_path);
       return;
    }
 
    /* Scan each referenced file and check if it's in scan_results */
-   for (i = 0; i < m3u_file_get_size(m3u_file); i++)
+   for (i = 0; i < rm3u_get_size(m3u); i++)
    {
-      m3u_file_entry_t *entry = NULL;
+      rm3u_entry_t *entry = NULL;
       const char *ref_path = NULL;
 
-      if (!m3u_file_get_entry(m3u_file, i, &entry))
+      if (!rm3u_get_entry(m3u, i, &entry))
          continue;
 
       ref_path = entry->full_path;
@@ -741,7 +744,7 @@ static void task_database_iterate_m3u(
       }
    }
 
-   m3u_file_free(m3u_file);
+   rm3u_free(m3u);
 
    /* If we found at least one match, add M3U entry */
    if (found_match)
@@ -1141,7 +1144,7 @@ static enum scan_verdict database_info_list_iterate_found_match(
    if (*db_state->serial)
    {
       size_t _len = strlcpy(db_crc, db_state->serial, db_crc_len);
-      strlcpy(db_crc  + _len,
+      strlcpy_lit(db_crc  + _len,
             "|serial",
             db_crc_len - _len);
    }
@@ -2157,7 +2160,7 @@ static bool manual_scan_end_flush_tick(
       /* ...except for M3U, since the processing occurs at the end,
          we overwrite any previous m3u entry (which has same file,
          but less descriptive label, database, crc */
-      is_m3u        = m3u_file_is_m3u(result->entry_path);
+      is_m3u        = rm3u_is_m3u_filestream(result->entry_path);
       /* will_add records the path as present exactly when this
        * result is pushed below: when absent (the push is
        * unconditional), and in the m3u-present case the path
@@ -3190,7 +3193,7 @@ static void task_manual_content_scan_handler(retro_task_t *task)
                   manual_scan->content_list_index].data;
 
             /* Check if this is an M3U file and add to list for post-processing */
-            if (m3u_file_is_m3u(content_path))
+            if (rm3u_is_m3u_filestream(content_path))
             {
                union string_list_elem_attr attr;
                attr.i = 0;
@@ -3355,7 +3358,7 @@ static void task_manual_content_scan_handler(retro_task_t *task)
                }
                /* If this is an M3U file, add it to the
                 * M3U list for later processing */
-               if (m3u_file_is_m3u(content_path))
+               if (rm3u_is_m3u_filestream(content_path))
                {
                   union string_list_elem_attr attr;
                   attr.i = 0;

@@ -99,7 +99,7 @@ SOURCES_C := \
 	$(CORE_DIR)/playlist.c \
 	$(CORE_DIR)/manual_content_scan.c \
 	$(CORE_DIR)/verbosity.c \
-	$(LIBRETRO_COMM_DIR)/formats/m3u/m3u_file.c \
+	$(LIBRETRO_COMM_DIR)/formats/m3u/rm3u.c \
 	$(LIBRETRO_COMM_DIR)/formats/logiqx_dat/logiqx_dat.c \
 	$(CORE_DIR)/libretro-db/bintree.c \
 	$(CORE_DIR)/libretro-db/libretrodb.c \
@@ -130,6 +130,7 @@ SOURCES_C := \
 	$(LIBRETRO_COMM_DIR)/streams/interface_stream.c \
 	$(LIBRETRO_COMM_DIR)/streams/memory_stream.c \
 	$(LIBRETRO_COMM_DIR)/streams/file_stream.c \
+	$(LIBRETRO_COMM_DIR)/string/rstrtod.c \
 	$(LIBRETRO_COMM_DIR)/streams/rzip_stream.c \
 	$(LIBRETRO_COMM_DIR)/streams/trans_stream.c \
 	$(LIBRETRO_COMM_DIR)/streams/trans_stream_pipe.c \

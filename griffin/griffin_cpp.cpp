@@ -76,10 +76,36 @@ VIDEO DRIVER
 #include "../deps/SPIRV-Cross/spirv_glsl.cpp"
 #include "../deps/SPIRV-Cross/spirv_msl.cpp"
 #include "../deps/SPIRV-Cross/spirv_parser.cpp"
+/* The C API wrapper compiles its backend sections only when these
+ * are defined truthy.  INVARIANT: each SPIRV_CROSS_C_API_* macro must
+ * be truthy exactly when the matching backend source is amalgamated
+ * above - a wrapper section compiled against an absent backend is an
+ * undefined-symbol link failure on every lane lacking that backend's
+ * feature flag (spirv_hlsl.cpp is HAVE_HLSL-gated; glsl and msl are
+ * unconditional here). */
+#ifndef SPIRV_CROSS_C_API_GLSL
+#define SPIRV_CROSS_C_API_GLSL 1
+#endif
+#ifndef SPIRV_CROSS_C_API_HLSL
+#if defined(HAVE_HLSL)
+#define SPIRV_CROSS_C_API_HLSL 1
+#else
+#define SPIRV_CROSS_C_API_HLSL 0
+#endif
+#endif
+#ifndef SPIRV_CROSS_C_API_MSL
+#define SPIRV_CROSS_C_API_MSL 1
+#endif
+#ifndef SPIRV_CROSS_C_API_CPP
+#define SPIRV_CROSS_C_API_CPP 0
+#endif
+#ifndef SPIRV_CROSS_C_API_REFLECT
+#define SPIRV_CROSS_C_API_REFLECT 0
+#endif
+#include "../deps/SPIRV-Cross/spirv_cross_c.cpp"
 #include "../deps/SPIRV-Cross/spirv_cross_parsed_ir.cpp"
 #ifdef HAVE_SLANG
-#include "../gfx/drivers_shader/slang_process.cpp"
-#include "../gfx/drivers_shader/slang_cache.cpp"
+
 #endif
 #endif
 

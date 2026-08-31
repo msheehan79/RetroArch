@@ -113,10 +113,6 @@ CONSOLE EXTENSIONS
 ============================================================ */
 #ifdef RARCH_CONSOLE
 
-#ifdef HW_DOL
-#include "../memory/ngc/ssaram.c"
-#endif
-
 #ifdef INTERNAL_LIBOGC
 #include "../wii/libogc/libfat/cache.c"
 #include "../wii/libogc/libfat/directory.c"
@@ -268,9 +264,7 @@ ACHIEVEMENTS
 /*============================================================
 MD5
 ============================================================ */
-#ifndef __APPLE__
 #include "../libretro-common/utils/md5.c"
-#endif
 
 /*============================================================
 CHEATS
@@ -410,6 +404,8 @@ VIDEO SHADERS
 
 #ifdef HAVE_SLANG
 #include "../gfx/drivers_shader/glslang_util.c"
+#include "../gfx/drivers_shader/slang_cache.c"
+#include "../gfx/drivers_shader/slang_process.c"
 #endif
 
 /* Must mirror the guard on shader_gl3.cpp in griffin_cpp.cpp exactly:
@@ -468,6 +464,7 @@ VIDEO IMAGE
 #include "../libretro-common/formats/png/rpng.c"
 #include "../libretro-common/formats/png/rpng_apng.c"
 #include "../libretro-common/formats/png/rpng_encode.c"
+#include "../libretro-common/file/rpng_file.c"
 #endif
 #ifdef HAVE_RJPEG
 #include "../libretro-common/formats/jpeg/rjpeg.c"
@@ -514,6 +511,7 @@ VIDEO IMAGE
 #endif
 
 #include "../libretro-common/formats/bmp/rbmp_encode.c"
+#include "../libretro-common/file/rbmp_file.c"
 
 #ifdef HAVE_RWAV
 #include "../libretro-common/formats/wav/rwav.c"
@@ -1184,8 +1182,10 @@ FILE
 #include "../libretro-common/lists/dir_list.c"
 #include "../libretro-common/lists/string_list.c"
 #include "../libretro-common/lists/nested_list.c"
+#include "../libretro-common/memory/mempool.c"
 #include "../libretro-common/lists/file_list.c"
 #include "../libretro-common/file/retro_dirent.c"
+#include "../libretro-common/file/file_watch.c"
 #include "../libretro-common/streams/file_stream.c"
 #include "../libretro-common/streams/file_stream_transforms.c"
 #include "../libretro-common/streams/interface_stream.c"
@@ -1206,6 +1206,7 @@ FILE
 #include "../libretro-common/vfs/vfs_implementation_saf.c"
 #endif
 
+#include "../libretro-common/string/rstrtod.c"
 #include "../libretro-common/string/stdstring.c"
 #if defined(__linux__)
 #endif
@@ -1467,6 +1468,7 @@ MENU
 #endif
 
 #ifdef HAVE_MENU
+#include "../menu/menu_str.c"
 #include "../menu/menu_driver.c"
 #include "../menu/menu_setting.c"
 #if defined(HAVE_MATERIALUI) || defined(HAVE_XMB) || defined(HAVE_OZONE)
@@ -1696,6 +1698,7 @@ SSL
 #include "../deps/mbedtls/ripemd160.c"
 #include "../deps/mbedtls/rsa.c"
 #include "../deps/mbedtls/sha1.c"
+#include "../deps/mbedtls/sha_alt.c"
 #include "../deps/mbedtls/sha256.c"
 #include "../deps/mbedtls/sha512.c"
 #include "../deps/mbedtls/threading.c"
@@ -1744,7 +1747,7 @@ DISK CONTROL INTERFACE
 /*============================================================
 MISC FILE FORMATS
 ============================================================ */
-#include "../libretro-common/formats/m3u/m3u_file.c"
+#include "../libretro-common/formats/m3u/rm3u.c"
 
 /*============================================================
 TIME
@@ -1830,7 +1833,6 @@ SMB CLIENT
 #include "../deps/libsmb2/lib/krb5-wrapper.c"
 #include "../deps/libsmb2/lib/libsmb2.c"
 #include "../deps/libsmb2/lib/md4c.c"
-#include "../deps/libsmb2/lib/md5.c"
 #include "../deps/libsmb2/lib/ntlmssp.c"
 #include "../deps/libsmb2/lib/pdu.c"
 #include "../deps/libsmb2/lib/sha1.c"
