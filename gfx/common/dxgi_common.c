@@ -15,6 +15,7 @@
 
 #include <compat/strl.h>
 #include <retro_environment.h>
+#include <retro_atomic.h>
 #include <gfx/scaler/pixconv.h>
 
 #ifdef HAVE_CONFIG_H
@@ -32,10 +33,41 @@
 #ifdef __cplusplus
 extern const GUID DECLSPEC_SELECTANY libretro_IID_IDXGIOutput6 = { 0x068346e8,0xaaec,
 0x4b84, {0xad,0xd7,0x13,0x7f,0x51,0x3f,0x77,0xa1 } };
+extern const GUID DECLSPEC_SELECTANY libretro_IID_IDXGISwapChain3 = { 0x94d99bdb,0xf1f8,
+0x4ab0, {0xb2,0x36,0x7d,0xa0,0x17,0x0e,0xda,0xb1 } };
+extern const GUID DECLSPEC_SELECTANY libretro_IID_IDXGISwapChain4 = { 0x3d585d5a,0xbd4a,
+0x489e, {0xb1,0xf4,0x3d,0xbc,0xb6,0x45,0x2f,0xfb } };
 #else
 const GUID DECLSPEC_SELECTANY libretro_IID_IDXGIOutput6 = { 0x068346e8,0xaaec,
 0x4b84, {0xad,0xd7,0x13,0x7f,0x51,0x3f,0x77,0xa1 } };
+const GUID DECLSPEC_SELECTANY libretro_IID_IDXGISwapChain3 = { 0x94d99bdb,0xf1f8,
+0x4ab0, {0xb2,0x36,0x7d,0xa0,0x17,0x0e,0xda,0xb1 } };
+const GUID DECLSPEC_SELECTANY libretro_IID_IDXGISwapChain4 = { 0x3d585d5a,0xbd4a,
+0x489e, {0xb1,0xf4,0x3d,0xbc,0xb6,0x45,0x2f,0xfb } };
 #endif
+
+/* The drivers create an IDXGISwapChain and hold it as an
+ * IDXGISwapChain4: on the DXGI runtime of Windows 10 and later every
+ * swapchain is one. On DXGI 1.1 or 1.2 - Windows 7 and 8, and Wine -
+ * the object ends at IDXGISwapChain or IDXGISwapChain1, and a call
+ * through a later slot reads past its vtable. So before a call that
+ * IDXGISwapChain3 or 4 introduced, ask the object whether it is one;
+ * the reference the query hands back is dropped at once, the caller
+ * keeps using the pointer it has. */
+static bool dxgi_swapchain_implements(DXGISwapChain chain, const GUID *iid)
+{
+   void *probe = NULL;
+#ifdef __cplusplus
+   if (FAILED(chain->QueryInterface(*iid, &probe)) || !probe)
+      return false;
+   ((IUnknown*)probe)->Release();
+#else
+   if (FAILED(chain->lpVtbl->QueryInterface(chain, iid, &probe)) || !probe)
+      return false;
+   ((IUnknown*)probe)->lpVtbl->Release((IUnknown*)probe);
+#endif
+   return true;
+}
 
 #ifdef HAVE_DXGI_HDR
 typedef enum hdr_root_constants
@@ -2582,6 +2614,21 @@ bool dxgi_display_hdr_active(HWND hwnd)
    return ret;
 }
 
+/* Set from the frame-path HDR check when the display cannot do HDR;
+ * consumed on the main thread. */
+static retro_atomic_int_t dxgi_hdr_disable_pending;
+
+void dxgi_hdr_process_deferred_disable(void)
+{
+   if (retro_atomic_load_acquire_int(&dxgi_hdr_disable_pending))
+   {
+      settings_t *settings           = config_get_ptr();
+      retro_atomic_store_relaxed_int(&dxgi_hdr_disable_pending, 0);
+      settings->flags               |= SETTINGS_FLG_MODIFIED;
+      settings->uints.video_hdr_mode = 0;
+   }
+}
+
 #ifdef __WINRT__
 bool dxgi_check_display_hdr_support(DXGIFactory2 factory, HWND hwnd)
 #else
@@ -2773,18 +2820,22 @@ bool dxgi_check_display_hdr_support(DXGIFactory1 factory, HWND hwnd)
 	  * guarantees both paths. */
          if (supported)
          {
-            uint32_t disp_flags = video_driver_get_disp_flags();
-            disp_flags |= VIDEO_FLAG_HDR_SUPPORT;
-            disp_flags |= VIDEO_FLAG_HDR10_SUPPORT;
-            disp_flags |= VIDEO_FLAG_SCRGB_SUPPORT;
-            video_driver_set_disp_flags(disp_flags);
+            video_driver_modify_disp_flags(
+                  VIDEO_FLAG_HDR_SUPPORT
+                | VIDEO_FLAG_HDR10_SUPPORT
+                | VIDEO_FLAG_SCRGB_SUPPORT, 0);
          }
          else
          {
-            settings_t*    settings           = config_get_ptr();
-            settings->flags                  |= SETTINGS_FLG_MODIFIED;
-            settings->uints.video_hdr_mode    = 0;
-            video_driver_set_disp_flags(video_driver_get_disp_flags() & ~(VIDEO_FLAG_HDR_SUPPORT | VIDEO_FLAG_HDR10_SUPPORT | VIDEO_FLAG_SCRGB_SUPPORT));
+            /* Force-disabling the HDR setting is a settings write,
+             * and this check runs from the D3D frame paths - the
+             * video thread under the wrapper, main running free.
+             * Flag it; the main thread applies it in
+             * dxgi_hdr_process_deferred_disable() on its next
+             * video_driver_frame. The disp-flags clear is atomic
+             * and stays here. */
+            retro_atomic_store_release_int(&dxgi_hdr_disable_pending, 1);
+            video_driver_modify_disp_flags(0, VIDEO_FLAG_HDR_SUPPORT | VIDEO_FLAG_HDR10_SUPPORT | VIDEO_FLAG_SCRGB_SUPPORT);
          }
       }
       else
@@ -2816,6 +2867,12 @@ void dxgi_swapchain_color_space(
       DXGI_COLOR_SPACE_TYPE *chain_color_space,
       DXGI_COLOR_SPACE_TYPE color_space)
 {
+   /* CheckColorSpaceSupport and SetColorSpace1 are IDXGISwapChain3's.
+    * A swapchain without them is on a runtime with no colour space
+    * to select: it presents what it always did. */
+   if (!chain_handle
+         || !dxgi_swapchain_implements(chain_handle, &libretro_IID_IDXGISwapChain3))
+      return;
    if (*chain_color_space != color_space)
    {
       UINT color_space_support = 0;
@@ -2876,6 +2933,10 @@ void dxgi_set_hdr_metadata(
    int selected_chroma                              = 0;
 
    if (!handle)
+      return;
+   /* SetHDRMetaData is IDXGISwapChain4's; a swapchain without it has
+    * no HDR metadata to set or to clear. */
+   if (!dxgi_swapchain_implements(handle, &libretro_IID_IDXGISwapChain4))
       return;
 
    /* Clear the hdr meta data if the monitor does not support HDR */

@@ -33,6 +33,9 @@
 #include <jni.h>
 #include <poll.h>
 #include <sched.h>
+/* struct android_app below is sized by DEFAULT_MAX_PADS; include its
+ * home rather than rely on whoever included this header first. */
+#include "../../input/input_driver.h"
 
 #include <android/looper.h>
 #include <android/configuration.h>
@@ -514,6 +517,11 @@ void android_display_server_reapply_mode(void);
  * by the input driver's poll, and a core reaches that poll from inside
  * retro_run(). No-op when nothing is pending. */
 void android_input_flush_pending_state(void);
+
+/* Dispatches an outstanding keypress haptic. Called from the runloop for
+ * the same reason as the flush above, and only from there: entering Java
+ * is only safe on the OS stack. No-op when nothing is pending. */
+void android_input_flush_pending_haptics(void);
 
 bool android_app_write_cmd(struct android_app *android_app, int8_t cmd);
 

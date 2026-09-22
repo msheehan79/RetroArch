@@ -27,6 +27,14 @@
 
 #include <defines/psp_defines.h>
 
+#if defined(PSP)
+/* The SDK header this driver's PSP path takes SceCtrlData, the button
+ * bits and the sceCtrl calls from. The VITA path includes its own
+ * below; without this one the file compiled only because griffin
+ * happens to include psp_input.c, which does, before it. */
+#include <pspctrl.h>
+#endif
+
 #ifdef HAVE_MENU
 #include "../../menu/menu_driver.h"
 #endif
@@ -307,6 +315,11 @@ static void psp_joypad_poll(void)
          continue;
 #endif
 #if defined(VITA)
+      /* The system keyboard (psp_input.c) is modal and reads the pad
+       * itself; the buttons that drive it must not also drive the
+       * menu behind it. */
+      if (input_state_get_ptr()->flags & INP_FLAG_NATIVE_KB_SHOWN)
+         continue;
       /* The touch panels stand in for L2/R2/L3/R3 in-game only.  In
        * the menu the front panel is the pointer and the rear one is
        * where the hands rest, and a trigger pressed from either is a

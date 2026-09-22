@@ -67,12 +67,55 @@ int rh265_video_drain(rh265_video *v);
 /* Active luma bit depth of the stream (8 or 10).  At 10 bits the
  * plane pointers reference uint16_t samples: cast the returned byte
  * pointer and index with the sample stride. */
+/* While @skip is set, a sub-layer non-reference picture (TRAIL_N and
+ * its kin) in the highest sub-layer is consumed without being decoded:
+ * the decode call returns 0 for it, as for any sample yielding no
+ * picture, and the stream moves on. Nothing can reference it, so what
+ * follows decodes unchanged. For a caller that has fallen behind its
+ * clock and would rather drop a frame than show every one late. */
+void rh265_video_set_skip_nonref(rh265_video *v, int skip);
+/* Whether the last decode call passed a picture over under that
+ * setting; its presentation slot has gone. */
+int rh265_video_dropped(const rh265_video *v);
+
 int rh265_video_bit_depth(const rh265_video *v);
 
 const uint8_t *rh265_video_plane(const rh265_video *v, int plane,
       int *stride, int *width, int *height);
 
 void rh265_video_close(rh265_video *v);
+
+/* Decode the CTB rows of a WPP picture (entropy_coding_sync, x265's
+ * default) on up to @threads threads: the calling thread and @pool
+ * (an rthreads tpool_t of at least threads - 1 threads) take rows as
+ * they come free, each row starting two CTBs behind the row above -
+ * the wavefront the syntax was coded for, so this changes when
+ * samples are written, never what they are. Pictures without WPP,
+ * with more than one slice, or with fewer than two rows decode as
+ * before. NULL or threads <= 1 restores single-threaded decoding.
+ * The pool is the caller's and must outlive every decode made while
+ * it is set. */
+/* For the decoder's own samples: how many times a reference read found
+ * the rows it needed not yet final. Zero on one thread by construction;
+ * a sample asserts it. */
+int rh265_video_ref_wait_misses(void);
+
+/* How many decode contexts the decoder keeps in rotation, 1 to 8: a
+ * new picture takes the next one round. Today the pictures still
+ * decode one after the other, so this changes which memory a picture
+ * uses and nothing else - which is what a sample proves the
+ * per-picture state complete with, before pictures decode
+ * concurrently. */
+void rh265_video_set_contexts(rh265_video *v, int n);
+
+/* Test knob: hold each row's publication for up to @max_yields thread
+ * yields, drawn at random, so that pictures reading from a picture in
+ * flight wait for their rows rather than nearly always finding them.
+ * Output must be byte-exact under it. 0 is off. Debug only. */
+void rh265_video_set_publish_delay(int max_yields);
+
+void rh265_video_set_thread_pool(rh265_video *v, void *pool,
+      unsigned threads);
 
 RETRO_END_DECLS
 

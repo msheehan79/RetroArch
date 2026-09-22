@@ -22,6 +22,7 @@
 #include <psp2/types.h>
 #include <psp2/kernel/sysmem.h>
 #include <psp2/display.h>
+#include <psp2/common_dialog.h>
 
 #include <retro_inline.h>
 #include <encodings/utf.h>
@@ -49,6 +50,7 @@
 #include "../../retroarch.h"
 #include "../../verbosity.h"
 #include "../../configuration.h"
+#include "../../input/input_osk.h"
 
 /* Forward declaration
    TODO/FIXME - check if this custom memcpy is genuinely more efficient */
@@ -474,7 +476,6 @@ static int gxm_switch_video_mode(gxm_video_mode_t video_mode)
 
       default:
          return -1;
-         break;
    }
 
    clip_rect_x_max = video_mode_data.width;
@@ -1561,7 +1562,8 @@ static void gfx_display_gxm_draw(gfx_display_ctx_draw_t *draw,
    if (!color)
       color           = &gxm_colors[0];
 
-   gxm_set_viewport(draw->x, draw->y, draw->width, draw->height);
+   gxm_set_viewport(draw->x, draw->y,
+         VIDEO_SCALE_W(draw->dims), VIDEO_SCALE_H(draw->dims));
    vertices = (gxm_texture_tint_vertex_t *)
       gxm_pool_memalign(
          draw->coords->vertices * sizeof(gxm_texture_tint_vertex_t),
@@ -2112,6 +2114,27 @@ static void gxm_update_viewport(vita_video_t* vita)
    vita->should_resize  = false;
 }
 
+/* A system common dialog (the keyboard psp_input.c opens) is drawn by
+ * the OS into the back buffer this frame is about to present, but only
+ * when asked, once per frame, after our scene has ended. The sync
+ * object orders its rendering after ours. */
+static void gxm_common_dialog_update(void)
+{
+   SceCommonDialogUpdateParam param;
+
+   memset(&param, 0, sizeof(param));
+   param.renderTarget.colorFormat      = DISPLAY_COLOR_FORMAT;
+   param.renderTarget.surfaceType      = SCE_GXM_COLOR_SURFACE_LINEAR;
+   param.renderTarget.width            = video_mode_data.width;
+   param.renderTarget.height           = video_mode_data.height;
+   param.renderTarget.strideInPixels   = video_mode_data.stride;
+   param.renderTarget.colorSurfaceData = displayBufferData[backBufferIndex];
+   param.renderTarget.depthSurfaceData = depthBufferData;
+   param.displaySyncObject             = displayBufferSync[backBufferIndex];
+
+   sceCommonDialogUpdate(&param);
+}
+
 static bool gxm_frame(void *data, const void *frame,
       unsigned width, unsigned height, uint64_t frame_count,
       unsigned pitch, const char *msg, video_frame_info_t *video_info)
@@ -2285,6 +2308,9 @@ static bool gxm_frame(void *data, const void *frame,
 
    sceGxmEndScene(gxm_context, NULL, NULL);
    drawing = 0;
+
+   if (input_osk_native_active())
+      gxm_common_dialog_update();
 
    sceGxmPadHeartbeat(&displaySurface[backBufferIndex],
          displayBufferSync[backBufferIndex]);
@@ -2964,6 +2990,7 @@ static void gxm_render_overlay(void *data)
 static const video_overlay_interface_t gxm_overlay_interface = {
    gxm_overlay_enable,
    gxm_overlay_load,
+   NULL, /* load_textures */
    gxm_overlay_tex_geom,
    gxm_overlay_vertex_geom,
    gxm_overlay_full_screen,
@@ -3030,6 +3057,7 @@ gfx_display_ctx_driver_t gfx_display_ctx_gxm = {
    &gxm_font,
    GFX_VIDEO_DRIVER_GXM,
    "vita2d",
+   true,
    true,
    gfx_display_gxm_scissor_begin,
    gfx_display_gxm_scissor_end

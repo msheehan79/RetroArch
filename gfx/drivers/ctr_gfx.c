@@ -302,9 +302,9 @@ static void gfx_display_ctr_draw(gfx_display_ctx_draw_t *draw,
    v     = ctr->vertex_cache.current++;
 
    v->x0 = draw->x;
-   v->y0 = 240 - draw->height - draw->y;
-   v->x1 = v->x0 + draw->width;
-   v->y1 = v->y0 + draw->height;
+   v->y0 = 240 - VIDEO_SCALE_H(draw->dims) - draw->y;
+   v->x1 = v->x0 + VIDEO_SCALE_W(draw->dims);
+   v->y1 = v->y0 + VIDEO_SCALE_H(draw->dims);
    v->u0 = 0;
    v->v0 = 0;
    v->u1 = texture->active_width;
@@ -2923,6 +2923,7 @@ static void ctr_render_overlay(ctr_video_t *ctr)
 static const video_overlay_interface_t ctr_overlay = {
    ctr_overlay_enable,
    ctr_overlay_load,
+   NULL, /* load_textures */
    ctr_overlay_tex_geom,
    ctr_overlay_vertex_geom,
    ctr_overlay_full_screen,
@@ -3054,6 +3055,7 @@ gfx_display_ctx_driver_t gfx_display_ctx_ctr = {
    GFX_VIDEO_DRIVER_CTR,
    "ctr",
    true,
+   false,
    NULL,
    NULL
 };

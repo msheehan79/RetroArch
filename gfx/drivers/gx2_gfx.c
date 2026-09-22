@@ -27,6 +27,8 @@
 #include <file/file_path.h>
 #include <string/stdstring.h>
 
+#include <compat/strl.h>
+
 #include "../../driver.h"
 #include "../../configuration.h"
 #include "../../verbosity.h"
@@ -429,17 +431,19 @@ static void gfx_display_wiiu_draw(gfx_display_ctx_draw_t *draw,
          /* Convert the libretro bottom-up coordinate system to GX2 - low y at
             the top of the screen, large y at the bottom
             The compiler will optimise 90% of this out anyway */
-         float y      = -(draw->y + draw->height - video_height);
+         unsigned dw  = VIDEO_SCALE_W(draw->dims);
+         unsigned dh  = VIDEO_SCALE_H(draw->dims);
+         float y      = -(draw->y + dh - video_height);
          /* Remember: this is a triangle strip, not a quad, draw in a Z shape
             Bottom-left, right, top-left, right */
-         v[0].pos.x   = (draw->x               ) / video_width;
-         v[0].pos.y   = (y       + draw->height) / video_height;
-         v[1].pos.x   = (draw->x + draw->width ) / video_width;
-         v[1].pos.y   = (y       + draw->height) / video_height;
-         v[2].pos.x   = (draw->x               ) / video_width;
-         v[2].pos.y   = (y                     ) / video_height;
-         v[3].pos.x   = (draw->x + draw->width ) / video_width;
-         v[3].pos.y   = (y                     ) / video_height;
+         v[0].pos.x   = (draw->x    ) / video_width;
+         v[0].pos.y   = (y       + dh) / video_height;
+         v[1].pos.x   = (draw->x + dw) / video_width;
+         v[1].pos.y   = (y       + dh) / video_height;
+         v[2].pos.x   = (draw->x    ) / video_width;
+         v[2].pos.y   = (y          ) / video_height;
+         v[3].pos.x   = (draw->x + dw) / video_width;
+         v[3].pos.y   = (y          ) / video_height;
       }
       else
       {
@@ -499,9 +503,9 @@ static void gfx_display_wiiu_draw(gfx_display_ctx_draw_t *draw,
       v                  = wiiu->vertex_cache.v + wiiu->vertex_cache.current;
       v->pos.x           = draw->x;
       v->pos.y           = wiiu->color_buffer.surface.height -
-                           draw->y - draw->height;
-      v->pos.width       = draw->width;
-      v->pos.height      = draw->height;
+                           draw->y - VIDEO_SCALE_H(draw->dims);
+      v->pos.width       = VIDEO_SCALE_W(draw->dims);
+      v->pos.height      = VIDEO_SCALE_H(draw->dims);
       v->coord.u         = 0.0f;
       v->coord.v         = 0.0f;
       v->coord.width     = 1.0f;
@@ -1535,6 +1539,7 @@ static const video_overlay_interface_t gx2_overlay_interface =
 {
    gx2_overlay_enable,
    gx2_overlay_load,
+   NULL, /* load_textures */
    gx2_overlay_tex_geom,
    gx2_overlay_vertex_geom,
    gx2_overlay_full_screen,
@@ -2706,6 +2711,7 @@ gfx_display_ctx_driver_t gfx_display_ctx_wiiu = {
    &gx2_font,
    GFX_VIDEO_DRIVER_WIIU,
    "gx2",
+   true,
    true,
    gfx_display_wiiu_scissor_begin,
    gfx_display_wiiu_scissor_end

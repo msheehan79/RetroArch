@@ -20,6 +20,8 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include <retro_posix_source.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
@@ -180,6 +182,19 @@ struct http_t
    struct conn_pool_entry *conn;
    bool ssl;
    bool request_sent;
+   /* The last net_http_update() stopped because the transport had
+    * nothing more to give, rather than stopping on its own drain
+    * budget with bytes still buffered. Only then is there anything for
+    * net_http_wait() to wait on; stopping on the budget means the next
+    * call has work waiting for it already. */
+   bool blocked;
+   /* conn came out of the pool rather than being opened for this
+    * request; such a connection may have been closed by the peer
+    * while idle. */
+   bool conn_reused;
+   /* The request has already been replayed once on a fresh
+    * connection; it will not be replayed again. */
+   bool retried;
 
    request_t request;
    response_t response;
@@ -203,22 +218,46 @@ struct http_connection_t
    bool ssl;
 };
 
+/* The OS error left by the socket call that just failed, for
+ * net_http_failure().  Only where the platform keeps it in errno (or
+ * WSAGetLastError on Windows); elsewhere 0, meaning "no code". */
+static int net_http_socket_error(void)
+{
+#if defined(_WIN32)
+   return WSAGetLastError();
+#elif defined(__PS3__) || defined(VITA) || defined(WIIU) \
+      || defined(GEKKO) || defined(_3DS)
+   return 0;
+#else
+   return errno;
+#endif
+}
+
+/* Record the socket error for the first failing stage.  Must run
+ * straight after the failed call, before anything can overwrite it. */
+static void net_http_note_socket_error(struct http_t *state)
+{
+   if (state && !state->fail_stage)
+      state->fail_code = net_http_socket_error();
+}
+
 static void net_http_log_transport_state(
       struct http_t *state, const char *stage, ssize_t io_len)
 {
+#if defined(DEBUG)
+   int port           = 0;
+   int fd             = -1;
+   int connected      = 0;
+   const char *method = "GET";
+   const char *domain = "<null>";
+   const char *path   = "<null>";
+#endif
    /* Keep the first failure: a connect that fails on one address and
     * then another says the same thing twice, while a later stage
     * failing because of an earlier one says less. */
    if (state && !state->fail_stage)
       state->fail_stage = stage;
 #if defined(DEBUG)
-   const char *method = "GET";
-   const char *domain = "<null>";
-   const char *path   = "<null>";
-   int port           = 0;
-   int fd             = -1;
-   int connected      = 0;
-
    if (state)
    {
       method = state->request.method ? state->request.method : "GET";
@@ -249,10 +288,6 @@ static void net_http_log_transport_state(
          errno,
          strerror(errno));
    fflush(stderr);
-#else
-   (void)state;
-   (void)stage;
-   (void)io_len;
 #endif
 }
 
@@ -276,6 +311,10 @@ static const retro_time_t dns_cache_timeout = 1000 /* usec/ms */ * 1000 /* ms/s 
 static const retro_time_t dns_cache_fail_timeout = 1000 /* usec/ms */ * 1000 /* ms/s */ * 30 /* s */;
 #ifdef HAVE_THREADS
 static slock_t *dns_cache_lock = NULL;
+/* Signalled by net_http_resolve() once an entry carries a result, so
+ * that a caller with nothing else to wait on can wait for the lookup
+ * rather than spin over it.  See net_http_wait_dns(). */
+static scond_t *dns_cache_cond = NULL;
 #define LOCK_DNS_CACHE() slock_lock(dns_cache_lock)
 #define UNLOCK_DNS_CACHE() slock_unlock(dns_cache_lock)
 #else
@@ -1059,6 +1098,10 @@ static void net_http_resolve(void *data)
       LOCK_DNS_CACHE();
       entry->valid = true;
       entry->addr = NULL;
+#ifdef HAVE_THREADS
+      if (dns_cache_cond)
+         scond_broadcast(dns_cache_cond);
+#endif
       UNLOCK_DNS_CACHE();
       free(domain);
       return;
@@ -1072,6 +1115,10 @@ static void net_http_resolve(void *data)
    LOCK_DNS_CACHE();
    entry->valid = true;
    entry->addr = addr;
+#ifdef HAVE_THREADS
+   if (dns_cache_cond)
+      scond_broadcast(dns_cache_cond);
+#endif
    UNLOCK_DNS_CACHE();
 }
 
@@ -1083,6 +1130,8 @@ static bool net_http_new_socket(struct http_t *state)
 #ifdef HAVE_THREADS
    if (!dns_cache_lock)
       dns_cache_lock = slock_new();
+   if (!dns_cache_cond)
+      dns_cache_cond = scond_new();
    LOCK_DNS_CACHE();
 
    /* need some place to create this, I guess */
@@ -1107,7 +1156,10 @@ static bool net_http_new_socket(struct http_t *state)
          if (fd >= 0)
             state->conn = net_http_conn_pool_add(state->request.domain, state->request.port, fd, state->ssl);
          else
+         {
+            net_http_note_socket_error(state);
             net_http_log_transport_state(state, "socket_create_failed", -1);
+         }
          /* still waiting on thread */
          UNLOCK_DNS_CACHE();
          return (fd >= 0);
@@ -1233,6 +1285,7 @@ static bool net_http_connect(struct http_t *state)
             return true;
          }
 
+         net_http_note_socket_error(state);
          net_http_log_transport_state(state, "socket_connect_failed", -1);
          socket_close(conn->fd);
       }
@@ -1242,6 +1295,43 @@ static bool net_http_connect(struct http_t *state)
       state->err  = true;
       return false;
    }
+}
+
+/**
+ * net_http_retry_fresh:
+ *
+ * A pooled connection that the peer closed while it sat idle fails
+ * either on the first send or on the first recv, before a single
+ * byte of the response has arrived.  Replay the request once on a
+ * fresh connection in that case.  Nothing is retried once any
+ * response byte has been seen, and a connection opened for this
+ * request is never retried at all.
+ *
+ * @return true if the request has been rearmed and net_http_update()
+ * should keep going, false if the failure stands.
+ **/
+static bool net_http_retry_fresh(struct http_t *state)
+{
+   if (!state->conn_reused || state->retried || state->response.pos)
+      return false;
+
+   net_http_log_transport_state(state, "retry_on_fresh_connection", -1);
+
+   if (state->conn)
+      net_http_conn_pool_remove(state->conn);
+
+   state->conn            = NULL;
+   state->conn_reused     = false;
+   state->retried         = true;
+   state->err             = false;
+   state->request_sent    = false;
+   state->fail_stage      = NULL;
+   state->fail_code       = 0;
+   state->response.part   = P_HEADER_TOP;
+   state->response.pos    = 0;
+   state->response.len    = 0;
+   state->response.status = -1;
+   return true;
 }
 
 static void net_http_send_str(
@@ -1265,6 +1355,7 @@ static void net_http_send_str(
       if (!socket_send_all_blocking(
                   state->conn->fd, text, text_size, true))
       {
+         net_http_note_socket_error(state);
          state->err = true;
          net_http_log_transport_state(state, "socket_send_failed", -1);
       }
@@ -1274,6 +1365,18 @@ static void net_http_send_str(
 static bool net_http_send_request(struct http_t *state)
 {
    struct request *request = (struct request*)&state->request;
+
+   if (     request->method
+         && request->method[0] == 'P'
+         && request->method[1] == 'O' /* POST, not PUT */
+         && !request->postdata
+         && request->contentlength > 0)
+   {
+      state->err = true;
+      net_http_log_transport_state(state, "post_without_payload", -1);
+      return true;
+   }
+
    /* This is a bit lazy, but it works. */
    if (request->method)
    {
@@ -1310,14 +1413,6 @@ static bool net_http_send_request(struct http_t *state)
    {
       size_t _len;
       int    len;
-      if (     !request->postdata
-            && request->method[1] == 'O' /* POST, not PUT */
-            && request->contentlength > 0)
-      {
-         state->err = true;
-         net_http_log_transport_state(state, "post_without_payload", -1);
-         return true;
-      }
       if (!request->headers && !request->contenttype)
          net_http_send_str(state,
                "Content-Type: application/x-www-form-urlencoded\r\n",
@@ -1991,6 +2086,7 @@ static bool net_http_redirect(struct http_t *state, const char *location)
       }
    }
    state->request_sent       = false;
+   state->retried            = false;
    state->response.part      = P_HEADER_TOP;
    state->response.status    = -1;
    /* Start with larger buffer to reduce reallocations */
@@ -2044,6 +2140,8 @@ void net_http_init(void)
 #ifdef HAVE_THREADS
    if (!dns_cache_lock)
       dns_cache_lock = slock_new();
+   if (!dns_cache_cond)
+      dns_cache_cond = scond_new();
    if (!conn_pool_lock)
       conn_pool_lock = slock_new();
 #endif
@@ -2082,6 +2180,13 @@ void net_http_deinit(void)
    LOCK_DNS_CACHE();
    entries   = dns_cache;
    dns_cache = NULL;
+#ifdef HAVE_THREADS
+   /* A waiter in net_http_wait_dns() re-reads the list on wake, so
+    * emptying it is what releases it; broadcast under the lock so it
+    * cannot miss the wake between the unlink and the wait. */
+   if (dns_cache_cond)
+      scond_broadcast(dns_cache_cond);
+#endif
    UNLOCK_DNS_CACHE();
 
    while (entries)
@@ -2099,6 +2204,11 @@ void net_http_deinit(void)
    }
 
 #ifdef HAVE_THREADS
+   if (dns_cache_cond)
+   {
+      scond_free(dns_cache_cond);
+      dns_cache_cond = NULL;
+   }
    if (dns_cache_lock)
    {
       slock_free(dns_cache_lock);
@@ -2118,6 +2228,119 @@ void net_http_deinit(void)
  * @return true if it's done, or if something broke.
  * @total will be 0 if it's not known.
  **/
+/**
+ * net_http_wait:
+ * @state            : transfer handle
+ * @timeout_ms       : longest time to wait, in milliseconds
+ *
+ * Waits until @state's transport can make progress again, for callers
+ * that drive a transfer from a thread of their own rather than once per
+ * frame. Such a caller has nothing to pace it, and a fixed sleep
+ * between passes costs its full duration whether the answer arrived in
+ * a microsecond or not at all.
+ *
+ * Returns immediately when there is nothing to wait for: before a
+ * socket exists, after an error, and - importantly - when the last pass
+ * stopped on its own drain budget, which leaves bytes already buffered
+ * for the next one.
+ *
+ * The wait is for writability while connecting or sending and for
+ * readability once the request is out.
+ *
+ * Returns: true when the transport reported itself ready or no wait was
+ * needed, false when @timeout_ms elapsed first.
+ **/
+#ifdef HAVE_THREADS
+/* Is a lookup for @domain:@port still outstanding? Caller holds the
+ * DNS cache lock. */
+static bool net_http_dns_pending(const char *domain, int port)
+{
+   struct dns_cache_entry *entry;
+
+   for (entry = dns_cache; entry; entry = entry->next)
+   {
+      if (port == entry->port && strcmp(entry->domain, domain) == 0)
+         return !entry->valid;
+   }
+   return false;
+}
+
+/* The wait for a transfer that has no socket yet because its name is
+ * still being resolved. There is nothing to select() on in that state,
+ * so the wait is on the cache signal instead: the resolver publishes
+ * its result under the cache lock and broadcasts, and until that lands
+ * the caller costs nothing. Without it a threaded caller, which has
+ * nothing else pacing it, spins between here and net_http_update() for
+ * the whole lookup. */
+static bool net_http_wait_dns(struct http_t *state, int timeout_ms)
+{
+   retro_time_t deadline;
+   bool pending;
+
+   if (!dns_cache_lock || !dns_cache_cond)
+      return true;
+
+   deadline = cpu_features_get_time_usec() + (retro_time_t)timeout_ms * 1000;
+
+   LOCK_DNS_CACHE();
+
+   for (;;)
+   {
+      retro_time_t now;
+
+      /* Re-read rather than hold an entry across the wait: the lock is
+       * released while waiting, and net_http_deinit() unlinks and frees
+       * every entry in that window. An emptied cache reads as not
+       * pending, which is the right answer - there is no lookup left to
+       * wait for. */
+      pending = net_http_dns_pending(state->request.domain,
+            state->request.port);
+      if (!pending)
+         break;
+
+      now = cpu_features_get_time_usec();
+      if (now >= deadline)
+         break;
+
+      scond_wait_timeout(dns_cache_cond, dns_cache_lock, deadline - now);
+   }
+
+   UNLOCK_DNS_CACHE();
+
+   return !pending;
+}
+#endif
+
+bool net_http_wait(struct http_t *state, int timeout_ms)
+{
+   bool rd = false;
+   bool wr = false;
+
+   if (!state || state->err || !state->blocked)
+      return true;
+   if (!state->conn)
+   {
+#ifdef HAVE_THREADS
+      return net_http_wait_dns(state, timeout_ms);
+#else
+      /* Resolution runs inline, so the result is already published. */
+      return true;
+#endif
+   }
+   if (state->conn->fd < 0)
+      return true;
+
+   if (state->conn->connected && state->request_sent)
+      rd = true;
+   else
+      wr = true;
+
+   if (!socket_wait(state->conn->fd, &rd, &wr, timeout_ms))
+      return false;
+
+   return rd || wr;
+}
+
 bool net_http_update(struct http_t *state, size_t* progress, size_t* total)
 {
    struct response *response;
@@ -2126,13 +2349,24 @@ bool net_http_update(struct http_t *state, size_t* progress, size_t* total)
    if (!state || state->err)
       return true;
 
+   /* Re-established below wherever the pass ends without progress. */
+   state->blocked = false;
+
    if (!state->conn)
    {
-      state->conn = net_http_conn_pool_find(state->request.domain, state->request.port);
+      /* A replayed request goes out on a connection of its own;
+       * the pool is what it is recovering from. */
+      if (!state->retried)
+         state->conn = net_http_conn_pool_find(state->request.domain, state->request.port);
+      state->conn_reused = (state->conn != NULL);
       if (!state->conn)
       {
          if (!net_http_new_socket(state))
             state->err = true;
+         /* No progress this pass: either the resolver is still
+          * running or the socket has only just been created. Both
+          * are states net_http_wait() waits out. */
+         state->blocked = !state->err;
          return state->err;
       }
    }
@@ -2141,11 +2375,17 @@ bool net_http_update(struct http_t *state, size_t* progress, size_t* total)
    {
       if (!net_http_connect(state))
          state->err = true;
+      state->blocked = !state->err;
       return state->err;
    }
 
    if (!state->request_sent)
-      return net_http_send_request(state);
+   {
+      if (net_http_send_request(state) && net_http_retry_fresh(state))
+         return false;
+      state->blocked = !state->err && !state->request_sent;
+      return state->err;
+   }
 
    response = (struct response*)&state->response;
 
@@ -2258,6 +2498,8 @@ bool net_http_update(struct http_t *state, size_t* progress, size_t* total)
             {
                net_http_log_transport_state(state,
                      "receive_header_failed", _len);
+               if (net_http_retry_fresh(state))
+                  return false;
                net_http_conn_pool_remove(state->conn);
                state->conn      = NULL;
                state->err       = true;
@@ -2289,9 +2531,18 @@ bool net_http_update(struct http_t *state, size_t* progress, size_t* total)
          /* _len == 0 is EAGAIN: the socket is drained for now.
           * _len < 0 past the header stage is a close, which the body
           * parser above has already turned into P_DONE for T_FULL and
-          * into an error otherwise; either way we are finished here. */
+          * into an error otherwise; either way we are finished here.
+          *
+          * This is the one exit that leaves nothing buffered anywhere,
+          * including inside the TLS layer: the SSL read reports EAGAIN
+          * only once it has handed over every decrypted byte it holds.
+          * Breaking on the budget below leaves bytes waiting, so only
+          * this exit marks the transfer as blocked. */
          if (_len <= 0)
+         {
+            state->blocked = (_len == 0);
             break;
+         }
 
          drained += (size_t)_len;
          if (     drained >= NET_HTTP_DRAIN_BUDGET

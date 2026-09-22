@@ -19,6 +19,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <android/native_window.h>
+#include <sys/system_properties.h>
+
+#include <compat/strl.h>
 
 #include "../../verbosity.h"
 #include "../video_display_server.h"
@@ -534,16 +537,29 @@ dpi_fallback:
 
 bool android_display_has_focus(void *data)
 {
-   bool                    focused = false;
    struct android_app *android_app = (struct android_app*)g_android;
    if (!android_app)
       return true;
 
-   slock_lock(android_app->mutex);
-   focused = !retro_atomic_load_acquire_int(&android_app->unfocused);
-   slock_unlock(android_app->mutex);
+   /* The focus commands publish this with a release store
+    * (android_input_poll_main_cmd), so the acquire load carries the
+    * ordering by itself and there is no second field here to read
+    * with it. The input poll reaches this every frame. */
+   return !retro_atomic_load_acquire_int(&android_app->unfocused);
+}
 
-   return focused;
+/* The thread's looper is ident-based - prepared with
+ * ALOOPER_PREPARE_ALLOW_NON_CALLBACKS - so a poll here reports
+ * readiness and consumes nothing; the next android_input_poll
+ * dispatches the ident as it always did. Input, app commands and the
+ * sensor queue all arrive through this one object. */
+static bool android_display_server_idle_wait(void *data, unsigned ms)
+{
+   (void)data;
+   if (!ALooper_forThread())
+      return false;
+   ALooper_pollOnce((int)ms, NULL, NULL, NULL);
+   return true;
 }
 
 const video_display_server_t dispserv_android = {
@@ -563,5 +579,19 @@ const video_display_server_t dispserv_android = {
    android_display_server_get_video_output_next,
    android_display_get_metrics,
    android_display_server_get_flags,
+   NULL, /* get_scanline */
+   NULL, /* wait_vblank */
+   NULL, /* modeline_list_outputs */
+   NULL, /* modeline_open */
+   NULL, /* modeline_close */
+   NULL, /* modeline_caps */
+   NULL, /* modeline_enum */
+   NULL, /* modeline_add */
+   NULL, /* modeline_update */
+   NULL, /* modeline_delete */
+   NULL, /* modeline_set */
+   NULL, /* modeline_flush */
+   NULL, /* get_edid */
+   android_display_server_idle_wait,
    "android"
 };

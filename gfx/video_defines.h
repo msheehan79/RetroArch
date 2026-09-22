@@ -19,6 +19,12 @@
 
 #include <retro_common_api.h>
 
+/* One-cycle alias: builds that still pass the old switch get the
+ * in-tree modeline engine. */
+#if defined(HAVE_CRTSWITCHRES) && !defined(HAVE_MODELINE)
+#define HAVE_MODELINE
+#endif
+
 RETRO_BEGIN_DECLS
 
 enum
@@ -102,6 +108,15 @@ enum video_rotation_type
    VIDEO_ROTATION_270_DEG
 };
 
+/* How hard to push for exclusive fullscreen where the platform lets the
+ * application decide (VK_EXT_full_screen_exclusive on Windows Vulkan). */
+enum video_fse_negotiation
+{
+   VIDEO_FSE_RELAXED = 0, /* hint only; the driver may decline */
+   VIDEO_FSE_FORCED,      /* take it explicitly and hold it    */
+   VIDEO_FSE_LAST
+};
+
 enum autoswitch_refresh_rate
 {
    AUTOSWITCH_REFRESH_RATE_EXCLUSIVE_FULLSCREEN = 0,
@@ -131,7 +146,10 @@ enum rarch_display_type
    RARCH_DISPLAY_WIN32,
    RARCH_DISPLAY_WAYLAND,
    RARCH_DISPLAY_OSX,
-   RARCH_DISPLAY_KMS
+   RARCH_DISPLAY_KMS,
+   /* Legacy Raspberry Pi firmware stack: no window, modes through
+    * the firmware's gencmd interface */
+   RARCH_DISPLAY_VIDEOCORE
 };
 
 
@@ -169,6 +187,19 @@ enum text_alignment
 #define FONT_COLOR_GET_ALPHA(col) (((col) >>  0) & 0xff)
 #define FONT_COLOR_ARGB_TO_RGBA(col) ( (((col) >> 24) & 0xff) | (((unsigned)(col) << 8) & 0xffffff00) )
 
+/* A size pair in one word: width in the high half, height in the low,
+ * clamped so neither axis can write over the other. Anything past
+ * 65535 an axis is beyond what a driver here allocates. */
+#define VIDEO_SCALE_DIM_MAX 0xffffu
+/* Each axis becomes unsigned before it is compared, so a caller holding
+ * its sizes in int or float packs without a cast of its own. */
+#define VIDEO_SCALE_CLAMP(v) \
+   ((unsigned)(v) > VIDEO_SCALE_DIM_MAX ? VIDEO_SCALE_DIM_MAX : (unsigned)(v))
+#define VIDEO_SCALE_PACK(w, h) \
+   ((VIDEO_SCALE_CLAMP(w) << 16) | VIDEO_SCALE_CLAMP(h))
+#define VIDEO_SCALE_W(d) (((unsigned)(d) >> 16) & VIDEO_SCALE_DIM_MAX)
+#define VIDEO_SCALE_H(d)  ((unsigned)(d)        & VIDEO_SCALE_DIM_MAX)
+
 typedef struct video_viewport
 {
    int x;
@@ -183,11 +214,6 @@ typedef struct gfx_ctx_flags
 {
    uint32_t flags;
 } gfx_ctx_flags_t;
-
-struct Size2D
-{
-   unsigned width, height;
-};
 
 enum gfx_ctx_api
 {

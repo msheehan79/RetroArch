@@ -561,8 +561,7 @@ static void gx_set_video_mode(void *data, unsigned fbWidth, unsigned lines,
 
    {
       gfx_display_t *p_disp   = disp_get_ptr();
-      p_disp->framebuf_width  = new_fb_width;
-      p_disp->framebuf_height = new_fb_height;
+      p_disp->framebuf_dims   = VIDEO_SCALE_PACK(new_fb_width, new_fb_height);
       p_disp->framebuf_pitch  = new_fb_pitch;
    }
 
@@ -678,8 +677,8 @@ static void init_texture(gx_video_t *gx, unsigned width, unsigned height,
    width                  &= ~3;
    height                 &= ~3;
 
-   fb_width                = p_disp->framebuf_width;
-   fb_height               = p_disp->framebuf_height;
+   fb_width                = VIDEO_SCALE_W(p_disp->framebuf_dims);
+   fb_height               = VIDEO_SCALE_H(p_disp->framebuf_dims);
 
    GX_InitTexObj(fb_ptr, g_tex.data, width, height,
          (gx->rgb32)
@@ -1517,6 +1516,7 @@ static void gx_render_overlay(void *data)
 static const video_overlay_interface_t gx_overlay_interface = {
    gx_overlay_enable,
    gx_overlay_load,
+   NULL, /* load_textures */
    gx_overlay_tex_geom,
    gx_overlay_vertex_geom,
    gx_overlay_full_screen,
@@ -1588,14 +1588,13 @@ static bool gx_frame(void *data, const void *frame,
       video_frame_info_t *video_info)
 {
    char fps_text_buf[128];
-   settings_t               *settings = config_get_ptr();
    gx_video_t *gx                     = (gx_video_t*)data;
    u8                       clear_efb = GX_FALSE;
    uint32_t level                     = 0;
-   unsigned overscan_corr_top         = settings->uints.video_overscan_correction_top;
-   unsigned overscan_corr_bottom      = settings->uints.video_overscan_correction_bottom;
-   bool video_smooth                  = settings->bools.video_smooth;
-   unsigned video_aspect_ratio_idx    = settings->uints.video_aspect_ratio_idx;
+   unsigned overscan_corr_top         = video_info->overscan_correction_top;
+   unsigned overscan_corr_bottom      = video_info->overscan_correction_bottom;
+   bool video_smooth                  = video_info->video_smooth;
+   unsigned video_aspect_ratio_idx    = video_info->aspect_ratio_idx;
 #ifdef HAVE_MENU
    bool menu_is_alive = (video_info->menu_st_flags & MENU_ST_FLAG_ALIVE) ? true : false;
 #endif
@@ -1658,8 +1657,8 @@ static bool gx_frame(void *data, const void *frame,
    if (gx->menu_texture_enable && gx->menu_data)
    {
       gfx_display_t *p_disp   = disp_get_ptr();
-      unsigned fb_width       = p_disp->framebuf_width;
-      unsigned fb_height      = p_disp->framebuf_height;
+      unsigned fb_width       = VIDEO_SCALE_W(p_disp->framebuf_dims);
+      unsigned fb_height      = VIDEO_SCALE_H(p_disp->framebuf_dims);
       unsigned fb_pitch       = p_disp->framebuf_pitch;
 
       convert_texture16(

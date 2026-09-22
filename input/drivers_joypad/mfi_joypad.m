@@ -14,6 +14,7 @@
  *  If not, see <http://www.gnu.org/licenses/>.
  */
 #include <stdint.h>
+#include "../../apple_runtime.h"
 #include <unistd.h>
 #include <string.h>
 #include <limits.h>
@@ -29,6 +30,9 @@
 #include "../../verbosity.h"
 #include "../../input/input_driver.h"
 #include "../../tasks/tasks_internal.h"
+#ifdef __MACH__
+#include <TargetConditionals.h>
+#endif
 
 #ifndef MAX_MFI_CONTROLLERS
 #define MAX_MFI_CONTROLLERS 4
@@ -67,7 +71,7 @@ static bool mfi_inited;
 
 static bool apple_gamecontroller_available(void)
 {
-#if defined(IOS)
+#if TARGET_OS_IPHONE
     int major, minor;
     get_ios_version(&major, &minor);
 
@@ -99,7 +103,7 @@ static void apple_gamecontroller_joypad_poll_internal(GCController *controller, 
      * The menu button can be pressed/unpressed
      * like any other button in iOS 13,
      * so no need to passthrough anything */
-    if (@available(iOS 13, *))
+    if (apple_runtime_available(0, APPLE_RUNTIME_VER(13, 0, 0), 0))
         *buttons             = 0;
     else
     {
@@ -112,7 +116,7 @@ static void apple_gamecontroller_joypad_poll_internal(GCController *controller, 
     }
     memset(mfi_axes[slot], 0, sizeof(mfi_axes[0]));
 
-    if (@available(macOS 11, iOS 14, tvOS 14, *))
+    if (apple_runtime_available(APPLE_RUNTIME_VER(11, 0, 0), APPLE_RUNTIME_VER(14, 0, 0), APPLE_RUNTIME_VER(14, 0, 0)))
     {
         GCPhysicalInputProfile *profile = controller.physicalInputProfile;
 
@@ -157,20 +161,20 @@ static void apple_gamecontroller_joypad_poll_internal(GCController *controller, 
         *buttons             |= gp.rightShoulder.pressed   ? (1 << RETRO_DEVICE_ID_JOYPAD_R)     : 0;
         *buttons             |= gp.leftTrigger.pressed     ? (1 << RETRO_DEVICE_ID_JOYPAD_L2)    : 0;
         *buttons             |= gp.rightTrigger.pressed    ? (1 << RETRO_DEVICE_ID_JOYPAD_R2)    : 0;
-#if OSX || __IPHONE_OS_VERSION_MAX_ALLOWED >= 120100 || __TV_OS_VERSION_MAX_ALLOWED >= 120100
-        if (@available(iOS 12.1, macOS 10.15, tvOS 12.1, *))
+#if TARGET_OS_OSX || __IPHONE_OS_VERSION_MAX_ALLOWED >= 120100 || __TV_OS_VERSION_MAX_ALLOWED >= 120100
+        if (apple_runtime_available(APPLE_RUNTIME_VER(10, 15, 0), APPLE_RUNTIME_VER(12, 1, 0), APPLE_RUNTIME_VER(12, 1, 0)))
         {
             *buttons         |= gp.leftThumbstickButton.pressed ? (1 << RETRO_DEVICE_ID_JOYPAD_L3) : 0;
             *buttons         |= gp.rightThumbstickButton.pressed ? (1 << RETRO_DEVICE_ID_JOYPAD_R3) : 0;
         }
 #endif
 
-#if OSX || __IPHONE_OS_VERSION_MAX_ALLOWED >= 130000 || __TV_OS_VERSION_MAX_ALLOWED >= 130000
-        if (@available(iOS 13, tvOS 13, macOS 10.15, *))
+#if TARGET_OS_OSX || __IPHONE_OS_VERSION_MAX_ALLOWED >= 130000 || __TV_OS_VERSION_MAX_ALLOWED >= 130000
+        if (apple_runtime_available(APPLE_RUNTIME_VER(10, 15, 0), APPLE_RUNTIME_VER(13, 0, 0), APPLE_RUNTIME_VER(13, 0, 0)))
         {
             *buttons             |= gp.buttonOptions.pressed ? (1 << RETRO_DEVICE_ID_JOYPAD_SELECT) : 0;
             *buttons             |= gp.buttonMenu.pressed    ? (1 << RETRO_DEVICE_ID_JOYPAD_START)  : 0;
-            if (@available(iOS 14, tvOS 14, macOS 11, *))
+            if (apple_runtime_available(APPLE_RUNTIME_VER(11, 0, 0), APPLE_RUNTIME_VER(14, 0, 0), APPLE_RUNTIME_VER(14, 0, 0)))
                 *buttons         |= gp.buttonHome.pressed    ? (1 << RARCH_FIRST_CUSTOM_BIND)       : 0;
             else
             {
@@ -246,7 +250,7 @@ static void apple_gamecontroller_joypad_register(GCController *controller)
     /* Don't let tvOS or iOS do anything with **our** buttons!!
      * iOS will start a screen recording if you hold or doubleclick
      * the OPTIONS button, we don't want that. */
-    if (@available(iOS 14.0, tvOS 14.0, macOS 11, *))
+    if (apple_runtime_available(APPLE_RUNTIME_VER(11, 0, 0), APPLE_RUNTIME_VER(14, 0, 0), APPLE_RUNTIME_VER(14, 0, 0)))
     {
         GCExtendedGamepad *gp = (GCExtendedGamepad *)controller.extendedGamepad;
         gp.buttonOptions.preferredSystemGestureState = GCSystemGestureStateDisabled;
@@ -272,7 +276,7 @@ static void apple_gamecontroller_joypad_register(GCController *controller)
     /* controllerPausedHandler is deprecated in favor
      * of being able to deal with the menu
      * button as any other button */
-    if (@available(iOS 13, *))
+    if (apple_runtime_available(0, APPLE_RUNTIME_VER(13, 0, 0), 0))
        return;
 
 /* GCGamepad is deprecated */
@@ -514,7 +518,7 @@ static id<CHHapticPatternPlayer> apple_gamecontroller_create_haptic_player(
 
 - (void)shutdown
 {
-    if (@available(iOS 14, tvOS 14, macOS 11, *))
+    if (apple_runtime_available(APPLE_RUNTIME_VER(11, 0, 0), APPLE_RUNTIME_VER(14, 0, 0), APPLE_RUNTIME_VER(14, 0, 0)))
     {
         /* When controller disconnects, the haptic engine is already stopped
          * by the system, so don't bother trying to cancel players - just
@@ -536,7 +540,7 @@ static id<CHHapticPatternPlayer> apple_gamecontroller_create_haptic_player(
 
 static void apple_gamecontroller_joypad_setup_haptics(GCController *controller)
 {
-    if (@available(iOS 14, tvOS 14, macOS 11, *))
+    if (apple_runtime_available(APPLE_RUNTIME_VER(11, 0, 0), APPLE_RUNTIME_VER(14, 0, 0), APPLE_RUNTIME_VER(14, 0, 0)))
         mfi_rumblers[controller.playerIndex] = [[MFIRumbleController alloc] initWithController:controller];
 }
 
@@ -559,7 +563,7 @@ static void apple_gamecontroller_joypad_connect(GCController *controller)
         return;
     }
 
-    if (@available(macOS 11, iOS 14, tvOS 14, *))
+    if (apple_runtime_available(APPLE_RUNTIME_VER(11, 0, 0), APPLE_RUNTIME_VER(14, 0, 0), APPLE_RUNTIME_VER(14, 0, 0)))
     {
         RARCH_DBG("[MFI] New controller connected:\n");
         RARCH_DBG("[MFI]    name: %s\n", [controller.vendorName UTF8String]);
@@ -754,7 +758,7 @@ void *apple_gamecontroller_joypad_init(void *data)
       return (void*)-1;
 
 #if TARGET_OS_IOS
-   if (@available(iOS 14, *))
+   if (apple_runtime_available(0, APPLE_RUNTIME_VER(14, 0, 0), 0))
       apple_gamecontroller_device_haptics_setup();
 #endif
 
@@ -783,7 +787,7 @@ void *apple_gamecontroller_joypad_init(void *data)
 static void apple_gamecontroller_joypad_destroy(void)
 {
 #if TARGET_OS_IOS
-   if (@available(iOS 14, *))
+   if (apple_runtime_available(0, APPLE_RUNTIME_VER(14, 0, 0), 0))
    {
       if (deviceHapticEngine)
       {
@@ -888,7 +892,7 @@ static bool apple_gamecontroller_joypad_set_rumble(unsigned pad,
     settings_t *settings            = config_get_ptr();
     bool enable_device_vibration    = settings->bools.enable_device_vibration;
 
-    if (@available(iOS 14, *))
+    if (apple_runtime_available(0, APPLE_RUNTIME_VER(14, 0, 0), 0))
     {
         if (enable_device_vibration && pad == 0)
         {
@@ -934,7 +938,7 @@ static bool apple_gamecontroller_joypad_set_rumble(unsigned pad,
 
     if (pad < MAX_MFI_CONTROLLERS)
     {
-       if (@available(iOS 14, tvOS 14, macOS 11, *))
+       if (apple_runtime_available(APPLE_RUNTIME_VER(11, 0, 0), APPLE_RUNTIME_VER(14, 0, 0), APPLE_RUNTIME_VER(14, 0, 0)))
        {
           MFIRumbleController *rumble = mfi_rumblers[pad];
           if (rumble)

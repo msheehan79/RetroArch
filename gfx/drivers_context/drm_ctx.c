@@ -46,6 +46,9 @@
 #include "../../verbosity.h"
 #include "../../frontend/frontend_driver.h"
 #include "../common/drm_common.h"
+#ifdef HAVE_WAYLAND
+#include "../common/wayland_drm_lease.h"
+#endif
 
 #ifdef HAVE_EGL
 #include "../common/egl_common.h"
@@ -80,6 +83,8 @@ typedef struct gfx_ctx_drm_data
    unsigned fb_height;
    bool core_hw_context_enable;
    bool waiting_for_flip;
+   bool leased;
+   bool lease_lost;
 } gfx_ctx_drm_data_t;
 
 struct drm_fb
@@ -345,7 +350,7 @@ error:
 /* Get the mode from video_state */
 bool gfx_ctx_drm_get_mode_from_video_state(drmModeModeInfoPtr modeInfo)
 {
-#ifdef HAVE_CRTSWITCHRES
+#ifdef HAVE_MODELINE
    video_driver_state_t *video_st = video_state_get_ptr();
    if (video_st->crt_switch_st.vdisplay >= 1)
    {
@@ -627,6 +632,16 @@ static bool gfx_ctx_drm_queue_flip(gfx_ctx_drm_data_t *drm)
          DRM_MODE_PAGE_FLIP_EVENT, &drm->waiting_for_flip) == 0)
       return true;
 
+#ifdef HAVE_WAYLAND
+   /* A lease the compositor has taken back fails here first, and
+    * looks like any other flip failure until it is asked. Once. */
+   if (drm->leased && !drm->lease_lost && wayland_drm_lease_revoked())
+   {
+      drm->lease_lost = true;
+      RARCH_ERR("[KMS] The compositor took the leased connector back.\n");
+   }
+#endif
+
    /* Failed to queue page flip. */
    return false;
 }
@@ -731,6 +746,15 @@ static void free_drm_resources(gfx_ctx_drm_data_t *drm)
 
    if (drm->fd >= 0)
    {
+#ifdef HAVE_WAYLAND
+      if (drm->leased)
+      {
+         /* The lease owns the descriptor, and master came with it */
+         wayland_drm_lease_release();
+         drm->leased = false;
+      }
+      else
+#endif
       if (g_drm_fd >= 0)
       {
          drmDropMaster(g_drm_fd);
@@ -738,6 +762,7 @@ static void free_drm_resources(gfx_ctx_drm_data_t *drm)
       }
    }
 
+   drm->fd            = -1;
    drm->gbm_surface   = NULL;
    drm->gbm_dev       = NULL;
    g_drm_fd           = -1;
@@ -786,6 +811,31 @@ static void *gfx_ctx_drm_init(void *video_driver)
 
    gpu_descriptors = dir_list_new("/dev/dri", NULL, false, true, false, false);
 
+#ifdef HAVE_WAYLAND
+   /* A Wayland compositor holds DRM master, so a card opened here
+    * could never modeset. A leased connector comes with master for
+    * its own objects, and resources on that descriptor are only the
+    * leased ones - the head is already chosen, hence index 0. */
+   drm->fd = wayland_drm_lease_acquire((int)video_monitor_index);
+   if (drm->fd >= 0)
+   {
+      drm->leased = true;
+      fd          = drm->fd;
+
+      if (     !drm_get_resources(fd)
+            || !drm_get_connector(fd, 0)
+            || !drm_get_encoder(fd))
+      {
+         RARCH_ERR("[KMS] The leased connector could not be set up.\n");
+         goto error;
+      }
+
+      drm_setup(fd);
+      goto have_device;
+   }
+   drm->fd = -1;
+#endif
+
 nextgpu:
    free_drm_resources(drm);
 
@@ -816,6 +866,7 @@ nextgpu:
 
    drm_setup(fd);
 
+have_device:
    /* Choose the optimal video mode for get_video_size():
      - video mode issued by switchres through the CRT module
      - custom timings from configuration
@@ -842,13 +893,18 @@ nextgpu:
       drm->fb_height = g_drm_connector->modes[0].vdisplay;
    }
 
-   drmSetMaster(g_drm_fd);
+   /* A lease carries master for the objects it granted; asking for
+    * it again is neither needed nor permitted. */
+   if (!drm->leased)
+      drmSetMaster(g_drm_fd);
 
    drm->gbm_dev      = gbm_create_device(fd);
 
    if (!drm->gbm_dev)
    {
       RARCH_WARN("[KMS] Couldn't create GBM device.\n");
+      if (drm->leased)
+         goto error;
       goto nextgpu;
    }
 

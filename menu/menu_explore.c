@@ -27,6 +27,7 @@
 #include <streams/file_stream.h>
 #include <string/stdstring.h>
 
+#include "../gfx/gfx_surface.h"
 #include "menu_driver.h"
 #include "menu_cbs.h"
 #include "../retroarch.h"
@@ -44,6 +45,7 @@ enum
    EXPLORE_BY_DEVELOPER          = 0,
    EXPLORE_BY_PUBLISHER,
    EXPLORE_BY_RELEASEYEAR,
+   EXPLORE_BY_RELEASEMONTH,
    EXPLORE_BY_PLAYERCOUNT,
    EXPLORE_BY_GENRE,
    EXPLORE_BY_ACHIEVEMENTS,
@@ -146,6 +148,7 @@ explore_by_info[EXPLORE_CAT_COUNT] =
    { "developer",          MENU_ENUM_LABEL_VALUE_RDB_ENTRY_DEVELOPER,           MENU_ENUM_LABEL_VALUE_EXPLORE_BY_DEVELOPER,          true,  true,  false, false },
    { "publisher",          MENU_ENUM_LABEL_VALUE_RDB_ENTRY_PUBLISHER,           MENU_ENUM_LABEL_VALUE_EXPLORE_BY_PUBLISHER,          true,  true,  false, false },
    { "releaseyear",        MENU_ENUM_LABEL_VALUE_EXPLORE_CATEGORY_RELEASE_YEAR, MENU_ENUM_LABEL_VALUE_EXPLORE_BY_RELEASE_YEAR,       false, false, true,  false },
+   { "releasemonth",       MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_MONTH,       MENU_ENUM_LABEL_VALUE_EXPLORE_BY_RELEASE_MONTH,      false, false, true,  false },
    { "users",              MENU_ENUM_LABEL_VALUE_EXPLORE_CATEGORY_PLAYER_COUNT, MENU_ENUM_LABEL_VALUE_EXPLORE_BY_PLAYER_COUNT,       false, false, true,  false },
    { "genre",              MENU_ENUM_LABEL_VALUE_RDB_ENTRY_GENRE,               MENU_ENUM_LABEL_VALUE_EXPLORE_BY_GENRE,              true,  false, false, false },
    { "achievements",       MENU_ENUM_LABEL_VALUE_RDB_ENTRY_ACHIEVEMENTS,        MENU_ENUM_LABEL_VALUE_EXPLORE_BY_ACHIEVEMENTS,       false, false, false, true  },
@@ -432,7 +435,7 @@ static void explore_load_icons(explore_state_t *state)
 {
    char path[PATH_MAX_LENGTH];
    size_t i, _len, system_count;
-   bool supports_rgba = (video_driver_get_disp_flags() & VIDEO_FLAG_USE_RGBA);
+   bool supports_rgba = gfx_surface_wants_rgba();
    if (!state)
       return;
 
@@ -1014,6 +1017,7 @@ static int explore_action_ok_find(const char *path, const char *label,
    line.label_setting         = NULL;
    line.type                  = 0;
    line.idx                   = 0;
+   line.text_type             = MENU_INPUT_DIALOG_KB_TYPE_TEXT;
    line.cb                    = explore_action_find_complete;
    menu_input_dialog_start(&line);
    return 0;
@@ -1225,6 +1229,7 @@ static int explore_action_ok_saveview(const char *path, const char *label,
    line.label_setting         = NULL;
    line.type                  = 0;
    line.idx                   = 0;
+   line.text_type             = MENU_INPUT_DIALOG_KB_TYPE_TEXT;
    line.cb                    = explore_action_saveview_complete;
    menu_input_dialog_start(&line);
    return 0;

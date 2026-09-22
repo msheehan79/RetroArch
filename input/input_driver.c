@@ -37,10 +37,23 @@
 #endif
 
 #include "input_driver.h"
+#include "../gfx/gfx_instrument.h"
+#include "../gfx/gfx_surface.h"
+#ifdef HAVE_RPNG
+#include <formats/rpng.h>
+#endif
 #include "input_keymaps.h"
 #include "input_remapping.h"
 #include "input_osk.h"
 #include "input_types.h"
+
+#ifdef HAVE_MIST
+#include "../steam/steam.h"
+#endif
+
+#ifdef HAVE_COCOATOUCH
+#include "../ui/drivers/cocoa/apple_platform.h"
+#endif
 
 #ifdef HAVE_BSV_MOVIE
 #include "bsv/bsvmovie.h"
@@ -72,6 +85,7 @@
 #include "../retroarch.h"
 #include "../tasks/tasks_internal.h"
 #include "../verbosity.h"
+#include "../gfx/video_driver.h"
 
 #ifdef ANDROID
 #include "../frontend/drivers/platform_unix.h"
@@ -79,6 +93,9 @@
 
 #include "../ai/game_ai.h"
 #include <compat/strl.h>
+#ifdef __MACH__
+#include <TargetConditionals.h>
+#endif
 
 /* Force a helper out of line even though it has a single call site.
  * Follows the RXML_NOINLINE precedent in
@@ -139,11 +156,11 @@ struct input_remote
  **/
 #define CHECK_INPUT_DRIVER_BLOCK_HOTKEY(normal_bind, autoconf_bind) \
 ( \
-         (((normal_bind)->key      != RETROK_UNKNOWN) \
+         (((RETRO_KEYBIND_KEY(normal_bind))      != RETROK_UNKNOWN) \
       || ((normal_bind)->mbutton   != NO_BTN) \
       || ((normal_bind)->joykey    != NO_BTN) \
       || ((normal_bind)->joyaxis   != AXIS_NONE) \
-      || ((autoconf_bind)->key     != RETROK_UNKNOWN) \
+      || ((RETRO_KEYBIND_KEY(autoconf_bind))     != RETROK_UNKNOWN) \
       || ((autoconf_bind)->joykey  != NO_BTN) \
       || ((autoconf_bind)->joyaxis != AXIS_NONE)) \
 )
@@ -235,6 +252,50 @@ static input_device_driver_t null_joypad = {
 };
 
 
+/* Stands in for the joypad drivers on the read paths while background
+ * controller input is off and the window is unfocused (see
+ * input_driver_joypad_for_read()). Every read is idle and nothing
+ * reaches the real driver. Every read entry is filled, because readers
+ * call button/axis/state without checking for NULL. */
+static bool idle_joypad_query(unsigned pad) { return false; }
+static int32_t idle_joypad_button(unsigned port, uint16_t joykey) { return 0; }
+static int16_t idle_joypad_state(rarch_joypad_info_t *joypad_info,
+      const struct retro_keybind *binds, unsigned port) { return 0; }
+static void idle_joypad_get_buttons(unsigned port, input_bits_t *state)
+{
+   BIT256_CLEAR_ALL_PTR(state);
+}
+static int16_t idle_joypad_axis(unsigned port, uint32_t joyaxis) { return 0; }
+static void idle_joypad_poll(void) { }
+static bool idle_joypad_rumble(unsigned pad,
+      enum retro_rumble_effect effect, uint16_t strength) { return false; }
+static bool idle_joypad_rumble_gain(unsigned pad, unsigned gain) { return false; }
+static bool idle_joypad_set_sensor_state(unsigned port,
+      enum retro_sensor_action action, unsigned rate) { return false; }
+static bool idle_joypad_get_sensor_input(unsigned port,
+      unsigned id, float *value) { return false; }
+static const char *idle_joypad_name(unsigned pad) { return NULL; }
+
+static const input_device_driver_t idle_joypad = {
+   NULL, /* init */
+   idle_joypad_query,
+   NULL, /* destroy */
+   idle_joypad_button,
+   idle_joypad_state,
+   idle_joypad_get_buttons,
+   idle_joypad_axis,
+   idle_joypad_poll,
+   idle_joypad_rumble,
+   idle_joypad_rumble_gain,
+   idle_joypad_set_sensor_state,
+   idle_joypad_get_sensor_input,
+   idle_joypad_name,
+   "idle",
+};
+
+#define INPUT_JOYPAD_FOR_READ(st, drv) \
+   (((drv) && ((st)->flags & INP_FLAG_JOYPAD_UNFOCUSED)) ? &idle_joypad : (drv))
+
 #ifdef HAVE_HID
 static bool null_hid_joypad_query(void *data, unsigned pad) {
    return pad < MAX_USERS; }
@@ -320,8 +381,10 @@ input_device_driver_t *joypad_drivers[] = {
 #endif
 #if defined(HAVE_SDL3)
    &sdl3_joypad,
-#elif defined(HAVE_SDL) || defined(HAVE_SDL2)
-   &sdl_joypad,
+#elif defined(HAVE_SDL2)
+   &sdl2_joypad,
+#elif defined(HAVE_SDL)
+   &sdl1_joypad,
 #endif
 #if defined(DINGUX) && defined(HAVE_SDL_DINGUX)
    &sdl_dingux_joypad,
@@ -399,10 +462,12 @@ input_driver_t *input_drivers[] = {
 #ifdef HAVE_DINPUT
    &input_dinput,
 #endif
-#if (defined(HAVE_SDL) || defined(HAVE_SDL2)) && !(defined(HAVE_COCOA) || defined(HAVE_COCOA_METAL))
-   &input_sdl,
+#if defined(HAVE_SDL2) && !defined(HAVE_COCOA)
+   &input_sdl2,
+#elif defined(HAVE_SDL) && !defined(HAVE_COCOA)
+   &input_sdl1,
 #endif
-#if defined(HAVE_SDL3) && !(defined(HAVE_COCOA) || defined(HAVE_COCOA_METAL))
+#if defined(HAVE_SDL3) && !defined(HAVE_COCOA)
    &input_sdl3,
 #endif
 #if defined(DINGUX) && defined(HAVE_SDL_DINGUX)
@@ -423,7 +488,7 @@ input_driver_t *input_drivers[] = {
 #if defined(__linux__) && !defined(ANDROID)
    &input_linuxraw,
 #endif
-#if defined(HAVE_COCOA) || defined(HAVE_COCOATOUCH) || defined(HAVE_COCOA_METAL)
+#if defined(HAVE_COCOA) || defined(HAVE_COCOATOUCH)
    &input_cocoa,
 #endif
 #ifdef __QNX__
@@ -465,6 +530,25 @@ hid_driver_t *hid_drivers[] = {
 #endif
 
 static input_driver_state_t input_driver_st = {0}; /* double alignment */
+
+const input_device_driver_t *input_driver_joypad_for_read(
+      const input_device_driver_t *drv)
+{
+   return INPUT_JOYPAD_FOR_READ(&input_driver_st, drv);
+}
+
+/* Publishes INP_FLAG_JOYPAD_UNFOCUSED for this poll. Only controllers
+ * are gated here; the keyboard and mouse input drivers apply their own
+ * focus checks. The focus query only runs with the setting off. */
+static void input_driver_update_joypad_focus(
+      input_driver_state_t *input_st, const settings_t *settings)
+{
+   if (     !settings->bools.input_joypad_background
+         && !video_driver_has_focus())
+      input_st->flags |=  INP_FLAG_JOYPAD_UNFOCUSED;
+   else
+      input_st->flags &= ~INP_FLAG_JOYPAD_UNFOCUSED;
+}
 
 /**************************************/
 
@@ -927,7 +1011,7 @@ static int32_t input_state_wrap(
          /* Extended bind IDs (turbo, hold, meta keys) are not
           * covered by joypad->state(), so use the original
           * per-button dispatch path. */
-         if (binds[_port][id].valid)
+         if (RETRO_KEYBIND_VALID(&binds[_port][id]))
          {
             const uint64_t bind_joykey     = binds[_port][id].joykey;
             const uint64_t bind_joyaxis    = binds[_port][id].joyaxis;
@@ -1190,7 +1274,7 @@ static int16_t input_joypad_analog_axis(
    bind_minus   = &binds[ident_minus];
    bind_plus    = &binds[ident_plus];
 
-   if (!bind_minus->valid || !bind_plus->valid)
+   if (!RETRO_KEYBIND_VALID(bind_minus) || !RETRO_KEYBIND_VALID(bind_plus))
       return 0;
 
    input_conv_analog_id_to_bind_id(idx,
@@ -1199,7 +1283,7 @@ static int16_t input_joypad_analog_axis(
    bind_x_minus = &binds[ident_x_minus];
    bind_x_plus  = &binds[ident_x_plus];
 
-   if (!bind_x_minus->valid || !bind_x_plus->valid)
+   if (!RETRO_KEYBIND_VALID(bind_x_minus) || !RETRO_KEYBIND_VALID(bind_x_plus))
       return 0;
 
    input_conv_analog_id_to_bind_id(idx,
@@ -1208,16 +1292,16 @@ static int16_t input_joypad_analog_axis(
    bind_y_minus = &binds[ident_y_minus];
    bind_y_plus  = &binds[ident_y_plus];
 
-   if (!bind_y_minus->valid || !bind_y_plus->valid)
+   if (!RETRO_KEYBIND_VALID(bind_y_minus) || !RETRO_KEYBIND_VALID(bind_y_plus))
       return 0;
 
    /* Keyboard bind priority */
-   if (     bind_plus->key  != RETROK_UNKNOWN
-         || bind_minus->key != RETROK_UNKNOWN)
+   if (     RETRO_KEYBIND_KEY(bind_plus)  != RETROK_UNKNOWN
+         || RETRO_KEYBIND_KEY(bind_minus) != RETROK_UNKNOWN)
    {
       input_driver_state_t *input_st = &input_driver_st;
 
-      if (bind_plus->key && input_state_wrap(
+      if (RETRO_KEYBIND_KEY(bind_plus) && input_state_wrap(
             input_st->current_driver,
             input_st->current_data,
             input_st->primary_joypad,
@@ -1226,9 +1310,9 @@ static int16_t input_joypad_analog_axis(
             (*input_st->libretro_input_binds),
             !!(input_st->flags & INP_FLAG_KB_MAPPING_BLOCKED),
             0, RETRO_DEVICE_KEYBOARD, 0,
-            bind_plus->key))
+            RETRO_KEYBIND_KEY(bind_plus)))
          res  = 0x7fff;
-      if (bind_minus->key && input_state_wrap(
+      if (RETRO_KEYBIND_KEY(bind_minus) && input_state_wrap(
             input_st->current_driver,
             input_st->current_data,
             input_st->primary_joypad,
@@ -1237,7 +1321,7 @@ static int16_t input_joypad_analog_axis(
             (*input_st->libretro_input_binds),
             !!(input_st->flags & INP_FLAG_KB_MAPPING_BLOCKED),
             0, RETRO_DEVICE_KEYBOARD, 0,
-            bind_minus->key))
+            RETRO_KEYBIND_KEY(bind_minus)))
          res += -0x7fff;
 
       if (res)
@@ -1414,18 +1498,18 @@ INPUT_NOINLINE static bool input_joypad_analog_stick(
    bind_y_minus = &binds[ident_y_minus];
    bind_y_plus  = &binds[ident_y_plus];
 
-   if (   !bind_x_minus->valid || !bind_x_plus->valid
-       || !bind_y_minus->valid || !bind_y_plus->valid)
+   if (   !RETRO_KEYBIND_VALID(bind_x_minus) || !RETRO_KEYBIND_VALID(bind_x_plus)
+       || !RETRO_KEYBIND_VALID(bind_y_minus) || !RETRO_KEYBIND_VALID(bind_y_plus))
       return false;
 
    /* Keyboard bind priority — check X */
-   if (     bind_x_plus->key  != RETROK_UNKNOWN
-         || bind_x_minus->key != RETROK_UNKNOWN)
+   if (     RETRO_KEYBIND_KEY(bind_x_plus)  != RETROK_UNKNOWN
+         || RETRO_KEYBIND_KEY(bind_x_minus) != RETROK_UNKNOWN)
    {
       input_driver_state_t *input_st = &input_driver_st;
       bool kb_blocked = !!(input_st->flags & INP_FLAG_KB_MAPPING_BLOCKED);
 
-      if (bind_x_plus->key && input_state_wrap(
+      if (RETRO_KEYBIND_KEY(bind_x_plus) && input_state_wrap(
             input_st->current_driver,
             input_st->current_data,
             input_st->primary_joypad,
@@ -1433,9 +1517,9 @@ INPUT_NOINLINE static bool input_joypad_analog_stick(
             (*input_st->libretro_input_binds),
             kb_blocked,
             0, RETRO_DEVICE_KEYBOARD, 0,
-            bind_x_plus->key))
+            RETRO_KEYBIND_KEY(bind_x_plus)))
          *out_x  = 0x7fff;
-      if (bind_x_minus->key && input_state_wrap(
+      if (RETRO_KEYBIND_KEY(bind_x_minus) && input_state_wrap(
             input_st->current_driver,
             input_st->current_data,
             input_st->primary_joypad,
@@ -1443,18 +1527,18 @@ INPUT_NOINLINE static bool input_joypad_analog_stick(
             (*input_st->libretro_input_binds),
             kb_blocked,
             0, RETRO_DEVICE_KEYBOARD, 0,
-            bind_x_minus->key))
+            RETRO_KEYBIND_KEY(bind_x_minus)))
          *out_x += -0x7fff;
    }
 
    /* Keyboard bind priority — check Y */
-   if (     bind_y_plus->key  != RETROK_UNKNOWN
-         || bind_y_minus->key != RETROK_UNKNOWN)
+   if (     RETRO_KEYBIND_KEY(bind_y_plus)  != RETROK_UNKNOWN
+         || RETRO_KEYBIND_KEY(bind_y_minus) != RETROK_UNKNOWN)
    {
       input_driver_state_t *input_st = &input_driver_st;
       bool kb_blocked = !!(input_st->flags & INP_FLAG_KB_MAPPING_BLOCKED);
 
-      if (bind_y_plus->key && input_state_wrap(
+      if (RETRO_KEYBIND_KEY(bind_y_plus) && input_state_wrap(
             input_st->current_driver,
             input_st->current_data,
             input_st->primary_joypad,
@@ -1462,9 +1546,9 @@ INPUT_NOINLINE static bool input_joypad_analog_stick(
             (*input_st->libretro_input_binds),
             kb_blocked,
             0, RETRO_DEVICE_KEYBOARD, 0,
-            bind_y_plus->key))
+            RETRO_KEYBIND_KEY(bind_y_plus)))
          *out_y  = 0x7fff;
-      if (bind_y_minus->key && input_state_wrap(
+      if (RETRO_KEYBIND_KEY(bind_y_minus) && input_state_wrap(
             input_st->current_driver,
             input_st->current_data,
             input_st->primary_joypad,
@@ -1472,7 +1556,7 @@ INPUT_NOINLINE static bool input_joypad_analog_stick(
             (*input_st->libretro_input_binds),
             kb_blocked,
             0, RETRO_DEVICE_KEYBOARD, 0,
-            bind_y_minus->key))
+            RETRO_KEYBIND_KEY(bind_y_minus)))
          *out_y += -0x7fff;
    }
 
@@ -1932,7 +2016,7 @@ static int16_t input_state_device(
 #endif
             {
                bool bind_valid       = input_st->libretro_input_binds[port]
-                  && (*input_st->libretro_input_binds[port])[id].valid;
+                  && RETRO_KEYBIND_VALID(&(*input_st->libretro_input_binds[port])[id]);
                unsigned remap_button = settings->uints.input_remap_ids[port][id];
 
                /* TODO/FIXME: What on earth is this code doing...? */
@@ -2195,7 +2279,7 @@ static int16_t input_state_device(
                if (id < RARCH_FIRST_META_KEY)
                {
                   bool bind_valid         = input_st->libretro_input_binds[port]
-                     && (*input_st->libretro_input_binds[port])[id].valid;
+                     && RETRO_KEYBIND_VALID(&(*input_st->libretro_input_binds[port])[id]);
 
                   if (bind_valid)
                   {
@@ -2316,7 +2400,7 @@ static int16_t input_state_device(
          if (id < RARCH_FIRST_META_KEY)
          {
             bool bind_valid = input_st->libretro_input_binds[port]
-               && (*input_st->libretro_input_binds[port])[id].valid;
+               && RETRO_KEYBIND_VALID(&(*input_st->libretro_input_binds[port])[id]);
 
             if (bind_valid)
             {
@@ -2352,9 +2436,11 @@ static int16_t input_state_internal(
    uint8_t max_users                       = (settings->uints.input_max_users
          > MAX_USERS) ? MAX_USERS
          : (uint8_t)settings->uints.input_max_users;
-   const input_device_driver_t *joypad     = input_st->primary_joypad;
+   const input_device_driver_t *joypad     = INPUT_JOYPAD_FOR_READ(
+         input_st, input_st->primary_joypad);
 #ifdef HAVE_MFI
-   const input_device_driver_t *sec_joypad = input_st->secondary_joypad;
+   const input_device_driver_t *sec_joypad = INPUT_JOYPAD_FOR_READ(
+         input_st, input_st->secondary_joypad);
 #else
    const input_device_driver_t *sec_joypad = NULL;
 #endif
@@ -2457,7 +2543,7 @@ static int16_t input_state_internal(
                    * due to the way that mapping is handled elsewhere. We
                    * cannot fix this without rewriting the entire mess that
                    * is the input remapping system... */
-                  bool valid_bind = (*input_st->libretro_input_binds[mapped_port])[id].valid &&
+                  bool valid_bind = RETRO_KEYBIND_VALID(&(*input_st->libretro_input_binds[mapped_port])[id]) &&
                         (id == settings->uints.input_remap_ids[mapped_port][id]);
 
                   if (valid_bind)
@@ -3169,7 +3255,7 @@ static bool input_overlay_poll(
 static void input_overlay_update_desc_geom(input_overlay_t *ol,
       struct overlay_desc *desc)
 {
-   if (!desc->image.pixels || !(desc->flags & OVERLAY_DESC_MOVABLE))
+   if (!OVERLAY_HAS_IMAGE(&desc->image) || !(desc->flags & OVERLAY_DESC_MOVABLE))
       return;
 
    if (ol->iface->vertex_geom)
@@ -3180,6 +3266,109 @@ static void input_overlay_update_desc_geom(input_overlay_t *ol,
    desc->delta_x = 0.0f;
    desc->delta_y = 0.0f;
 }
+
+
+#ifdef HAVE_RPNG
+/* Show one frame of a two-frame APNG, from the pair composed at load.
+ * False when the surface is still the video thread's or the submit
+ * failed: the caller keeps its current state, so the next poll tries
+ * again instead of the press or release being lost. */
+static bool input_overlay_update_apng_frame(input_overlay_t *ol,
+      size_t i, int target_frame)
+{
+   gfx_surface_t *s    = (gfx_surface_t*)ol->surfaces[i];
+   const uint32_t *pix = ol->anim_2frame_pix[i];
+   size_t frame_len;
+
+   if (!pix || !s || !s->num_slots || s->inflight)
+      return false;
+
+   frame_len = (size_t)VIDEO_SCALE_W(s->dims) * VIDEO_SCALE_H(s->dims);
+   memcpy(s->slots[0], pix + (target_frame ? frame_len : 0),
+         frame_len * sizeof(uint32_t));
+   return gfx_surface_submit(s, 0, ol->images[i]->supports_rgba)
+         != GFX_SURFACE_SUBMIT_FAILED;
+}
+
+/* Update every two-frame APNG to the frame matching its aggregated
+ * press state. Called after desc press state has been collected. */
+static void input_overlay_update_2frame(input_overlay_t *ol)
+{
+   size_t i;
+
+   if (!ol->anim_2frame || !ol->surfaces)
+      return;
+
+   for (i = 0; i < ol->num_images; i++)
+   {
+      uint8_t target;
+      if (!ol->anim_2frame[i])
+         continue;
+
+      target = ol->anim_2frame_pressed[i] ? 1 : 0;
+      if (     ol->anim_2frame_cur[i] != target
+            && input_overlay_update_apng_frame(ol, i, target))
+         ol->anim_2frame_cur[i] = target;
+      ol->anim_2frame_pressed[i] = 0;
+   }
+}
+
+/* Advance every animated image of the pack whose frame is due, once
+ * per input poll on the main thread. A frame is composed by the
+ * stream into a free slot and submitted: the texture is updated in
+ * place, so the page's handles stand and a page switch is still an
+ * upload of nothing. A slot still with the video thread means the
+ * frame is skipped rather than waited for - the overlay is a control
+ * surface, and a late button image is worse than a dropped one. */
+void input_overlay_animate(input_overlay_t *ol, retro_time_t now)
+{
+   size_t i;
+
+   if (     !ol
+         || !ol->anim_stream
+         || !(ol->flags & INPUT_OVERLAY_ENABLE)
+         || !ol->surfaces)
+      return;
+
+   for (i = 0; i < ol->num_images; i++)
+   {
+      rpng_apng_stream_t *st = (rpng_apng_stream_t*)ol->anim_stream[i];
+      gfx_surface_t *s       = (gfx_surface_t*)ol->surfaces[i];
+      const uint32_t *frame;
+      int duration_ms        = 0;
+
+      if (!st || !s || !s->num_slots)
+         continue;
+      /* Two-frame APNGs are driven by desc press state, not time. */
+      if (ol->anim_2frame && ol->anim_2frame[i])
+         continue;
+      if (ol->anim_next_us[i] && now < ol->anim_next_us[i])
+         continue;
+      /* The last frame is still the video thread's: this one is
+       * dropped rather than waited for, and the next poll tries
+       * again. */
+      if (s->inflight)
+         continue;
+
+      if (!(frame = rpng_apng_stream_next(st, &duration_ms)))
+      {
+         /* End of a pass: overlays loop, which is what an animated
+          * control surface is for. */
+         rpng_apng_stream_rewind(st);
+         if (!(frame = rpng_apng_stream_next(st, &duration_ms)))
+            continue;
+      }
+      memcpy(s->slots[0], frame,
+            (size_t)VIDEO_SCALE_W(s->dims)
+            * VIDEO_SCALE_H(s->dims) * sizeof(uint32_t));
+      if (gfx_surface_submit(s, 0, ol->images[i]->supports_rgba)
+            == GFX_SURFACE_SUBMIT_FAILED)
+         continue;
+      ol->anim_next_us[i] = now
+         + (retro_time_t)(duration_ms > 0 ? duration_ms : 100) * 1000;
+   }
+}
+#endif
 
 /**
  * input_overlay_post_poll:
@@ -3201,16 +3390,33 @@ static void input_overlay_post_poll(
       struct overlay_desc *desc = &ol->active->descs[i];
 
       if (     desc->touch_mask != 0
-            && show_input && desc->image.pixels
+            && show_input && OVERLAY_HAS_IMAGE(&desc->image)
             && ol->iface->set_alpha)
          ol->iface->set_alpha(ol->iface_data, desc->image_index,
                desc->alpha_mod * opacity);
+
+#ifdef HAVE_RPNG
+      /* A two-frame APNG shares its press state across every desc
+       * that uses the same image. The anim arrays are per unique
+       * image of the pack, not per page entry, so they are indexed
+       * by pack_image_index rather than image_index. */
+      if (     desc->touch_mask != 0
+            && ol->anim_2frame
+            && OVERLAY_HAS_IMAGE(&desc->image)
+            && desc->pack_image_index < ol->num_images
+            && ol->anim_2frame[desc->pack_image_index])
+         ol->anim_2frame_pressed[desc->pack_image_index] = 1;
+#endif
 
       input_overlay_update_desc_geom(ol, desc);
 
       desc->old_touch_mask = desc->touch_mask;
       desc->touch_mask     = 0;
    }
+
+#ifdef HAVE_RPNG
+   input_overlay_update_2frame(ol);
+#endif
 }
 
 static void input_overlay_desc_init_hitbox(struct overlay_desc *desc)
@@ -3420,7 +3626,7 @@ static void input_overlay_set_vertex_geom(input_overlay_t *ol)
    if (!ol->iface->vertex_geom)
       return;
 
-   if (ol->active->image.pixels)
+   if (OVERLAY_HAS_IMAGE(&ol->active->image))
       ol->iface->vertex_geom(ol->iface_data, 0,
             ol->active->mod_x, ol->active->mod_y,
             ol->active->mod_w, ol->active->mod_h);
@@ -3428,7 +3634,7 @@ static void input_overlay_set_vertex_geom(input_overlay_t *ol)
    for (i = 0; i < ol->active->size; i++)
    {
       struct overlay_desc *desc = &ol->active->descs[i];
-      if (desc->image.pixels)
+      if (OVERLAY_HAS_IMAGE(&desc->image))
          ol->iface->vertex_geom(ol->iface_data, desc->image_index,
                desc->mod_x, desc->mod_y, desc->mod_w, desc->mod_h);
    }
@@ -3471,14 +3677,36 @@ void input_overlay_set_scale_factor(
    input_overlay_set_vertex_geom(ol);
 }
 
+/* The video driver is about to go: every pack's textures, active or
+ * cached, are unloaded while it can still do so. A pack whose pixels
+ * went to the driver it is losing has nothing to upload again and is
+ * reloaded from its path (input_overlay_has_source). */
+void input_overlay_video_teardown(void)
+{
+   input_overlay_release_textures(input_driver_st.overlay_ptr);
+   input_overlay_release_textures(input_driver_st.overlay_cache_ptr);
+}
+
+static void input_overlay_load_active_geom(
+      enum overlay_visibility *visibility,
+      input_overlay_t *ol, float opacity);
+
 void input_overlay_load_active(
       enum overlay_visibility *visibility,
       input_overlay_t *ol, float opacity)
 {
-   if (ol->iface->load)
-      ol->iface->load(ol->iface_data, ol->active->load_images,
-            ol->active->load_images_size);
+   /* No page in the driver, no per-image state to set on it: the
+    * setters would index whatever the driver held before. */
+   if (input_overlay_load_page(ol) != INPUT_OVERLAY_PAGE_NONE)
+      input_overlay_load_active_geom(visibility, ol, opacity);
+}
 
+/* The per-page state that follows either load: alpha, geometry,
+ * full-screen. */
+static void input_overlay_load_active_geom(
+      enum overlay_visibility *visibility,
+      input_overlay_t *ol, float opacity)
+{
    input_overlay_set_alpha_mod(visibility, ol, opacity);
    input_overlay_set_vertex_geom(ol);
 
@@ -3547,6 +3775,10 @@ static void input_overlay_poll_clear(
 
       input_overlay_update_desc_geom(ol, desc);
    }
+
+#ifdef HAVE_RPNG
+   input_overlay_update_2frame(ol);
+#endif
 }
 
 static enum overlay_visibility input_overlay_get_visibility(
@@ -3591,6 +3823,35 @@ static void input_overlay_free_images(input_overlay_t *ol)
 
    for (i = 0; i < ol->num_images; i++)
       image_texture_free(ol->images[i]);
+
+#ifdef HAVE_RPNG
+   if (ol->anim_stream)
+      for (i = 0; i < ol->num_images; i++)
+         if (ol->anim_stream[i])
+            rpng_apng_stream_close((rpng_apng_stream_t*)ol->anim_stream[i]);
+#endif
+   if (ol->anim_data)
+      for (i = 0; i < ol->num_images; i++)
+         free(ol->anim_data[i]);
+   free(ol->anim_stream);
+   free(ol->anim_data);
+   free(ol->anim_len);
+   free(ol->anim_next_us);
+   if (ol->anim_2frame_pix)
+      for (i = 0; i < ol->num_images; i++)
+         free(ol->anim_2frame_pix[i]);
+   free(ol->anim_2frame);
+   free(ol->anim_2frame_pressed);
+   free(ol->anim_2frame_cur);
+   free(ol->anim_2frame_pix);
+   ol->anim_stream         = NULL;
+   ol->anim_data           = NULL;
+   ol->anim_len            = NULL;
+   ol->anim_next_us        = NULL;
+   ol->anim_2frame         = NULL;
+   ol->anim_2frame_pressed = NULL;
+   ol->anim_2frame_cur     = NULL;
+   ol->anim_2frame_pix     = NULL;
 
    free(ol->images);
    ol->images = NULL;
@@ -3643,12 +3904,16 @@ static void input_overlay_free(input_overlay_t *ol)
    if (!ol)
       return;
 
+   /* The driver's page refers to the pack's textures: it lets go of
+    * them first, before they are unloaded - under threaded video a
+    * frame can be drawn between the two calls. */
+   if (ol->iface && ol->iface->enable)
+      ol->iface->enable(ol->iface_data, false);
+
+   input_overlay_release_textures(ol);
    input_overlay_free_images(ol);
 
    input_overlay_free_overlays(ol);
-
-   if (ol->iface && ol->iface->enable)
-      ol->iface->enable(ol->iface_data, false);
 
    if (ol->path)
    {
@@ -3814,10 +4079,12 @@ static void input_overlay_get_mouse_scale(settings_t *settings,
    if (geom->base_height)
    {
       float adj_x, adj_y;
+      unsigned output_size = VIDEO_DRIVER_OUTPUT_SIZE(video_st);
       float speed          = settings->floats.input_overlay_mouse_speed;
       float swipe_thres    =
             655.35f * settings->floats.input_overlay_mouse_swipe_threshold;
-      float display_aspect = (float)video_st->width / video_st->height;
+      float display_aspect = (float)VIDEO_DRIVER_OUTPUT_WIDTH(output_size)
+                           / VIDEO_DRIVER_OUTPUT_HEIGHT(output_size);
       float core_aspect    = (float)geom->base_width / geom->base_height;
 
       if (display_aspect > core_aspect)
@@ -4471,7 +4738,7 @@ INPUT_NOINLINE static void input_poll_overlay(
 
    /* Block other touchscreen input as needed. */
    if (     button_pressed
-#ifdef IOS
+#if TARGET_OS_IPHONE
          || (ptr_state->device_mask & (1 << RETRO_DEVICE_LIGHTGUN))
          || (ol->flags & INPUT_OVERLAY_BLOCKED))
 #else
@@ -4633,7 +4900,7 @@ size_t input_config_get_bind_string(
       char key[64];
       key[0] = '\0';
 
-      input_keymaps_translate_rk_to_str(bind->key, key, sizeof(key));
+      input_keymaps_translate_rk_to_str(RETRO_KEYBIND_KEY(bind), key, sizeof(key));
       if (     key[0] == 'n'
             && key[1] == 'u'
             && key[2] == 'l'
@@ -5122,6 +5389,38 @@ static bool input_keyboard_line_event(
    return ret;
 }
 
+bool input_osk_native_active(void)
+{
+   /* Drivers that can report the panel state themselves raise the
+    * flag from their poll, on the main thread. Everything below is a
+    * backend whose panel state lives outside the input driver. */
+   if (input_state_get_ptr()->flags & INP_FLAG_NATIVE_KB_SHOWN)
+      return true;
+#ifdef HAVE_MIST
+   if (steam_has_osk_open())
+      return true;
+#endif
+#ifdef HAVE_COCOATOUCH
+   if (ios_keyboard_active())
+      return true;
+#endif
+   return false;
+}
+
+bool input_osk_native_available(void)
+{
+   /* No Steam arm here: steam_has_osk_open() answers whether the
+    * panel is up, which is not the same question, and the Steam OSK
+    * has no cheap availability query. */
+   if (input_state_get_ptr()->flags & INP_FLAG_NATIVE_KB_AVAIL)
+      return true;
+#ifdef HAVE_COCOATOUCH
+   return true;
+#else
+   return false;
+#endif
+}
+
 void input_event_osk_append(
       input_keyboard_line_t *keyboard_line,
       enum osk_type *osk_idx,
@@ -5588,7 +5887,8 @@ bool input_key_pressed(int key, bool keyboard_pressed)
    {
       const input_device_driver_t
          *joypad                     = (const input_device_driver_t*)
-         input_driver_st.primary_joypad;
+         INPUT_JOYPAD_FOR_READ(&input_driver_st,
+               input_driver_st.primary_joypad);
       const uint64_t bind_joykey     = input_config_binds[0][key].joykey;
       const uint64_t bind_joyaxis    = input_config_binds[0][key].joyaxis;
       const uint64_t autobind_joykey = input_autoconf_binds[0][key].joykey;
@@ -6119,7 +6419,7 @@ void config_read_keybinds_conf(void *data)
          const char *btn                 = NULL;
          struct config_entry_list *entry = NULL;
 
-         if (!bind || !bind->valid || !keybind || !keybind->valid)
+         if (!bind || !RETRO_KEYBIND_VALID(bind) || !keybind || !keybind->valid)
             continue;
 
          meta                       = keybind->meta;
@@ -6134,18 +6434,19 @@ void config_read_keybinds_conf(void *data)
          fill_pathname_join_delim(str, prefix, btn,  '_', sizeof(str));
 
          /* Clear old mapping bit unless just recently set */
-         if (!key_store[bind->key])
-            input_keyboard_mapping_bits(0, bind->key);
+         if (!key_store[RETRO_KEYBIND_KEY(bind)])
+            input_keyboard_mapping_bits(0, RETRO_KEYBIND_KEY(bind));
 
          entry                      = config_get_entry(conf, str);
          if (entry && entry->value && *entry->value)
-            bind->key               = input_config_translate_str_to_rk(
-                  entry->value, strlen(entry->value));
+            RETRO_KEYBIND_SET_KEY(bind,
+                  input_config_translate_str_to_rk(
+                     entry->value, strlen(entry->value)));
 
          /* Store new mapping bit and remember it for a while
           * so that next clear leaves the new key alone */
-         input_keyboard_mapping_bits(1, bind->key);
-         key_store[bind->key]       = true;
+         input_keyboard_mapping_bits(1, RETRO_KEYBIND_KEY(bind));
+         key_store[RETRO_KEYBIND_KEY(bind)]       = true;
 
          input_config_parse_joy_button  (str, conf, prefix, btn, bind,
                &input_config_bind_labels[i][j]);
@@ -6208,6 +6509,11 @@ void input_driver_init_command(input_driver_state_t *input_st,
 
 }
 
+unsigned input_driver_command_generation(void)
+{
+   return input_driver_st.command_generation;
+}
+
 void input_driver_deinit_command(input_driver_state_t *input_st)
 {
    int i;
@@ -6216,6 +6522,7 @@ void input_driver_deinit_command(input_driver_state_t *input_st)
       if (input_st->command[i])
          input_st->command[i]->destroy(
             input_st->command[i]);
+      input_st->command_generation++;
 
       input_st->command[i] = NULL;
     }
@@ -6276,14 +6583,19 @@ static void input_overlay_enable_(bool enable)
       }
 
       /* Load last-active overlay */
+      ol->flags &= ~INPUT_OVERLAY_TEXTURES_DECLINED;
       input_overlay_load_active(input_st->overlay_visibility, ol, opacity);
 
       /* Adjust to current settings */
       command_event(CMD_EVENT_OVERLAY_SET_SCALE_FACTOR, NULL);
 
       if (auto_rotate)
+      {
+         unsigned output_size = VIDEO_DRIVER_OUTPUT_SIZE(video_st);
          input_overlay_auto_rotate_(
-               video_st->width, video_st->height, true, ol);
+               VIDEO_DRIVER_OUTPUT_WIDTH(output_size),
+               VIDEO_DRIVER_OUTPUT_HEIGHT(output_size), true, ol);
+      }
 
       /* Enable */
       if (ol->iface->enable)
@@ -6304,6 +6616,10 @@ static void input_overlay_enable_(bool enable)
 
       if (ol->iface && ol->iface->enable)
          ol->iface->enable(ol->iface_data, false);
+      /* The pack's textures stay: the driver they were made on is
+       * still here, and a pack that comes back from the cache shows
+       * its pages without an upload. Only the video teardown unloads
+       * them (input_overlay_video_teardown), the driver still there. */
       ol->iface = NULL;
 
       memset(&ol->overlay_state, 0, sizeof(input_overlay_state_t));
@@ -6311,10 +6627,21 @@ static void input_overlay_enable_(bool enable)
    }
 }
 
+/* The video side reads the active overlay's viewport override from a
+ * copy (video_driver_update_viewport() may run on the threaded video
+ * worker, and the overlay is freed and replaced here); refreshed
+ * whenever overlay_ptr or the overlay it shows changes. */
+static void input_overlay_viewport_publish(void)
+{
+   input_overlay_t *ol = input_driver_st.overlay_ptr;
+   video_driver_set_overlay_viewport(ol ? ol->active : NULL);
+}
+
 static void input_overlay_deinit(void)
 {
    input_overlay_free(input_driver_st.overlay_ptr);
    input_driver_st.overlay_ptr = NULL;
+   input_overlay_viewport_publish();
 
    input_overlay_free(input_driver_st.overlay_cache_ptr);
    input_driver_st.overlay_cache_ptr = NULL;
@@ -6339,6 +6666,7 @@ static void input_overlay_move_to_cache(void)
    /* Move to cache */
    input_st->overlay_cache_ptr = ol;
    input_st->overlay_ptr       = NULL;
+   input_overlay_viewport_publish();
 }
 
 static void input_overlay_swap_with_cached(void)
@@ -6353,6 +6681,7 @@ static void input_overlay_swap_with_cached(void)
    ol                          = input_st->overlay_cache_ptr;
    input_st->overlay_cache_ptr = input_st->overlay_ptr;
    input_st->overlay_ptr       = ol;
+   input_overlay_viewport_publish();
 
    /* Enable and update to current settings */
    input_overlay_enable_(true);
@@ -6378,6 +6707,14 @@ void input_overlay_set_visibility(int overlay_idx,
    input_driver_state_t *input_st = &input_driver_st;
    input_overlay_t      *ol       = input_st->overlay_ptr;
 
+   /* The index arrives from a caller's own mapping - the overlay LED
+    * driver passes settings->uints.led_map[], which is read from the
+    * config with no range of its own - so it is bounded here, where the
+    * array size is known, and on the same terms as
+    * input_overlay_get_visibility(). */
+   if (overlay_idx < 0 || overlay_idx >= MAX_VISIBILITY)
+      return;
+
    if (!input_st->overlay_visibility)
    {
       unsigned i;
@@ -6400,7 +6737,12 @@ void input_overlay_set_visibility(int overlay_idx,
 
    if (!ol)
       return;
-   if (vis == OVERLAY_VISIBILITY_HIDDEN)
+   /* set_alpha() indexes the driver's own per-image storage, which is
+    * sized by the images the active overlay loaded, so that is the
+    * bound it gets - the same one input_overlay_set_alpha_mod() walks. */
+   if (     vis == OVERLAY_VISIBILITY_HIDDEN
+         && ol->active
+         && (unsigned)overlay_idx < ol->active->load_images_size)
       ol->iface->set_alpha(ol->iface_data, overlay_idx, 0.0);
 }
 
@@ -6438,7 +6780,7 @@ void input_overlay_check_mouse_cursor(void)
 }
 
 static void input_overlay_loaded_move_images(input_overlay_t *ol,
-      struct string_list *image_list)
+      struct string_list *image_list, struct string_list *anim_list)
 {
    size_t i;
 
@@ -6454,6 +6796,85 @@ static void input_overlay_loaded_move_images(input_overlay_t *ol,
 
    for (i = 0; i < ol->num_images; i++)
       ol->images[i] = (struct texture_image*)image_list->elems[i].attr.p;
+
+#ifdef HAVE_RPNG
+   /* The animated images' file bytes, and a stream over each: the
+    * pack owns both from here, and frees them with the images. A
+    * pack with no animation allocates nothing. */
+   if (anim_list && anim_list->size >= ol->num_images)
+   {
+      size_t animated = 0;
+      for (i = 0; i < ol->num_images; i++)
+         if (anim_list->elems[i].attr.p)
+            animated++;
+      if (     animated
+            && (ol->anim_data    = (void**)calloc(ol->num_images, sizeof(void*)))
+            && (ol->anim_len     = (size_t*)calloc(ol->num_images, sizeof(size_t)))
+            && (ol->anim_stream  = (void**)calloc(ol->num_images, sizeof(void*)))
+            && (ol->anim_next_us = (int64_t*)calloc(ol->num_images, sizeof(int64_t)))
+            && (ol->anim_2frame  = (uint8_t*)calloc(ol->num_images, sizeof(uint8_t)))
+            && (ol->anim_2frame_pressed = (uint8_t*)calloc(ol->num_images, sizeof(uint8_t)))
+            && (ol->anim_2frame_cur     = (uint8_t*)calloc(ol->num_images, sizeof(uint8_t)))
+            && (ol->anim_2frame_pix     = (uint32_t**)calloc(ol->num_images, sizeof(uint32_t*))))
+      {
+         for (i = 0; i < ol->num_images; i++)
+         {
+            overlay_anim_src_t *src =
+               (overlay_anim_src_t*)anim_list->elems[i].attr.p;
+            if (!src)
+               continue;
+            ol->anim_data[i]   = src->data;
+            ol->anim_len[i]    = src->len;
+            ol->anim_stream[i] = rpng_apng_stream_open(
+                  (const uint8_t*)src->data, src->len);
+            if (ol->anim_stream[i])
+            {
+               rpng_apng_stream_t *st = (rpng_apng_stream_t*)ol->anim_stream[i];
+               unsigned w             = 0;
+               unsigned h             = 0;
+               int num_frames         = 0;
+               rpng_apng_stream_set_argb(st,
+                     ol->images[i]->supports_rgba ? 0 : 1);
+               rpng_apng_stream_get_info(st, &w, &h, &num_frames, NULL);
+               /* A two-frame APNG is an unpressed/pressed pair. Both
+                * frames are composed here, once: the second depends
+                * on the first, so composing on demand would decode
+                * both on every press. Anything that goes wrong leaves
+                * it an ordinary looping animation. */
+               if (     num_frames == 2
+                     && w == ol->images[i]->width
+                     && h == ol->images[i]->height)
+               {
+                  size_t frame_len = (size_t)w * h;
+                  uint32_t *pix    = (uint32_t*)malloc(
+                        frame_len * 2 * sizeof(uint32_t));
+                  const uint32_t *frame;
+                  int duration_ms  = 0;
+
+                  if (     pix
+                        && (frame = rpng_apng_stream_next(st, &duration_ms)))
+                  {
+                     memcpy(pix, frame, frame_len * sizeof(uint32_t));
+                     if ((frame = rpng_apng_stream_next(st, &duration_ms)))
+                     {
+                        memcpy(pix + frame_len, frame,
+                              frame_len * sizeof(uint32_t));
+                        ol->anim_2frame_pix[i] = pix;
+                        ol->anim_2frame[i]     = 1;
+                        pix                    = NULL;
+                     }
+                  }
+                  free(pix);
+                  rpng_apng_stream_rewind(st);
+               }
+            }
+         }
+      }
+   }
+   if (anim_list)
+      for (i = 0; i < anim_list->size; i++)
+         free(anim_list->elems[i].attr.p);
+#endif
 }
 
 /* task_data = overlay_task_data_t* */
@@ -6499,6 +6920,19 @@ static void input_overlay_loaded(retro_task_t *task,
             image_texture_free((struct texture_image*)data->image_list->elems[i].attr.p);
          string_list_free(data->image_list);
       }
+      if (data->anim_list)
+      {
+         size_t i;
+         for (i = 0; i < data->anim_list->size; i++)
+         {
+            overlay_anim_src_t *src =
+               (overlay_anim_src_t*)data->anim_list->elems[i].attr.p;
+            if (src)
+               free(src->data);
+            free(src);
+         }
+         string_list_free(data->anim_list);
+      }
       free(data);
       return;
    }
@@ -6516,8 +6950,10 @@ static void input_overlay_loaded(retro_task_t *task,
 #endif
 
    if (ol->num_images > 0)
-      input_overlay_loaded_move_images(ol, data->image_list);
+      input_overlay_loaded_move_images(ol, data->image_list, data->anim_list);
    string_list_free(data->image_list);
+   if (data->anim_list)
+      string_list_free(data->anim_list);
 
    free(data);
 
@@ -6527,6 +6963,7 @@ static void input_overlay_loaded(retro_task_t *task,
    if (input_st->overlay_ptr)
       input_overlay_free(input_st->overlay_ptr);
    input_st->overlay_ptr = ol;
+   input_overlay_viewport_publish();
 
    /* Enable or disable the overlay */
    input_overlay_enable_(enable_overlay);
@@ -6535,6 +6972,7 @@ static void input_overlay_loaded(retro_task_t *task,
    if (!(ol->flags & INPUT_OVERLAY_ALIVE))
    {
       input_st->overlay_ptr = NULL;
+      input_overlay_viewport_publish();
       input_overlay_free(ol);
       return;
    }
@@ -6677,9 +7115,14 @@ void input_overlay_init(void)
    bool overlay_shown             = ol
          && (ol->flags & INPUT_OVERLAY_ENABLE)
          && string_is_equal(path_overlay, ol->path);
+   /* A cached pack is reusable only while it still has something to
+    * upload from: the pixels are released once they are on the GPU,
+    * so a pack whose textures went with a video reinit is reloaded
+    * from its path instead. */
    bool overlay_cached            = ol_cache
          && (ol_cache->flags & INPUT_OVERLAY_ALIVE)
-         && string_is_equal(path_overlay, ol_cache->path);
+         && string_is_equal(path_overlay, ol_cache->path)
+         && input_overlay_has_source(ol_cache);
    bool overlay_hidden            = !ol && overlay_cached;
 
 #if defined(GEKKO)
@@ -6764,7 +7207,7 @@ static bool input_keys_pressed_other_sources(
       if (input_state_wrap( \
             input_st->current_driver, \
             input_st->current_data, \
-            input_st->primary_joypad, \
+            joypad, \
             sec_joypad, \
             joypad_info, \
             binds, \
@@ -6810,7 +7253,7 @@ static void input_keys_pressed(
          || binds_auto->joykey  != NO_BTN
          || binds_auto->joyaxis != AXIS_NONE;
    bool keyboard_hotkey_set       =
-         binds_norm->key != RETROK_UNKNOWN;
+         RETRO_KEYBIND_KEY(binds_norm) != RETROK_UNKNOWN;
 
    if (!binds)
       return;
@@ -6824,13 +7267,13 @@ static void input_keys_pressed(
       bool kb_blocked = !!(input_st->flags & INP_FLAG_KB_MAPPING_BLOCKED);
 
    if (     (port == hotkey_port)
-         && (binds_norm->valid || binds_auto->valid)
+         && (RETRO_KEYBIND_VALID(binds_norm) || RETRO_KEYBIND_VALID(binds_auto))
          && CHECK_INPUT_DRIVER_BLOCK_HOTKEY(binds_norm, binds_auto))
    {
       if (input_state_wrap(
             input_st->current_driver,
             input_st->current_data,
-            input_st->primary_joypad,
+            joypad,
             sec_joypad,
             joypad_info,
             binds,
@@ -6868,7 +7311,7 @@ static void input_keys_pressed(
       ret = input_state_wrap(
             input_st->current_driver,
             input_st->current_data,
-            input_st->primary_joypad,
+            joypad,
             sec_joypad,
             joypad_info,
             binds,
@@ -6914,23 +7357,23 @@ static void input_keys_pressed(
        * is not part of the usual buttons. */
       i = RARCH_MENU_TOGGLE;
 
-      if (!(binds[port][i].valid
+      if (!(RETRO_KEYBIND_VALID(&binds[port][i])
             && input_state_wrap(
                   input_st->current_driver,
                   input_st->current_data,
-                  input_st->primary_joypad,
+                  joypad,
                   sec_joypad,
                   joypad_info,
                   binds,
                   !!(input_st->flags & INP_FLAG_KB_MAPPING_BLOCKED),
                   port, RETRO_DEVICE_KEYBOARD, 0,
-                  input_config_binds[port][i].key)))
+                  RETRO_KEYBIND_KEY(&input_config_binds[port][i]))))
       {
-         bool bit_pressed = binds[port][i].valid
+         bool bit_pressed = RETRO_KEYBIND_VALID(&binds[port][i])
                && input_state_wrap(
                      input_st->current_driver,
                      input_st->current_data,
-                     input_st->primary_joypad,
+                     joypad,
                      sec_joypad,
                      joypad_info,
                      binds,
@@ -6956,21 +7399,21 @@ static void input_keys_pressed(
    if (     !any_pressed
          && !(input_st->flags & INP_FLAG_WAIT_INPUT_RELEASE)
          && !(input_st->flags & INP_FLAG_KB_MAPPING_BLOCKED)
-         && binds[port][RARCH_MENU_TOGGLE].key == binds[port][RARCH_ENABLE_HOTKEY].key)
+         && RETRO_KEYBIND_KEY(&binds[port][RARCH_MENU_TOGGLE]) == RETRO_KEYBIND_KEY(&binds[port][RARCH_ENABLE_HOTKEY]))
    {
       i = RARCH_MENU_TOGGLE;
 
-      if (     binds[port][i].valid
+      if (     RETRO_KEYBIND_VALID(&binds[port][i])
             && input_state_wrap(
                   input_st->current_driver,
                   input_st->current_data,
-                  input_st->primary_joypad,
+                  joypad,
                   sec_joypad,
                   joypad_info,
                   binds,
                   !!(input_st->flags & INP_FLAG_KB_MAPPING_BLOCKED),
                   port, RETRO_DEVICE_KEYBOARD, 0,
-                  input_config_binds[port][i].key))
+                  RETRO_KEYBIND_KEY(&input_config_binds[port][i])))
          input_st->flags |= INP_FLAG_MENU_PRESS_PENDING;
       else if (input_st->flags & INP_FLAG_MENU_PRESS_PENDING)
          /* Also set 'enable_hotkey' to prevent hotkey delay untrigger */
@@ -7018,13 +7461,13 @@ static void input_keys_pressed(
                if (input_state_wrap(
                      input_st->current_driver,
                      input_st->current_data,
-                     input_st->primary_joypad,
+                     joypad,
                      sec_joypad,
                      joypad_info,
                      binds,
                      !!(input_st->flags & INP_FLAG_KB_MAPPING_BLOCKED),
                      port, RETRO_DEVICE_KEYBOARD, 0,
-                     input_config_binds[port][i].key))
+                     RETRO_KEYBIND_KEY(&input_config_binds[port][i])))
                {
                   keyboard_hotkey_pressed = true;
 
@@ -7036,7 +7479,7 @@ static void input_keys_pressed(
                if (input_state_wrap(
                      input_st->current_driver,
                      input_st->current_data,
-                     input_st->primary_joypad,
+                     joypad,
                      sec_joypad,
                      joypad_info,
                      binds,
@@ -7056,19 +7499,19 @@ static void input_keys_pressed(
          /* No 'enable_hotkey' in keyboard */
          if (!keyboard_hotkey_set)
          {
-            if (binds[port][i].key != RETROK_UNKNOWN)
+            if (RETRO_KEYBIND_KEY(&binds[port][i]) != RETROK_UNKNOWN)
             {
                /* Deny blocking if keyboard hotkey is pressed */
                if (input_state_wrap(
                      input_st->current_driver,
                      input_st->current_data,
-                     input_st->primary_joypad,
+                     joypad,
                      sec_joypad,
                      joypad_info,
                      binds,
                      !!(input_st->flags & INP_FLAG_KB_MAPPING_BLOCKED),
                      port, RETRO_DEVICE_KEYBOARD, 0,
-                     input_config_binds[port][i].key))
+                     RETRO_KEYBIND_KEY(&input_config_binds[port][i])))
                {
                   keyboard_hotkey_pressed = true;
 
@@ -7081,7 +7524,7 @@ static void input_keys_pressed(
                if (input_state_wrap(
                      input_st->current_driver,
                      input_st->current_data,
-                     input_st->primary_joypad,
+                     joypad,
                      sec_joypad,
                      joypad_info,
                      binds,
@@ -7107,7 +7550,7 @@ static void input_keys_pressed(
          block_hotkey[i] = false;
    }
 
-   if (!is_menu && binds[port][RARCH_GAME_FOCUS_TOGGLE].valid)
+   if (!is_menu && RETRO_KEYBIND_VALID(&binds[port][RARCH_GAME_FOCUS_TOGGLE]))
    {
       /* Never block Game Focus toggle hotkey */
       block_hotkey[RARCH_GAME_FOCUS_TOGGLE] = false;
@@ -7116,11 +7559,11 @@ static void input_keys_pressed(
    for (i = RARCH_FIRST_META_KEY; i < RARCH_BIND_LIST_END; i++)
    {
       bool other_pressed = input_keys_pressed_other_sources(input_st, i, p_new_state);
-      bool bit_pressed   = binds[port][i].valid
+      bool bit_pressed   = RETRO_KEYBIND_VALID(&binds[port][i])
             && input_state_wrap(
                   input_st->current_driver,
                   input_st->current_data,
-                  input_st->primary_joypad,
+                  joypad,
                   sec_joypad,
                   joypad_info,
                   binds,
@@ -7198,6 +7641,39 @@ static void input_keys_pressed(
    } /* kb_blocked scope */
 }
 
+void input_driver_set_shader_uses_sensors(bool uses)
+{
+   retro_atomic_store_release_int(
+         &input_driver_st.shader_uses_sensors, uses ? 1 : 0);
+}
+
+void input_driver_read_sensor_snapshot(float *gyro3,
+      float *accel3, float *rest3)
+{
+   input_driver_state_t *input_st = &input_driver_st;
+   for (;;)
+   {
+      int v[9];
+      int i;
+      float *dst[3];
+      int s1 = retro_atomic_load_acquire_int(&input_st->sensor_snap_seq);
+      if (s1 & 1)
+         continue;
+      for (i = 0; i < 9; i++)
+         v[i] = retro_atomic_load_relaxed_int(
+               &input_st->sensor_snap_bits[i]);
+      retro_atomic_thread_fence_acquire();
+      if (retro_atomic_load_relaxed_int(&input_st->sensor_snap_seq) != s1)
+         continue;
+      dst[0] = gyro3;
+      dst[1] = accel3;
+      dst[2] = rest3;
+      for (i = 0; i < 9; i++)
+         memcpy(&dst[i / 3][i % 3], &v[i], sizeof(float));
+      return;
+   }
+}
+
 void input_driver_poll(void)
 {
    size_t i, j;
@@ -7230,6 +7706,13 @@ void input_driver_poll(void)
    if (input && input->poll)
       input->poll(input_st->current_data);
 
+   /* The real drivers are polled regardless, so their state stays
+    * current and nothing is replayed on refocus; everything read
+    * below goes through the stand-in while controllers are gated. */
+   input_driver_update_joypad_focus(input_st, settings);
+   joypad                         = INPUT_JOYPAD_FOR_READ(input_st, joypad);
+   sec_joypad                     = INPUT_JOYPAD_FOR_READ(input_st, sec_joypad);
+
    /* Invalidate joypad state bitmask cache for the new frame */
    memset(input_st->joypad_state_cache_valid, 0,
          sizeof(input_st->joypad_state_cache_valid));
@@ -7238,7 +7721,8 @@ void input_driver_poll(void)
     * from shaders and/or core. Setting gates everything. */
    if (settings->bools.input_sensors_enable)
    {
-      bool want = input_st->shader_uses_sensors
+      bool want = retro_atomic_load_acquire_int(
+               &input_st->shader_uses_sensors)
          || input_st->core_accel_rate
          || input_st->core_gyro_rate;
 
@@ -7296,6 +7780,32 @@ void input_driver_poll(void)
       input_st->sensor_accelerometer_cache[2] = input_get_sensor_state_internal(settings, 0, RETRO_SENSOR_ACCELEROMETER_Z);
    }
 
+   /* Publish the three vec3s as one coherent snapshot: the shader
+    * backends read them from the video thread per frame, and plain
+    * float stores could hand them a vector mixing two polls (and
+    * carried no happens-before at all). Same seq discipline as the
+    * video viewport snapshots. */
+   {
+      int seq = retro_atomic_load_relaxed_int(&input_st->sensor_snap_seq);
+      float *src[3];
+      int i, j;
+      src[0] = input_st->sensor_gyroscope_cache;
+      src[1] = input_st->sensor_accelerometer_cache;
+      src[2] = input_st->sensor_accelerometer_rest;
+      retro_atomic_store_relaxed_int(&input_st->sensor_snap_seq, seq + 1);
+      retro_atomic_thread_fence_release();
+      for (i = 0; i < 3; i++)
+         for (j = 0; j < 3; j++)
+         {
+            int b;
+            memcpy(&b, &src[i][j], sizeof(b));
+            retro_atomic_store_relaxed_int(
+                  &input_st->sensor_snap_bits[i * 3 + j], b);
+         }
+      retro_atomic_thread_fence_release();
+      retro_atomic_store_release_int(&input_st->sensor_snap_seq, seq + 2);
+   }
+
 #ifdef HAVE_OVERLAY
    if (      input_st->overlay_ptr
          && (input_st->overlay_ptr->flags & INPUT_OVERLAY_ALIVE))
@@ -7333,6 +7843,14 @@ void input_driver_poll(void)
             break;
       }
 
+      /* Under threaded video the pack's textures arrive after the
+       * page was first shown; the page moves over to them here. */
+      if (input_overlay_promote_textures(input_st->overlay_ptr))
+         input_overlay_load_active_geom(input_st->overlay_visibility,
+               input_st->overlay_ptr, input_overlay_opacity);
+#ifdef HAVE_RPNG
+      input_overlay_animate(input_st->overlay_ptr, cpu_features_get_time_usec());
+#endif
       input_poll_overlay(
             !!(input_st->flags & INP_FLAG_KB_MAPPING_BLOCKED),
             settings,
@@ -7397,7 +7915,7 @@ void input_driver_poll(void)
 
          /* --- Turbo button state --- */
          input_st->turbo_btns.frame_enable[i] =
-                  (*input_st->libretro_input_binds[i])[turbo_btn_id].valid
+                  RETRO_KEYBIND_VALID(&(*input_st->libretro_input_binds[i])[turbo_btn_id])
                && turbo_enable ?
             input_state_wrap(input_st->current_driver,
                   input_st->current_data,
@@ -7418,7 +7936,7 @@ void input_driver_poll(void)
 
          /* --- Hold button modifier state --- */
          input_st->hold_btns.frame_enable[i] =
-                  (*input_st->libretro_input_binds[i])[RARCH_HOLD_ENABLE].valid ?
+                  RETRO_KEYBIND_VALID(&(*input_st->libretro_input_binds[i])[RARCH_HOLD_ENABLE]) ?
             input_state_wrap(input_st->current_driver,
                   input_st->current_data,
                   joypad, sec_joypad, &joypad_info[i],
@@ -7494,7 +8012,7 @@ void input_driver_poll(void)
                   int32_t ret = input_state_wrap(
                         input_st->current_driver,
                         input_st->current_data,
-                        input_st->primary_joypad,
+                        joypad,
                         sec_joypad,
                         &joypad_info[i],
                         (*input_st->libretro_input_binds),
@@ -7507,7 +8025,7 @@ void input_driver_poll(void)
                      if (ret & (1 << k))
                      {
                         bool valid_bind  =
-                           (*input_st->libretro_input_binds[i])[k].valid;
+                           RETRO_KEYBIND_VALID(&(*input_st->libretro_input_binds[i])[k]);
 
                         if (valid_bind)
                         {
@@ -8112,14 +8630,9 @@ void input_driver_collect_system_input(input_driver_state_t *input_st,
 {
    rarch_joypad_info_t joypad_info;
    input_driver_t *input               = input_st->current_driver;
-   const input_device_driver_t *joypad = input_st->primary_joypad;
-#ifdef HAVE_MFI
-   const input_device_driver_t
-      *sec_joypad                      = input_st->secondary_joypad;
-#else
+   const input_device_driver_t *joypad = NULL;
    const input_device_driver_t
       *sec_joypad                      = NULL;
-#endif
    unsigned block_delay                = settings->uints.input_hotkey_block_delay;
    /* Both of the arrays indexed below are [MAX_USERS]; the setting is
     * read from the config file and is not guaranteed to respect that. */
@@ -8135,6 +8648,16 @@ void input_driver_collect_system_input(input_driver_state_t *input_st,
          MENU_ST_FLAG_ALIVE) ? true : false;
    bool menu_input_active              = menu_is_alive &&
          !(settings->bools.menu_unified_controls && !display_kb);
+#endif
+
+   /* Hotkeys and menu navigation read the controllers through the
+    * stand-in while they are gated, the same as the core does. */
+   input_driver_update_joypad_focus(input_st, settings);
+   joypad                              = INPUT_JOYPAD_FOR_READ(
+         input_st, input_st->primary_joypad);
+#ifdef HAVE_MFI
+   sec_joypad                          = INPUT_JOYPAD_FOR_READ(
+         input_st, input_st->secondary_joypad);
 #endif
    joypad_info.axis_threshold          = settings->floats.input_axis_threshold;
 
@@ -8312,11 +8835,11 @@ void input_driver_collect_system_input(input_driver_state_t *input_st,
             {0,                RARCH_BIND_LIST_END_NULL      },
          };
 
-         ids[14][0] = input_config_binds[0][RARCH_QUIT_KEY].key;
-         ids[15][0] = input_config_binds[0][RARCH_FULLSCREEN_TOGGLE_KEY].key;
-         ids[16][0] = input_config_binds[0][RARCH_UI_COMPANION_TOGGLE].key;
-         ids[17][0] = input_config_binds[0][RARCH_FPS_TOGGLE].key;
-         ids[18][0] = input_config_binds[0][RARCH_NETPLAY_HOST_TOGGLE].key;
+         ids[14][0] = RETRO_KEYBIND_KEY(&input_config_binds[0][RARCH_QUIT_KEY]);
+         ids[15][0] = RETRO_KEYBIND_KEY(&input_config_binds[0][RARCH_FULLSCREEN_TOGGLE_KEY]);
+         ids[16][0] = RETRO_KEYBIND_KEY(&input_config_binds[0][RARCH_UI_COMPANION_TOGGLE]);
+         ids[17][0] = RETRO_KEYBIND_KEY(&input_config_binds[0][RARCH_FPS_TOGGLE]);
+         ids[18][0] = RETRO_KEYBIND_KEY(&input_config_binds[0][RARCH_NETPLAY_HOST_TOGGLE]);
          ids[19][0] = RETROK_ESCAPE;
 
          /* Escape cancels dialogs */
@@ -8707,7 +9230,7 @@ void input_keyboard_event(bool down, unsigned code,
          for (j = 0; j < max_users; j++)
          {
             unsigned k;
-            unsigned hotkey_code = input_config_binds[0][RARCH_ENABLE_HOTKEY].key;
+            unsigned hotkey_code = RETRO_KEYBIND_KEY(&input_config_binds[0][RARCH_ENABLE_HOTKEY]);
 
             /* Block hotkey key events based on 'enable_hotkey' modifier,
              * and only when modifier is a keyboard key. */
@@ -8719,7 +9242,7 @@ void input_keyboard_event(bool down, unsigned code,
             {
                for (k = RARCH_FIRST_META_KEY; k < RARCH_BIND_LIST_END; k++)
                {
-                  if (input_config_binds[j][k].key == code)
+                  if (RETRO_KEYBIND_KEY(&input_config_binds[j][k]) == code)
                   {
                      block_key_event = true;
                      break;
@@ -8734,7 +9257,7 @@ void input_keyboard_event(bool down, unsigned code,
             {
                for (k = 0; k < RARCH_FIRST_META_KEY; k++)
                {
-                  if (input_config_binds[j][k].key == code)
+                  if (RETRO_KEYBIND_KEY(&input_config_binds[j][k]) == code)
                   {
                      block_key_event = true;
                      break;

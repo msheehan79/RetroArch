@@ -22,7 +22,17 @@
 #if defined(HAVE_GLSLANG)
 #include "slang_cache.h"
 #endif
+/* The vendored SPIRV-Cross headers end their enumerator lists with a
+ * comma, which the C89 lane rejects under -pedantic; they are upstream
+ * files and are not edited here. */
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+#endif
 #include <spirv_cross_c.h>
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 /* SPIR-V words are uint32_t on our side; the C API declares SpvId
  * (hardcoded 'unsigned int' in spirv.h).  Same width everywhere by
@@ -78,7 +88,8 @@ static const char *semantic_uniform_names[] = {
    "HDR10",
    "Gyroscope",
    "Accelerometer",
-   "AccelerometerRest"
+   "AccelerometerRest",
+   "SwapCount"
 };
 
 static bool slang_reflect(
@@ -554,10 +565,16 @@ static bool slang_process_reflection(
       slang_semantic_meta *src = &sl_reflection.semantics[semantic];
       if (src->push_constant || src->uniform)
       {
-         uniform_sem_t uniform = { map->uniforms[semantic],
-            src->num_components
-               * (unsigned)sizeof(float) };
+         uniform_sem_t uniform;
          enum slang_semantic _semantic   = (enum slang_semantic)semantic;
+
+         uniform.data = map->uniforms[semantic];
+         /* A backend that has not wired a source for this semantic leaves
+          * the slot NULL; the shader then reads its zero-initialised
+          * default rather than the upload copying from NULL. */
+         if (!uniform.data)
+            continue;
+         uniform.size = src->num_components * (unsigned)sizeof(float);
          if (semantic < (int)(sizeof(semantic_uniform_names) / sizeof(*semantic_uniform_names)))
             strlcpy(uniform.id, semantic_uniform_names[_semantic], sizeof(uniform.id));
          else
@@ -588,8 +605,10 @@ static bool slang_process_reflection(
 
       if (src->push_constant || src->uniform)
       {
-         uniform_sem_t uniform = {
-            &shader_info->parameters[i].current, sizeof(float) };
+         uniform_sem_t uniform;
+
+         uniform.data = &shader_info->parameters[i].current;
+         uniform.size = sizeof(float);
          strlcpy(uniform.id, slang_map_semantic_name(sl_reflection.semantic_map, SLANG_SEMANTIC_FLOAT_PARAMETER, i), sizeof(uniform.id));
 
          if (src->push_constant)
@@ -698,15 +717,15 @@ static bool slang_process_reflection(
 
          if (src->push_constant || src->uniform)
          {
-            uniform_sem_t uniform = {
-               (void*)((uintptr_t)map->textures[semantic].size
-                     + index * map->textures[semantic].size_stride),
-               4 * sizeof(float)
-            };
+            uniform_sem_t uniform;
             enum slang_texture_semantic _semantic = (enum slang_texture_semantic)semantic;
             static const char* names[] = {
                "OriginalSize", "SourceSize", "OriginalHistorySize", "PassOutputSize", "PassFeedbackSize",
             };
+
+            uniform.data = (void*)((uintptr_t)map->textures[semantic].size
+                  + index * map->textures[semantic].size_stride);
+            uniform.size = 4 * sizeof(float);
             if (semantic < (int)SLANG_TEXTURE_SEMANTIC_ORIGINAL_HISTORY)
                strlcpy(uniform.id, names[_semantic], sizeof(uniform.id));
             else
@@ -1288,7 +1307,7 @@ error:
 }
 
 bool slang_preprocess_parse_parameters_meta(const glslang_meta *meta,
-      struct video_shader *shader)
+      struct video_shader *shader, unsigned pass)
 {
    unsigned i;
    unsigned old_num_parameters = shader->num_parameters;
@@ -1346,6 +1365,9 @@ bool slang_preprocess_parse_parameters_meta(const glslang_meta *meta,
          &shader->parameters[shader->num_parameters++]))
          continue;
 
+      /* The pass that first declares a parameter owns it: a later pass
+       * naming the same id takes the branch above and adds nothing. */
+      p->pass    = (int)pass;
       strlcpy(p->id,   meta->parameters[i].id,   sizeof(p->id));
       strlcpy(p->desc, meta->parameters[i].desc, sizeof(p->desc));
       p->initial = meta->parameters[i].initial;
@@ -1362,14 +1384,14 @@ bool slang_preprocess_parse_parameters_meta(const glslang_meta *meta,
  * slang_preprocess_parse_parameters (C-linkage overload) — uses shader_line_buf
  * ----------------------------------------------------------------------- */
 bool slang_preprocess_parse_parameters(const char *shader_path,
-      struct video_shader *shader)
+      struct video_shader *shader, unsigned pass)
 {
    return slang_preprocess_parse_parameters_cached(shader_path, shader,
-         NULL);
+         pass, NULL);
 }
 
 bool slang_preprocess_parse_parameters_cached(const char *shader_path,
-      struct video_shader *shader, void *include_cache)
+      struct video_shader *shader, unsigned pass, void *include_cache)
 {
    struct shader_line_buf lines;
 
@@ -1377,7 +1399,7 @@ bool slang_preprocess_parse_parameters_cached(const char *shader_path,
 
    if (shader_line_buf_init(&lines))
    {
-      if (glslang_read_shader_file_cached(shader_path, &lines, true, false,
+      if (glslang_read_shader_pragmas_cached(shader_path, &lines,
                include_cache))
       {
          glslang_meta meta;
@@ -1385,7 +1407,8 @@ bool slang_preprocess_parse_parameters_cached(const char *shader_path,
          meta.rt_format = SLANG_FORMAT_UNKNOWN;
          if (glslang_parse_meta(&lines, &meta))
          {
-            bool ret = slang_preprocess_parse_parameters_meta(&meta, shader);
+            bool ret = slang_preprocess_parse_parameters_meta(&meta, shader,
+                  pass);
             free(meta.parameters);
             shader_line_buf_free(&lines);
             return ret;
@@ -1426,7 +1449,8 @@ bool slang_process(
    if (!glslang_compile_shader(pass->source.path, &output))
       return false;
 
-   if (!slang_preprocess_parse_parameters_meta(&output.meta, shader_info))
+   if (!slang_preprocess_parse_parameters_meta(&output.meta, shader_info,
+            pass_number))
    {
       glslang_output_free(&output);
       return false;
@@ -1798,6 +1822,7 @@ static bool validate_type_for_semantic(spvc_type type, enum slang_semantic sem)
             &&  spvc_type_get_columns(type)  == 1;
          /* int */
       case SLANG_SEMANTIC_CURRENT_SUBFRAME:
+      case SLANG_SEMANTIC_SWAP_COUNT:
          return spvc_type_get_basetype(type) == SPVC_BASETYPE_UINT32
             &&  spvc_type_get_vector_size(type)  == 1
             &&  spvc_type_get_columns(type)  == 1;

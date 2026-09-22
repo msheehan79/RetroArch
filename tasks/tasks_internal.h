@@ -137,6 +137,8 @@ void *task_push_webdav_delete(const char *url, bool mute, const char *headers,
       retro_task_callback_t cb, void *userdata);
 void *task_push_webdav_move(const char *url, const char *dest, bool mute, const char *headers,
       retro_task_callback_t cb, void *userdata);
+void *task_push_webdav_copy(const char *url, const char *dest, bool mute, const char *headers,
+      retro_task_callback_t cb, void *userdata);
 
 bool task_push_bluetooth_scan(retro_task_callback_t cb);
 
@@ -338,6 +340,8 @@ bool take_screenshot(
       bool has_valid_framebuffer, bool fullpath, bool use_thread);
 
 bool event_load_save_files(bool is_sram_load_disabled);
+
+bool content_savefile_is_live(const char *path);
 
 bool event_save_files(bool sram_used, bool compress_files,
       const char *path_cheat_database);

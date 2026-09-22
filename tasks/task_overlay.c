@@ -24,6 +24,9 @@
 #include <file/archive_file.h>
 #endif
 #include <formats/image.h>
+#ifdef HAVE_RPNG
+#include <formats/rpng.h>
+#endif
 #include <streams/file_stream.h>
 #include <string/stdstring.h>
 #include <lrc_hash.h>
@@ -31,6 +34,7 @@
 #include "tasks_internal.h"
 
 #include "../gfx/video_driver.h"
+#include "../gfx/gfx_surface.h"
 #include "../input/input_driver.h"
 #include "../input/input_overlay.h"
 #include "../input/input_remapping.h"
@@ -52,6 +56,7 @@ struct overlay_loader
    struct overlay *overlays;
    struct overlay *active;
    struct string_list *image_list;
+   struct string_list *anim_list; /* APNG file bytes, parallel */
 
    size_t resolve_pos;
    unsigned size;
@@ -303,7 +308,8 @@ static bool task_overlay_load_image_texture(
       struct overlay *overlay,
       struct texture_image *image,
       const char *full_path,
-      const char *rel_path)
+      const char *rel_path,
+      unsigned *pack_idx)
 {
    int img_idx = string_list_find_elem(loader->image_list, rel_path) - 1;
 
@@ -314,6 +320,11 @@ static bool task_overlay_load_image_texture(
 
       image->supports_rgba =
             (loader->flags & OVERLAY_LOADER_RGBA_SUPPORT) ? true : false;
+      /* An ask, answered by the decode: a 16-bit PNG comes back at
+       * ten bits a channel where the driver can sample it, anything
+       * else comes back eight. */
+      image->pix10         =
+            (loader->flags & OVERLAY_LOADER_10BIT) ? true : false;
 
 #ifdef HAVE_COMPRESSION
       if (path_get_archive_delim(full_path))
@@ -350,9 +361,43 @@ static bool task_overlay_load_image_texture(
 
       attr.p = (void*)image;
       string_list_append(loader->image_list, rel_path, attr);
+      if (pack_idx)
+         *pack_idx = (unsigned)(loader->image_list->size - 1);
+
+#ifdef HAVE_RPNG
+      /* An animated PNG keeps its file bytes: the pack composes the
+       * frames from them one at a time, where a still is done with
+       * the file the moment it is decoded. The decoded image above is
+       * the animation's first frame, so nothing decodes twice. */
+      {
+         union string_list_elem_attr aattr;
+         overlay_anim_src_t *src = NULL;
+         int64_t len             = 0;
+         void *buf               = NULL;
+
+         aattr.i = 0;
+         if (     !path_get_archive_delim(full_path)
+               && filestream_read_file(full_path, &buf, &len)
+               && buf && len > 0
+               && rpng_is_apng((const uint8_t*)buf, (size_t)len)
+               && (src = (overlay_anim_src_t*)calloc(1, sizeof(*src))))
+         {
+            src->data = buf;
+            src->len  = (size_t)len;
+            buf       = NULL;
+         }
+         free(buf);
+         aattr.p = (void*)src;
+         string_list_append(loader->anim_list, rel_path, aattr);
+      }
+#endif
    }
    else
+   {
       *image = *((struct texture_image*)loader->image_list->elems[img_idx].attr.p);
+      if (pack_idx)
+         *pack_idx = (unsigned)img_idx;
+   }
 
    overlay->load_images[overlay->load_images_size++] = *image;
 
@@ -383,7 +428,7 @@ static void task_overlay_load_desc_image(
             image_path, sizeof(path));
 
       if (task_overlay_load_image_texture(loader, overlay, &desc->image,
-               path, image_path))
+               path, image_path, &desc->pack_image_index))
          desc->image_index = overlay->load_images_size - 1;
    }
 
@@ -1078,7 +1123,7 @@ static void task_overlay_deferred_load(retro_task_t *task, void *budget)
                overlay->config.paths.path, sizeof(overlay_resolved_path));
 
          if (!task_overlay_load_image_texture(loader, overlay, &overlay->image,
-               overlay_resolved_path, overlay->config.paths.path))
+               overlay_resolved_path, overlay->config.paths.path, NULL))
          {
             RARCH_ERR("[Overlay] Failed to load image: \"%s\".\n",
                   overlay_resolved_path);
@@ -1297,6 +1342,20 @@ static void task_overlay_free(retro_task_t *task)
       string_list_free(loader->image_list);
    }
 
+   if (loader->anim_list)
+   {
+      /* Same shape: the elements are file buffers nobody took. */
+      for (i = 0; i < loader->anim_list->size; i++)
+      {
+         overlay_anim_src_t *src =
+            (overlay_anim_src_t*)loader->anim_list->elems[i].attr.p;
+         if (src)
+            free(src->data);
+         free(src);
+      }
+      string_list_free(loader->anim_list);
+   }
+
    if (loader->overlays)
    {
       for (i = 0; i < loader->size; i++)
@@ -1373,6 +1432,7 @@ static void task_overlay_handler(retro_task_t *task)
       data->overlay_types               = loader->overlay_types;
       data->overlay_path                = loader->overlay_path;
       data->image_list                  = loader->image_list;
+      data->anim_list                   = loader->anim_list;
 
       /* Ownership moves with the pointers, so drop the loader's
        * references to them.  task_overlay_free() below releases
@@ -1387,6 +1447,7 @@ static void task_overlay_handler(retro_task_t *task)
       loader->active                    = NULL;
       loader->overlay_path              = NULL;
       loader->image_list                = NULL;
+      loader->anim_list                 = NULL;
 
       task_set_data(task, data);
    }
@@ -1439,6 +1500,15 @@ bool task_push_overlay_load_default(
 
    if (!image_list)
    {
+      free(loader);
+      return false;
+   }
+
+   loader->anim_list        = string_list_new();
+
+   if (!loader->anim_list)
+   {
+      string_list_free(image_list);
       free(loader);
       return false;
    }
@@ -1541,8 +1611,16 @@ bool task_push_overlay_load_default(
    if (is_osk)
       loader->flags        |= OVERLAY_LOADER_IS_OSK;
 #ifdef RARCH_INTERNAL
-   if ((video_driver_get_disp_flags() & VIDEO_FLAG_USE_RGBA))
-      loader->flags        |= OVERLAY_LOADER_RGBA_SUPPORT;
+   {
+      gfx_surface_requirements_t req;
+      if (gfx_surface_query_requirements(0, &req))
+      {
+         if (req.rgba)
+            loader->flags  |= OVERLAY_LOADER_RGBA_SUPPORT;
+         if (req.formats & GFX_SURFACE_PIXFMT_2101010)
+            loader->flags  |= OVERLAY_LOADER_10BIT;
+      }
+   }
 #endif
 
    t                        = task_init();

@@ -175,7 +175,26 @@ enum audio_driver_state_flags
     * The threaded pipeline's producer only waits for ring space while
     * this is set: with the consumer parked, waiting could never end.
     */
-   AUDIO_FLAG_STARTED      = (1 << 9)
+   AUDIO_FLAG_STARTED      = (1 << 9),
+   /**
+    * A driver write happened since the runloop last cleared this. Set at
+    * the write sites, whichever path reached them - core audio, or the
+    * frame of silence audio_driver_menu_sample() feeds while the core is
+    * paused with the mixer and thumbnail audio mixed in. Read by the
+    * runloop's pace record so "audio is holding the loop" is a fact
+    * about this iteration rather than a guess about who wrote.
+    */
+   AUDIO_FLAG_WROTE        = (1 << 10),
+   /* The mixer subsystem is between audio_mixer_init() and
+    * audio_mixer_done(): the window in which claiming voices is
+    * legal. audio_driver_init_internal() raises it right after the
+    * mixer comes up; audio_driver_mixer_deinit() drops it before the
+    * mixer goes down. Streams arriving outside the window - a mixer
+    * load task retiring after teardown at shutdown, or a menu sound
+    * during a session whose audio driver failed to initialize - are
+    * refused at audio_driver_mixer_add_stream() instead of claiming
+    * voices whose locks are gone. */
+   AUDIO_FLAG_MIXER_INITED = (1 << 11)
 };
 
 typedef struct audio_statistics

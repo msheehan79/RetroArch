@@ -27,7 +27,7 @@
 #include <vulkan/vulkan.h>
 
 #define RETRO_HW_RENDER_INTERFACE_VULKAN_VERSION 5
-#define RETRO_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_VULKAN_VERSION 2
+#define RETRO_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_VULKAN_VERSION 3
 
 struct retro_vulkan_image
 {
@@ -154,6 +154,13 @@ struct retro_hw_render_context_negotiation_interface_vulkan
     * If not, a second queue must be provided in presentation_queue and presentation_queue_index.
     * If surface is not VK_NULL_HANDLE, the instance from frontend will have been created with supported for
     * VK_KHR_surface extension.
+    *
+    * v3: presentation_queue may be another queue of queue_family_index even when presentation is supported
+    * on queue itself, which takes the frontend's present off the queue the core submits to and off its lock.
+    * presentation_queue_family_index must still equal queue_family_index; another family would need an image
+    * ownership transfer around every frame and is rejected.
+    * A core must only do this when GET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_SUPPORT reports 3 or higher:
+    * earlier frontends reject a presentation_queue that is not queue and fail context creation.
     *
     * The core is free to set its own queue priorities.
     * Device provided to frontend is owned by the frontend, but any additional device resources must be freed by core
@@ -351,7 +358,18 @@ struct retro_hw_render_interface_vulkan
     * so that the frontend can reuse the older pointer.
     *
     * The image itself however, must not be touched by the core until
-    * wait_sync_index has been completed later. The frontend may perform
+    * wait_sync_index has been completed later - and that includes
+    * destroying it, or releasing the last reference that keeps it
+    * alive. The frontend reads the image on its own schedule: on a
+    * threaded video path that is a frame or more after set_image,
+    * under fast-forward many frames after, so an image whose lifetime
+    * is only "until the next set_image" is read after it is gone - a
+    * GPU page fault and a lost device. The core keeps every image it
+    * hands over until wait_sync_index for the sync index it was handed
+    * at has returned: one image per set bit of get_sync_index_mask
+    * suffices.
+    *
+    * The frontend may perform
     * layout transitions on the image, so even read-only access is not defined.
     * The exception to read-only rule is if GENERAL layout is used for the image.
     * In this case, the frontend is not allowed to perform any layout transitions,

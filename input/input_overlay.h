@@ -111,7 +111,11 @@ enum overlay_show_input_type
 enum OVERLAY_LOADER_FLAGS
 {
    OVERLAY_LOADER_RGBA_SUPPORT = (1 << 0),
-   OVERLAY_LOADER_IS_OSK       = (1 << 1)
+   OVERLAY_LOADER_IS_OSK       = (1 << 1),
+   /* The driver samples XRGB2101010, so a 16-bit PNG in the pack is
+    * decoded at ten bits a channel instead of being flattened to
+    * eight. An 8-bit image decodes as it always did. */
+   OVERLAY_LOADER_10BIT        = (1 << 2)
 };
 
 enum INPUT_OVERLAY_FLAGS
@@ -120,7 +124,10 @@ enum INPUT_OVERLAY_FLAGS
    INPUT_OVERLAY_ALIVE   = (1 << 1),
    INPUT_OVERLAY_BLOCKED = (1 << 2),
    INPUT_OVERLAY_IS_OSK  = (1 << 3),
-   INPUT_OVERLAY_GAMEPAD_HIDDEN = (1 << 4)
+   INPUT_OVERLAY_GAMEPAD_HIDDEN = (1 << 4),
+   /* The driver declined the pack's textures (load_textures): pages
+    * go through load() until the next enable. */
+   INPUT_OVERLAY_TEXTURES_DECLINED = (1 << 5)
 };
 
 enum OVERLAY_FLAGS
@@ -187,6 +194,15 @@ typedef struct video_overlay_interface
    void (*enable)(void *data, bool state);
    bool (*load)(void *data,
          const void *images, unsigned num_images);
+   /* Show @num_textures textures video_driver_texture_load() made,
+    * in place of load(): the driver takes the same per-image
+    * geometry and alpha as for load() but uploads nothing and owns
+    * nothing - the textures are the overlay pack's, uploaded once
+    * for every page and unloaded by the frontend after enable(false).
+    * A page switch is then a pass over indices. Optional; a driver
+    * without it takes load() on every switch as before. */
+   bool (*load_textures)(void *data,
+         const uintptr_t *textures, unsigned num_textures);
    void (*tex_geom)(void *data, unsigned image,
          float x, float y, float w, float h);
    void (*vertex_geom)(void *data, unsigned image,
@@ -220,7 +236,14 @@ struct overlay_desc
    enum overlay_type type;
 
    unsigned next_index;
+   /* Index into the page's own image list (load_images / the page's
+    * textures). Every desc with an image gets its own entry, even when
+    * several share one file. */
    unsigned image_index;
+   /* Index into the pack's unique images (ol->images and the anim_*
+    * arrays), which are deduplicated by path. Only meaningful when the
+    * desc has an image. */
+   unsigned pack_image_index;
 
    float alpha_mod;
    float range_mod;
@@ -268,6 +291,10 @@ struct overlay
 {
    struct overlay_desc *descs;
    struct texture_image *load_images;
+   /* The pack's texture handle of each load_images entry, valid while
+    * the overlay is enabled on a driver with load_textures; views
+    * into input_overlay_t::page_textures. */
+   uintptr_t *textures;
 
    struct texture_image image;
 
@@ -325,7 +352,6 @@ struct overlay
    char name[64];
 
    uint8_t flags;
-    bool viewport_override_logged;
 };
 
 typedef struct input_overlay_state
@@ -396,6 +422,37 @@ struct input_overlay
    input_overlay_state_t overlay_state;
    input_overlay_pointer_state_t pointer_state;
    struct texture_image **images;
+   /* One block: the pack's texture handle per unique image (the first
+    * num_images entries), then each page's handle list in page order,
+    * which overlay::textures point into. Built by the enable on a
+    * driver with load_textures, unloaded and freed by the disable. */
+   uintptr_t *page_textures;
+   /* An animated image's file bytes and its APNG stream, one entry per
+    * unique image, NULL for the still ones. The bytes are kept because
+    * the stream decodes from them frame by frame; a still image's
+    * bytes and pixels both go once its texture exists. */
+   void **anim_data;
+   size_t *anim_len;
+   void **anim_stream;
+   /* When the frame showing now is due to be replaced, in
+    * microseconds on the same clock as the rest of the frontend. */
+   int64_t *anim_next_us;
+   /* A gfx_surface per unique image, holding that texture: the same
+    * ownership the animated previews use, so an overlay asset and a
+    * preview frame reach the GPU through one path. num_images of
+    * them, NULL until the pack is uploaded. */
+   void **surfaces;
+
+   /* Two-frame APNGs are treated as a pressed/unpressed pair rather
+    * than a looping animation. One entry per unique image; only valid
+    * when the corresponding anim_stream entry is non-NULL. */
+   uint8_t *anim_2frame;
+   uint8_t *anim_2frame_pressed;
+   uint8_t *anim_2frame_cur;
+   /* Both frames of each two-frame APNG, composed once at load and
+    * laid out back to back (width * height pixels each), so a press
+    * is a copy rather than a decode. NULL for every other image. */
+   uint32_t **anim_2frame_pix;
 
    size_t num_images;
    size_t index;
@@ -449,6 +506,11 @@ typedef struct
    struct overlay *overlays;
    struct overlay *active;
    struct string_list *image_list;
+   /* Parallel to image_list: for an image that turned out to be an
+    * APNG, the file bytes its frames are composed from, as an
+    * overlay_anim_src_t in attr.p; NULL entries for the stills. The
+    * pack takes them over with the images. */
+   struct string_list *anim_list;
    size_t size;
    uint16_t overlay_types;
    uint8_t flags;
@@ -466,6 +528,79 @@ void input_overlay_auto_rotate_(
       unsigned video_driver_height,
       bool input_overlay_enable,
       input_overlay_t *ol);
+
+/* The file bytes of one animated overlay image, handed from the
+ * loader to the pack, which frees them with the image. */
+typedef struct
+{
+   void  *data;
+   size_t len;
+} overlay_anim_src_t;
+
+/* Advance the pack's animated images to the frame due at @now, one
+ * per poll on the main thread; a pack with none is untouched. The
+ * frames update their textures in place, so the pages' handles stand
+ * and nothing is uploaded. */
+void input_overlay_animate(input_overlay_t *ol, retro_time_t now);
+
+/* Whether a page or a desc has an image, asked of its texture_image.
+ *
+ * By its size, never by its pixels. The pixels are released once the
+ * driver has the pack's textures (input_overlay_load_page), and the
+ * struct that release clears is not some private copy: the loader
+ * registers the address of the first overlay::image or
+ * overlay_desc::image to name a file as the pack's unique image
+ * (task_overlay_load_image_texture), so input_overlay::images[] points
+ * INTO the pages. A test on .pixels therefore turned false for exactly
+ * the descs that had just been given textures; their geometry was
+ * never set, and every image of the page was drawn over the whole
+ * screen. A desc or page without an image is calloc()ed and has no
+ * width; one with an image keeps its width for good. */
+#define OVERLAY_HAS_IMAGE(img) ((img)->width != 0)
+
+/* Unload the pack's textures (see video_overlay_interface::load_textures)
+ * and forget the page lists. Safe to call with none uploaded. */
+void input_overlay_release_textures(input_overlay_t *ol);
+
+/* Upload every unique image of the pack and build each page's list of
+ * handles. True when the pack has its textures, already or as of this
+ * call; false when it cannot be uploaded this way, or when the uploads
+ * are still with the video thread (input_overlay_promote_textures). */
+bool input_overlay_upload_textures(input_overlay_t *ol);
+
+/* Whether the pack can still be shown: it has its textures, or the
+ * pixels to make them from. */
+bool input_overlay_has_source(const input_overlay_t *ol);
+
+/* What the driver holds after input_overlay_load_page(). */
+enum input_overlay_page
+{
+   /* Nothing of this page: the pack had nothing to show it from, or
+    * the driver could not load it. Whatever the driver held before -
+    * no page, or an older one with fewer images - is what the per-image
+    * setters (set_alpha, vertex_geom, tex_geom) would now write to,
+    * with this page's indices: the caller leaves them alone. */
+   INPUT_OVERLAY_PAGE_NONE = 0,
+   INPUT_OVERLAY_PAGE_PIXELS,    /* through load()          */
+   INPUT_OVERLAY_PAGE_TEXTURES   /* through load_textures() */
+};
+
+/* Hand the active page to the driver: as textures when the driver
+ * takes them, as pixels through load() otherwise. */
+enum input_overlay_page input_overlay_load_page(input_overlay_t *ol);
+
+/* Under threaded video the pack's uploads finish after the page was
+ * shown through load(). Once per poll: when the last handle is in,
+ * the active page is handed to the driver again as textures and the
+ * pixels go. True on the poll that happens, and the caller applies
+ * the page's alpha and geometry again, as after any load; false, at
+ * the cost of a few tests, on every other. */
+bool input_overlay_promote_textures(input_overlay_t *ol);
+
+/* Unload the textures of the active and the cached pack ahead of the
+ * video driver's teardown; they are uploaded again at the next enable
+ * on whatever driver comes up. */
+void input_overlay_video_teardown(void);
 
 void input_overlay_load_active(
       enum overlay_visibility *visibility,

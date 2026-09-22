@@ -23,11 +23,18 @@
 #include <file/file_path.h>
 #include <net/net_compat.h>
 #include <streams/file_stream.h>
-#include <retro_timers.h>
 #include <retro_miscellaneous.h>
 
 #include "task_file_transfer.h"
 #include "tasks_internal.h"
+
+/* How long a threaded transfer will wait on its socket before coming
+ * back to check whether the task was cancelled. The task queue runs
+ * handlers one at a time, so this is also how long every other queued
+ * task can be held up behind a transfer with nothing to do - which is
+ * why it stays at the millisecond the old fixed sleep cost, rather
+ * than being raised to save wakeups. */
+#define HTTP_TRANSFER_WAIT_MS 1
 
 enum http_status_enum
 {
@@ -196,9 +203,14 @@ static int task_http_iterate_transfer(retro_task_t *task)
    http_handle_t *http  = (http_handle_t*)task->state;
    size_t pos  = 0, tot = 0;
 
-   /* FIXME: This wouldn't be needed if we could wait for a timeout */
+   /* Driven from a task thread there is nothing to pace this loop, so
+    * it used to sleep a millisecond a pass whether or not the peer had
+    * answered - paid in full even when the bytes were already there.
+    * Waiting on the socket instead costs the same millisecond when
+    * nothing arrives and returns the moment something does. The
+    * unthreaded queue is paced by the frame and waits for nothing. */
    if (task_queue_is_threaded())
-      retro_sleep(1);
+      net_http_wait(http->handle, HTTP_TRANSFER_WAIT_MS);
 
    if (!net_http_update(http->handle, &pos, &tot))
    {
@@ -600,8 +612,10 @@ void* task_push_webdav_delete(const char *url, bool mute,
    return task_push_http_transfer_generic(conn, url, mute, false, cb, user_data);
 }
 
-void *task_push_webdav_move(const char *url,
-      const char *dest, bool mute, const char *headers,
+/* MOVE and COPY (RFC 4918 9.8, 9.9): the target in a Destination
+ * header, ahead of any caller headers. */
+static void *task_push_webdav_to_destination(const char *url,
+      const char *method, const char *dest, bool mute, const char *headers,
       retro_task_callback_t cb, void *userdata)
 {
    size_t _len;
@@ -611,7 +625,7 @@ void *task_push_webdav_move(const char *url,
    if (!url || !*url)
       return NULL;
 
-   if (!(conn = net_http_connection_new(url, "MOVE", NULL)))
+   if (!(conn = net_http_connection_new(url, method, NULL)))
       return NULL;
 
    _len  = strlcpy_lit(dest_header, "Destination: ", sizeof(dest_header));
@@ -624,6 +638,22 @@ void *task_push_webdav_move(const char *url,
    net_http_connection_set_headers(conn, dest_header);
 
    return task_push_http_transfer_generic(conn, url, mute, false, cb, userdata);
+}
+
+void *task_push_webdav_move(const char *url,
+      const char *dest, bool mute, const char *headers,
+      retro_task_callback_t cb, void *userdata)
+{
+   return task_push_webdav_to_destination(url, "MOVE", dest, mute,
+         headers, cb, userdata);
+}
+
+void *task_push_webdav_copy(const char *url,
+      const char *dest, bool mute, const char *headers,
+      retro_task_callback_t cb, void *userdata)
+{
+   return task_push_webdav_to_destination(url, "COPY", dest, mute,
+         headers, cb, userdata);
 }
 
 void* task_push_http_transfer_file(const char* url, bool mute,

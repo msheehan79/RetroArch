@@ -1296,15 +1296,28 @@ static void gdrive_read_download_cb(retro_task_t *task, void *task_data,
    if (!success && data)
       gdrive_log_http_failure(cb_st->path, data);
 
-   if (success && data->data)
+   /* As in webdav.c: a downloaded file, even an empty one, is always
+    * handed back open, and one that cannot be written locally is a
+    * failure, so success with no file only ever means "not on the
+    * server" (gdrive_read_search_cb()). */
+   if (success)
    {
       file = filestream_open(cb_st->file,
             RETRO_VFS_FILE_ACCESS_READ_WRITE,
             RETRO_VFS_FILE_ACCESS_HINT_NONE);
-      if (file)
+      if (   file
+          && data->data && data->len
+          && filestream_write(file, data->data, data->len) != (int64_t)data->len)
       {
-         filestream_write(file, data->data, data->len);
+         filestream_close(file);
+         file = NULL;
+      }
+      if (file)
          filestream_seek(file, 0, SEEK_SET);
+      else
+      {
+         RARCH_WARN(GDPFX "Could not write \"%s\".\n", cb_st->file);
+         success = false;
       }
    }
 
@@ -1391,6 +1404,7 @@ static bool gdrive_read(const char *path, const char *file,
 /* ========== Update ========== */
 
 static void gdrive_do_update(gdrive_cb_state_t *cb_st);
+static void gdrive_do_patch(gdrive_cb_state_t *cb_st);
 
 static void gdrive_upload_cb(retro_task_t *task, void *task_data,
       void *user_data, const char *err)
@@ -1404,10 +1418,13 @@ static void gdrive_upload_cb(retro_task_t *task, void *task_data,
 
    success = (data && data->status >= 200 && data->status < 300);
 
+   /* The file ID is known by now, and any backup already taken, so the
+    * retry repeats only the PATCH: going back through the search would
+    * take the backup a second time. */
    if (data && data->status == 401 && !cb_st->retried)
    {
       cb_st->retried = true;
-      gdrive_refresh_then_retry(gdrive_do_update, cb_st);
+      gdrive_refresh_then_retry(gdrive_do_patch, cb_st);
       return;
    }
 
@@ -1506,6 +1523,83 @@ static void gdrive_create_cb(retro_task_t *task, void *task_data,
    gdrive_do_patch(cb_st);
 }
 
+/* With destructive sync off, a delete keeps the server's copy - renamed
+ * in place to <name>-<yymmdd-hhmmss> - but an upload replaced its
+ * content outright.  Before the PATCH, copy the file (files.copy, done
+ * by Drive itself) to that name in the same folder, so an upload keeps
+ * the copy a delete would have.  The server manifest is rewritten every
+ * sync and is not backed up. */
+static bool gdrive_wants_backup(const char *path)
+{
+   settings_t *settings = config_get_ptr();
+   return settings
+       && !settings->bools.cloud_sync_destructive
+       && !string_is_equal(path, CLOUD_SYNC_SERVER_MANIFEST);
+}
+
+static void gdrive_backup_copy_cb(retro_task_t *task, void *task_data,
+      void *user_data, const char *err)
+{
+   gdrive_cb_state_t    *cb_st = (gdrive_cb_state_t *)user_data;
+   http_transfer_data_t *data  = (http_transfer_data_t *)task_data;
+
+   if (!cb_st)
+      return;
+
+   if (data && data->status == 401 && !cb_st->retried)
+   {
+      cb_st->retried = true;
+      gdrive_refresh_then_retry(gdrive_do_update, cb_st);
+      return;
+   }
+
+   if (!data || data->status < 200 || data->status >= 300)
+   {
+      if (data)
+         gdrive_log_http_failure(cb_st->path, data);
+      RARCH_WARN(GDPFX "Not replacing %s: the copy on the server could not be backed up\n",
+            cb_st->path);
+      gdrive_cb_state_finish(cb_st, false);
+      return;
+   }
+
+   /* The PATCH is a request of its own. */
+   cb_st->retried = false;
+   gdrive_do_patch(cb_st);
+}
+
+static void gdrive_backup_then_patch(gdrive_cb_state_t *cb_st)
+{
+   char url[2048];
+   char json[PATH_MAX_LENGTH + 512];
+   char escaped_name[PATH_MAX_LENGTH];
+   char timestamp[32];
+   char *headers;
+   struct tm tm_;
+   time_t cur_time = time(NULL);
+
+   rtime_localtime(&cur_time, &tm_);
+   strftime(timestamp, sizeof(timestamp), "-%y%m%d-%H%M%S", &tm_);
+   gdrive_json_escape(escaped_name, sizeof(escaped_name),
+         path_basename(cb_st->path));
+   snprintf(json, sizeof(json),
+         "{\"name\":\"%s%s\",\"parents\":[\"%s\"]}",
+         escaped_name, timestamp, cb_st->parent_id);
+   snprintf(url, sizeof(url),
+         GDRIVE_API_BASE "/files/%s/copy", cb_st->file_id);
+
+   headers = gdrive_get_headers("Content-Type: application/json\r\n");
+
+   RARCH_DBG(GDPFX "Copy (backup) %s\n", cb_st->path);
+   if (!task_push_http_post_transfer_with_headers(url, json, true, NULL,
+         headers, gdrive_backup_copy_cb, cb_st))
+   {
+      RARCH_WARN(GDPFX "Could not back up %s\n", cb_st->path);
+      gdrive_cb_state_finish(cb_st, false);
+   }
+   free(headers);
+}
+
 static void gdrive_update_search_cb(retro_task_t *task, void *task_data,
       void *user_data, const char *err)
 {
@@ -1530,7 +1624,10 @@ static void gdrive_update_search_cb(retro_task_t *task, void *task_data,
 
    if (cb_st->file_id[0])
    {
-      gdrive_do_patch(cb_st);
+      if (gdrive_wants_backup(cb_st->path))
+         gdrive_backup_then_patch(cb_st);
+      else
+         gdrive_do_patch(cb_st);
    }
    else
    {

@@ -1076,7 +1076,7 @@ static void gfx_display_gdi_draw(gfx_display_ctx_draw_t *draw,
    /* Two coordinate-input conventions in this vtable:
     *
     *   1. Plain quad:  coords->vertex is NULL, geometry comes from
-    *      draw->x / draw->y / draw->width / draw->height.  draw->y
+    *      draw->x / draw->y / VIDEO_SCALE_W(draw->dims) / VIDEO_SCALE_H(draw->dims).  draw->y
     *      is "Y from bottom" because gfx_display_draw_quad flips it
     *      to match GL's bottom-up convention.  This is what
     *      menu/widget code uses for the simple-rect path.
@@ -1136,15 +1136,15 @@ static void gfx_display_gdi_draw(gfx_display_ctx_draw_t *draw,
    }
    else
    {
-      if (draw->width == 0 || draw->height == 0)
+      if (VIDEO_SCALE_W(draw->dims) == 0 || VIDEO_SCALE_H(draw->dims) == 0)
          return;
       /* Plain quad path: draw->y is bottom-up in caller's
        * coordinate system (the video_height value we were
        * passed), so flip. */
       dst_x = (int)draw->x;
-      dst_y = (int)video_height - (int)draw->height - (int)draw->y;
-      dst_w = draw->width;
-      dst_h = draw->height;
+      dst_y = (int)video_height - (int)VIDEO_SCALE_H(draw->dims) - (int)draw->y;
+      dst_w = VIDEO_SCALE_W(draw->dims);
+      dst_h = VIDEO_SCALE_H(draw->dims);
 
       /* Apply draw->scale_factor (centered scaling around the
        * quad's midpoint).  XMB sets this on icon draws (node->zoom)
@@ -3167,7 +3167,7 @@ static bool gdi_alive(void *data)
    gdi_t *gdi           = (gdi_t*)data;
 
    /* Read from local bookkeeping rather than video_st (which would
-    * acquire context_lock + display_lock).  gdi->full_{width,height}
+    * cross threads needlessly).  gdi->full_{width,height}
     * is written at every set_size call site in this driver. */
    temp_width  = gdi->full_width;
    temp_height = gdi->full_height;
@@ -3837,6 +3837,7 @@ static void gdi_overlays_render(gdi_t *gdi,
 static const video_overlay_interface_t gdi_overlay_interface = {
    gdi_overlay_enable,
    gdi_overlay_load,
+   NULL, /* load_textures */
    gdi_overlay_tex_geom,
    gdi_overlay_vertex_geom,
    gdi_overlay_full_screen,
@@ -3905,6 +3906,7 @@ gfx_display_ctx_driver_t gfx_display_ctx_gdi = {
    &gdi_font,
    GFX_VIDEO_DRIVER_GDI,
    "gdi",
+   false,
    false,
    gfx_display_gdi_scissor_begin,
    gfx_display_gdi_scissor_end

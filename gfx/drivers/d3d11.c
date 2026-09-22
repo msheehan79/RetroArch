@@ -68,6 +68,8 @@
 #include <libretro.h>
 #include <libretro_d3d11.h>
 #include "../common/d3dcompiler_common.h"
+#include "../common/d3d11_deferred_proxy.h"
+#include "../common/d3d11_hw_interface.h"
 /* slang_process.h is self-contained - it only defines types and
  * constants used by pass state.  The actual slang_process() call
  * sites remain guarded with HAVE_SLANG+HAVE_SPIRV_CROSS. */
@@ -312,6 +314,78 @@ typedef struct
 {
    unsigned              cur_mon_id;
    HANDLE                frameLatencyWaitableObject;
+   /* Copy of the last presented backbuffer, taken before the present of
+    * a frame() that asked for it (retain_output), and the group that
+    * frame put on screen for present_last() to replay. */
+   D3D11Texture2D        retained;
+   /* The threaded wrapper's hardware ring. The core records on a
+    * deferred context of its own; at each push its command list and the
+    * texture it left bound at PS slot 0 go into a slot, and the video
+    * thread replays the list on the immediate context and reads that
+    * texture, in the order the immediate context executes. */
+   struct
+   {
+      struct
+      {
+         ID3D11CommandList *list;
+         D3D11Texture2D     texture;
+         DXGI_FORMAT        format;
+      } slot[3];
+      /* Set by present_slot for the frame that follows: the texture
+       * to read instead of whatever PS slot 0 holds. */
+      D3D11Texture2D present;
+      DXGI_FORMAT    present_format;
+   } hw_ring;
+   /* libretro_d3d11.h version 2: the core and this driver take turns on
+    * the immediate context. `lock` is what they take; `frontend_used` is
+    * set whenever the driver has had the context and is what
+    * lock_context reports to the core; `texture` is the frame the core
+    * named with set_texture when the driver runs on the core's thread. */
+   struct
+   {
+      CRITICAL_SECTION lock;
+      bool             lock_ready;
+      bool             active;
+      bool             frontend_used;
+      /* Turns. A Windows critical section is not fair: a thread that
+       * releases it and asks again at once usually gets it, over one
+       * that has been waiting. A core locks and unlocks around every
+       * piece of GS work, thousands of times a frame, and would keep
+       * the frontend's thread out for the whole of it. So the frontend
+       * says when it is waiting, and the core's lock_context lets it go
+       * first. core_depth is the core thread's own count, so a nested
+       * lock_context never waits for a frontend it is itself blocking. */
+      volatile LONG    frontend_waiting;
+      unsigned         core_depth;
+      /* The runtime's own multithread protection is on for the
+       * context, so Present may run while the core has the lock. */
+      bool             present_unlocked;
+      D3D11Texture2D   texture;
+   } hw_v2;
+   /* Interface version 3, no shader preset: the frame is drawn straight
+    * from the core's texture, where the driver used to copy it into
+    * frame.texture[0] first and draw from that. A version 3 core keeps a
+    * texture per sync index and leaves one alone until the frontend is
+    * done with it, which is what makes this safe; the handful of views
+    * that takes are kept, with the textures they are of, until another
+    * texture wants the place. `eligible` is set by whoever handed the
+    * frame's texture over; `view` is what the frame on screen is drawn
+    * from, repeats of it included, until a frame arrives another way. */
+   struct
+   {
+      struct
+      {
+         D3D11Texture2D          texture;
+         D3D11ShaderResourceView view;
+      } cache[4];
+      unsigned                next;
+      D3D11ShaderResourceView view;
+      bool                    eligible;
+   } hw_direct;
+   unsigned              retained_width;
+   unsigned              retained_height;
+   unsigned              retained_light;
+   unsigned              retained_dark;
    DXGISwapChain         swapChain;
    D3D11Device           device;
    D3D_FEATURE_LEVEL     supportedFeatureLevel;
@@ -337,6 +411,12 @@ typedef struct
    unsigned              swap_interval;
    int8_t                wait_for_vblank;
    uint32_t              flags;
+   /* settings->uints.video_swapchain_bit_depth, seeded at init and
+    * refreshed in apply_state_changes (a blocking command, so the
+    * settings read inside it cannot race main): the frame's resize
+    * handling consumes this instead of live settings on the video
+    * thread. */
+   unsigned swapchain_bit_depth_latched;
    d3d11_shader_t        shaders[GFX_MAX_SHADERS];
 #ifdef HAVE_DXGI_HDR
    enum dxgi_swapchain_bit_depth
@@ -394,6 +474,10 @@ typedef struct
       D3D11Buffer      vbo;
       d3d11_texture_t* textures;
       int              count;
+      int              vbo_capacity; /* sprites the vbo holds */
+      /* textures are copies of the overlay pack's (load_textures):
+       * drawn from, never released here. */
+      bool             borrowed;
    } overlays;
 #endif
 
@@ -428,6 +512,7 @@ typedef struct
       uint32_t                   rotation;
       uint32_t                   total_subframes;
       uint32_t                   current_subframe;
+      uint32_t                   swap_count;
       float                      core_aspect;
       float                      core_aspect_rot;
 #ifdef HAVE_DXGI_HDR
@@ -785,15 +870,21 @@ static void gfx_display_d3d11_draw(gfx_display_ctx_draw_t *draw,
          || (vertex_count > d3d11->sprites.capacity))
       return;
 
-   if (d3d11->sprites.offset + vertex_count > d3d11->sprites.capacity)
-      d3d11->sprites.offset = 0;
-
    {
       D3D11_MAPPED_SUBRESOURCE mapped_vbo;
       d3d11_sprite_t*          sprite = NULL;
+      /* Rewinding the ring is where the GPU may still be reading:
+       * DISCARD renames the buffer, so in-flight draws keep theirs. */
+      D3D11_MAP map_type = D3D11_MAP_WRITE_NO_OVERWRITE;
+
+      if (d3d11->sprites.offset + vertex_count > d3d11->sprites.capacity)
+      {
+         d3d11->sprites.offset = 0;
+         map_type              = D3D11_MAP_WRITE_DISCARD;
+      }
 
       d3d11->context->lpVtbl->Map(
-            d3d11->context, (D3D11Resource)d3d11->sprites.vbo, 0, D3D11_MAP_WRITE_NO_OVERWRITE, 0, &mapped_vbo);
+            d3d11->context, (D3D11Resource)d3d11->sprites.vbo, 0, map_type, 0, &mapped_vbo);
 
       sprite = (d3d11_sprite_t*)mapped_vbo.pData + d3d11->sprites.offset;
 
@@ -801,9 +892,9 @@ static void gfx_display_d3d11_draw(gfx_display_ctx_draw_t *draw,
       {
          sprite->pos.x    = draw->x / (float)d3d11->viewport.Width;
          sprite->pos.y    =
-            (d3d11->viewport.Height - draw->y - draw->height) / (float)d3d11->viewport.Height;
-         sprite->pos.w    = draw->width / (float)d3d11->viewport.Width;
-         sprite->pos.h    = draw->height / (float)d3d11->viewport.Height;
+            (d3d11->viewport.Height - draw->y - VIDEO_SCALE_H(draw->dims)) / (float)d3d11->viewport.Height;
+         sprite->pos.w    = VIDEO_SCALE_W(draw->dims) / (float)d3d11->viewport.Width;
+         sprite->pos.h    = VIDEO_SCALE_H(draw->dims) / (float)d3d11->viewport.Height;
 
          sprite->coords.u = 0.0f;
          sprite->coords.v = 0.0f;
@@ -1026,6 +1117,13 @@ typedef struct
    const font_renderer_driver_t* font_driver;
    void*                         font_data;
    struct font_atlas*            atlas;
+   /* Glyph sprites gathered while a raster block is bound, drawn as
+    * one batch by d3d11_font_flush_block(). */
+   d3d11_sprite_t*               acc;
+   video_font_raster_block_t*    block;
+   d3d11_video_t*                d3d11;
+   unsigned                      acc_count;
+   unsigned                      acc_cap;
 } d3d11_font_t;
 
 static void d3d11_font_update_atlas_region(
@@ -1056,6 +1154,7 @@ static void * d3d11_font_init(void* data, const char* font_path,
       return NULL;
    }
 
+   font->d3d11               = d3d11;
    font->atlas               = font->font_driver->get_atlas(font->font_data);
    font->texture.sampler     = d3d11->samplers[RARCH_FILTER_LINEAR][RARCH_WRAP_BORDER];
    font->texture.desc.Width  = font->atlas->width;
@@ -1095,6 +1194,7 @@ static void d3d11_font_free(void* data, bool is_threaded)
    Release(font->texture.handle);
    Release(font->texture.staging);
    Release(font->texture.view);
+   free(font->acc);
    free(font);
 }
 
@@ -1180,6 +1280,11 @@ static void d3d11_font_update_atlas_region(
          (D3D11Resource)font->texture.staging, 0, &box);
 }
 
+static void d3d11_font_draw_sprites(d3d11_video_t *d3d11,
+      d3d11_font_t *font, unsigned start_offset, unsigned total_count);
+static void d3d11_font_upload_atlas(d3d11_video_t *d3d11,
+      d3d11_font_t *font);
+
 static void d3d11_font_render_msg(
       void *userdata,
       void* data,
@@ -1197,6 +1302,7 @@ static void d3d11_font_render_msg(
    unsigned total_count;
    unsigned start_offset;
    D3D11_MAPPED_SUBRESOURCE mapped_vbo;
+   D3D11_MAP map_type = D3D11_MAP_WRITE_NO_OVERWRITE;
    HRESULT hr;
    d3d11_sprite_t *v                = NULL;
    d3d11_font_t *font               = (d3d11_font_t*)data;
@@ -1314,20 +1420,45 @@ static void d3d11_font_render_msg(
          total_bytes++;
       }
       need = have_drop ? total_bytes * 2 : total_bytes;
-      if (d3d11->sprites.offset + need > (unsigned)d3d11->sprites.capacity)
-         d3d11->sprites.offset = 0;
+      if (font->block)
+      {
+         /* Gather into the block; the draw happens at flush */
+         unsigned want = font->acc_count + (unsigned)need;
+         if (want > font->acc_cap)
+         {
+            unsigned cap = font->acc_cap ? font->acc_cap : 512;
+            d3d11_sprite_t *acc;
+            while (cap < want)
+               cap *= 2;
+            if (!(acc = (d3d11_sprite_t*)realloc(font->acc,
+                        cap * sizeof(*acc))))
+               return;
+            font->acc     = acc;
+            font->acc_cap = cap;
+         }
+         mapped_vbo.pData = font->acc;
+         start_offset     = font->acc_count;
+      }
+      else
+      {
+         if (d3d11->sprites.offset + need > (unsigned)d3d11->sprites.capacity)
+         {
+            d3d11->sprites.offset = 0;
+            map_type              = D3D11_MAP_WRITE_DISCARD;
+         }
+
+         /* Single Map for the entire message (all lines, shadow + foreground). */
+         hr = d3d11->context->lpVtbl->Map(
+               d3d11->context, (D3D11Resource)d3d11->sprites.vbo,
+               0, map_type, 0, &mapped_vbo);
+
+         if (FAILED(hr))
+            return;
+         start_offset = d3d11->sprites.offset;
+      }
    }
 
-   /* Single Map for the entire message (all lines, shadow + foreground). */
-   hr = d3d11->context->lpVtbl->Map(
-         d3d11->context, (D3D11Resource)d3d11->sprites.vbo,
-         0, D3D11_MAP_WRITE_NO_OVERWRITE, 0, &mapped_vbo);
-
-   if (FAILED(hr))
-      return;
-
-   v             = (d3d11_sprite_t*)mapped_vbo.pData + d3d11->sprites.offset;
-   start_offset  = d3d11->sprites.offset;
+   v = (d3d11_sprite_t*)mapped_vbo.pData + start_offset;
 
    /* Prepare a sprite template for the constant fields.
     * params.scaling (1.0f) and params.rotation (0.0f) are identical for
@@ -1343,7 +1474,8 @@ static void d3d11_font_render_msg(
    {
       const char *line_start = msg;
       int lines              = 0;
-      int capacity           = d3d11->sprites.capacity;
+      int capacity           = font->block
+         ? (int)(font->acc_cap - start_offset) : d3d11->sprites.capacity;
       bool need_align        = (text_align == TEXT_ALIGN_RIGHT
                                  || text_align == TEXT_ALIGN_CENTER);
 
@@ -1511,6 +1643,17 @@ static void d3d11_font_render_msg(
    total_count = (unsigned)(v
          - ((d3d11_sprite_t*)mapped_vbo.pData + start_offset));
 
+   if (font->block)
+   {
+      /* The atlas goes up once, at flush, for every glyph the block's
+       * strings discovered; the renderer keeps merging the rectangle */
+      font->acc_count                  += total_count;
+      font->block->carr.coords.vertices = font->acc_count;
+      return;
+   }
+
+   d3d11_font_upload_atlas(d3d11, font);
+
    /* Single Unmap for the entire message. */
    d3d11->context->lpVtbl->Unmap(
          d3d11->context, (D3D11Resource)d3d11->sprites.vbo, 0);
@@ -1518,6 +1661,14 @@ static void d3d11_font_render_msg(
    if (!total_count)
       return;
 
+   d3d11_font_draw_sprites(d3d11, font, start_offset, total_count);
+}
+
+/* Uploads the atlas rectangle dirtied since the last upload. No-op
+ * when nothing is dirty. */
+static void d3d11_font_upload_atlas(d3d11_video_t *d3d11,
+      d3d11_font_t *font)
+{
    if (font->atlas->dirty)
    {
       if (font->texture.staging)
@@ -1526,7 +1677,13 @@ static void d3d11_font_render_msg(
                font->atlas->dirty_x1, font->atlas->dirty_y1);
       font->atlas->dirty = false;
    }
+}
 
+/* Draws total_count glyph sprites already in the sprite ring at
+ * start_offset with the atlas bound. */
+static void d3d11_font_draw_sprites(d3d11_video_t *d3d11,
+      d3d11_font_t *font, unsigned start_offset, unsigned total_count)
+{
    {
       d3d11_texture_t *texture = (d3d11_texture_t*)&font->texture;
       d3d11->context->lpVtbl->PSSetShaderResources(
@@ -1554,6 +1711,55 @@ static void d3d11_font_render_msg(
          d3d11->context, d3d11_sprite_shader(d3d11)->ps, NULL, 0);
 
    d3d11->sprites.offset = start_offset + total_count;
+}
+
+static void d3d11_font_bind_block(void *data, void *userdata)
+{
+   d3d11_font_t *font = (d3d11_font_t*)data;
+   if (font)
+      font->block = (video_font_raster_block_t*)userdata;
+}
+
+static void d3d11_font_flush_block(unsigned width, unsigned height,
+      void *data)
+{
+   D3D11_MAPPED_SUBRESOURCE mapped_vbo;
+   D3D11_MAP map_type  = D3D11_MAP_WRITE_NO_OVERWRITE;
+   d3d11_font_t *font  = (d3d11_font_t*)data;
+   d3d11_video_t *d3d11;
+   unsigned count, start_offset;
+
+   if (!font || !font->block || !font->acc_count)
+      return;
+   d3d11 = font->d3d11;
+   if (!d3d11 || !(d3d11->flags & D3D11_ST_FLAG_SPRITES_ENABLE))
+   {
+      font->acc_count = 0;
+      return;
+   }
+
+   count = font->acc_count;
+   if (count > (unsigned)d3d11->sprites.capacity)
+      count = (unsigned)d3d11->sprites.capacity;
+   if (d3d11->sprites.offset + count > (unsigned)d3d11->sprites.capacity)
+   {
+      d3d11->sprites.offset = 0;
+      map_type              = D3D11_MAP_WRITE_DISCARD;
+   }
+   start_offset = d3d11->sprites.offset;
+
+   if (SUCCEEDED(d3d11->context->lpVtbl->Map(
+               d3d11->context, (D3D11Resource)d3d11->sprites.vbo,
+               0, map_type, 0, &mapped_vbo)))
+   {
+      memcpy((d3d11_sprite_t*)mapped_vbo.pData + start_offset,
+            font->acc, count * sizeof(d3d11_sprite_t));
+      d3d11->context->lpVtbl->Unmap(
+            d3d11->context, (D3D11Resource)d3d11->sprites.vbo, 0);
+      d3d11_font_upload_atlas(d3d11, font);
+      d3d11_font_draw_sprites(d3d11, font, start_offset, count);
+   }
+   font->acc_count = 0;
 }
 
 static const struct font_glyph* d3d11_font_get_glyph(void *data, uint32_t code)
@@ -1607,125 +1813,87 @@ static uint32_t d3d11_get_flags(void *data)
 }
 
 #ifdef HAVE_OVERLAY
-static void d3d11_free_overlays(d3d11_video_t* d3d11)
+/* The page goes, the sprite buffer stays: d3d11_overlay_sprites_begin()
+ * reuses it for the next page while it is big enough. Releasing it
+ * here, at the top of every page load, left that reuse with nothing
+ * to reuse and made a page switch a CreateBuffer. */
+static void d3d11_free_overlay_page(d3d11_video_t* d3d11)
 {
    int i;
-   for (i = 0; i < d3d11->overlays.count; i++)
-      d3d11_release_texture(&d3d11->overlays.textures[i]);
+   if (!d3d11->overlays.borrowed)
+      for (i = 0; i < d3d11->overlays.count; i++)
+         d3d11_release_texture(&d3d11->overlays.textures[i]);
+   free(d3d11->overlays.textures);
+   d3d11->overlays.textures     = NULL;
+   d3d11->overlays.count        = 0;
+   d3d11->overlays.borrowed     = false;
+}
 
+static void d3d11_free_overlays(d3d11_video_t* d3d11)
+{
+   d3d11_free_overlay_page(d3d11);
    Release(d3d11->overlays.vbo);
+   d3d11->overlays.vbo          = NULL;
+   d3d11->overlays.vbo_capacity = 0;
 }
 
-static void d3d11_overlay_vertex_geom(
-      void* data, unsigned index,
-      float x, float y, float w, float h)
+/* The sprite buffer mapped to write sprite @index - or NULL when
+ * there is no such sprite: no page loaded, a page whose load failed,
+ * an index off the end of it, a device that will not map. The setters
+ * below are called whenever the frontend likes, not only after a load
+ * that worked, and a failed Map leaves pData as it found it. */
+static d3d11_sprite_t *d3d11_overlay_sprite_map(d3d11_video_t *d3d11,
+      unsigned index)
 {
    D3D11_MAPPED_SUBRESOURCE mapped_vbo;
-   d3d11_video_t*           d3d11 = (d3d11_video_t*)data;
-
-   if (!d3d11)
-      return;
-
-   d3d11->context->lpVtbl->Map(
-         d3d11->context, (D3D11Resource)d3d11->overlays.vbo, 0, D3D11_MAP_WRITE_NO_OVERWRITE, 0, &mapped_vbo);
-   {
-      d3d11_sprite_t* sprites = (d3d11_sprite_t*)mapped_vbo.pData;
-      sprites[index].pos.x    = x;
-      sprites[index].pos.y    = y;
-      sprites[index].pos.w    = w;
-      sprites[index].pos.h    = h;
-   }
-   d3d11->context->lpVtbl->Unmap(d3d11->context, (D3D11Resource)d3d11->overlays.vbo, 0);
+   if (     !d3d11
+         || !d3d11->overlays.vbo
+         || (int)index >= d3d11->overlays.count)
+      return NULL;
+   mapped_vbo.pData = NULL;
+   if (FAILED(d3d11->context->lpVtbl->Map(d3d11->context,
+               (D3D11Resource)d3d11->overlays.vbo, 0,
+               D3D11_MAP_WRITE_NO_OVERWRITE, 0, &mapped_vbo)))
+      return NULL;
+   if (!mapped_vbo.pData)
+      d3d11->context->lpVtbl->Unmap(d3d11->context,
+            (D3D11Resource)d3d11->overlays.vbo, 0);
+   return (d3d11_sprite_t*)mapped_vbo.pData;
 }
 
-static void d3d11_overlay_tex_geom(
-      void* data, unsigned index,
-      float u, float v, float w, float h)
+/* A page's sprite buffer, reused across pages while it is big enough,
+ * and its sprites reset to the whole screen in white. */
+static d3d11_sprite_t *d3d11_overlay_sprites_begin(d3d11_video_t *d3d11,
+      unsigned num, D3D11_MAPPED_SUBRESOURCE *mapped_vbo)
 {
-   D3D11_MAPPED_SUBRESOURCE mapped_vbo;
-   d3d11_video_t*           d3d11 = (d3d11_video_t*)data;
+   unsigned i;
+   d3d11_sprite_t *sprites;
 
-   if (!d3d11)
-      return;
-
-   d3d11->context->lpVtbl->Map(
-         d3d11->context, (D3D11Resource)d3d11->overlays.vbo, 0, D3D11_MAP_WRITE_NO_OVERWRITE, 0, &mapped_vbo);
+   if (!d3d11->overlays.vbo || d3d11->overlays.vbo_capacity < (int)num)
    {
-      d3d11_sprite_t* sprites = (d3d11_sprite_t*)mapped_vbo.pData;
-      sprites[index].coords.u = u;
-      sprites[index].coords.v = v;
-      sprites[index].coords.w = w;
-      sprites[index].coords.h = h;
+      D3D11_BUFFER_DESC desc;
+      Release(d3d11->overlays.vbo);
+      d3d11->overlays.vbo      = NULL;
+      desc.ByteWidth           = sizeof(d3d11_sprite_t) * num;
+      desc.Usage               = D3D11_USAGE_DYNAMIC;
+      desc.BindFlags           = D3D11_BIND_VERTEX_BUFFER;
+      desc.CPUAccessFlags      = D3D11_CPU_ACCESS_WRITE;
+      desc.MiscFlags           = 0;
+      desc.StructureByteStride = 0;
+      if (FAILED(d3d11->device->lpVtbl->CreateBuffer(d3d11->device,
+                  &desc, NULL, &d3d11->overlays.vbo)))
+         return NULL;
+      d3d11->overlays.vbo_capacity = num;
    }
-   d3d11->context->lpVtbl->Unmap(d3d11->context, (D3D11Resource)d3d11->overlays.vbo, 0);
-}
 
-static void d3d11_overlay_set_alpha(void* data, unsigned index, float mod)
-{
-   D3D11_MAPPED_SUBRESOURCE mapped_vbo;
-   d3d11_video_t*           d3d11 = (d3d11_video_t*)data;
+   if (FAILED(d3d11->context->lpVtbl->Map(d3d11->context,
+         (D3D11Resource)d3d11->overlays.vbo, 0,
+         D3D11_MAP_WRITE_DISCARD, 0, mapped_vbo)))
+      return NULL;
+   sprites = (d3d11_sprite_t*)mapped_vbo->pData;
 
-   if (!d3d11)
-      return;
-
-   d3d11->context->lpVtbl->Map(
-         d3d11->context, (D3D11Resource)d3d11->overlays.vbo, 0, D3D11_MAP_WRITE_NO_OVERWRITE, 0, &mapped_vbo);
+   for (i = 0; i < num; i++)
    {
-      d3d11_sprite_t* sprites  = (d3d11_sprite_t*)mapped_vbo.pData;
-      sprites[index].colors[0] = DXGI_COLOR_RGBA(0xFF, 0xFF, 0xFF, mod * 0xFF);
-      sprites[index].colors[1] = sprites[index].colors[0];
-      sprites[index].colors[2] = sprites[index].colors[0];
-      sprites[index].colors[3] = sprites[index].colors[0];
-   }
-   d3d11->context->lpVtbl->Unmap(d3d11->context, (D3D11Resource)d3d11->overlays.vbo, 0);
-}
-
-static bool d3d11_overlay_load(void* data, const void* image_data, unsigned num_images)
-{
-   D3D11_BUFFER_DESC desc;
-   D3D11_MAPPED_SUBRESOURCE    mapped_vbo;
-   unsigned                    i;
-   d3d11_sprite_t*             sprites;
-   d3d11_video_t*              d3d11  = (d3d11_video_t*)data;
-   const struct texture_image* images = (const struct texture_image*)image_data;
-
-   if (!d3d11)
-      return false;
-
-   d3d11_free_overlays(d3d11);
-   d3d11->overlays.textures = (d3d11_texture_t*)calloc(
-         num_images, sizeof(d3d11_texture_t));
-
-   d3d11->overlays.count    = num_images;
-   desc.ByteWidth           = sizeof(d3d11_sprite_t) * num_images;
-   desc.Usage               = D3D11_USAGE_DYNAMIC;
-   desc.BindFlags           = D3D11_BIND_VERTEX_BUFFER;
-   desc.CPUAccessFlags      = D3D11_CPU_ACCESS_WRITE;
-   desc.MiscFlags           = 0;
-   desc.StructureByteStride = 0;
-   d3d11->device->lpVtbl->CreateBuffer(d3d11->device, &desc, NULL,
-         &d3d11->overlays.vbo);
-
-   d3d11->context->lpVtbl->Map(
-         d3d11->context, (D3D11Resource)d3d11->overlays.vbo, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_vbo);
-   sprites                  = (d3d11_sprite_t*)mapped_vbo.pData;
-
-   for (i = 0; i < num_images; i++)
-   {
-
-      d3d11->overlays.textures[i].desc.Width  = images[i].width;
-      d3d11->overlays.textures[i].desc.Height = images[i].height;
-      d3d11->overlays.textures[i].desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-
-      d3d11_release_texture(&d3d11->overlays.textures[i]);
-      d3d11_init_texture(d3d11->device, &d3d11->overlays.textures[i]);
-
-      if (d3d11->overlays.textures[i].staging)
-         d3d11_update_texture(
-               d3d11->context, images[i].width,
-               images[i].height, 0, DXGI_FORMAT_B8G8R8A8_UNORM,
-               images[i].pixels, &d3d11->overlays.textures[i]);
-
       sprites[i].pos.x           = 0.0f;
       sprites[i].pos.y           = 0.0f;
       sprites[i].pos.w           = 1.0f;
@@ -1744,6 +1912,135 @@ static bool d3d11_overlay_load(void* data, const void* image_data, unsigned num_
       sprites[i].colors[2]       = sprites[i].colors[0];
       sprites[i].colors[3]       = sprites[i].colors[0];
    }
+   return sprites;
+}
+
+static void d3d11_overlay_vertex_geom(
+      void* data, unsigned index,
+      float x, float y, float w, float h)
+{
+   d3d11_video_t*  d3d11   = (d3d11_video_t*)data;
+   d3d11_sprite_t* sprites = d3d11_overlay_sprite_map(d3d11, index);
+
+   if (!sprites)
+      return;
+
+   sprites[index].pos.x    = x;
+   sprites[index].pos.y    = y;
+   sprites[index].pos.w    = w;
+   sprites[index].pos.h    = h;
+   d3d11->context->lpVtbl->Unmap(d3d11->context, (D3D11Resource)d3d11->overlays.vbo, 0);
+}
+
+static void d3d11_overlay_tex_geom(
+      void* data, unsigned index,
+      float u, float v, float w, float h)
+{
+   d3d11_video_t*  d3d11   = (d3d11_video_t*)data;
+   d3d11_sprite_t* sprites = d3d11_overlay_sprite_map(d3d11, index);
+
+   if (!sprites)
+      return;
+
+   sprites[index].coords.u = u;
+   sprites[index].coords.v = v;
+   sprites[index].coords.w = w;
+   sprites[index].coords.h = h;
+   d3d11->context->lpVtbl->Unmap(d3d11->context, (D3D11Resource)d3d11->overlays.vbo, 0);
+}
+
+static void d3d11_overlay_set_alpha(void* data, unsigned index, float mod)
+{
+   d3d11_video_t*  d3d11   = (d3d11_video_t*)data;
+   d3d11_sprite_t* sprites = d3d11_overlay_sprite_map(d3d11, index);
+
+   if (!sprites)
+      return;
+
+   sprites[index].colors[0] = DXGI_COLOR_RGBA(0xFF, 0xFF, 0xFF, mod * 0xFF);
+   sprites[index].colors[1] = sprites[index].colors[0];
+   sprites[index].colors[2] = sprites[index].colors[0];
+   sprites[index].colors[3] = sprites[index].colors[0];
+   d3d11->context->lpVtbl->Unmap(d3d11->context, (D3D11Resource)d3d11->overlays.vbo, 0);
+}
+
+static bool d3d11_overlay_load(void* data, const void* image_data, unsigned num_images)
+{
+   D3D11_MAPPED_SUBRESOURCE    mapped_vbo;
+   unsigned                    i;
+   d3d11_video_t*              d3d11  = (d3d11_video_t*)data;
+   const struct texture_image* images = (const struct texture_image*)image_data;
+
+   if (!d3d11)
+      return false;
+
+   d3d11_free_overlay_page(d3d11);
+   if (!num_images)
+      return true;
+   d3d11->overlays.textures = (d3d11_texture_t*)calloc(
+         num_images, sizeof(d3d11_texture_t));
+   if (!d3d11->overlays.textures)
+      return false;
+   d3d11->overlays.count    = num_images;
+
+   /* No sprites, no page: not a count the draw and the setters would
+    * take at its word against a buffer that is not there. */
+   if (!d3d11_overlay_sprites_begin(d3d11, num_images, &mapped_vbo))
+   {
+      d3d11_free_overlay_page(d3d11);
+      return false;
+   }
+
+   for (i = 0; i < num_images; i++)
+   {
+      d3d11->overlays.textures[i].desc.Width  = images[i].width;
+      d3d11->overlays.textures[i].desc.Height = images[i].height;
+      d3d11->overlays.textures[i].desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+
+      d3d11_release_texture(&d3d11->overlays.textures[i]);
+      d3d11_init_texture(d3d11->device, &d3d11->overlays.textures[i]);
+
+      if (d3d11->overlays.textures[i].staging)
+         d3d11_update_texture(
+               d3d11->context, images[i].width,
+               images[i].height, 0, DXGI_FORMAT_B8G8R8A8_UNORM,
+               images[i].pixels, &d3d11->overlays.textures[i]);
+   }
+   d3d11->context->lpVtbl->Unmap(d3d11->context, (D3D11Resource)d3d11->overlays.vbo, 0);
+
+   return true;
+}
+
+/* A page of the pack's textures: copies of d3d11_gfx_load_texture's
+ * d3d11_texture_t per image to draw from, the sprite buffer reused
+ * and reset, and nothing uploaded, created or released. */
+static bool d3d11_overlay_load_textures(void* data,
+      const uintptr_t* textures, unsigned num_textures)
+{
+   D3D11_MAPPED_SUBRESOURCE    mapped_vbo;
+   unsigned                    i;
+   d3d11_video_t*              d3d11  = (d3d11_video_t*)data;
+
+   if (!d3d11)
+      return false;
+
+   d3d11_free_overlay_page(d3d11);
+   if (!num_textures)
+      return true;
+   d3d11->overlays.textures = (d3d11_texture_t*)calloc(
+         num_textures, sizeof(d3d11_texture_t));
+   if (!d3d11->overlays.textures)
+      return false;
+   d3d11->overlays.count    = num_textures;
+   d3d11->overlays.borrowed = true;
+
+   if (!d3d11_overlay_sprites_begin(d3d11, num_textures, &mapped_vbo))
+   {
+      d3d11_free_overlay_page(d3d11);
+      return false;
+   }
+   for (i = 0; i < num_textures; i++)
+      d3d11->overlays.textures[i] = *(const d3d11_texture_t*)textures[i];
    d3d11->context->lpVtbl->Unmap(d3d11->context, (D3D11Resource)d3d11->overlays.vbo, 0);
 
    return true;
@@ -1780,8 +2077,9 @@ static void d3d11_get_overlay_interface(
       void* data, const video_overlay_interface_t** iface)
 {
    static const video_overlay_interface_t overlay_interface = {
-      d3d11_overlay_enable,      d3d11_overlay_load,        d3d11_overlay_tex_geom,
-      d3d11_overlay_vertex_geom, d3d11_overlay_full_screen, d3d11_overlay_set_alpha,
+      d3d11_overlay_enable,      d3d11_overlay_load,        d3d11_overlay_load_textures,
+      d3d11_overlay_tex_geom,    d3d11_overlay_vertex_geom, d3d11_overlay_full_screen,
+      d3d11_overlay_set_alpha,
    };
 
    *iface = &overlay_interface;
@@ -1819,37 +2117,41 @@ static void d3d11_render_overlay(d3d11_video_t *d3d11)
 #endif
 
 #ifdef HAVE_DXGI_HDR
-static void d3d11_set_hdr_menu_nits(void *data, float menu_nits)
+/* Writes hdr.ubo_values to the HDR constant buffer. The buffer exists
+ * only while HDR is enabled - it is made with the HDR swapchain and
+ * from these same values - so with HDR off the values are kept and
+ * nothing is mapped: mapping a NULL resource is a crash inside
+ * d3d11.dll, and every HDR poke is reachable with HDR off. */
+static void d3d11_hdr_ubo_update(d3d11_video_t *d3d11)
 {
    D3D11_MAPPED_SUBRESOURCE mapped_ubo;
+
+   if (!d3d11->hdr.ubo || !d3d11->context)
+      return;
+   if (FAILED(d3d11->context->lpVtbl->Map(
+         d3d11->context, (D3D11Resource)d3d11->hdr.ubo, 0,
+         D3D11_MAP_WRITE_DISCARD, 0, &mapped_ubo)))
+      return;
+   *(dxgi_hdr_uniform_t*)mapped_ubo.pData = d3d11->hdr.ubo_values;
+   d3d11->context->lpVtbl->Unmap(d3d11->context, (D3D11Resource)d3d11->hdr.ubo, 0);
+}
+
+static void d3d11_set_hdr_menu_nits(void *data, float menu_nits)
+{
    d3d11_video_t* d3d11                   = (d3d11_video_t*)data;
 
    d3d11->hdr.menu_nits        = menu_nits;
 
-   if (FAILED(d3d11->context->lpVtbl->Map(
-         d3d11->context, (D3D11Resource)d3d11->hdr.ubo, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_ubo)))
-      return;
-   {
-      dxgi_hdr_uniform_t *ubo = (dxgi_hdr_uniform_t*)mapped_ubo.pData;
-      *ubo                    = d3d11->hdr.ubo_values;
-   }
-   d3d11->context->lpVtbl->Unmap(d3d11->context, (D3D11Resource)d3d11->hdr.ubo, 0);
+   d3d11_hdr_ubo_update(d3d11);
 }
 
 static void d3d11_set_hdr_paper_white_nits(void* data, float paper_white_nits)
 {
-   D3D11_MAPPED_SUBRESOURCE mapped_ubo;
-   dxgi_hdr_uniform_t *ubo                = NULL;
    d3d11_video_t      *d3d11              = (d3d11_video_t*)data;
 
    d3d11->hdr.ubo_values.paper_white_nits = paper_white_nits;
 
-   if (FAILED(d3d11->context->lpVtbl->Map(
-         d3d11->context, (D3D11Resource)d3d11->hdr.ubo, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_ubo)))
-      return;
-   ubo  = (dxgi_hdr_uniform_t*)mapped_ubo.pData;
-   *ubo = d3d11->hdr.ubo_values;
-   d3d11->context->lpVtbl->Unmap(d3d11->context, (D3D11Resource)d3d11->hdr.ubo, 0);
+   d3d11_hdr_ubo_update(d3d11);
    
    if(d3d11->shader_preset)
    {
@@ -1861,18 +2163,11 @@ static void d3d11_set_hdr_paper_white_nits(void* data, float paper_white_nits)
 
 static void d3d11_set_hdr_expand_gamut(void* data, unsigned expand_gamut)
 {
-   D3D11_MAPPED_SUBRESOURCE mapped_ubo;
-   dxgi_hdr_uniform_t *ubo                = NULL;
    d3d11_video_t* d3d11                   = (d3d11_video_t*)data;
 
    d3d11->hdr.ubo_values.expand_gamut     = expand_gamut;
 
-   if (FAILED(d3d11->context->lpVtbl->Map(
-         d3d11->context, (D3D11Resource)d3d11->hdr.ubo, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_ubo)))
-      return;
-   ubo  = (dxgi_hdr_uniform_t*)mapped_ubo.pData;
-   *ubo = d3d11->hdr.ubo_values;
-   d3d11->context->lpVtbl->Unmap(d3d11->context, (D3D11Resource)d3d11->hdr.ubo, 0);
+   d3d11_hdr_ubo_update(d3d11);
    
    if(d3d11->shader_preset)
    {
@@ -1884,18 +2179,11 @@ static void d3d11_set_hdr_expand_gamut(void* data, unsigned expand_gamut)
 
 static void d3d11_set_hdr_scanlines(void* data, bool scanlines)
 {
-   D3D11_MAPPED_SUBRESOURCE mapped_ubo;
-   dxgi_hdr_uniform_t *ubo                = NULL;
    d3d11_video_t* d3d11                   = (d3d11_video_t*)data;
 
    d3d11->hdr.ubo_values.scanlines     = scanlines ? 1.0f : 0.0f;
 
-   if (FAILED(d3d11->context->lpVtbl->Map(
-         d3d11->context, (D3D11Resource)d3d11->hdr.ubo, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_ubo)))
-      return;
-   ubo  = (dxgi_hdr_uniform_t*)mapped_ubo.pData;
-   *ubo = d3d11->hdr.ubo_values;
-   d3d11->context->lpVtbl->Unmap(d3d11->context, (D3D11Resource)d3d11->hdr.ubo, 0);
+   d3d11_hdr_ubo_update(d3d11);
    
    if(d3d11->shader_preset)
    {
@@ -1907,18 +2195,11 @@ static void d3d11_set_hdr_scanlines(void* data, bool scanlines)
 
 static void d3d11_set_hdr_subpixel_layout(void* data, unsigned subpixel_layout)
 {
-   D3D11_MAPPED_SUBRESOURCE mapped_ubo;
-   dxgi_hdr_uniform_t *ubo                = NULL;
    d3d11_video_t* d3d11                   = (d3d11_video_t*)data;
 
    d3d11->hdr.ubo_values.subpixel_layout  = subpixel_layout;
 
-   if (FAILED(d3d11->context->lpVtbl->Map(
-         d3d11->context, (D3D11Resource)d3d11->hdr.ubo, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_ubo)))
-      return;
-   ubo  = (dxgi_hdr_uniform_t*)mapped_ubo.pData;
-   *ubo = d3d11->hdr.ubo_values;
-   d3d11->context->lpVtbl->Unmap(d3d11->context, (D3D11Resource)d3d11->hdr.ubo, 0);
+   d3d11_hdr_ubo_update(d3d11);
    
    if(d3d11->shader_preset)
    {
@@ -1930,17 +2211,10 @@ static void d3d11_set_hdr_subpixel_layout(void* data, unsigned subpixel_layout)
 
 static void d3d11_set_hdr_inverse_tonemap(d3d11_video_t* d3d11, bool inverse_tonemap)
 {
-   D3D11_MAPPED_SUBRESOURCE mapped_ubo;
-   dxgi_hdr_uniform_t *ubo                = NULL;
 
    d3d11->hdr.ubo_values.inverse_tonemap  = inverse_tonemap ? 1.0f : 0.0f;
 
-   if (FAILED(d3d11->context->lpVtbl->Map(
-         d3d11->context, (D3D11Resource)d3d11->hdr.ubo, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_ubo)))
-      return;
-   ubo  = (dxgi_hdr_uniform_t*)mapped_ubo.pData;
-   *ubo = d3d11->hdr.ubo_values;
-   d3d11->context->lpVtbl->Unmap(d3d11->context, (D3D11Resource)d3d11->hdr.ubo, 0);
+   d3d11_hdr_ubo_update(d3d11);
    
    if(d3d11->shader_preset)
    {
@@ -1952,17 +2226,9 @@ static void d3d11_set_hdr_inverse_tonemap(d3d11_video_t* d3d11, bool inverse_ton
 
 static void d3d11_set_hdr10(d3d11_video_t* d3d11, bool hdr10)
 {
-   D3D11_MAPPED_SUBRESOURCE mapped_ubo;
-   dxgi_hdr_uniform_t *ubo                = NULL;
-
    d3d11->hdr.ubo_values.hdr10  = hdr10 ? 1.0f : 0.0f;
 
-   if (FAILED(d3d11->context->lpVtbl->Map(
-         d3d11->context, (D3D11Resource)d3d11->hdr.ubo, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_ubo)))
-      return;
-   ubo  = (dxgi_hdr_uniform_t*)mapped_ubo.pData;
-   *ubo = d3d11->hdr.ubo_values;
-   d3d11->context->lpVtbl->Unmap(d3d11->context, (D3D11Resource)d3d11->hdr.ubo, 0);
+   d3d11_hdr_ubo_update(d3d11);
    
    if(d3d11->shader_preset)
    {
@@ -2347,6 +2613,7 @@ static bool d3d11_shader_load_step(void *data,
                &d3d11->pass[i].core_aspect_rot,
                &d3d11->pass[i].total_subframes,
                &d3d11->pass[i].current_subframe,
+               &d3d11->pass[i].swap_count,
 #ifdef HAVE_DXGI_HDR
                &d3d11->pass[i].hdr_mode,
                &d3d11->pass[i].paper_white_nits,
@@ -2692,6 +2959,7 @@ static bool d3d11_gfx_set_shader(void* data, enum rarch_shader_type type, const 
             &d3d11->pass[i].core_aspect_rot, /* OriginalAspectRotated */
             &d3d11->pass[i].total_subframes, /* TotalSubFrames */
             &d3d11->pass[i].current_subframe,/* CurrentSubFrame */
+            &d3d11->pass[i].swap_count, /* SwapCount */
 #ifdef HAVE_DXGI_HDR
             &d3d11->pass[i].hdr_mode,        /* HDRMode */
             &d3d11->pass[i].paper_white_nits,/* BrightnessNits */
@@ -2875,6 +3143,15 @@ error:
    return false;
 }
 
+static void d3d11_hw_ring_free(d3d11_video_t *d3d11);
+static bool d3d11_hw_v2_lock_context(void *data);
+static void d3d11_hw_v2_unlock_context(void *data);
+static void d3d11_hw_v2_set_texture(void *data, ID3D11Texture2D *texture);
+static void d3d11_hw_v2_protect_context(d3d11_video_t *d3d11);
+static unsigned d3d11_hw_v2_get_sync_index(void *data);
+static unsigned d3d11_hw_v2_get_sync_index_mask(void *data);
+static void d3d11_hw_v2_wait_sync_index(void *data);
+
 static void d3d11_gfx_free(void* data)
 {
    int i;
@@ -2887,6 +3164,9 @@ static void d3d11_gfx_free(void* data)
 
    if (d3d11->flags & D3D11_ST_FLAG_WAITABLE_SWAPCHAINS)
       CloseHandle(d3d11->frameLatencyWaitableObject);
+   Release(d3d11->retained);
+   d3d11->retained = NULL;
+   d3d11_hw_ring_free(d3d11);
 
 
 #ifdef HAVE_OVERLAY
@@ -2942,7 +3222,7 @@ static void d3d11_gfx_free(void* data)
    Release(d3d11->scissor_disabled);
    Release(d3d11->swapChain);
 
-   video_st_flags                  = video_st->flags;
+   video_st_flags                  = (uint32_t)retro_atomic_load_relaxed_int(&video_st->flags);
    if (video_st_flags & VIDEO_FLAG_CACHE_CONTEXT)
    {
       cached_device_d3d11          = d3d11->device;
@@ -2965,7 +3245,7 @@ static void d3d11_gfx_free(void* data)
    }
 
 #ifdef HAVE_DXGI_HDR
-   video_driver_set_disp_flags(video_driver_get_disp_flags() & ~(VIDEO_FLAG_HDR_SUPPORT | VIDEO_FLAG_HDR10_SUPPORT | VIDEO_FLAG_SCRGB_SUPPORT));
+   video_driver_modify_disp_flags(0, VIDEO_FLAG_HDR_SUPPORT | VIDEO_FLAG_HDR10_SUPPORT | VIDEO_FLAG_SCRGB_SUPPORT);
 #endif
 
 #ifdef HAVE_MONITOR
@@ -3038,6 +3318,7 @@ static bool d3d11_init_swapchain(d3d11_video_t* d3d11,
        * profiles, aperture grilles) without pulling in the HDR
        * pipeline.  Opt-in; G22/P709 is correct for both depths. */
       settings_t *settings     = config_get_ptr();
+      d3d11->swapchain_bit_depth_latched = settings->uints.video_swapchain_bit_depth;
       d3d11->chain_bit_depth   = (settings->uints.video_swapchain_bit_depth == 2)
          ? DXGI_SWAPCHAIN_BIT_DEPTH_10 : DXGI_SWAPCHAIN_BIT_DEPTH_8;
    }
@@ -3875,6 +4156,31 @@ static void *d3d11_gfx_init(const video_info_t* video,
       d3d11->hw_iface.context           = d3d11->context;
       d3d11->hw_iface.featureLevel      = d3d11->supportedFeatureLevel;
       d3d11->hw_iface.D3DCompile        = D3DCompile;
+      /* Version 2 only for a core that asked for it; every other core
+       * compares interface_version against 1 and refuses anything else. */
+      if (d3d11_hw_interface_negotiated_version()
+            >= RETRO_HW_RENDER_INTERFACE_D3D11_VERSION_2)
+      {
+         if (!d3d11->hw_v2.lock_ready)
+         {
+            InitializeCriticalSection(&d3d11->hw_v2.lock);
+            d3d11->hw_v2.lock_ready = true;
+         }
+         /* A fresh context is nobody's: the core's first lock_context
+          * says so, and it binds everything. */
+         d3d11->hw_v2.frontend_used         = true;
+         d3d11->hw_v2.active                = true;
+         d3d11_hw_v2_protect_context(d3d11);
+         d3d11->hw_iface.interface_version  = RETRO_HW_RENDER_INTERFACE_D3D11_VERSION_2;
+         d3d11->hw_iface.lock_context       = d3d11_hw_v2_lock_context;
+         d3d11->hw_iface.unlock_context     = d3d11_hw_v2_unlock_context;
+         d3d11->hw_iface.set_texture        = d3d11_hw_v2_set_texture;
+         d3d11->hw_iface.get_sync_index      = d3d11_hw_v2_get_sync_index;
+         d3d11->hw_iface.get_sync_index_mask = d3d11_hw_v2_get_sync_index_mask;
+         d3d11->hw_iface.wait_sync_index     = d3d11_hw_v2_wait_sync_index;
+         RARCH_LOG("[D3D11] Hardware render interface version %u.\n",
+               d3d11->hw_iface.interface_version);
+      }
    }
 
    {
@@ -3978,7 +4284,7 @@ static void d3d11_init_render_targets(d3d11_video_t* d3d11, unsigned width, unsi
    int rot;
    bool last_pass;
    d3d11->mvp_last_pass = d3d11->ubo_values.mvp;
-   rot                  = retroarch_get_rotation();
+   rot                  = video_driver_get_rotation_snapshot();
 
    for (i = 0; i < d3d11->shader_preset->passes; i++)
    {
@@ -4103,7 +4409,371 @@ static INLINE void d3d11_wait_for_vblank(d3d11_video_t* d3d11)
    Release(pOutput);
 }
 
+/* Copies the current backbuffer into the retained texture, creating or
+ * resizing that texture to match the swapchain when it does not. */
+static void d3d11_retain_backbuffer(d3d11_video_t *d3d11)
+{
+   D3D11Texture2D back_buffer = NULL;
+   D3D11_TEXTURE2D_DESC desc;
+
+   d3d11->swapChain->lpVtbl->GetBuffer(d3d11->swapChain, 0,
+         uuidof(ID3D11Texture2D), (void**)&back_buffer);
+   if (!back_buffer)
+      return;
+   back_buffer->lpVtbl->GetDesc(back_buffer, &desc);
+
+   if (     !d3d11->retained
+         || d3d11->retained_width  != desc.Width
+         || d3d11->retained_height != desc.Height)
+   {
+      Release(d3d11->retained);
+      d3d11->retained        = NULL;
+      desc.BindFlags         = 0;
+      desc.MiscFlags         = 0;
+      desc.CPUAccessFlags    = 0;
+      desc.Usage             = D3D11_USAGE_DEFAULT;
+      d3d11->device->lpVtbl->CreateTexture2D(d3d11->device, &desc, NULL,
+            &d3d11->retained);
+      d3d11->retained_width  = desc.Width;
+      d3d11->retained_height = desc.Height;
+   }
+
+   if (d3d11->retained)
+      d3d11->context->lpVtbl->CopyResource(d3d11->context,
+            (D3D11Resource)d3d11->retained, (D3D11Resource)back_buffer);
+   Release(back_buffer);
+}
+
+/* Replays the group the retaining frame made: its light presents, then
+ * its dark ones, so BFI keeps its strobe pattern through a repeat. Each
+ * present waits on the frame latency object as frame() does, so the
+ * cadence comes from the swapchain when it can. Returns swaps made. */
+/* --- libretro_d3d11.h version 2 ----------------------------------------
+ *
+ * The immediate context is shared with the core by taking turns. Only
+ * two of this driver's entry points can run while the core is running:
+ * the frame, and the repeat of the last one. Everything else reaches the
+ * video thread as a command the main thread waits for, and the main
+ * thread is not inside the core while it waits - the core may not hold
+ * the lock across a return from retro_run. So those two take the lock,
+ * and nothing else needs to. */
+
+static void d3d11_hw_v2_enter(d3d11_video_t *d3d11)
+{
+   if (!d3d11->hw_v2.active)
+      return;
+   InterlockedIncrement(&d3d11->hw_v2.frontend_waiting);
+   EnterCriticalSection(&d3d11->hw_v2.lock);
+   InterlockedDecrement(&d3d11->hw_v2.frontend_waiting);
+   d3d11->hw_v2.frontend_used = true;
+}
+
+static void d3d11_hw_v2_leave(d3d11_video_t *d3d11)
+{
+   if (d3d11->hw_v2.active)
+      LeaveCriticalSection(&d3d11->hw_v2.lock);
+}
+
+/* The frame blocks in places that do not touch the context at all -
+ * the waitable swapchain's latency wait, the wait for vertical blank -
+ * and holding the lock through those keeps the core off the context for
+ * most of a refresh, every refresh: a core that needs six milliseconds
+ * of a sixteen millisecond frame was held to 48 fps by them. The lock is
+ * given up around such a wait and taken again after it. What the core
+ * does to the pipeline state meanwhile does not matter where these are
+ * used: before the frame has bound anything, or after it has issued its
+ * last draw. With no wrapper in front the frame runs on the core's
+ * thread inside the core's own lock, and giving up one level of a
+ * recursive lock there changes nothing, as it should. */
+static void d3d11_hw_v2_yield_begin(d3d11_video_t *d3d11)
+{
+   if (d3d11->hw_v2.active)
+      LeaveCriticalSection(&d3d11->hw_v2.lock);
+}
+
+static void d3d11_hw_v2_yield_end(d3d11_video_t *d3d11)
+{
+   if (!d3d11->hw_v2.active)
+      return;
+   InterlockedIncrement(&d3d11->hw_v2.frontend_waiting);
+   EnterCriticalSection(&d3d11->hw_v2.lock);
+   InterlockedDecrement(&d3d11->hw_v2.frontend_waiting);
+   d3d11->hw_v2.frontend_used = true;
+}
+
+/* ID3D10Multithread, which a D3D11 immediate context has answered for
+ * since Windows 7. Declared here to the extent it is used. */
+typedef struct d3d11_mt d3d11_mt_t;
+typedef struct
+{
+   HRESULT (STDMETHODCALLTYPE *QueryInterface)(d3d11_mt_t*, REFIID, void**);
+   ULONG   (STDMETHODCALLTYPE *AddRef)(d3d11_mt_t*);
+   ULONG   (STDMETHODCALLTYPE *Release)(d3d11_mt_t*);
+   void    (STDMETHODCALLTYPE *Enter)(d3d11_mt_t*);
+   void    (STDMETHODCALLTYPE *Leave)(d3d11_mt_t*);
+   BOOL    (STDMETHODCALLTYPE *SetMultithreadProtected)(d3d11_mt_t*, BOOL);
+   BOOL    (STDMETHODCALLTYPE *GetMultithreadProtected)(d3d11_mt_t*);
+} d3d11_mt_vtbl_t;
+struct d3d11_mt { const d3d11_mt_vtbl_t *lpVtbl; };
+
+/* Present is the one blocking call in the frame that does touch the
+ * context. With the runtime's multithread protection on, the runtime
+ * serialises it against the core's calls itself, for as long as it
+ * actually needs the context and no longer, and the lock can be given up
+ * around it too. Without it, Present stays under the lock. */
+static void d3d11_hw_v2_protect_context(d3d11_video_t *d3d11)
+{
+   static const GUID iid_mt = { 0x9b7e4e00, 0x342c, 0x4106,
+      { 0xa1, 0x9f, 0x4f, 0x27, 0x04, 0xf6, 0x89, 0xf0 } };
+   d3d11_mt_t *mt = NULL;
+   d3d11->hw_v2.present_unlocked = false;
+   if (     FAILED(d3d11->context->lpVtbl->QueryInterface(d3d11->context,
+               &iid_mt, (void**)&mt))
+         || !mt)
+      return;
+   mt->lpVtbl->SetMultithreadProtected(mt, TRUE);
+   d3d11->hw_v2.present_unlocked = mt->lpVtbl->GetMultithreadProtected(mt) ? true : false;
+   mt->lpVtbl->Release(mt);
+}
+
+static bool d3d11_hw_v2_lock_context(void *data)
+{
+   d3d11_video_t *d3d11 = (d3d11_video_t*)data;
+   bool used;
+   /* The frontend first, if it is waiting and this is not a nested
+    * lock: see frontend_waiting. With no wrapper in front the frontend
+    * is this thread and never waits. */
+   if (!d3d11->hw_v2.core_depth)
+   {
+      while (d3d11->hw_v2.frontend_waiting > 0)
+         SwitchToThread();
+   }
+   EnterCriticalSection(&d3d11->hw_v2.lock);
+   d3d11->hw_v2.core_depth++;
+   used                       = d3d11->hw_v2.frontend_used;
+   d3d11->hw_v2.frontend_used = false;
+   return used;
+}
+
+static void d3d11_hw_v2_unlock_context(void *data)
+{
+   d3d11_video_t *d3d11 = (d3d11_video_t*)data;
+   if (d3d11->hw_v2.core_depth)
+      d3d11->hw_v2.core_depth--;
+   LeaveCriticalSection(&d3d11->hw_v2.lock);
+}
+
+/* No threaded wrapper in front: the frame that follows, inside
+ * video_refresh, reads this. The reference is dropped there. */
+static void d3d11_hw_v2_set_texture(void *data, ID3D11Texture2D *texture)
+{
+   d3d11_video_t *d3d11 = (d3d11_video_t*)data;
+   if (texture)
+      texture->lpVtbl->AddRef(texture);
+   Release(d3d11->hw_v2.texture);
+   d3d11->hw_v2.texture = texture;
+}
+
+/* Version 3 with no wrapper in front: the frame reads the texture inside
+ * video_refresh, so there is one sync index and nothing to wait for. */
+static unsigned d3d11_hw_v2_get_sync_index(void *data)      { (void)data; return 0; }
+static unsigned d3d11_hw_v2_get_sync_index_mask(void *data) { (void)data; return 1; }
+static void     d3d11_hw_v2_wait_sync_index(void *data)     { (void)data; }
+
+/* The repeat of the last frame waits for the display exactly as the
+ * frame does, and with a core slower than the display it runs on every
+ * refresh the frame does not: at 120 Hz under a 60 fps core that is
+ * every other one. It gives the lock up around its waits as the frame
+ * does (d3d11_hw_v2_yield_begin). */
+static unsigned d3d11_present_last_body(void *data);
+
+static unsigned d3d11_present_last(void *data)
+{
+   d3d11_video_t *d3d11 = (d3d11_video_t*)data;
+   unsigned ret;
+   if (!d3d11)
+      return 0;
+   d3d11_hw_v2_enter(d3d11);
+   ret = d3d11_present_last_body(data);
+   d3d11_hw_v2_leave(d3d11);
+   return ret;
+}
+
+static unsigned d3d11_present_last_body(void *data)
+{
+   unsigned i;
+   unsigned done          = 0;
+   d3d11_video_t *d3d11   = (d3d11_video_t*)data;
+   D3D11DeviceContext context;
+   unsigned present_flags;
+
+   if (!d3d11 || !d3d11->retained || !d3d11->swapChain)
+      return 0;
+
+   context       = d3d11->context;
+   present_flags = (d3d11->flags & D3D11_ST_FLAG_HAS_ALLOW_TEARING)
+         && !d3d11->swap_interval ? DXGI_PRESENT_ALLOW_TEARING : 0;
+
+   for (i = 0; i < d3d11->retained_light; i++)
+   {
+      D3D11Texture2D back_buffer = NULL;
+      D3D11_TEXTURE2D_DESC desc;
+
+      if (d3d11->flags & D3D11_ST_FLAG_WAITABLE_SWAPCHAINS)
+      {
+         d3d11_hw_v2_yield_begin(d3d11);
+         WaitForSingleObjectEx(d3d11->frameLatencyWaitableObject, 1000, true);
+         d3d11_hw_v2_yield_end(d3d11);
+      }
+
+      d3d11->swapChain->lpVtbl->GetBuffer(d3d11->swapChain, 0,
+            uuidof(ID3D11Texture2D), (void**)&back_buffer);
+      if (!back_buffer)
+         return done;
+      back_buffer->lpVtbl->GetDesc(back_buffer, &desc);
+      if (     desc.Width  != d3d11->retained_width
+            || desc.Height != d3d11->retained_height)
+      {
+         Release(back_buffer);
+         return done;
+      }
+      context->lpVtbl->CopyResource(context,
+            (D3D11Resource)back_buffer, (D3D11Resource)d3d11->retained);
+      Release(back_buffer);
+      if (d3d11->hw_v2.present_unlocked)
+         d3d11_hw_v2_yield_begin(d3d11);
+      DXGIPresent(d3d11->swapChain, d3d11->swap_interval, present_flags);
+      if (d3d11->hw_v2.present_unlocked)
+         d3d11_hw_v2_yield_end(d3d11);
+      done++;
+   }
+
+   for (i = 0; i < d3d11->retained_dark; i++)
+   {
+      D3D11Texture2D back_buffer  = NULL;
+      D3D11RenderTargetView rtv   = NULL;
+
+      if (d3d11->flags & D3D11_ST_FLAG_WAITABLE_SWAPCHAINS)
+      {
+         d3d11_hw_v2_yield_begin(d3d11);
+         WaitForSingleObjectEx(d3d11->frameLatencyWaitableObject, 1000, true);
+         d3d11_hw_v2_yield_end(d3d11);
+      }
+
+      d3d11->swapChain->lpVtbl->GetBuffer(d3d11->swapChain, 0,
+            uuidof(ID3D11Texture2D), (void**)&back_buffer);
+      if (!back_buffer)
+         return done;
+      d3d11->device->lpVtbl->CreateRenderTargetView(d3d11->device,
+            (D3D11Resource)back_buffer, NULL, &rtv);
+      Release(back_buffer);
+      if (!rtv)
+         return done;
+      context->lpVtbl->OMSetRenderTargets(context, 1, &rtv, NULL);
+      context->lpVtbl->ClearRenderTargetView(context, rtv, d3d11->clearcolor);
+      if (d3d11->hw_v2.present_unlocked)
+         d3d11_hw_v2_yield_begin(d3d11);
+      DXGIPresent(d3d11->swapChain, d3d11->swap_interval, present_flags);
+      if (d3d11->hw_v2.present_unlocked)
+         d3d11_hw_v2_yield_end(d3d11);
+      Release(rtv);
+      done++;
+   }
+   return done;
+}
+
+/* The display timestamp of the most recent present, from DXGI's frame
+ * statistics, converted to the QPC-based clock cpu_features_get_time_usec()
+ * keeps on Windows. 0 when the swapchain cannot say (windowed blit
+ * model, or statistics disjoint after a mode change). */
+static retro_time_t d3d11_get_last_present_time(void *data)
+{
+   DXGI_FRAME_STATISTICS stats;
+   static LARGE_INTEGER freq;
+   d3d11_video_t *d3d11 = (d3d11_video_t*)data;
+
+   if (!d3d11 || !d3d11->swapChain)
+      return 0;
+   if (FAILED(d3d11->swapChain->lpVtbl->GetFrameStatistics(
+               d3d11->swapChain, &stats)))
+      return 0;
+   if (!stats.SyncQPCTime.QuadPart)
+      return 0;
+   if (!freq.QuadPart && !QueryPerformanceFrequency(&freq))
+      return 0;
+   return (stats.SyncQPCTime.QuadPart / freq.QuadPart * 1000000)
+        + (stats.SyncQPCTime.QuadPart % freq.QuadPart * 1000000 / freq.QuadPart);
+}
+
+/* The view to draw a version 3 core's texture through. A core rotates a
+ * few textures, so a view per texture is made once and found again. */
+static D3D11ShaderResourceView d3d11_hw_direct_view(d3d11_video_t *d3d11,
+      D3D11Texture2D texture)
+{
+   unsigned i;
+   D3D11ShaderResourceView view = NULL;
+   unsigned n = sizeof(d3d11->hw_direct.cache) / sizeof(d3d11->hw_direct.cache[0]);
+
+   for (i = 0; i < n; i++)
+      if (d3d11->hw_direct.cache[i].texture == texture)
+         return d3d11->hw_direct.cache[i].view;
+
+   if (FAILED(d3d11->device->lpVtbl->CreateShaderResourceView(d3d11->device,
+               (D3D11Resource)texture, NULL, &view)) || !view)
+      return NULL;
+
+   i = d3d11->hw_direct.next;
+   d3d11->hw_direct.next = (i + 1) % n;
+   if (d3d11->hw_direct.view == d3d11->hw_direct.cache[i].view)
+      d3d11->hw_direct.view = NULL;
+   Release(d3d11->hw_direct.cache[i].view);
+   Release(d3d11->hw_direct.cache[i].texture);
+   texture->lpVtbl->AddRef(texture);
+   d3d11->hw_direct.cache[i].texture = texture;
+   d3d11->hw_direct.cache[i].view    = view;
+   return view;
+}
+
+static void d3d11_hw_direct_free(d3d11_video_t *d3d11)
+{
+   unsigned i;
+   for (i = 0; i < sizeof(d3d11->hw_direct.cache) / sizeof(d3d11->hw_direct.cache[0]); i++)
+   {
+      Release(d3d11->hw_direct.cache[i].view);
+      Release(d3d11->hw_direct.cache[i].texture);
+   }
+   memset(&d3d11->hw_direct, 0, sizeof(d3d11->hw_direct));
+}
+
+static bool d3d11_gfx_frame_body(void *data, const void *frame,
+      unsigned width, unsigned height, uint64_t frame_count,
+      unsigned pitch, const char *msg, video_frame_info_t *video_info);
+
+/* The lock is recursive: the frame calls itself for black frame
+ * insertion, and with no wrapper in front it runs inside video_refresh,
+ * where the core already holds the lock. */
 static bool d3d11_gfx_frame(
+      void*               data,
+      const void*         frame,
+      unsigned            width,
+      unsigned            height,
+      uint64_t            frame_count,
+      unsigned            pitch,
+      const char*         msg,
+      video_frame_info_t* video_info)
+{
+   d3d11_video_t *d3d11 = (d3d11_video_t*)data;
+   bool ret;
+   if (!d3d11)
+      return false;
+   d3d11_hw_v2_enter(d3d11);
+   ret = d3d11_gfx_frame_body(data, frame, width, height, frame_count,
+         pitch, msg, video_info);
+   d3d11_hw_v2_leave(d3d11);
+   return ret;
+}
+
+static bool d3d11_gfx_frame_body(
       void*               data,
       const void*         frame,
       unsigned            width,
@@ -4152,10 +4822,14 @@ static bool d3d11_gfx_frame(
 #endif
 
    if (d3d11->flags & D3D11_ST_FLAG_WAITABLE_SWAPCHAINS)
+   {
+      d3d11_hw_v2_yield_begin(d3d11);
       WaitForSingleObjectEx(
             d3d11->frameLatencyWaitableObject,
             1000,
             true);
+      d3d11_hw_v2_yield_end(d3d11);
+   }
 
 #ifdef HAVE_DXGI_HDR
    {
@@ -4170,9 +4844,8 @@ static bool d3d11_gfx_frame(
           * whenever it disagrees with the current depth, so it has
           * to honour the setting the creation path already honours,
           * or a 10-bit SDR chain is torn straight back down. */
-         settings_t *settings = config_get_ptr();
          desired_bit_depth    =
-            (settings->uints.video_swapchain_bit_depth == 2)
+            (d3d11->swapchain_bit_depth_latched == 2)
             ? DXGI_SWAPCHAIN_BIT_DEPTH_10 : DXGI_SWAPCHAIN_BIT_DEPTH_8;
       }
 
@@ -4317,16 +4990,47 @@ static bool d3d11_gfx_frame(
       {
           D3D11_SHADER_RESOURCE_VIEW_DESC hw_desc;
           D3D11ShaderResourceView hw_view = NULL;
-          context->lpVtbl->PSGetShaderResources(context, 0, 1, &hw_view);
+          if (d3d11->hw_ring.present)
+          {
+             /* The ring's texture for this frame, from the core's
+              * deferred context; PS slot 0 on this context has nothing
+              * to do with it. */
+             hw_texture             = d3d11->hw_ring.present;
+             /* Version 2's present_slot already took this frame's
+              * reference. */
+             if (!d3d11->hw_v2.active)
+                hw_texture->lpVtbl->AddRef(hw_texture);
+             hw_desc.Format         = d3d11->hw_ring.present_format;
+             d3d11->hw_ring.present = NULL;
+          }
+          else if (d3d11->hw_v2.texture)
+          {
+             /* Version 2, no wrapper in front: the texture the core
+              * named. The reference set_texture took becomes this
+              * frame's. */
+             D3D11_TEXTURE2D_DESC v2_desc;
+             hw_texture           = d3d11->hw_v2.texture;
+             d3d11->hw_v2.texture = NULL;
+             if (d3d11->hw_iface.interface_version
+                   >= RETRO_HW_RENDER_INTERFACE_D3D11_VERSION_2)
+                d3d11->hw_direct.eligible = true;
+             hw_texture->lpVtbl->GetDesc(hw_texture, &v2_desc);
+             hw_desc.Format       = v2_desc.Format;
+          }
+          else
+             context->lpVtbl->PSGetShaderResources(context, 0, 1, &hw_view);
 
-          if (!hw_view)
+          if (!hw_view && !hw_texture)
           {
              RARCH_WARN("[D3D11] HW render: no SRV bound at slot 0.\n");
           }
           else
           {
-             hw_view->lpVtbl->GetDesc(hw_view, &hw_desc);
-             hw_view->lpVtbl->GetResource(hw_view, (D3D11Resource*)&hw_texture);
+             if (hw_view)
+             {
+                hw_view->lpVtbl->GetDesc(hw_view, &hw_desc);
+                hw_view->lpVtbl->GetResource(hw_view, (D3D11Resource*)&hw_texture);
+             }
 
              if (d3d11->frame.texture[0].desc.Format != hw_desc.Format)
              {
@@ -4389,7 +5093,23 @@ static bool d3d11_gfx_frame(
       if (d3d11->flags & D3D11_ST_FLAG_RESIZE_RTS)
          d3d11_init_render_targets(d3d11, width, height);
 
-      if (hw_texture)
+      /* A frame that arrives any other way is drawn from
+       * frame.texture[0] as always. */
+      if (!hw_texture || !d3d11->hw_direct.eligible
+            || (d3d11->shader_preset && video_info->shader_active))
+         d3d11->hw_direct.view = NULL;
+      else
+         d3d11->hw_direct.view = d3d11_hw_direct_view(d3d11, hw_texture);
+      d3d11->hw_direct.eligible = false;
+
+      if (hw_texture && d3d11->hw_direct.view)
+      {
+         /* Version 3, nothing between the core's texture and the screen
+          * but the draw below: no copy. The cache holds the texture. */
+         Release(hw_texture);
+         hw_texture = NULL;
+      }
+      else if (hw_texture)
       {
           D3D11_BOX frame_box;
           frame_box.left   = 0;
@@ -4441,6 +5161,15 @@ static bool d3d11_gfx_frame(
 
    if (d3d11->shader_preset && video_info->shader_active)
    {
+      /* Loop-invariant for the whole chain: every pass of one frame
+       * sees the same frame. Gathered once rather than once per pass. */
+      uint32_t pass_frame_time_delta;
+      uint32_t pass_rotation;
+      int32_t  pass_frame_direction;
+      float    pass_original_fps;
+      float    pass_core_aspect;
+      float    pass_core_aspect_rot;
+
       for (i = 0; i < d3d11->shader_preset->passes; i++)
       {
          if (d3d11->shader_preset->pass[i].feedback)
@@ -4450,6 +5179,21 @@ static bool d3d11_gfx_frame(
             d3d11->pass[i].rt       = tmp;
          }
       }
+
+      pass_frame_time_delta = (uint32_t)video_driver_get_frame_time_delta_usec();
+      pass_original_fps     = video_driver_get_original_fps();
+      pass_rotation         = video_driver_get_rotation_snapshot();
+      pass_core_aspect      = video_driver_get_core_aspect();
+      pass_core_aspect_rot  = pass_core_aspect;
+#ifdef HAVE_REWIND
+      pass_frame_direction  = state_manager_frame_is_reversed() ? -1 : 1;
+#else
+      pass_frame_direction  = 1;
+#endif
+      /* OriginalAspectRotated: return 1 / aspect for 90 and 270 rotated content */
+      if (     pass_rotation == VIDEO_ROTATION_90_DEG
+            || pass_rotation == VIDEO_ROTATION_270_DEG)
+         pass_core_aspect_rot = 1 / pass_core_aspect_rot;
 
       for (i = 0; i < d3d11->shader_preset->passes; i++)
       {
@@ -4468,20 +5212,12 @@ static bool d3d11_gfx_frame(
          else
             d3d11->pass[i].frame_count = frame_count;
 
-#ifdef HAVE_REWIND
-         d3d11->pass[i].frame_direction  = state_manager_frame_is_reversed() ? -1 : 1;
-#else
-         d3d11->pass[i].frame_direction  = 1;
-#endif
-         d3d11->pass[i].frame_time_delta = (uint32_t)video_driver_get_frame_time_delta_usec();
-         d3d11->pass[i].original_fps     = video_driver_get_original_fps();
-         d3d11->pass[i].rotation         = retroarch_get_rotation();
-         d3d11->pass[i].core_aspect      = video_driver_get_core_aspect();
-         /* OriginalAspectRotated: return 1 / aspect for 90 and 270 rotated content */
-         d3d11->pass[i].core_aspect_rot  = d3d11->pass[i].core_aspect;
-         if (     d3d11->pass[i].rotation == VIDEO_ROTATION_90_DEG
-               || d3d11->pass[i].rotation == VIDEO_ROTATION_270_DEG)
-            d3d11->pass[i].core_aspect_rot = 1 / d3d11->pass[i].core_aspect_rot;
+         d3d11->pass[i].frame_direction  = pass_frame_direction;
+         d3d11->pass[i].frame_time_delta = pass_frame_time_delta;
+         d3d11->pass[i].original_fps     = pass_original_fps;
+         d3d11->pass[i].rotation         = pass_rotation;
+         d3d11->pass[i].core_aspect      = pass_core_aspect;
+         d3d11->pass[i].core_aspect_rot  = pass_core_aspect_rot;
 
          /* Sub-frame info for multiframe shaders (per real content frame).
             Should always be 1 for non-use of subframes */
@@ -4497,20 +5233,23 @@ static bool d3d11_gfx_frame(
               d3d11->pass[i].total_subframes = video_info->shader_subframes;
 
            d3d11->pass[i].current_subframe = 1;  
+           d3d11->pass[i].swap_count       = (uint32_t)video_info->swap_count;
          }
 
 #ifdef HAVE_DXGI_HDR
          {
-            settings_t*    settings = config_get_ptr();
-
+            /* From the driver's latches: the HDR pokes store into
+             * hdr.ubo_values (blocking commands under the wrapper)
+             * and init seeds them, so the frame never reads live
+             * settings here. */
             d3d11->pass[i].hdr_mode             = video_info->hdr_mode;
 
             if (d3d11->flags & D3D11_ST_FLAG_HDR_ENABLE)
             {
-               d3d11->pass[i].paper_white_nits  = settings->floats.video_hdr_paper_white_nits;
-               d3d11->pass[i].scanlines         = settings->bools.video_hdr_scanlines ? 1.0f : 0.0f;
-               d3d11->pass[i].subpixel_layout   = settings->uints.video_hdr_subpixel_layout;
-               d3d11->pass[i].expand_gamut      = settings->uints.video_hdr_expand_gamut;
+               d3d11->pass[i].paper_white_nits  = d3d11->hdr.ubo_values.paper_white_nits;
+               d3d11->pass[i].scanlines         = d3d11->hdr.ubo_values.scanlines;
+               d3d11->pass[i].subpixel_layout   = d3d11->hdr.ubo_values.subpixel_layout;
+               d3d11->pass[i].expand_gamut      = d3d11->hdr.ubo_values.expand_gamut;
             }
          }
 #endif /* HAVE_DXGI_HDR */ 
@@ -4667,14 +5406,16 @@ static bool d3d11_gfx_frame(
          context->lpVtbl->GSSetShader(context, shader->gs, NULL, 0);
 
          {
-            settings_t* settings                      = config_get_ptr();
             d3d11->hdr.ubo_values.source_size.width   = width;
             d3d11->hdr.ubo_values.source_size.height  = height;
 
             d3d11->hdr.ubo_values.output_size.width   = d3d11->frame.output_size.x;
             d3d11->hdr.ubo_values.output_size.height  = d3d11->frame.output_size.y;
 
-            d3d11->hdr.ubo_values.scanlines           = settings->bools.video_hdr_scanlines ? 1.0f : 0.0f;
+            /* scanlines already lives in ubo_values: the poke wrote
+             * it there, or the menu-scanline suppression around this
+             * frame did; re-reading settings here was redundant and
+             * a live read from the video thread. */
 
             if (video_info->hdr_mode == 2) /* scRGB */
             {
@@ -4715,9 +5456,17 @@ static bool d3d11_gfx_frame(
          context->lpVtbl->VSSetConstantBuffers(context, 0, 1, &d3d11->frame.ubo);
       }
 
-      context->lpVtbl->PSSetShaderResources(
-            context, 0, 1,
-            &texture->view);
+      /* The core's own texture when the frame was handed over that way
+       * and nothing - no shader pass - has put another in its place;
+       * SDR and HDR draw it through this one binding alike. */
+      if (d3d11->hw_direct.view && texture == d3d11->frame.texture)
+         context->lpVtbl->PSSetShaderResources(
+               context, 0, 1,
+               &d3d11->hw_direct.view);
+      else
+         context->lpVtbl->PSSetShaderResources(
+               context, 0, 1,
+               &texture->view);
       context->lpVtbl->PSSetSamplers(
             context, 0, 1,
             &d3d11->samplers[RARCH_FILTER_UNSPEC][RARCH_WRAP_DEFAULT]);
@@ -5131,19 +5880,44 @@ static bool d3d11_gfx_frame(
    }
 #endif
 
+   /* The backbuffer is undefined after a flip-model present, so the
+    * copy is taken now. Not from the BFI light dupes, which recurse in
+    * here with the dupe lock held and would only copy the same image. */
+   if (     video_info->retain_output
+         && !(d3d11->flags & D3D11_ST_FLAG_FRAME_DUPE_LOCK))
+   {
+      d3d11_retain_backbuffer(d3d11);
+      d3d11->retained_light = 1;
+      d3d11->retained_dark  = 0;
+   }
+
    if (vsync && d3d11->wait_for_vblank < 0)
    {
       d3d11->context->lpVtbl->Flush(d3d11->context);
+      d3d11_hw_v2_yield_begin(d3d11);
       d3d11_wait_for_vblank(d3d11);
+      d3d11_hw_v2_yield_end(d3d11);
       DXGIPresent(d3d11->swapChain, 0,
             present_flags | ((d3d11->flags & D3D11_ST_FLAG_HAS_ALLOW_TEARING) ? DXGI_PRESENT_ALLOW_TEARING : 0)
       );
    }
    else
+   {
+      /* A present that waits for the display does its waiting inside
+       * the call. */
+      if (d3d11->hw_v2.present_unlocked)
+         d3d11_hw_v2_yield_begin(d3d11);
       DXGIPresent(d3d11->swapChain, d3d11->swap_interval, present_flags);
+      if (d3d11->hw_v2.present_unlocked)
+         d3d11_hw_v2_yield_end(d3d11);
+   }
 
    if (vsync && d3d11->wait_for_vblank > 0)
+   {
+      d3d11_hw_v2_yield_begin(d3d11);
       d3d11_wait_for_vblank(d3d11);
+      d3d11_hw_v2_yield_end(d3d11);
+   }
 
    if (
            black_frame_insertion
@@ -5185,6 +5959,15 @@ static bool d3d11_gfx_frame(
             DXGIPresent(d3d11->swapChain, d3d11->swap_interval, present_flags);
          }
       }
+
+      /* The group this frame made, for present_last() to replay. */
+      if (     video_info->retain_output
+            && !(d3d11->flags & D3D11_ST_FLAG_FRAME_DUPE_LOCK))
+      {
+         d3d11->retained_light = 1 + (video_info->black_frame_insertion
+               - video_info->bfi_dark_frames);
+         d3d11->retained_dark  = video_info->bfi_dark_frames;
+      }
    }
 
    /* Frame duping for Shader Subframes, don't combine with swap_interval > 1, BFI.
@@ -5211,6 +5994,7 @@ static bool d3d11_gfx_frame(
             {
                d3d11->pass[m].total_subframes = video_info->shader_subframes;
                d3d11->pass[m].current_subframe = k+1;
+               d3d11->pass[m].swap_count       = (uint32_t)(video_info->swap_count + k);
             }
          if (!d3d11_gfx_frame(d3d11, NULL, 0, 0, frame_count, 0, msg,
                   video_info))
@@ -5525,7 +6309,7 @@ static bool d3d11_gfx_read_viewport_hdr(void *data, uint16_t *buffer,
       bool is_idle, struct rpng_hdr_metadata *out_meta)
 {
    d3d11_video_t* d3d11 = (d3d11_video_t*)data;
-   ID3D11Texture2D* BackBuffer;
+   ID3D11Texture2D* BackBuffer = NULL;
    DXGISwapChain m_SwapChain;
    ID3D11Texture2D* BackBufferStagingTexture = NULL;
    ID3D11Resource* BackBufferStaging = NULL;
@@ -5569,6 +6353,7 @@ static bool d3d11_gfx_read_viewport_hdr(void *data, uint16_t *buffer,
    StagingDesc.Usage          = D3D11_USAGE_STAGING;
    StagingDesc.BindFlags      = 0;
    StagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+   StagingDesc.MiscFlags      = 0;
 
    d3d11->device->lpVtbl->CreateTexture2D(d3d11->device, &StagingDesc, NULL, &BackBufferStagingTexture);
    if (!BackBufferStagingTexture)
@@ -5594,6 +6379,9 @@ static bool d3d11_gfx_read_viewport_hdr(void *data, uint16_t *buffer,
       unsigned vp_y      = (d3d11->vp.y > 0) ? d3d11->vp.y : 0;
       unsigned vp_width  = (d3d11->vp.width  > d3d11->vp.full_width)  ? d3d11->vp.full_width  : d3d11->vp.width;
       unsigned vp_height = (d3d11->vp.height > d3d11->vp.full_height) ? d3d11->vp.full_height : d3d11->vp.height;
+
+      dxgi_readback_clamp_window(StagingDesc.Width, StagingDesc.Height,
+            &vp_x, &vp_y, &vp_width, &vp_height);
 
       ret = dxgi_hdr_readback_to_rgb16(StagingDesc.Format,
             Map.pData, Map.RowPitch, vp_x, vp_y, vp_width, vp_height,
@@ -5625,9 +6413,9 @@ static bool d3d11_gfx_read_viewport_hdr(void *data, uint16_t *buffer,
 static bool d3d11_gfx_read_viewport(void* data, uint8_t* buffer, bool is_idle)
 {
    d3d11_video_t* d3d11 = (d3d11_video_t*)data;
-   ID3D11Texture2D* BackBuffer;
+   ID3D11Texture2D* BackBuffer = NULL;
    DXGISwapChain m_SwapChain;
-   ID3D11Texture2D* BackBufferStagingTexture;
+   ID3D11Texture2D* BackBufferStagingTexture = NULL;
    ID3D11Resource* BackBufferStaging = NULL;
    ID3D11Resource* BackBufferResource = NULL;
    D3D11_TEXTURE2D_DESC StagingDesc;
@@ -5636,7 +6424,8 @@ static bool d3d11_gfx_read_viewport(void* data, uint8_t* buffer, bool is_idle)
    uint8_t* bufferRow;
    uint32_t y;
    uint32_t x;
-   bool ret;
+   bool ret = false;
+   HRESULT hr;
 
    if (!d3d11)
       return false;
@@ -5662,9 +6451,15 @@ static bool d3d11_gfx_read_viewport(void* data, uint8_t* buffer, bool is_idle)
    StagingDesc.Usage = D3D11_USAGE_STAGING;
    StagingDesc.BindFlags = 0;
    StagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+   StagingDesc.MiscFlags = 0;
 
    /* Create the back buffer staging texture. */
-   d3d11->device->lpVtbl->CreateTexture2D(d3d11->device, &StagingDesc, NULL, &BackBufferStagingTexture);
+   hr = d3d11->device->lpVtbl->CreateTexture2D(d3d11->device, &StagingDesc, NULL, &BackBufferStagingTexture);
+   if (FAILED(hr) || !BackBufferStagingTexture)
+   {
+      RARCH_ERR("[D3D11] Screenshot staging texture failed: 0x%08lx.\n", (unsigned long)hr);
+      goto cleanup;
+   }
 
 #ifdef __cplusplus
    BackBufferStagingTexture->lpVtbl->QueryInterface(BackBufferStagingTexture, IID_ID3D11Resource, (void**)&BackBufferStaging);
@@ -5674,11 +6469,19 @@ static bool d3d11_gfx_read_viewport(void* data, uint8_t* buffer, bool is_idle)
    BackBuffer->lpVtbl->QueryInterface(BackBuffer, &IID_ID3D11Resource, (void**)&BackBufferResource);
 #endif
 
+   if (!BackBufferStaging || !BackBufferResource)
+      goto cleanup;
+
    /* Copy back buffer to back buffer staging. */
    d3d11->context->lpVtbl->CopyResource(d3d11->context, BackBufferStaging, BackBufferResource);
 
    /* Map the staging texture for CPU read. */
-   d3d11->context->lpVtbl->Map(d3d11->context, BackBufferStaging, 0, D3D11_MAP_READ, 0, &Map);
+   hr = d3d11->context->lpVtbl->Map(d3d11->context, BackBufferStaging, 0, D3D11_MAP_READ, 0, &Map);
+   if (FAILED(hr))
+   {
+      RARCH_ERR("[D3D11] Screenshot staging map failed: 0x%08lx.\n", (unsigned long)hr);
+      goto cleanup;
+   }
    BackBufferData = (const uint8_t*)Map.pData;
 
    {
@@ -5686,6 +6489,9 @@ static bool d3d11_gfx_read_viewport(void* data, uint8_t* buffer, bool is_idle)
       unsigned vp_y      = (d3d11->vp.y > 0) ? d3d11->vp.y : 0;
       unsigned vp_width  = (d3d11->vp.width  > d3d11->vp.full_width)  ? d3d11->vp.full_width  : d3d11->vp.width;
       unsigned vp_height = (d3d11->vp.height > d3d11->vp.full_height) ? d3d11->vp.full_height : d3d11->vp.height;
+
+      dxgi_readback_clamp_window(StagingDesc.Width, StagingDesc.Height,
+            &vp_x, &vp_y, &vp_width, &vp_height);
 
       ret = true;
 
@@ -5758,10 +6564,15 @@ static bool d3d11_gfx_read_viewport(void* data, uint8_t* buffer, bool is_idle)
    d3d11->context->lpVtbl->Unmap(d3d11->context, BackBufferStaging, 0);
 
    /* Release the backbuffer staging. */
-   BackBufferStaging->lpVtbl->Release(BackBufferStaging);
-   BackBufferResource->lpVtbl->Release(BackBufferResource);
-   BackBufferStagingTexture->lpVtbl->Release(BackBufferStagingTexture);
-   BackBuffer->lpVtbl->Release(BackBuffer);
+cleanup:
+   if (BackBufferStaging)
+      BackBufferStaging->lpVtbl->Release(BackBufferStaging);
+   if (BackBufferResource)
+      BackBufferResource->lpVtbl->Release(BackBufferResource);
+   if (BackBufferStagingTexture)
+      BackBufferStagingTexture->lpVtbl->Release(BackBufferStagingTexture);
+   if (BackBuffer)
+      BackBuffer->lpVtbl->Release(BackBuffer);
 
    return ret;
 }
@@ -5826,7 +6637,14 @@ static void d3d11_gfx_apply_state_changes(void* data)
 {
    d3d11_video_t* d3d11 = (d3d11_video_t*)data;
    if (d3d11)
+   {
+      settings_t *settings = config_get_ptr();
+      /* Blocking command: main is parked, so this settings read
+       * cannot race, and the frame's resize path reads the latch. */
+      d3d11->swapchain_bit_depth_latched =
+            settings->uints.video_swapchain_bit_depth;
       d3d11->flags |= D3D11_ST_FLAG_RESIZE_VIEWPORT;
+   }
 }
 
 static void d3d11_gfx_set_osd_msg(
@@ -5972,6 +6790,85 @@ static uintptr_t d3d11_gfx_load_texture(
    return d3d11_gfx_load_texture_internal(d3d11, image, filter_type);
 }
 
+/* Same-size contents into a texture d3d11_gfx_load_texture made: the
+ * staging texture it kept is mapped and copied into the resource, as
+ * for the first upload. Immediate-context work, so the video thread's
+ * when the wrapper is up. */
+static bool d3d11_gfx_update_texture_internal(d3d11_video_t *d3d11,
+      uintptr_t handle, const struct texture_image *image)
+{
+   D3D11_MAPPED_SUBRESOURCE mapped;
+   D3D11_BOX box;
+   D3D11DeviceContext ctx   = d3d11->context;
+   d3d11_texture_t *texture = (d3d11_texture_t*)handle;
+   HRESULT hr;
+
+   if (     !d3d11 || !texture || !texture->staging
+         || texture->desc.Width  != image->width
+         || texture->desc.Height != image->height)
+      return false;
+
+   /* The staging texture the last update copied from may still be
+    * the GPU's; a plain map would wait for it. This is a streaming
+    * frame with a newer one behind it, so it is dropped instead and
+    * the texture keeps what it shows. */
+   hr = ctx->lpVtbl->Map(ctx, (D3D11Resource)texture->staging, 0,
+         D3D11_MAP_WRITE, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
+   if (hr == DXGI_ERROR_WAS_STILL_DRAWING)
+      return true;
+   if (FAILED(hr))
+      return false;
+
+   dxgi_copy(image->width, image->height, texture->desc.Format, 0,
+         image->pixels, texture->desc.Format, mapped.RowPitch, mapped.pData);
+   ctx->lpVtbl->Unmap(ctx, (D3D11Resource)texture->staging, 0);
+
+   box.left   = 0;
+   box.top    = 0;
+   box.front  = 0;
+   box.right  = image->width;
+   box.bottom = image->height;
+   box.back   = 1;
+   ctx->lpVtbl->CopySubresourceRegion(ctx, (D3D11Resource)texture->handle,
+         0, 0, 0, 0, (D3D11Resource)texture->staging, 0, &box);
+   if (texture->desc.MiscFlags & D3D11_RESOURCE_MISC_GENERATE_MIPS)
+      ctx->lpVtbl->GenerateMips(ctx, texture->view);
+   return true;
+}
+
+#ifdef HAVE_THREADS
+static uintptr_t d3d11_texture_update_wrap(void *data)
+{
+   d3d11_texture_cmd_t *cmd = (d3d11_texture_cmd_t*)data;
+   cmd->handle = d3d11_gfx_update_texture_internal(cmd->d3d11,
+         cmd->handle, cmd->image) ? cmd->handle : 0;
+   return 0;
+}
+#endif
+
+static bool d3d11_gfx_update_texture(void *video_data, uintptr_t id,
+      const struct texture_image *ti, bool threaded)
+{
+   d3d11_video_t *d3d11 = (d3d11_video_t*)video_data;
+   if (!id || !ti || !ti->pixels)
+      return false;
+
+#ifdef HAVE_THREADS
+   if (threaded)
+   {
+      d3d11_texture_cmd_t cmd;
+      cmd.d3d11       = d3d11;
+      cmd.image       = (struct texture_image*)ti;
+      cmd.filter_type = TEXTURE_FILTER_LINEAR;
+      cmd.handle      = id;
+      video_thread_texture_handle(&cmd, d3d11_texture_update_wrap);
+      return cmd.handle != 0;
+   }
+#endif
+
+   return d3d11_gfx_update_texture_internal(d3d11, id, ti);
+}
+
 static void d3d11_gfx_unload_texture(void* data,
       bool threaded, uintptr_t handle)
 {
@@ -5996,6 +6893,203 @@ static void d3d11_gfx_unload_texture(void* data,
 #endif
 
    d3d11_gfx_unload_texture_internal(handle);
+}
+
+/* --- the threaded wrapper's hardware ring ------------------------------ */
+
+/* The core's own context: deferred, so it records on the core's thread
+ * and the immediate context - the video thread's - stays that thread's. */
+static bool d3d11_hw_ring_context_new(void *data, void **ctx)
+{
+   d3d11_video_t *d3d11 = (d3d11_video_t*)data;
+   D3D11DeviceContext deferred = NULL;
+   D3D11DeviceContext proxy;
+   if (!d3d11 || !d3d11->device || !ctx)
+      return false;
+   if (FAILED(d3d11->device->lpVtbl->CreateDeferredContext(d3d11->device, 0, &deferred)))
+      return false;
+   /* The core gets a proxy in front of the deferred context; the proxy
+    * rewrites the one map a deferred context rejects and the cores do
+    * not know to avoid. See d3d11_deferred_proxy.c. */
+   proxy = d3d11_deferred_proxy_new(deferred);
+   Release(deferred); /* the proxy holds its own reference */
+   if (!proxy)
+      return false;
+   *ctx = proxy;
+   return true;
+}
+
+static void d3d11_hw_ring_context_free(void *data, void *ctx)
+{
+   (void)data;
+   Release((D3D11DeviceContext)ctx);
+}
+
+/* Main thread. Closes the core's recording into a command list and
+ * takes the texture it left at PS slot 0 - the contract the driver's
+ * own frame path reads from the immediate context - both into the
+ * slot. The texture is referenced; the core is free to rebind. */
+static bool d3d11_hw_ring_capture(void *data, unsigned slot,
+      const void *source, unsigned format)
+{
+   d3d11_video_t *d3d11        = (d3d11_video_t*)data;
+   /* The proxy is what the core holds; its bookkeeping must see the
+    * FinishCommandList, so the calls go through it. */
+   D3D11DeviceContext deferred = (D3D11DeviceContext)source;
+   D3D11ShaderResourceView view = NULL;
+   D3D11Texture2D texture       = NULL;
+   ID3D11CommandList *list      = NULL;
+   D3D11_SHADER_RESOURCE_VIEW_DESC desc;
+
+   if (!d3d11 || !source || slot >= 3)
+      return false;
+
+
+   deferred->lpVtbl->PSGetShaderResources(deferred, 0, 1, &view);
+   if (view)
+   {
+      view->lpVtbl->GetDesc(view, &desc);
+      view->lpVtbl->GetResource(view, (D3D11Resource*)&texture);
+      Release(view);
+   }
+   if (FAILED(deferred->lpVtbl->FinishCommandList(deferred,
+               D3D11_HW_RING_KEEP_CONTEXT_STATE, &list)))
+   {
+      Release(texture);
+      return false;
+   }
+
+   Release(d3d11->hw_ring.slot[slot].list);
+   Release(d3d11->hw_ring.slot[slot].texture);
+   d3d11->hw_ring.slot[slot].list    = list;
+   d3d11->hw_ring.slot[slot].texture = texture;
+   d3d11->hw_ring.slot[slot].format  = texture ? desc.Format : DXGI_FORMAT_UNKNOWN;
+   return true;
+}
+
+/* Video thread: replays the slot's list on the immediate context, ahead
+ * of the frame that reads the slot's texture. */
+static bool d3d11_hw_ring_present_slot(void *data, unsigned slot)
+{
+   d3d11_video_t *d3d11 = (d3d11_video_t*)data;
+   if (!d3d11 || slot >= 3)
+      return false;
+   if (d3d11->hw_ring.slot[slot].list)
+   {
+      d3d11->context->lpVtbl->ExecuteCommandList(d3d11->context,
+            d3d11->hw_ring.slot[slot].list, TRUE);
+      Release(d3d11->hw_ring.slot[slot].list);
+      d3d11->hw_ring.slot[slot].list = NULL;
+   }
+   if (d3d11->hw_v2.active)
+   {
+      /* Version 2: the reference is taken here, under the lock the
+       * capture replaces the slot's texture under, and becomes the
+       * frame's. One left over from a frame that never came is dropped. */
+      EnterCriticalSection(&d3d11->hw_v2.lock);
+      Release(d3d11->hw_ring.present);
+      d3d11->hw_ring.present        = d3d11->hw_ring.slot[slot].texture;
+      d3d11->hw_ring.present_format = d3d11->hw_ring.slot[slot].format;
+      if (d3d11->hw_ring.present)
+         d3d11->hw_ring.present->lpVtbl->AddRef(d3d11->hw_ring.present);
+      LeaveCriticalSection(&d3d11->hw_v2.lock);
+      return d3d11->hw_ring.present != NULL;
+   }
+   d3d11->hw_ring.present        = d3d11->hw_ring.slot[slot].texture;
+   d3d11->hw_ring.present_format = d3d11->hw_ring.slot[slot].format;
+   return d3d11->hw_ring.present != NULL;
+}
+
+/* No GPU fence is needed: every use of the core's texture is ordered by
+ * the immediate context, which is the only place anything executes.
+ * What the ring waits for is the video thread having replayed a slot,
+ * a CPU event. Fences here are Win32 auto-reset events. */
+/* Video thread, version 3: the frame reads the core's own texture. The
+ * wrapper holds a reference to it for as long as the slot does; this
+ * takes the frame's own, under the lock, as present_slot does for
+ * version 2's copies. Nothing was copied on the core's thread. */
+static bool d3d11_hw_ring_install(void *data, const void *image,
+      const void *semaphores, unsigned num_semaphores,
+      unsigned src_queue_family, const void *cmd, unsigned num_cmd)
+{
+   d3d11_video_t *d3d11   = (d3d11_video_t*)data;
+   D3D11Texture2D texture = (D3D11Texture2D)image;
+   D3D11_TEXTURE2D_DESC desc;
+   (void)semaphores; (void)num_semaphores; (void)src_queue_family;
+   (void)cmd; (void)num_cmd;
+   if (!d3d11 || !texture || !d3d11->hw_v2.active)
+      return false;
+   texture->lpVtbl->GetDesc(texture, &desc);
+   EnterCriticalSection(&d3d11->hw_v2.lock);
+   Release(d3d11->hw_ring.present);
+   texture->lpVtbl->AddRef(texture);
+   d3d11->hw_ring.present        = texture;
+   d3d11->hw_ring.present_format = desc.Format;
+   d3d11->hw_direct.eligible     = true;
+   LeaveCriticalSection(&d3d11->hw_v2.lock);
+   return true;
+}
+
+static bool d3d11_hw_ring_fence_new(void *data, void **fence)
+{
+   HANDLE ev;
+   (void)data;
+   if (!fence)
+      return false;
+   if (!(ev = CreateEvent(NULL, FALSE, FALSE, NULL)))
+      return false;
+   *fence = (void*)ev;
+   return true;
+}
+
+static void d3d11_hw_ring_fence_free(void *data, void *fence)
+{
+   (void)data;
+   if (fence)
+      CloseHandle((HANDLE)fence);
+}
+
+static void d3d11_hw_ring_fence_signal(void *data, void *fence)
+{
+   (void)data;
+   if (fence)
+      SetEvent((HANDLE)fence);
+}
+
+static bool d3d11_hw_ring_fence_wait(void *data, void *fence, unsigned timeout_us)
+{
+   (void)data;
+   if (!fence)
+      return true;
+   return WaitForSingleObject((HANDLE)fence, timeout_us == HW_RING_WAIT_FOREVER
+         ? INFINITE : (timeout_us + 999) / 1000) == WAIT_OBJECT_0;
+}
+
+static void d3d11_hw_ring_free(d3d11_video_t *d3d11)
+{
+   unsigned i;
+   for (i = 0; i < 3; i++)
+   {
+      Release(d3d11->hw_ring.slot[i].list);
+      Release(d3d11->hw_ring.slot[i].texture);
+      d3d11->hw_ring.slot[i].list    = NULL;
+      d3d11->hw_ring.slot[i].texture = NULL;
+   }
+   if (d3d11->hw_v2.active)
+      Release(d3d11->hw_ring.present);
+   d3d11->hw_ring.present = NULL;
+
+   d3d11_hw_direct_free(d3d11);
+
+   /* Version 2's state goes with the rest of the hardware handoff. */
+   Release(d3d11->hw_v2.texture);
+   d3d11->hw_v2.texture = NULL;
+   d3d11->hw_v2.active  = false;
+   if (d3d11->hw_v2.lock_ready)
+   {
+      DeleteCriticalSection(&d3d11->hw_v2.lock);
+      d3d11->hw_v2.lock_ready = false;
+   }
 }
 
 static bool d3d11_get_hw_render_interface(
@@ -6153,7 +7247,20 @@ static const video_poke_interface_t d3d11_poke_interface = {
    NULL, /* d3d11_set_hdr_subpixel_layout */
 #endif
    d3d11_gfx_supports_texture_format,
-   d3d11_gfx_load_texture_compressed
+   d3d11_gfx_load_texture_compressed,
+   d3d11_present_last,
+   d3d11_get_last_present_time,
+   d3d11_hw_ring_install, /* version 3 frames: the core's own texture */
+   d3d11_hw_ring_fence_new,
+   d3d11_hw_ring_fence_free,
+   d3d11_hw_ring_fence_signal,
+   d3d11_hw_ring_fence_wait,
+   d3d11_hw_ring_capture,
+   d3d11_hw_ring_present_slot,
+   d3d11_hw_ring_context_new,
+   d3d11_hw_ring_context_free,
+   NULL, /* hw_ring_framebuffer */
+   d3d11_gfx_update_texture
 };
 
 static void d3d11_gfx_get_poke_interface(void* data,
@@ -6172,8 +7279,8 @@ static font_renderer_t d3d11_font = {
    d3d11_font_render_msg,
    "d3d11",
    d3d11_font_get_glyph,
-   NULL, /* bind_block */
-   NULL, /* flush */
+   d3d11_font_bind_block,
+   d3d11_font_flush_block,
    d3d11_font_get_message_width,
    d3d11_font_get_line_metrics
 };
@@ -6225,6 +7332,7 @@ gfx_display_ctx_driver_t gfx_display_ctx_d3d11 = {
    &d3d11_font,
    GFX_VIDEO_DRIVER_DIRECT3D11,
    "d3d11",
+   true,
    true,
    gfx_display_d3d11_scissor_begin,
    gfx_display_d3d11_scissor_end

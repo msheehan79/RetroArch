@@ -175,11 +175,6 @@ struct addrinfo {
 };
 
 /* XBOX Defs end */
-struct pollfd {
-        t_socket fd;
-        short events;
-        short revents;
-};
 
 #ifndef SOL_TCP
 #define SOL_TCP IPPROTO_TCP
@@ -202,9 +197,25 @@ struct iovec
   void *iov_base;        
 };	
 
-#if defined(_XBOX) || defined(__USE_WINSOCK__)
+/* All Win32/Xbox targets use the select()-based poll() in compat.c.
+ * Do not map poll to WSAPoll: that export is Vista+ only.
+ * winsock2.h declares struct pollfd when the target is Vista or newer.
+ * The Xbox XTL, legacy winsock.h and pre-Vista SDKs do not, so declare
+ * it there with the WSAPOLLFD layout. */
+#ifndef HAVE_POLLFD
+#define HAVE_POLLFD 1
+#if defined(_XBOX) || defined(__USE_WINSOCK__) || !defined(_WIN32_WINNT) || (_WIN32_WINNT < 0x0600)
+struct pollfd {
+        t_socket fd;
+        short events;
+        short revents;
+};
+#endif
+#endif
+
 int poll(struct pollfd *fds, unsigned int nfds, int timo);
 
+#if defined(_XBOX) || defined(__USE_WINSOCK__)
 #ifdef __USE_WINSOCK__
 #define write(fd, buf, maxcount) _write(fd, buf, (unsigned int)maxcount)
 #define read(fd, buf, maxcount) _read(fd, buf, (unsigned int)maxcount)
@@ -217,12 +228,6 @@ void smb2_freeaddrinfo(struct addrinfo *res);
 
 #define getaddrinfo smb2_getaddrinfo
 #define freeaddrinfo smb2_freeaddrinfo
-
-#else
-
-#undef poll
-#define poll WSAPoll
-
 #endif
 
 #ifdef __USE_WINSOCK__

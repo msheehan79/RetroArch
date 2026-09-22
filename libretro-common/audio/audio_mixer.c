@@ -35,7 +35,7 @@
  * Two voice pipelines, kept apart on purpose.  audio_mixer_play makes
  * a float voice mixed by audio_mixer_mix; audio_mixer_play_s16 makes a
  * fixed-point voice, resampled by the integer sinc resampler (quality
- * mapped in audio_mixer_i16_quality) and mixed with integer gain and
+ * mapped by the resampler layer) and mixed with integer gain and
  * saturation by audio_mixer_mix_s16.  Nothing is decoded in one
  * pipeline and converted into the other - a WAV sound keeps its source
  * bytes so either pipeline builds from the original, and frame counts
@@ -64,7 +64,6 @@
 
 #include <audio/audio_mixer.h>
 #include <audio/audio_resampler.h>
-#include <audio/sinc_resampler_int16.h>
 
 #ifdef HAVE_RWAV
 #include <formats/rwav.h>
@@ -84,12 +83,17 @@
  * left behind. */
 #if defined(HAVE_RWAV) || defined(HAVE_RVORBIS) || defined(HAVE_RFLAC) \
  || defined(HAVE_RMP3) || defined(HAVE_RMODTRACKER) || defined(HAVE_RAAC) \
- || defined(HAVE_ROPUS)
+ || defined(HAVE_ROPUS) || defined(HAVE_RAC3)
 #define AUDIO_MIXER_HAS_STREAM 1
 #include <formats/audio.h>
+#ifdef HAVE_RLPCM
+#include <formats/rlpcm.h>
+#endif
 #endif
 
 
+
+#include <retro_atomic.h>
 
 #ifdef HAVE_THREADS
 #include <rthreads/rthreads.h>
@@ -213,7 +217,7 @@ struct audio_mixer_voice
           * and past the stack-probe threshold on Windows, so every call
           * paid a chkstk page walk before doing any work. */
          int16_t    *decode_buf_s16;
-         void       *resampler_int16;
+         retro_resampler_int16_t resampler_int16;
       } stream;
 #endif
 
@@ -221,7 +225,13 @@ struct audio_mixer_voice
    } types;
    audio_mixer_sound_t *sound;
    audio_mixer_stop_cb_t stop_cb;
-   unsigned type;
+   /* Which codec the voice carries, AUDIO_MIXER_TYPE_NONE when idle.
+    * Published with a release store when a voice is claimed and cleared
+    * the same way once it is released, so the mix loops and the voice
+    * counts can test a voice for idle without taking its lock. Every
+    * read that goes on to touch the rest of the voice takes the lock
+    * and reads this again under it. */
+   retro_atomic_int_t type;
    /* volume drives the float pipeline, gain the s16 one. They are held
     * separately rather than converted on demand so that an s16 voice
     * never needs a float operation on the audio thread. */
@@ -649,7 +659,15 @@ static bool one_shot_resample(const float* in, size_t samples_in,
    struct resampler_data info;
    void* data                         = NULL;
    const retro_resampler_t* resampler = NULL;
-   float ratio                        = (double)s_rate / (double)rate;
+   float ratio;
+
+   /* A zero on either side leaves nothing to resample toward: the
+    * mixer has not been given its rate, or the source header claims
+    * none. The resampler run on such a ratio emits frames the output
+    * estimate never accounted for, past the end of the buffer. */
+   if (!s_rate || !rate)
+      return false;
+   ratio = (double)s_rate / (double)rate;
 
    if (!retro_resampler_realloc(&data, &resampler,
          resampler_ident, quality, ratio))
@@ -708,7 +726,7 @@ void audio_mixer_init(unsigned rate)
    {
       audio_mixer_voice_t *voice = &s_voices[i];
 
-      voice->type = AUDIO_MIXER_TYPE_NONE;
+      retro_atomic_store_release_int(&voice->type, AUDIO_MIXER_TYPE_NONE);
 #ifdef HAVE_THREADS
       if (!voice->lock)
          voice->lock = slock_new();
@@ -775,19 +793,6 @@ static int32_t audio_mixer_gain_s16(int16_t s, int32_t gain_q16)
 #ifdef AUDIO_MIXER_HAS_STREAM
 /* Only the WAV and streaming s16 resample paths consult this; a MOD-only or
  * no-codec build would otherwise flag it as unused. */
-static enum sinc_int16_quality audio_mixer_i16_quality(enum resampler_quality q)
-{
-   switch (q)
-   {
-      case RESAMPLER_QUALITY_LOWEST:  return SINC_INT16_QUALITY_LOWEST;
-      case RESAMPLER_QUALITY_LOWER:   return SINC_INT16_QUALITY_LOWER;
-      case RESAMPLER_QUALITY_HIGHER:  return SINC_INT16_QUALITY_HIGHER;
-      case RESAMPLER_QUALITY_HIGHEST: return SINC_INT16_QUALITY_HIGHEST;
-      case RESAMPLER_QUALITY_NORMAL:
-      case RESAMPLER_QUALITY_DONTCARE:
-      default:                        return SINC_INT16_QUALITY_NORMAL;
-   }
-}
 #endif
 
 #ifdef HAVE_RWAV
@@ -994,20 +999,26 @@ static bool wav_to_s16(const rwav_t* wav, const uint8_t* src,
 }
 
 static bool one_shot_resample_s16(const int16_t* in, size_t samples_in,
-      unsigned rate, enum resampler_quality quality,
+      unsigned rate, const char *resampler_ident,
+      enum resampler_quality quality,
       int16_t** out, size_t* samples_out)
 {
    struct resampler_data_int16 info;
+   retro_resampler_int16_t rs;
    size_t alloc_samples;
    size_t pad;
    void  *re    = NULL;
-   double ratio = (double)s_rate / (double)rate;
+   double ratio;
 
-   re = sinc_resampler_int16_init((ratio < 1.0) ? ratio : 1.0,
-         audio_mixer_i16_quality(quality));
-
-   if (!re)
+   /* As in one_shot_resample(): no rate on either side, no resample. */
+   if (!s_rate || !rate)
       return false;
+   ratio = (double)s_rate / (double)rate;
+
+   if (!retro_resampler_int16_new(&rs, resampler_ident, quality,
+            (ratio < 1.0) ? ratio : 1.0, false))
+      return false;
+   re = rs.data;
 
    /* Size by the predicted output count plus a ratio-scaled safeguard,
     * exactly like one_shot_resample, so the s16 buffer carries the same
@@ -1024,7 +1035,7 @@ static bool one_shot_resample_s16(const int16_t* in, size_t samples_in,
 
    if (*out == NULL)
    {
-      sinc_resampler_int16_free(re);
+      rs.free(re);
       return false;
    }
 
@@ -1036,8 +1047,8 @@ static bool one_shot_resample_s16(const int16_t* in, size_t samples_in,
    info.output_frames = 0;
    info.ratio         = ratio;
 
-   sinc_resampler_int16_process(re, &info);
-   sinc_resampler_int16_free(re);
+   rs.process(re, &info);
+   rs.free(re);
 
    /* As in one_shot_resample: report what came out, not what was
     * predicted, so the tail is not dropped. */
@@ -1054,7 +1065,7 @@ static bool one_shot_resample_s16(const int16_t* in, size_t samples_in,
 static bool wav_build_float(audio_mixer_sound_t* sound,
       const char *resampler_ident, enum resampler_quality quality);
 static bool wav_build_s16(audio_mixer_sound_t* sound,
-      enum resampler_quality quality);
+      const char *resampler_ident, enum resampler_quality quality);
 
 audio_mixer_sound_t* audio_mixer_load_wav(void *buffer, size_t size,
       const char *resampler_ident, enum resampler_quality quality,
@@ -1114,17 +1125,13 @@ audio_mixer_sound_t* audio_mixer_load_wav(void *buffer, size_t size,
    /* Build the pipeline the caller asked for now, so that triggering
     * the sound later allocates nothing. The other one is built only
     * if a mode flip actually asks for it. */
-   if (!(want_s16 ? wav_build_s16(sound, quality)
-                  : wav_build_float(sound, resampler_ident, quality)))
-   {
-      audio_mixer_destroy(sound);
-      return NULL;
-   }
+   if (want_s16 ? wav_build_s16(sound, resampler_ident, quality)
+                : wav_build_float(sound, resampler_ident, quality))
+      return sound;
 
-   return sound;
-#else
-   return NULL;
+   audio_mixer_destroy(sound);
 #endif
+   return NULL;
 }
 
 audio_mixer_sound_t* audio_mixer_load_wav_stream(void *buffer, size_t size)
@@ -1135,21 +1142,17 @@ audio_mixer_sound_t* audio_mixer_load_wav_stream(void *buffer, size_t size)
    if (!buffer || size <= 0)
       return NULL;
 
-   if (!(sound = (audio_mixer_sound_t*)calloc(1, sizeof(*sound))))
-      return NULL;
-
-   /* nothing is decoded here: the voice reads frames out of these
-    * bytes as it mixes them */
-   sound->type              = AUDIO_MIXER_TYPE_WAV_STREAM;
-   sound->types.stream.size = size;
-   sound->types.stream.data = buffer;
-
-   return sound;
-#else
-   (void)buffer;
-   (void)size;
-   return NULL;
+   if ((sound = (audio_mixer_sound_t*)calloc(1, sizeof(*sound))))
+   {
+      /* nothing is decoded here: the voice reads frames out of these
+       * bytes as it mixes them */
+      sound->type              = AUDIO_MIXER_TYPE_WAV_STREAM;
+      sound->types.stream.size = size;
+      sound->types.stream.data = buffer;
+      return sound;
+   }
 #endif
+   return NULL;
 }
 
 audio_mixer_sound_t* audio_mixer_load_ogg(void *buffer, size_t size)
@@ -1182,17 +1185,15 @@ audio_mixer_sound_t* audio_mixer_load_ogg(void *buffer, size_t size)
 
    sound = (audio_mixer_sound_t*)calloc(1, sizeof(*sound));
 
-   if (!sound)
-      return NULL;
-
-   sound->type           = mt;
-   sound->types.stream.size = size;
-   sound->types.stream.data = buffer;
-
-   return sound;
-#else
-   return NULL;
+   if (sound)
+   {
+      sound->type              = mt;
+      sound->types.stream.size = size;
+      sound->types.stream.data = buffer;
+      return sound;
+   }
 #endif
+   return NULL;
 }
 
 audio_mixer_sound_t* audio_mixer_load_flac(void *buffer, size_t size)
@@ -1200,17 +1201,15 @@ audio_mixer_sound_t* audio_mixer_load_flac(void *buffer, size_t size)
 #ifdef HAVE_RFLAC
    audio_mixer_sound_t* sound = (audio_mixer_sound_t*)calloc(1, sizeof(*sound));
 
-   if (!sound)
-      return NULL;
-
-   sound->type           = AUDIO_MIXER_TYPE_FLAC;
-   sound->types.stream.size = size;
-   sound->types.stream.data = buffer;
-
-   return sound;
-#else
-   return NULL;
+   if (sound)
+   {
+      sound->type              = AUDIO_MIXER_TYPE_FLAC;
+      sound->types.stream.size = size;
+      sound->types.stream.data = buffer;
+      return sound;
+   }
 #endif
+   return NULL;
 }
 
 audio_mixer_sound_t* audio_mixer_load_mp3(void *buffer, size_t size)
@@ -1218,17 +1217,15 @@ audio_mixer_sound_t* audio_mixer_load_mp3(void *buffer, size_t size)
 #ifdef HAVE_RMP3
    audio_mixer_sound_t* sound = (audio_mixer_sound_t*)calloc(1, sizeof(*sound));
 
-   if (!sound)
-      return NULL;
-
-   sound->type           = AUDIO_MIXER_TYPE_MP3;
-   sound->types.stream.size = size;
-   sound->types.stream.data = buffer;
-
-   return sound;
-#else
-   return NULL;
+   if (sound)
+   {
+      sound->type              = AUDIO_MIXER_TYPE_MP3;
+      sound->types.stream.size = size;
+      sound->types.stream.data = buffer;
+      return sound;
+   }
 #endif
+   return NULL;
 }
 
 audio_mixer_sound_t* audio_mixer_load_m4a(void *buffer, size_t size)
@@ -1236,17 +1233,47 @@ audio_mixer_sound_t* audio_mixer_load_m4a(void *buffer, size_t size)
 #ifdef HAVE_RAAC
    audio_mixer_sound_t* sound = (audio_mixer_sound_t*)calloc(1, sizeof(*sound));
 
-   if (!sound)
-      return NULL;
-
-   sound->type           = AUDIO_MIXER_TYPE_M4A;
-   sound->types.stream.size = size;
-   sound->types.stream.data = buffer;
-
-   return sound;
-#else
-   return NULL;
+   if (sound)
+   {
+      sound->type              = AUDIO_MIXER_TYPE_M4A;
+      sound->types.stream.size = size;
+      sound->types.stream.data = buffer;
+      return sound;
+   }
 #endif
+   return NULL;
+}
+
+audio_mixer_sound_t* audio_mixer_load_ac3(void *buffer, size_t size)
+{
+#ifdef HAVE_RAC3
+   audio_mixer_sound_t* sound = (audio_mixer_sound_t*)calloc(1, sizeof(*sound));
+
+   if (sound)
+   {
+      sound->type              = AUDIO_MIXER_TYPE_AC3;
+      sound->types.stream.size = size;
+      sound->types.stream.data = buffer;
+      return sound;
+   }
+#endif
+   return NULL;
+}
+
+audio_mixer_sound_t* audio_mixer_load_lpcm(void *buffer, size_t size)
+{
+#ifdef HAVE_RLPCM
+   audio_mixer_sound_t* sound = (audio_mixer_sound_t*)calloc(1, sizeof(*sound));
+
+   if (sound)
+   {
+      sound->type              = AUDIO_MIXER_TYPE_LPCM;
+      sound->types.stream.size = size;
+      sound->types.stream.data = buffer;
+      return sound;
+   }
+#endif
+   return NULL;
 }
 
 audio_mixer_sound_t* audio_mixer_load_opus(void *buffer, size_t size)
@@ -1254,17 +1281,15 @@ audio_mixer_sound_t* audio_mixer_load_opus(void *buffer, size_t size)
 #ifdef HAVE_ROPUS
    audio_mixer_sound_t* sound = (audio_mixer_sound_t*)calloc(1, sizeof(*sound));
 
-   if (!sound)
-      return NULL;
-
-   sound->type           = AUDIO_MIXER_TYPE_OPUS;
-   sound->types.stream.size = size;
-   sound->types.stream.data = buffer;
-
-   return sound;
-#else
-   return NULL;
+   if (sound)
+   {
+      sound->type              = AUDIO_MIXER_TYPE_OPUS;
+      sound->types.stream.size = size;
+      sound->types.stream.data = buffer;
+      return sound;
+   }
 #endif
+   return NULL;
 }
 
 audio_mixer_sound_t* audio_mixer_load_weba_avail(void *buffer, size_t size,
@@ -1321,17 +1346,15 @@ audio_mixer_sound_t* audio_mixer_load_mod(void *buffer, size_t size)
 #ifdef HAVE_RMODTRACKER
    audio_mixer_sound_t* sound = (audio_mixer_sound_t*)calloc(1, sizeof(*sound));
 
-   if (!sound)
-      return NULL;
-
-   sound->type              = AUDIO_MIXER_TYPE_MOD;
-   sound->types.stream.size = size;
-   sound->types.stream.data = buffer;
-
-   return sound;
-#else
-   return NULL;
+   if (sound)
+   {
+      sound->type              = AUDIO_MIXER_TYPE_MOD;
+      sound->types.stream.size = size;
+      sound->types.stream.data = buffer;
+      return sound;
+   }
 #endif
+   return NULL;
 }
 
 void audio_mixer_sound_set_data_owner(audio_mixer_sound_t *sound,
@@ -1381,13 +1404,25 @@ void audio_mixer_sound_set_end_granule(audio_mixer_sound_t *sound,
 void audio_mixer_voice_set_avail(audio_mixer_voice_t *voice, size_t avail)
 {
 #if (defined(HAVE_RWEBM) && (defined(HAVE_ROPUS) || defined(HAVE_RVORBIS))) \
- || defined(HAVE_RAAC) || defined(HAVE_RFLAC)
+ || defined(HAVE_RAAC) || defined(HAVE_RFLAC) || defined(HAVE_RAC3)
    if (!voice)
       return;
 #ifdef AUDIO_MIXER_HAS_STREAM
    AUDIO_MIXER_LOCK(voice);
-   switch (voice->type)
+   switch (retro_atomic_load_relaxed_int(&voice->type))
    {
+#ifdef HAVE_RAC3
+      case AUDIO_MIXER_TYPE_AC3:
+         audio_transfer_set_avail(voice->types.stream.stream,
+               AUDIO_TYPE_AC3, avail);
+         break;
+#endif
+#ifdef HAVE_RLPCM
+      case AUDIO_MIXER_TYPE_LPCM:
+         audio_transfer_set_avail(voice->types.stream.stream,
+               AUDIO_TYPE_LPCM, avail);
+         break;
+#endif
 #ifdef HAVE_RVORBIS
       case AUDIO_MIXER_TYPE_OGG:
          audio_transfer_set_avail(voice->types.stream.stream,
@@ -1434,7 +1469,7 @@ size_t audio_mixer_voice_buffer_tell(audio_mixer_voice_t *voice)
       return 0;
 #ifdef AUDIO_MIXER_HAS_STREAM
    AUDIO_MIXER_LOCK(voice);
-   switch (voice->type)
+   switch (retro_atomic_load_relaxed_int(&voice->type))
    {
 #ifdef HAVE_RWAV
       case AUDIO_MIXER_TYPE_WAV_STREAM:
@@ -1464,6 +1499,18 @@ size_t audio_mixer_voice_buffer_tell(audio_mixer_voice_t *voice)
       case AUDIO_MIXER_TYPE_M4A:
          r = audio_transfer_buffer_tell(voice->types.stream.stream,
                AUDIO_TYPE_AAC);
+         break;
+#endif
+#ifdef HAVE_RAC3
+      case AUDIO_MIXER_TYPE_AC3:
+         r = audio_transfer_buffer_tell(voice->types.stream.stream,
+               AUDIO_TYPE_AC3);
+         break;
+#endif
+#ifdef HAVE_RLPCM
+      case AUDIO_MIXER_TYPE_LPCM:
+         r = audio_transfer_buffer_tell(voice->types.stream.stream,
+               AUDIO_TYPE_LPCM);
          break;
 #endif
       default:
@@ -1542,6 +1589,20 @@ void audio_mixer_destroy(audio_mixer_sound_t* sound)
             free(handle);
 #endif
          break;
+      case AUDIO_MIXER_TYPE_AC3:
+#ifdef HAVE_RAC3
+         handle = (void*)sound->types.stream.data;
+         if (handle && !sound->data_owner)
+            free(handle);
+#endif
+         break;
+      case AUDIO_MIXER_TYPE_LPCM:
+#ifdef HAVE_RLPCM
+         handle = (void*)sound->types.stream.data;
+         if (handle && !sound->data_owner)
+            free(handle);
+#endif
+         break;
       case AUDIO_MIXER_TYPE_OPUS:
 #ifdef HAVE_ROPUS
          handle = (void*)sound->types.stream.data;
@@ -1610,7 +1671,7 @@ static bool wav_build_float(audio_mixer_sound_t* sound,
 }
 
 static bool wav_build_s16(audio_mixer_sound_t* sound,
-      enum resampler_quality quality)
+      const char *resampler_ident, enum resampler_quality quality)
 {
    int16_t *pcm    = NULL;
    size_t   samples;
@@ -1631,7 +1692,7 @@ static bool wav_build_s16(audio_mixer_sound_t* sound,
       int16_t *resampled = NULL;
 
       if (!one_shot_resample_s16(pcm, samples,
-            sound->types.wav.hdr.samplerate, quality,
+            sound->types.wav.hdr.samplerate, resampler_ident, quality,
             &resampled, &samples))
       {
          memalign_free((void*)pcm);
@@ -1660,7 +1721,7 @@ static bool wav_build_float(audio_mixer_sound_t* sound,
 }
 
 static bool wav_build_s16(audio_mixer_sound_t* sound,
-      enum resampler_quality quality)
+      const char *resampler_ident, enum resampler_quality quality)
 {
    (void)sound;
    (void)quality;
@@ -1729,6 +1790,26 @@ static bool audio_mixer_play_stream(
     * and the resampler below then has nothing to do. */
    audio_transfer_set_output_rate(xfer, type, (unsigned)s_rate);
 
+#ifdef HAVE_RLPCM
+   /* Raw linear PCM says nothing about itself, and a mixer sound is
+    * just a file someone dropped in a directory - there is no one to
+    * ask. So samples with no disc header take 16-bit stereo at 48 kHz,
+    * little-endian, which is what such a file usually is; a buffer
+    * that does open with a DVD or Blu-ray header keeps what the
+    * header says, since the arm reads that first. */
+   if (type == AUDIO_TYPE_LPCM)
+   {
+      rlpcm_format_t *fmt = (rlpcm_format_t*)audio_transfer_lpcm_format(xfer);
+      if (fmt && !fmt->bits)
+      {
+         fmt->sample_rate = 48000;
+         fmt->bits        = 16;
+         fmt->channels    = 2;
+         fmt->big_endian  = false;
+      }
+   }
+#endif
+
    if (!audio_transfer_start(xfer, type))
       goto error;
 
@@ -1746,6 +1827,10 @@ static bool audio_mixer_play_stream(
 
    if (rate != s_rate)
    {
+      /* A source claiming no rate, or a mixer not yet given one,
+       * cannot be brought to the output rate; see one_shot_resample(). */
+      if (!s_rate || !rate)
+         goto error;
       ratio = (double)s_rate / (double)rate;
 
       if (!retro_resampler_realloc(&resampler_data,
@@ -1754,16 +1839,17 @@ static bool audio_mixer_play_stream(
          goto error;
    }
 
-   /* Allocate on a 16-byte boundary, and pad to a multiple of 16 bytes. We
-    * add 16 more samples in the formula below just as safeguard, because
-    * resampler->process sometimes reports more output samples than the
-    * formula below calculates. Ideally, audio resamplers should have a
-    * function to return the number of samples they will output given a
-    * count of input samples. */
+   /* Allocate on a 16-byte boundary, and pad to a multiple of 16 bytes.
+    * process() reports more than the estimate below - a call ends on a
+    * phase it did not start on, so one input frame's worth of output
+    * lands on top - and the excess scales with the ratio, as it does in
+    * one_shot_resample(). buf_samples is what the fill clamps to. */
    samples                         = (unsigned)(AUDIO_MIXER_TEMP_BUFFER * ratio);
+   samples                         = ((samples + 2 * (unsigned)(ratio + 1.0)
+                                       + 32) + 15) & ~15;
    voice->types.stream.decode_buf  = (float*)memalign_alloc(64,
          (AUDIO_MIXER_STREAM_BUF_OFFSET(sizeof(float))
-          + (((samples + 16) + 15) & ~15)) * sizeof(float));
+          + samples) * sizeof(float));
 
    if (!voice->types.stream.decode_buf)
    {
@@ -1807,14 +1893,16 @@ static void audio_mixer_release_stream(audio_mixer_voice_t* voice,
    if (voice->types.stream.decode_buf_s16)
       memalign_free(voice->types.stream.decode_buf_s16);
    voice->types.stream.buffer_s16 = NULL;
-   if (voice->types.stream.resampler_int16)
-      sinc_resampler_int16_free(voice->types.stream.resampler_int16);
+   if (voice->types.stream.resampler_int16.data)
+      voice->types.stream.resampler_int16.free(
+            voice->types.stream.resampler_int16.data);
 }
 
 static bool audio_mixer_play_stream_s16(
       audio_mixer_sound_t* sound,
       audio_mixer_voice_t* voice,
       bool repeat, int32_t gain,
+      const char *resampler_ident,
       enum resampler_quality quality,
       audio_mixer_stop_cb_t stop_cb,
       enum audio_type_enum type)
@@ -1824,8 +1912,11 @@ static bool audio_mixer_play_stream_s16(
    unsigned channels    = 0;
    unsigned rate        = 0;
    void    *sbuf        = NULL;
-   void    *resamp_i16  = NULL;
+   retro_resampler_int16_t rs;
    void    *xfer        = audio_transfer_new(type);
+
+   /* No resampling leaves it zeroed, which the fill reads as "none". */
+   memset(&rs, 0, sizeof(rs));
    (void)repeat;
    (void)gain;
    (void)stop_cb;
@@ -1851,6 +1942,22 @@ static bool audio_mixer_play_stream_s16(
     * and the resampler below then has nothing to do. */
    audio_transfer_set_output_rate(xfer, type, (unsigned)s_rate);
 
+#ifdef HAVE_RLPCM
+   /* As above: raw samples with no header take the shape a headerless
+    * file usually has, and a disc header keeps its own. */
+   if (type == AUDIO_TYPE_LPCM)
+   {
+      rlpcm_format_t *fmt = (rlpcm_format_t*)audio_transfer_lpcm_format(xfer);
+      if (fmt && !fmt->bits)
+      {
+         fmt->sample_rate = 48000;
+         fmt->bits        = 16;
+         fmt->channels    = 2;
+         fmt->big_endian  = false;
+      }
+   }
+#endif
+
    if (!audio_transfer_start(xfer, type))
    {
       audio_transfer_free(xfer, type);
@@ -1870,23 +1977,24 @@ static bool audio_mixer_play_stream_s16(
 
    if (rate != s_rate)
    {
+      if (!s_rate || !rate)
+         goto error;
       ratio      = (double)s_rate / (double)rate;
-      resamp_i16 = sinc_resampler_int16_init(
-            (ratio < 1.0) ? ratio : 1.0,
-            audio_mixer_i16_quality(quality));
-      if (!resamp_i16)
+      if (!retro_resampler_int16_new(&rs, resampler_ident, quality,
+               (ratio < 1.0) ? ratio : 1.0, false))
          goto error;
    }
 
    samples     = (unsigned)(AUDIO_MIXER_TEMP_BUFFER * ratio);
+   samples     = ((samples + 2 * (unsigned)(ratio + 1.0) + 32) + 15) & ~15;
    voice->types.stream.decode_buf_s16 = (int16_t*)memalign_alloc(64,
          (AUDIO_MIXER_STREAM_BUF_OFFSET(sizeof(int16_t))
-          + (((samples + 16) + 15) & ~15)) * sizeof(int16_t));
+          + samples) * sizeof(int16_t));
 
    if (!voice->types.stream.decode_buf_s16)
    {
-      if (resamp_i16)
-         sinc_resampler_int16_free(resamp_i16);
+      if (rs.data)
+         rs.free(rs.data);
       goto error;
    }
    /* The resampled buffer is a view into the decode block; release
@@ -1897,7 +2005,7 @@ static bool audio_mixer_play_stream_s16(
    voice->types.stream.resampler       = NULL;
    voice->types.stream.resampler_data  = NULL;
    voice->types.stream.buffer          = NULL;
-   voice->types.stream.resampler_int16 = resamp_i16;
+   voice->types.stream.resampler_int16 = rs;
    voice->types.stream.buffer_s16      = (int16_t*)sbuf;
    voice->types.stream.buf_samples     = samples;
    voice->types.stream.ratio           = ratio;
@@ -1931,19 +2039,21 @@ audio_mixer_voice_t* audio_mixer_play(audio_mixer_sound_t* sound,
 
    for (i = 0; i < AUDIO_MIXER_MAX_VOICES; i++, voice++)
    {
-      if (voice->type != AUDIO_MIXER_TYPE_NONE)
+      if (retro_atomic_load_acquire_int(&voice->type)
+            != AUDIO_MIXER_TYPE_NONE)
          continue;
 
       AUDIO_MIXER_LOCK(voice);
 
-      if (voice->type != AUDIO_MIXER_TYPE_NONE)
+      if (retro_atomic_load_relaxed_int(&voice->type)
+            != AUDIO_MIXER_TYPE_NONE)
       {
          AUDIO_MIXER_UNLOCK(voice);
          continue;
       }
 
       /* claim the voice, also helps with cleanup on error */
-      voice->type = sound->type;
+      retro_atomic_store_release_int(&voice->type, sound->type);
 
       switch (sound->type)
       {
@@ -1990,6 +2100,18 @@ audio_mixer_voice_t* audio_mixer_play(audio_mixer_sound_t* sound,
                   resampler_ident, quality, stop_cb, AUDIO_TYPE_AAC);
 #endif
             break;
+         case AUDIO_MIXER_TYPE_AC3:
+#ifdef HAVE_RAC3
+            res = audio_mixer_play_stream(sound, voice, repeat, volume,
+                  resampler_ident, quality, stop_cb, AUDIO_TYPE_AC3);
+#endif
+            break;
+         case AUDIO_MIXER_TYPE_LPCM:
+#ifdef HAVE_RLPCM
+            res = audio_mixer_play_stream(sound, voice, repeat, volume,
+                  resampler_ident, quality, stop_cb, AUDIO_TYPE_LPCM);
+#endif
+            break;
          case AUDIO_MIXER_TYPE_OPUS:
 #ifdef HAVE_ROPUS
             res = audio_mixer_play_stream(sound, voice, repeat, volume,
@@ -2027,6 +2149,7 @@ audio_mixer_voice_t* audio_mixer_play(audio_mixer_sound_t* sound,
 
 audio_mixer_voice_t* audio_mixer_play_s16(audio_mixer_sound_t* sound,
       bool repeat, int32_t gain,
+      const char *resampler_ident,
       enum resampler_quality quality,
       audio_mixer_stop_cb_t stop_cb)
 {
@@ -2039,69 +2162,86 @@ audio_mixer_voice_t* audio_mixer_play_s16(audio_mixer_sound_t* sound,
 
    for (i = 0; i < AUDIO_MIXER_MAX_VOICES; i++, voice++)
    {
-      if (voice->type != AUDIO_MIXER_TYPE_NONE)
+      if (retro_atomic_load_acquire_int(&voice->type)
+            != AUDIO_MIXER_TYPE_NONE)
          continue;
 
       AUDIO_MIXER_LOCK(voice);
 
-      if (voice->type != AUDIO_MIXER_TYPE_NONE)
+      if (retro_atomic_load_relaxed_int(&voice->type)
+            != AUDIO_MIXER_TYPE_NONE)
       {
          AUDIO_MIXER_UNLOCK(voice);
          continue;
       }
 
-      voice->type   = sound->type;
+      /* is_s16 before the release store that publishes the voice: the
+       * unlocked voice counts read the flag only once type says the
+       * voice is claimed, so it has to be set by then. */
       voice->is_s16 = true;
+      retro_atomic_store_release_int(&voice->type, sound->type);
 
       switch (sound->type)
       {
          case AUDIO_MIXER_TYPE_FLAC:
 #ifdef HAVE_RFLAC
             res = audio_mixer_play_stream_s16(sound, voice, repeat, gain,
-                  quality, stop_cb, AUDIO_TYPE_FLAC);
+                  resampler_ident, quality, stop_cb, AUDIO_TYPE_FLAC);
 #endif
             break;
          case AUDIO_MIXER_TYPE_WAV_STREAM:
 #ifdef HAVE_RWAV
             res = audio_mixer_play_stream_s16(sound, voice, repeat, gain,
-                  quality, stop_cb, AUDIO_TYPE_WAV);
+                  resampler_ident, quality, stop_cb, AUDIO_TYPE_WAV);
 #endif
             break;
          case AUDIO_MIXER_TYPE_OGG:
 #ifdef HAVE_RVORBIS
             res = audio_mixer_play_stream_s16(sound, voice, repeat, gain,
-                  quality, stop_cb, AUDIO_TYPE_VORBIS);
+                  resampler_ident, quality, stop_cb, AUDIO_TYPE_VORBIS);
 #endif
             break;
          case AUDIO_MIXER_TYPE_MP3:
 #ifdef HAVE_RMP3
             res = audio_mixer_play_stream_s16(sound, voice, repeat, gain,
-                  quality, stop_cb, AUDIO_TYPE_MP3);
+                  resampler_ident, quality, stop_cb, AUDIO_TYPE_MP3);
 #endif
             break;
          case AUDIO_MIXER_TYPE_M4A:
 #ifdef HAVE_RAAC
             res = audio_mixer_play_stream_s16(sound, voice, repeat, gain,
-                  quality, stop_cb, AUDIO_TYPE_AAC);
+                  resampler_ident, quality, stop_cb, AUDIO_TYPE_AAC);
+#endif
+            break;
+         case AUDIO_MIXER_TYPE_AC3:
+#ifdef HAVE_RAC3
+            res = audio_mixer_play_stream_s16(sound, voice, repeat, gain,
+                  resampler_ident, quality, stop_cb, AUDIO_TYPE_AC3);
+#endif
+            break;
+         case AUDIO_MIXER_TYPE_LPCM:
+#ifdef HAVE_RLPCM
+            res = audio_mixer_play_stream_s16(sound, voice, repeat, gain,
+                  resampler_ident, quality, stop_cb, AUDIO_TYPE_LPCM);
 #endif
             break;
          case AUDIO_MIXER_TYPE_OPUS:
 #ifdef HAVE_ROPUS
             res = audio_mixer_play_stream_s16(sound, voice, repeat, gain,
-                  quality, stop_cb, AUDIO_TYPE_OPUS);
+                  resampler_ident, quality, stop_cb, AUDIO_TYPE_OPUS);
 #endif
             break;
          case AUDIO_MIXER_TYPE_MOD:
 #ifdef HAVE_RMODTRACKER
             res = audio_mixer_play_stream_s16(sound, voice, repeat, gain,
-                  quality, stop_cb, AUDIO_TYPE_MOD);
+                  resampler_ident, quality, stop_cb, AUDIO_TYPE_MOD);
 #endif
             break;
          case AUDIO_MIXER_TYPE_WAV:
             /* s16 voice: build the s16 pipeline from the source if it
              * is not there yet (the sound was loaded for float before
              * a mode flip) */
-            res = wav_build_s16(sound, quality)
+            res = wav_build_s16(sound, resampler_ident, quality)
                && audio_mixer_play_wav(sound, voice, repeat, stop_cb);
             break;
          case AUDIO_MIXER_TYPE_WEBA: /* resolved at load; never stored */
@@ -2139,7 +2279,7 @@ static void audio_mixer_release(audio_mixer_voice_t* voice)
    if (!voice)
       return;
 
-   switch (voice->type)
+   switch (retro_atomic_load_relaxed_int(&voice->type))
    {
 #ifdef HAVE_RWAV
       case AUDIO_MIXER_TYPE_WAV_STREAM:
@@ -2171,6 +2311,16 @@ static void audio_mixer_release(audio_mixer_voice_t* voice)
          audio_mixer_release_stream(voice, AUDIO_TYPE_AAC);
          break;
 #endif
+#ifdef HAVE_RAC3
+      case AUDIO_MIXER_TYPE_AC3:
+         audio_mixer_release_stream(voice, AUDIO_TYPE_AC3);
+         break;
+#endif
+#ifdef HAVE_RLPCM
+      case AUDIO_MIXER_TYPE_LPCM:
+         audio_mixer_release_stream(voice, AUDIO_TYPE_LPCM);
+         break;
+#endif
 #ifdef HAVE_ROPUS
       case AUDIO_MIXER_TYPE_OPUS:
          audio_mixer_release_stream(voice, AUDIO_TYPE_OPUS);
@@ -2181,7 +2331,7 @@ static void audio_mixer_release(audio_mixer_voice_t* voice)
    }
 
    memset(&voice->types, 0, sizeof(voice->types));
-   voice->type   = AUDIO_MIXER_TYPE_NONE;
+   retro_atomic_store_release_int(&voice->type, AUDIO_MIXER_TYPE_NONE);
    voice->is_s16 = false;
 }
 
@@ -2418,6 +2568,8 @@ again:
          voice->types.stream.resampler->process(
                voice->types.stream.resampler_data, &info);
          voice->types.stream.samples = (unsigned)(info.output_frames * 2);
+         if (voice->types.stream.samples > voice->types.stream.buf_samples)
+            voice->types.stream.samples = voice->types.stream.buf_samples;
       }
       else
       {
@@ -2540,11 +2692,13 @@ again:
       info.output_frames = 0;
       info.ratio         = voice->types.stream.ratio;
 
-      if (voice->types.stream.resampler_int16)
+      if (voice->types.stream.resampler_int16.data)
       {
-         sinc_resampler_int16_process(
-               voice->types.stream.resampler_int16, &info);
+         voice->types.stream.resampler_int16.process(
+               voice->types.stream.resampler_int16.data, &info);
          voice->types.stream.samples = (unsigned)(info.output_frames * 2);
+         if (voice->types.stream.samples > voice->types.stream.buf_samples)
+            voice->types.stream.samples = voice->types.stream.buf_samples;
       }
       else
       {
@@ -2595,6 +2749,14 @@ void audio_mixer_mix(float* buffer, size_t num_frames,
    {
       float volume;
 
+      /* An idle voice holds nothing to mix, so it is passed over
+       * without its lock: with every voice idle this loop takes none
+       * at all. The switch below reads type again under the lock, so a
+       * voice released in between lands on its NONE case. */
+      if (retro_atomic_load_acquire_int(&voice->type)
+            == AUDIO_MIXER_TYPE_NONE)
+         continue;
+
       AUDIO_MIXER_LOCK(voice);
 
       if (voice->is_s16)
@@ -2605,7 +2767,7 @@ void audio_mixer_mix(float* buffer, size_t num_frames,
 
       volume = (override) ? volume_override : voice->volume;
 
-      switch (voice->type)
+      switch (retro_atomic_load_relaxed_int(&voice->type))
       {
          case AUDIO_MIXER_TYPE_WAV:
             audio_mixer_mix_wav(buffer, num_frames, voice, volume);
@@ -2640,6 +2802,16 @@ void audio_mixer_mix(float* buffer, size_t num_frames,
             audio_mixer_mix_stream(buffer, num_frames, voice, volume, AUDIO_TYPE_AAC);
 #endif
             break;
+         case AUDIO_MIXER_TYPE_AC3:
+#ifdef HAVE_RAC3
+            audio_mixer_mix_stream(buffer, num_frames, voice, volume, AUDIO_TYPE_AC3);
+#endif
+            break;
+         case AUDIO_MIXER_TYPE_LPCM:
+#ifdef HAVE_RLPCM
+            audio_mixer_mix_stream(buffer, num_frames, voice, volume, AUDIO_TYPE_LPCM);
+#endif
+            break;
          case AUDIO_MIXER_TYPE_OPUS:
 #ifdef HAVE_ROPUS
             audio_mixer_mix_stream(buffer, num_frames, voice, volume, AUDIO_TYPE_OPUS);
@@ -2672,6 +2844,12 @@ void audio_mixer_mix_s16(int16_t* buffer, size_t num_frames,
    {
       int32_t gain_q16;
 
+      /* Idle voices are skipped without the lock, as in
+       * audio_mixer_mix() above */
+      if (retro_atomic_load_acquire_int(&voice->type)
+            == AUDIO_MIXER_TYPE_NONE)
+         continue;
+
       AUDIO_MIXER_LOCK(voice);
 
       if (!voice->is_s16)
@@ -2685,7 +2863,7 @@ void audio_mixer_mix_s16(int16_t* buffer, size_t num_frames,
        * thread, in the pipeline that exists to avoid float. */
       gain_q16 = (override) ? gain_override : voice->gain;
 
-      switch (voice->type)
+      switch (retro_atomic_load_relaxed_int(&voice->type))
       {
          case AUDIO_MIXER_TYPE_FLAC:
 #ifdef HAVE_RFLAC
@@ -2710,6 +2888,16 @@ void audio_mixer_mix_s16(int16_t* buffer, size_t num_frames,
          case AUDIO_MIXER_TYPE_M4A:
 #ifdef HAVE_RAAC
             audio_mixer_mix_stream_s16(buffer, num_frames, voice, gain_q16, AUDIO_TYPE_AAC);
+#endif
+            break;
+         case AUDIO_MIXER_TYPE_AC3:
+#ifdef HAVE_RAC3
+            audio_mixer_mix_stream_s16(buffer, num_frames, voice, gain_q16, AUDIO_TYPE_AC3);
+#endif
+            break;
+         case AUDIO_MIXER_TYPE_LPCM:
+#ifdef HAVE_RLPCM
+            audio_mixer_mix_stream_s16(buffer, num_frames, voice, gain_q16, AUDIO_TYPE_LPCM);
 #endif
             break;
          case AUDIO_MIXER_TYPE_OPUS:
@@ -2752,7 +2940,8 @@ bool audio_mixer_has_float_voices(void)
    unsigned i;
    const audio_mixer_voice_t *voice = s_voices;
    for (i = 0; i < AUDIO_MIXER_MAX_VOICES; i++, voice++)
-      if (voice->type != AUDIO_MIXER_TYPE_NONE && !voice->is_s16)
+      if (retro_atomic_load_acquire_int(&voice->type)
+               != AUDIO_MIXER_TYPE_NONE && !voice->is_s16)
          return true;
    return false;
 }
@@ -2762,7 +2951,8 @@ bool audio_mixer_has_s16_voices(void)
    unsigned i;
    const audio_mixer_voice_t *voice = s_voices;
    for (i = 0; i < AUDIO_MIXER_MAX_VOICES; i++, voice++)
-      if (voice->type != AUDIO_MIXER_TYPE_NONE && voice->is_s16)
+      if (retro_atomic_load_acquire_int(&voice->type)
+               != AUDIO_MIXER_TYPE_NONE && voice->is_s16)
          return true;
    return false;
 }

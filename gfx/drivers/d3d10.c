@@ -275,6 +275,7 @@ typedef struct
       uint32_t                   rotation;
       uint32_t                   total_subframes;
       uint32_t                   current_subframe;
+      uint32_t                   swap_count;
       float                      core_aspect;
       float                      core_aspect_rot;
 
@@ -662,10 +663,10 @@ static void gfx_display_d3d10_draw(gfx_display_ctx_draw_t *draw,
       {
          sprite->pos.x       = draw->x / (float)d3d10->viewport.Width;
          sprite->pos.y       =
-               (d3d10->viewport.Height - draw->y - draw->height)
+               (d3d10->viewport.Height - draw->y - VIDEO_SCALE_H(draw->dims))
                / (float)d3d10->viewport.Height;
-         sprite->pos.w       = draw->width  / (float)d3d10->viewport.Width;
-         sprite->pos.h       = draw->height / (float)d3d10->viewport.Height;
+         sprite->pos.w       = VIDEO_SCALE_W(draw->dims)  / (float)d3d10->viewport.Width;
+         sprite->pos.h       = VIDEO_SCALE_H(draw->dims) / (float)d3d10->viewport.Height;
 
          sprite->coords.u    = 0.0f;
          sprite->coords.v    = 0.0f;
@@ -1317,30 +1318,51 @@ static void d3d10_free_overlays(d3d10_video_t* d3d10)
    size_t i;
    for (i = 0; i < (unsigned)d3d10->overlays.count; i++)
       d3d10_release_texture(&d3d10->overlays.textures[i]);
+   /* The array as well as what it holds: every page load made a new
+    * one over this one. */
+   free(d3d10->overlays.textures);
+   d3d10->overlays.textures = NULL;
+   d3d10->overlays.count    = 0;
 
    Release(d3d10->overlays.vbo);
+   d3d10->overlays.vbo      = NULL;
+}
+
+/* A page's sprite buffer, mapped to write sprite @index - or NULL
+ * when there is no such sprite: no page loaded, a page whose load
+ * failed, an index off the end of it, a device that will not map. The
+ * setters below are called whenever the frontend likes, not only
+ * after a load that worked. */
+static d3d10_sprite_t *d3d10_overlay_sprite_map(d3d10_video_t *d3d10,
+      unsigned index)
+{
+   d3d10_sprite_t *sprites = NULL;
+   if (     !d3d10
+         || !d3d10->overlays.vbo
+         || (int)index >= d3d10->overlays.count)
+      return NULL;
+   if (FAILED(d3d10->overlays.vbo->lpVtbl->Map(d3d10->overlays.vbo,
+               D3D10_MAP_WRITE_NO_OVERWRITE, 0, (void**)&sprites)))
+      return NULL;
+   if (!sprites)
+      d3d10->overlays.vbo->lpVtbl->Unmap(d3d10->overlays.vbo);
+   return sprites;
 }
 
 static void
 d3d10_overlay_vertex_geom(void* data,
       unsigned index, float x, float y, float w, float h)
 {
-   d3d10_sprite_t* sprites = NULL;
    d3d10_video_t*  d3d10   = (d3d10_video_t*)data;
+   d3d10_sprite_t* sprites = d3d10_overlay_sprite_map(d3d10, index);
 
-   if (!d3d10)
+   if (!sprites)
       return;
 
-   d3d10->overlays.vbo->lpVtbl->Map(d3d10->overlays.vbo,
-         D3D10_MAP_WRITE_NO_OVERWRITE, 0, (void**)&sprites);
-
-   if (sprites)
-   {
-      sprites[index].pos.x = x;
-      sprites[index].pos.y = y;
-      sprites[index].pos.w = w;
-      sprites[index].pos.h = h;
-   }
+   sprites[index].pos.x = x;
+   sprites[index].pos.y = y;
+   sprites[index].pos.w = w;
+   sprites[index].pos.h = h;
 
    d3d10->overlays.vbo->lpVtbl->Unmap(d3d10->overlays.vbo);
 }
@@ -1348,44 +1370,33 @@ d3d10_overlay_vertex_geom(void* data,
 static void d3d10_overlay_tex_geom(void* data,
       unsigned index, float u, float v, float w, float h)
 {
-   d3d10_sprite_t* sprites = NULL;
    d3d10_video_t*  d3d10   = (d3d10_video_t*)data;
+   d3d10_sprite_t* sprites = d3d10_overlay_sprite_map(d3d10, index);
 
-   if (!d3d10)
+   if (!sprites)
       return;
 
-   d3d10->overlays.vbo->lpVtbl->Map(d3d10->overlays.vbo,
-         D3D10_MAP_WRITE_NO_OVERWRITE, 0, (void**)&sprites);
-
-   if (sprites)
-   {
-      sprites[index].coords.u = u;
-      sprites[index].coords.v = v;
-      sprites[index].coords.w = w;
-      sprites[index].coords.h = h;
-   }
+   sprites[index].coords.u = u;
+   sprites[index].coords.v = v;
+   sprites[index].coords.w = w;
+   sprites[index].coords.h = h;
 
    d3d10->overlays.vbo->lpVtbl->Unmap(d3d10->overlays.vbo);
 }
 
 static void d3d10_overlay_set_alpha(void* data, unsigned index, float mod)
 {
-   d3d10_sprite_t* sprites = NULL;
    d3d10_video_t*  d3d10   = (d3d10_video_t*)data;
+   d3d10_sprite_t* sprites = d3d10_overlay_sprite_map(d3d10, index);
 
-   if (!d3d10)
+   if (!sprites)
       return;
 
-   d3d10->overlays.vbo->lpVtbl->Map(d3d10->overlays.vbo,
-         D3D10_MAP_WRITE_NO_OVERWRITE, 0, (void**)&sprites);
+   sprites[index].colors[0] = DXGI_COLOR_RGBA(0xFF, 0xFF, 0xFF, mod * 0xFF);
+   sprites[index].colors[1] = sprites[index].colors[0];
+   sprites[index].colors[2] = sprites[index].colors[0];
+   sprites[index].colors[3] = sprites[index].colors[0];
 
-   if (sprites)
-   {
-      sprites[index].colors[0] = DXGI_COLOR_RGBA(0xFF, 0xFF, 0xFF, mod * 0xFF);
-      sprites[index].colors[1] = sprites[index].colors[0];
-      sprites[index].colors[2] = sprites[index].colors[0];
-      sprites[index].colors[3] = sprites[index].colors[0];
-   }
    d3d10->overlays.vbo->lpVtbl->Unmap(d3d10->overlays.vbo);
 }
 
@@ -1403,19 +1414,31 @@ static bool d3d10_overlay_load(void* data,
       return false;
 
    d3d10_free_overlays(d3d10);
+   if (!num_images)
+      return true;
    d3d10->overlays.textures = (d3d10_texture_t*)calloc(
          num_images, sizeof(d3d10_texture_t));
+   if (!d3d10->overlays.textures)
+      return false;
 
-   d3d10->overlays.count    = num_images;
    desc.ByteWidth           = sizeof(d3d10_sprite_t) * num_images;
    desc.Usage               = D3D10_USAGE_DYNAMIC;
    desc.BindFlags           = D3D10_BIND_VERTEX_BUFFER;
    desc.CPUAccessFlags      = D3D10_CPU_ACCESS_WRITE;
    desc.MiscFlags           = 0;
-   d3d10->device->lpVtbl->CreateBuffer(d3d10->device, &desc,
-         NULL, &d3d10->overlays.vbo);
-   d3d10->overlays.vbo->lpVtbl->Map(d3d10->overlays.vbo,
-         D3D10_MAP_WRITE_DISCARD, 0, (void**)&sprites);
+   /* A page with no buffer, or one that will not map, is no page:
+    * count stays 0, so nothing draws it and the setters refuse it. */
+   if (     FAILED(d3d10->device->lpVtbl->CreateBuffer(d3d10->device, &desc,
+               NULL, &d3d10->overlays.vbo))
+         || !d3d10->overlays.vbo
+         || FAILED(d3d10->overlays.vbo->lpVtbl->Map(d3d10->overlays.vbo,
+               D3D10_MAP_WRITE_DISCARD, 0, (void**)&sprites))
+         || !sprites)
+   {
+      d3d10_free_overlays(d3d10);
+      return false;
+   }
+   d3d10->overlays.count    = num_images;
 
    for (i = 0; i < (unsigned)num_images; i++)
    {
@@ -1487,7 +1510,7 @@ static void d3d10_overlay_full_screen(void* data, bool enable)
 static void d3d10_get_overlay_interface(void* data, const video_overlay_interface_t** iface)
 {
    static const video_overlay_interface_t overlay_interface = {
-      d3d10_overlay_enable,      d3d10_overlay_load,        d3d10_overlay_tex_geom,
+      d3d10_overlay_enable,      d3d10_overlay_load, NULL, /* load_textures */        d3d10_overlay_tex_geom,
       d3d10_overlay_vertex_geom, d3d10_overlay_full_screen, d3d10_overlay_set_alpha,
    };
 
@@ -1856,6 +1879,7 @@ static bool d3d10_shader_load_step(void *data,
                &d3d10->pass[i].core_aspect_rot,
                &d3d10->pass[i].total_subframes,
                &d3d10->pass[i].current_subframe,
+               &d3d10->pass[i].swap_count,
             }
          };
 
@@ -2072,6 +2096,7 @@ static bool d3d10_gfx_set_shader(void* data,
             &d3d10->pass[i].core_aspect_rot, /* OriginalAspectRotated */
             &d3d10->pass[i].total_subframes, /* TotalSubFrames */
             &d3d10->pass[i].current_subframe,/* CurrentSubFrame */
+            &d3d10->pass[i].swap_count, /* SwapCount */
          }
       };
       /* clang-format on */
@@ -2235,7 +2260,7 @@ static void d3d10_gfx_free(void* data)
 
 
 #if 0
-   video_st_flags = video_st->flags;
+   video_st_flags = (uint32_t)retro_atomic_load_relaxed_int(&video_st->flags);
    if (video_st_flags & VIDEO_FLAG_CACHE_CONTEXT)
    {
       cached_device_d3d10 = d3d10->device;
@@ -3030,6 +3055,15 @@ static bool d3d10_gfx_frame(
 
    if (d3d10->shader_preset)
    {
+      /* Loop-invariant for the whole chain: every pass of one frame
+       * sees the same frame. Gathered once rather than once per pass. */
+      uint32_t pass_frame_time_delta;
+      uint32_t pass_rotation;
+      int32_t  pass_frame_direction;
+      float    pass_original_fps;
+      float    pass_core_aspect;
+      float    pass_core_aspect_rot;
+
       for (i = 0; i < d3d10->shader_preset->passes; i++)
       {
          if (d3d10->shader_preset->pass[i].feedback)
@@ -3040,10 +3074,23 @@ static bool d3d10_gfx_frame(
          }
       }
 
+      pass_frame_time_delta = (uint32_t)video_driver_get_frame_time_delta_usec();
+      pass_original_fps     = video_driver_get_original_fps();
+      pass_rotation         = retroarch_get_rotation();
+      pass_core_aspect      = video_driver_get_core_aspect();
+      pass_core_aspect_rot  = pass_core_aspect;
+#ifdef HAVE_REWIND
+      pass_frame_direction  = state_manager_frame_is_reversed() ? -1 : 1;
+#else
+      pass_frame_direction  = 1;
+#endif
+      /* OriginalAspectRotated: return 1 / aspect for 90 and 270 rotated content */
+      if (pass_rotation == 1 || pass_rotation == 3)
+         pass_core_aspect_rot = 1 / pass_core_aspect_rot;
+
       for (i = 0; i < d3d10->shader_preset->passes; i++)
       {
          int j;
-         uint32_t rot;
 
          d3d10_set_shader(context, &d3d10->pass[i].shader);
 
@@ -3053,21 +3100,12 @@ static bool d3d10_gfx_frame(
          else
             d3d10->pass[i].frame_count   = frame_count;
 
-#ifdef HAVE_REWIND
-         d3d10->pass[i].frame_direction  = state_manager_frame_is_reversed()
-            ? -1 : 1;
-#else
-         d3d10->pass[i].frame_direction  = 1;
-#endif
-         d3d10->pass[i].frame_time_delta = (uint32_t)video_driver_get_frame_time_delta_usec();
-         d3d10->pass[i].original_fps     = video_driver_get_original_fps();
-         d3d10->pass[i].rotation         = retroarch_get_rotation();
-         d3d10->pass[i].core_aspect      = video_driver_get_core_aspect();
-         /* OriginalAspectRotated: return 1 / aspect for 90 and 270 rotated content */
-         d3d10->pass[i].core_aspect_rot  = video_driver_get_core_aspect();
-         rot = retroarch_get_rotation();
-         if (rot == 1 || rot == 3)
-            d3d10->pass[i].core_aspect_rot = 1/d3d10->pass[i].core_aspect_rot;
+         d3d10->pass[i].frame_direction  = pass_frame_direction;
+         d3d10->pass[i].frame_time_delta = pass_frame_time_delta;
+         d3d10->pass[i].original_fps     = pass_original_fps;
+         d3d10->pass[i].rotation         = pass_rotation;
+         d3d10->pass[i].core_aspect      = pass_core_aspect;
+         d3d10->pass[i].core_aspect_rot  = pass_core_aspect_rot;
 
          /* Sub-frame info for multiframe shaders (per real content frame).
             Should always be 1 for non-use of subframes */
@@ -3083,6 +3121,7 @@ static bool d3d10_gfx_frame(
               d3d10->pass[i].total_subframes = video_info->shader_subframes;
 
            d3d10->pass[i].current_subframe = 1;
+           d3d10->pass[i].swap_count       = (uint32_t)video_info->swap_count;
          }
 
          for (j = 0; j < SLANG_CBUFFER_MAX; j++)
@@ -3471,6 +3510,7 @@ static bool d3d10_gfx_frame(
             {
                d3d10->pass[m].total_subframes = video_info->shader_subframes;
                d3d10->pass[m].current_subframe = k+1;
+               d3d10->pass[m].swap_count       = (uint32_t)(video_info->swap_count + k);
             }
          if (!d3d10_gfx_frame(d3d10, NULL, 0, 0, frame_count, 0, msg,
                   video_info))
@@ -4008,6 +4048,7 @@ gfx_display_ctx_driver_t gfx_display_ctx_d3d10 = {
    &d3d10_font,
    GFX_VIDEO_DRIVER_DIRECT3D10,
    "d3d10",
+   true,
    true,
    gfx_display_d3d10_scissor_begin,
    gfx_display_d3d10_scissor_end

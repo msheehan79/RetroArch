@@ -39,7 +39,6 @@
 #include <pspsdk.h>
 #endif
 
-#include <pthread.h>
 
 #include <string/stdstring.h>
 #include <boolean.h>
@@ -220,9 +219,6 @@ static void frontend_psp_get_env_settings(int *argc, char *argv[],
 static void frontend_psp_deinit(void *data)
 {
    (void)data;
-#ifndef IS_SALAMANDER
-   pthread_terminate();
-#endif
 }
 
 static void frontend_psp_shutdown(bool unused)
@@ -295,8 +291,6 @@ static void frontend_psp_init(void *data)
    pspFpuSetEnable(0); /* disable FPU exceptions */
    scePowerSetClockFrequency(333,333,166);
 #endif
-   pthread_init();
-
 #endif
 
 #if defined(PSP) && defined(HAVE_KERNEL_PRX)

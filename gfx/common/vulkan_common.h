@@ -33,6 +33,7 @@
 
 #include "vksym.h"
 
+#include <stddef.h>
 #include <boolean.h>
 #include <retro_inline.h>
 #include <retro_common_api.h>
@@ -117,7 +118,14 @@ enum vk_flags
     * should copy the HDR backbuffer (not the tone-mapped SDR one) into the
     * HDR readback staging buffer. Distinct from READBACK_PENDING so the two
     * never interfere. */
-   VK_FLAG_READBACK_HDR        = (1 << 18)
+   VK_FLAG_READBACK_HDR        = (1 << 18),
+   /* GPU recording is on: taken from the frame the frontend hands over,
+    * so this thread never reads the recording state the main thread
+    * writes (video_frame_info_t::gpu_recording). */
+   VK_FLAG_GPU_RECORDING       = (1 << 19),
+   /* VK_ERROR_DEVICE_LOST was seen and reported to the runloop once;
+    * the frames until the reinit fail quietly. */
+   VK_FLAG_DEVICE_LOST_REPORTED = (1 << 20)
 };
 
 enum vk_texture_type
@@ -153,7 +161,7 @@ enum vulkan_wsi_type
    VULKAN_WSI_DISPLAY,
    VULKAN_WSI_MVK_MACOS,
    VULKAN_WSI_MVK_IOS,
-   VULKAN_WSI_SDL3,
+   VULKAN_WSI_SDL3
 };
 
 enum vulkan_context_flags
@@ -167,7 +175,7 @@ enum vulkan_context_flags
    /* Whether HDR colorspaces are supported by the instance */
    VK_CTX_FLAG_HDR_SUPPORT                  = (1 << 5),
    /* scRGB mode: RGBA16F swapchain with extended linear sRGB colour space */
-   VK_CTX_FLAG_HDR_SCRGB                    = (1 << 6),
+   VK_CTX_FLAG_HDR_SCRGB                    = (1 << 6)
 };
 
 enum vulkan_emulated_mailbox_flags
@@ -209,11 +217,26 @@ typedef struct vulkan_context
    VkPhysicalDevice gpu;
    VkDevice device;
    VkQueue queue;
+   /* The queue presents go to. Distinct from queue where the device
+    * offers a second queue in the graphics family - requested on the
+    * default path, and accepted as presentation_queue from a core that
+    * creates the device - so vkQueuePresentKHR needs no lock at all:
+    * only the frame thread touches it, and a hardware core submitting
+    * through lock_queue is never held behind a present that is waiting
+    * on the display. Equal to queue when the family has one queue, in
+    * which case the present shares queue_lock as before. */
+   VkQueue present_queue;
 
    VkPhysicalDeviceProperties gpu_properties;
    VkPhysicalDeviceMemoryProperties memory_properties;
 
    VkPresentModeKHR present_modes[16];
+   /* Whether the surface offers FIFO_RELAXED, which is what the
+    * context drivers answer GFX_CTX_FLAGS_ADAPTIVE_VSYNC from. Settled
+    * where the swapchain is created and read through an acquire: the
+    * array above is rewritten by the thread that draws, while the main
+    * thread is the one asking. */
+   retro_atomic_int_t supports_adaptive_vsync;
    VkImage swapchain_images[VULKAN_MAX_SWAPCHAIN_IMAGES];
    VkFence swapchain_fences[VULKAN_MAX_SWAPCHAIN_IMAGES];
    VkFormat swapchain_format;
@@ -223,12 +246,31 @@ typedef struct vulkan_context
 
    VkSemaphore swapchain_semaphores[VULKAN_MAX_SWAPCHAIN_IMAGES];
    VkSemaphore swapchain_acquire_semaphore;
-   VkSemaphore swapchain_recycled_semaphores[VULKAN_MAX_SWAPCHAIN_IMAGES];
-   VkSemaphore swapchain_wait_semaphores[VULKAN_MAX_SWAPCHAIN_IMAGES];
+   /* Acquire semaphores not in use: one per frame in flight, one
+    * for the current acquire, and up to VULKAN_MAX_SWAPCHAIN_IMAGES
+    * stale ones (below) - all of them can be recycled at once. */
+   VkSemaphore swapchain_recycled_semaphores[2 * VULKAN_MAX_SWAPCHAIN_IMAGES + 1];
+   /* The acquire semaphores each frame's submission waits on: its
+    * own acquire plus any stale ones it drained (see
+    * swapchain_stale_acquire_semaphores). Recycled once that frame's
+    * fence has signalled. */
+   VkSemaphore swapchain_wait_semaphores[VULKAN_MAX_SWAPCHAIN_IMAGES][VULKAN_MAX_SWAPCHAIN_IMAGES + 1];
+   unsigned    swapchain_num_wait_semaphores[VULKAN_MAX_SWAPCHAIN_IMAGES];
+   /* Acquire semaphores whose acquire happened but whose frame never
+    * submitted - so their signal is still pending, and they can be
+    * neither reused for an acquire nor destroyed. The next submission
+    * waits on them alongside its own acquire, which consumes the
+    * signal, and they recycle with that frame. Before, each one
+    * drained the whole device to be destroyed. */
+   VkSemaphore swapchain_stale_acquire_semaphores[VULKAN_MAX_SWAPCHAIN_IMAGES];
+   unsigned    num_stale_acquire_semaphores;
 
-#ifdef VULKAN_DEBUG
+   /* Only used under VULKAN_DEBUG, but always present: this struct
+    * is shared by every TU that includes this header, and a member
+    * that exists in some builds of it and not others shifts every
+    * field after it - a debug and a non-debug object linked together
+    * disagreed on graphics_queue_index. VK_NULL_HANDLE otherwise. */
    VkDebugUtilsMessengerEXT debug_callback;
-#endif
    uint32_t graphics_queue_index;
    uint32_t num_swapchain_images;
    uint32_t current_swapchain_index;
@@ -237,6 +279,10 @@ typedef struct vulkan_context
    unsigned swapchain_width;
    unsigned swapchain_height;
    unsigned num_recycled_acquire_semaphores;
+   /* Present mode the current swapchain was created with; compared
+    * against the mode a new swap_interval resolves to so a request
+    * that would not change the swapchain does not recreate it. */
+   VkPresentModeKHR swapchain_present_mode;
 
    int8_t swap_interval;
    uint8_t flags;
@@ -251,6 +297,9 @@ struct vulkan_emulated_mailbox
    scond_t *cond;
    VkDevice device;              /* ptr alignment */
    VkSwapchainKHR swapchain;     /* ptr alignment */
+   /* Every wait this object makes, from the display's rate; sampled at
+    * init so the thread never reads video state. */
+   int64_t timeout_us;
 
    unsigned index;
    VkResult result;              /* enum alignment */
@@ -267,6 +316,21 @@ typedef struct gfx_ctx_vulkan_data
    uint8_t flags;
    enum vulkan_wsi_type wsi_type;
    bool fse_supported;
+   /* Set once VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT has
+    * been acquired on the current swapchain, so it is released before
+    * that swapchain is destroyed. */
+   bool fse_acquired;
+   /* PFN_vkVoidFunction rather than the extension's own typedefs: this
+    * header is included by every Vulkan context and by shader_vulkan.c,
+    * most of which never see vulkan_win32.h. Cast at the call site. */
+   PFN_vkVoidFunction fse_acquire;
+   PFN_vkVoidFunction fse_release;
+   /* VK_GOOGLE_display_timing, when the device has it: each present
+    * carries a present ID and the driver reports when it actually
+    * reached the display, on the platform's monotonic clock. */
+   PFN_vkVoidFunction display_timing_query;
+   uint32_t present_id;
+   bool display_timing_supported;
 #ifdef VULKAN_HDR_SWAPCHAIN
    /* Loaded from VK_EXT_hdr_metadata when that optional device extension is
     * present; NULL otherwise. Used to signal SMPTE-2086 mastering-display
@@ -365,7 +429,27 @@ bool vulkan_surface_destroy(gfx_ctx_vulkan_data_t *vk);
 
 void vulkan_present(gfx_ctx_vulkan_data_t *vk, unsigned index);
 
+retro_time_t vulkan_last_present_time(gfx_ctx_vulkan_data_t *vk);
+
+/* The context driver hands the video driver &data->vk.context and keeps
+ * the swapchain beside it; every context embeds gfx_ctx_vulkan_data_t
+ * that way, so the owner is recoverable from the pointer the driver
+ * holds. Used by the driver for the timing query, which needs the
+ * swapchain handle. */
+#define VULKAN_CTX_DATA_FROM_CONTEXT(ctx) \
+   ((gfx_ctx_vulkan_data_t*)((char*)(ctx) - offsetof(gfx_ctx_vulkan_data_t, context)))
+
 void vulkan_acquire_next_image(gfx_ctx_vulkan_data_t *vk);
+
+/* Takes the acquire semaphore of the current frame, if one was
+ * acquired, and every stale one, into sems[] and stages[] (each with
+ * room for VULKAN_MAX_SWAPCHAIN_IMAGES + 1 entries) for a submission
+ * that will wait on them, records them against frame_index so they
+ * recycle with its fence, and returns how many it added. stage is the
+ * wait stage for all of them. */
+unsigned vulkan_context_take_acquire_waits(struct vulkan_context *ctx,
+      unsigned frame_index, VkSemaphore *sems,
+      VkPipelineStageFlags *stages, VkPipelineStageFlags stage);
 
 bool vulkan_create_swapchain(gfx_ctx_vulkan_data_t *vk,
       unsigned width, unsigned height,

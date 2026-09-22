@@ -268,6 +268,15 @@ typedef struct
    u32 pos_offset;
    u32 uv_offset;
    u32 col_offset;
+
+   /* The chunk a line is built into before it is handed over. Here
+    * rather than on the stack of the function that fills it: three
+    * arrays of MAX_MSG_LEN_CHUNK glyphs are twelve kilobytes, and a
+    * frame that size is three times what this tree allows. One font
+    * renders at a time on the thread that draws, so one is enough. */
+   float font_vertex[2 * 6 * MAX_MSG_LEN_CHUNK];
+   float font_tex_coords[2 * 6 * MAX_MSG_LEN_CHUNK];
+   float font_color[4 * 6 * MAX_MSG_LEN_CHUNK];
 } rsx_font_t;
 
 static const float rsx_vertexes[8] = {
@@ -345,9 +354,9 @@ static void gfx_display_rsx_draw(gfx_display_ctx_draw_t *draw,
       return;
 
    vp.x                     = fabs(draw->x);
-   vp.y                     = fabs(rsx->height - draw->y - draw->height);
-   vp.w                     = MIN(draw->width, rsx->width);
-   vp.h                     = MIN(draw->height, rsx->height);
+   vp.y                     = fabs(rsx->height - draw->y - VIDEO_SCALE_H(draw->dims));
+   vp.w                     = MIN(VIDEO_SCALE_W(draw->dims), rsx->width);
+   vp.h                     = MIN(VIDEO_SCALE_H(draw->dims), rsx->height);
    vp.min                   = 0.0f;
    vp.max                   = 1.0f;
    vp.scale[0]              = vp.w *  0.5f;
@@ -750,9 +759,9 @@ static void rsx_font_render_line(rsx_t *rsx,
 {
    int i;
    struct video_coords coords;
-   float font_tex_coords[2 * 6 * MAX_MSG_LEN_CHUNK];
-   float font_vertex    [2 * 6 * MAX_MSG_LEN_CHUNK];
-   float font_color     [4 * 6 * MAX_MSG_LEN_CHUNK];
+   float *font_tex_coords = font->font_tex_coords;
+   float *font_vertex     = font->font_vertex;
+   float *font_color      = font->font_color;
    float color_block[4 * 6];
    int n;
    const char* msg_end  = msg + msg_len;
@@ -2218,6 +2227,7 @@ static const video_overlay_interface_t rsx_overlay_interface =
 {
    rsx_overlay_enable,
    rsx_overlay_load,
+   NULL, /* load_textures */
    rsx_overlay_tex_geom,
    rsx_overlay_vertex_geom,
    rsx_overlay_full_screen,
@@ -2708,6 +2718,7 @@ gfx_display_ctx_driver_t gfx_display_ctx_rsx = {
    &rsx_font,
    GFX_VIDEO_DRIVER_RSX,
    "rsx",
+   true,
    true,
    gfx_display_rsx_scissor_begin,
    gfx_display_rsx_scissor_end

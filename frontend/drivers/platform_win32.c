@@ -724,13 +724,10 @@ enum frontend_architecture frontend_win32_get_arch(void)
    {
       case PROCESSOR_ARCHITECTURE_AMD64:
          return FRONTEND_ARCH_X86_64;
-         break;
       case PROCESSOR_ARCHITECTURE_INTEL:
          return FRONTEND_ARCH_X86;
-         break;
       case PROCESSOR_ARCHITECTURE_ARM:
          return FRONTEND_ARCH_ARM;
-         break;
       default:
          break;
    }
@@ -1313,9 +1310,6 @@ frontend_ctx_driver_t frontend_ctx_win32 = {
    frontend_win32_detach_console,   /* detach_console           */
    NULL,                            /* get_lakka_version        */
    NULL,                            /* set_screen_brightness    */
-#if defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)
-#else
-#endif
    NULL,                            /* set_sustained_performance_mode */
    frontend_win32_get_cpu_model_name,
    frontend_win32_get_user_language,

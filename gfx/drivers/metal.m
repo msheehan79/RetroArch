@@ -14,6 +14,7 @@
  */
 
 #include <Foundation/Foundation.h>
+#include "../../apple_runtime.h"
 #include <Metal/Metal.h>
 #include <MetalKit/MetalKit.h>
 #include <QuartzCore/QuartzCore.h>
@@ -55,7 +56,7 @@
 #include "../video_thread_wrapper.h"
 #endif
 
-#include "../common/metal/metal_shader_types.h"
+#include "metal.h"
 #include "../gfx_display.h"
 #include "../drivers_shader/slang_process.h"
 
@@ -152,7 +153,6 @@ typedef NS_ENUM(NSUInteger, ViewportResetMode) {
 
 /*! @brief captureEnabled allows previous frames to be read */
 @property (nonatomic, readwrite) bool captureEnabled;
-
 /*! @brief Returns the command buffer used for pre-render work,
  * such as mip maps and shader effects
  * */
@@ -347,8 +347,6 @@ typedef NS_ENUM(NSInteger, ViewDrawState)
 
 #pragma mark - Driver Classes
 
-#include "../common/metal_view.h"
-
 @interface FrameView : NSObject
 
 @property(nonatomic, readonly) RPixelFormat format;
@@ -359,6 +357,13 @@ typedef NS_ENUM(NSInteger, ViewDrawState)
 @property(nonatomic, readonly) ViewDrawState drawState;
 @property(nonatomic, readonly) struct video_shader *shader;
 @property(nonatomic, readwrite) uint64_t frameCount;
+/* SwapCount, TotalSubFrames and CurrentSubFrame for the shader chain,
+ * taken from the frame info each render: presents the display has
+ * seen before this one (advanced per shader sub-frame), the sub-frame
+ * count and the 1-based index of the one being drawn. */
+@property(nonatomic, readwrite) uint64_t swapCount;
+@property(nonatomic, readwrite) uint32_t totalSubframes;
+@property(nonatomic, readwrite) uint32_t currentSubframe;
 
 /* Final pass of the shader chain normally renders into the backbuffer
  * drawable.  When HDR is on, it must render into the HDR offscreen
@@ -408,6 +413,9 @@ typedef NS_ENUM(NSInteger, ViewDrawState)
 @property(nonatomic, readwrite) bool fullscreen;
 
 - (bool)loadImages:(const struct texture_image *)images count:(NSUInteger)count;
+/* A page of the overlay pack's textures (metal_load_texture handles):
+ * the array retains what it shows and nothing is uploaded. */
+- (bool)loadTextures:(const uintptr_t *)textures count:(NSUInteger)count;
 - (void)updateVertexX:(float)x y:(float)y w:(float)w h:(float)h index:(NSUInteger)index;
 - (void)updateTextureCoordsX:(float)x y:(float)y w:(float)w h:(float)h index:(NSUInteger)index;
 - (void)updateAlpha:(float)alpha index:(NSUInteger)index;
@@ -423,6 +431,13 @@ typedef NS_ENUM(NSInteger, ViewDrawState)
 @property(nonatomic, readonly) Overlay *overlay;
 @property(nonatomic, readonly) Context *context;
 @property(nonatomic, readonly) Uniforms *viewportMVP;
+
+/* What the last frame said the menu filter should be:
+ * set_texture_frame() is applied by the video thread from
+ * thread_update_driver_state(), and reading the setting there races
+ * the menu writing it. Both users are MetalDriver - this was
+ * declared on Context, where nothing referred to it. */
+@property(nonatomic, readwrite) bool frameMenuLinearFilter;
 
 - (instancetype)initWithVideo:(const video_info_t *)video
                                        input:(input_driver_t **)input
@@ -456,18 +471,15 @@ typedef NS_ENUM(NSInteger, ViewDrawState)
 
 #include "../../ui/drivers/cocoa/apple_platform.h"
 #include "../../ui/drivers/cocoa/cocoa_common.h"
+#include <defines/cocoa_defines.h>
 
-#define STRUCT_ASSIGN(x, y) \
-{ \
-   NSObject * __y = y; \
-   if (x != nil) { \
-      __attribute__((unused)) NSObject * __foo = (__bridge_transfer NSObject *)(__bridge void *)(x); \
-      __foo = nil; \
-      x = (__bridge __typeof__(x))nil; \
-   } \
-   if (__y != nil) \
-      x = (__bridge __typeof__(x))(__bridge_retained void *)((NSObject *)__y); \
-   }
+/* Reference ownership in this file goes through the RARCH_* ARC/MRR
+ * layer in <defines/cocoa_defines.h> (RARCH_RETAIN,
+ * RARCH_AUTORELEASE_R, RARCH_RELEASE_NIL, RARCH_ASSIGN, the bridge
+ * transfer forms, RARCH_STRUCT_ASSIGN for the unretained engine and
+ * buffer-chain slots, RARCH_WEAK, RARCH_SUPER_DEALLOC,
+ * RARCH_RETURN_INIT_FAILURE); see that header for the semantics of
+ * each form and for why the file must compile under both modes. */
 
 /* HDR availability gate.
  *
@@ -487,18 +499,20 @@ typedef NS_ENUM(NSInteger, ViewDrawState)
  * while the latter were phased out for newer point releases and checking
  * them fails silently even when the APIs are in fact present.
  *
- * Runtime: the HDR paths are still guarded with @available(...) checks
- * because RetroArch's Apple deployment targets (macOS 10.13, iOS 11) are
- * lower than the first HDR-capable OS release on each platform.  When
- * the runtime gate is false the driver stays in SDR mode.
+ * Runtime: the HDR paths are still guarded with cached runtime version
+ * checks (apple_runtime_available) because RetroArch's Apple deployment
+ * targets (macOS 10.13, iOS 11) are lower than the first HDR-capable OS
+ * release on each platform.  When the runtime gate is false the driver
+ * stays in SDR mode.
  *
- * METAL_HDR_AVAILABLE guards compile-time only. Whenever we touch an HDR-specific
- * API inside those blocks, an @available check guards runtime dispatch. */
+ * METAL_HDR_AVAILABLE guards compile-time only. Whenever we touch an
+ * HDR-specific API inside those blocks, an apple_runtime_available
+ * check guards runtime dispatch. */
 #include <Availability.h>
 #include <TargetConditionals.h>
 #if defined(TARGET_OS_TV) && TARGET_OS_TV
 #  define METAL_HDR_AVAILABLE 0
-#elif defined(OSX) && defined(__MAC_11_0)
+#elif TARGET_OS_OSX && defined(__MAC_11_0)
 #  define METAL_HDR_AVAILABLE 1
 #elif defined(HAVE_COCOATOUCH) && defined(__IPHONE_16_0)
 #  define METAL_HDR_AVAILABLE 1
@@ -535,7 +549,7 @@ static MTLPixelFormat metal_apply_hdr_layer_config(CAMetalLayer *layer,
    if (hdr_mode == METAL_HDR_MODE_OFF)
    {
       layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
-      if (@available(macOS 11.0, iOS 16.0, tvOS 16.0, *))
+      if (apple_runtime_available(APPLE_RUNTIME_VER(11, 0, 0), APPLE_RUNTIME_VER(16, 0, 0), APPLE_RUNTIME_VER(16, 0, 0)))
       {
          CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
          if (cs)
@@ -548,7 +562,7 @@ static MTLPixelFormat metal_apply_hdr_layer_config(CAMetalLayer *layer,
       return MTLPixelFormatBGRA8Unorm;
    }
 
-   if (@available(macOS 11.0, iOS 16.0, tvOS 16.0, *))
+   if (apple_runtime_available(APPLE_RUNTIME_VER(11, 0, 0), APPLE_RUNTIME_VER(16, 0, 0), APPLE_RUNTIME_VER(16, 0, 0)))
    {
       MTLPixelFormat fmt = (hdr_mode == METAL_HDR_MODE_SCRGB)
          ? MTLPixelFormatRGBA16Float
@@ -581,8 +595,8 @@ static MTLPixelFormat metal_apply_hdr_layer_config(CAMetalLayer *layer,
  * so HDR support flags won't be announced on older OSes. */
 static bool metal_display_supports_edr(void)
 {
-#ifdef OSX
-   if (@available(macOS 10.15, *))
+#if TARGET_OS_OSX
+   if (apple_runtime_available(APPLE_RUNTIME_VER(10, 15, 0), 0, 0))
    {
       NSScreen *screen = [NSScreen mainScreen];
       /* Potential, not current: the value reflects what the display *could*
@@ -602,10 +616,10 @@ static bool metal_display_supports_edr(void)
     * a deeper refactor.  Assume HDR is available when the tvOS gate
     * passes — the user has to opt in to enable it anyway, and tvOS 16
     * is only shipping on HDR-capable hardware (Apple TV 4K). */
-   if (@available(tvOS 16.0, *))
+   if (apple_runtime_available(0, 0, APPLE_RUNTIME_VER(16, 0, 0)))
       return true;
 #else
-   if (@available(iOS 16.0, *))
+   if (apple_runtime_available(0, APPLE_RUNTIME_VER(16, 0, 0), 0))
    {
       UIScreen *screen = [UIScreen mainScreen];
       if (screen)
@@ -621,8 +635,6 @@ static bool metal_display_supports_edr(void)
  * COMMON
  */
 
-static NSString *RPixelStrings[RPixelFormatCount];
-
 static NSUInteger RPixelFormatToBPP(RPixelFormat format)
 {
    if (   format == RPixelFormatB5G6R5Unorm
@@ -631,25 +643,42 @@ static NSUInteger RPixelFormatToBPP(RPixelFormat format)
    return 4;
 }
 
+/* For -debugDescription, i.e. for a human with a debugger.
+ *
+ * This filled a file-scope array on first call, under dispatch_once
+ * with a block. There was nothing to initialise: every value is a
+ * compile-time constant, and an NSString literal is a constant object
+ * the compiler puts in __DATA - it is not allocated, not refcounted,
+ * and needs no first call to bring it into being. So the once was
+ * guarding the assignment of constants into a mutable global that only
+ * existed to hold them.
+ *
+ * Nor was it about speed. dispatch_once's fast path is an acquire load
+ * and a compare, which is what a plain flag costs too, and the only
+ * caller is a debug description - a human in a debugger, or a log line
+ * - never a frame. A switch is free of all of it: no global, no token,
+ * no block, no bounds check separate from the default, and thread-safe
+ * by construction rather than by a barrier. */
 static NSString *NSStringFromRPixelFormat(RPixelFormat format)
 {
-   static dispatch_once_t onceToken;
-   dispatch_once(&onceToken, ^{
-
-#define STRING(literal) RPixelStrings[literal] = @#literal
-      STRING(RPixelFormatInvalid);
-      STRING(RPixelFormatB5G6R5Unorm);
-      STRING(RPixelFormatBGRA4Unorm);
-      STRING(RPixelFormatBGRA8Unorm);
-      STRING(RPixelFormatBGRX8Unorm);
-      STRING(RPixelFormatBGR10A2Unorm);
-#undef STRING
-
-   });
-
-   if (format >= RPixelFormatCount)
-      format = RPixelFormatInvalid;
-   return RPixelStrings[format];
+   switch (format)
+   {
+      case RPixelFormatBGRA4Unorm:
+         return @"RPixelFormatBGRA4Unorm";
+      case RPixelFormatB5G6R5Unorm:
+         return @"RPixelFormatB5G6R5Unorm";
+      case RPixelFormatBGRA8Unorm:
+         return @"RPixelFormatBGRA8Unorm";
+      case RPixelFormatBGRX8Unorm:
+         return @"RPixelFormatBGRX8Unorm";
+      case RPixelFormatBGR10A2Unorm:
+         return @"RPixelFormatBGR10A2Unorm";
+      case RPixelFormatInvalid:
+      case RPixelFormatCount:
+      default:
+         break;
+   }
+   return @"RPixelFormatInvalid";
 }
 
 static matrix_float4x4 make_matrix_float4x4(const float *v)
@@ -697,22 +726,74 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
  * CONTEXT
  */
 
-@interface BufferNode : NSObject
-@property (nonatomic, readonly) id<MTLBuffer> src;
-@property (nonatomic, readwrite) NSUInteger allocated;
-@property (nonatomic, readwrite) BufferNode *next;
-@end
+/* Per-frame transient-buffer suballocator.
+ *
+ * Plain C89 aggregates rather than Objective-C classes: allocRange runs
+ * once per draw batch and the node walks run per frame, making this the
+ * one piece of driver-internal state whose accessor dispatch multiplies
+ * with scene complexity.  As C structs with static functions the
+ * allocator inlines into its callers, drops the per-node isa/refcount
+ * words, and (measured on arm64 -O2 against the class version) halves
+ * the instruction count and cuts total memory operations by more than a
+ * third -- objc_msgSend boundaries otherwise force the compiler to
+ * reload every field after each opaque call.  The MTLBuffer / MTLDevice
+ * references are owned through RARCH_STRUCT_ASSIGN, exactly like the engine's
+ * unretained slots, so the ownership discipline is identical in ARC and
+ * MRC builds. */
+typedef struct buffer_node
+{
+   __unsafe_unretained id<MTLBuffer> src; /* owned: one ref per node */
+   NSUInteger allocated;
+   struct buffer_node *next;
+} buffer_node_t;
 
-@interface BufferChain : NSObject
-- (instancetype)initWithDevice:(id<MTLDevice>)device blockLen:(NSUInteger)blockLen;
-- (bool)allocRange:(BufferRange *)range length:(NSUInteger)length;
-- (void)commitRanges;
-- (void)discard;
-@end
+typedef struct buffer_chain
+{
+   __unsafe_unretained id<MTLDevice> device; /* owned */
+   NSUInteger block_len;
+   buffer_node_t *head;
+   NSUInteger offset;                        /* offset into *cur */
+   buffer_node_t *cur;                       /* borrow into head list */
+   NSUInteger length;
+   NSUInteger allocated;
+} buffer_chain_t;
+
+static void buffer_chain_init(buffer_chain_t *chain,
+      id<MTLDevice> device, NSUInteger block_len);
+static void buffer_chain_destroy(buffer_chain_t *chain);
+static bool buffer_chain_alloc_range(buffer_chain_t *chain,
+      BufferRange *range, NSUInteger length);
+static void buffer_chain_commit_ranges(buffer_chain_t *chain);
+static void buffer_chain_discard(buffer_chain_t *chain);
+
+/* Staging slots per streaming texture: one per frame the GPU can
+ * have in flight, so a texture updated every frame finds a free slot
+ * rather than dropping every frame whose predecessor's blit has not
+ * finished yet. */
+#define METAL_STAGING_SLOTS MAX_INFLIGHT
 
 @interface Texture()
-@property (nonatomic, readwrite) id<MTLTexture> texture;
-@property (nonatomic, readwrite) id<MTLSamplerState> sampler;
+{
+@public
+   /* Slot i of the staging buffer is busy from the commit of a blit
+    * that reads it until that command buffer completes. Hazard
+    * tracking orders one GPU access against another; it says nothing
+    * about the CPU writing a slot the GPU still reads, so a frame
+    * whose next slot is busy is dropped. Set by the updating thread
+    * only when clear and cleared by the completed handler only when
+    * set, each through __atomic stores: the handler runs on whatever
+    * thread Metal finishes on. */
+   int      _stagingBusy[METAL_STAGING_SLOTS];
+   unsigned _stagingNext;
+}
+@property (nonatomic, readwrite, strong) id<MTLTexture> texture;
+@property (nonatomic, readwrite, strong) id<MTLSamplerState> sampler;
+/* Staging for a streaming update: the pixels go here and the GPU
+ * copies them into the texture, so the copy is ordered against the
+ * draws that sample it (see metal_update_texture). One buffer of
+ * METAL_STAGING_SLOTS frame-sized slots, made on the first update and
+ * kept, since a streaming texture updates every frame. */
+@property (nonatomic, readwrite, strong) id<MTLBuffer> staging;
 @end
 
 @interface Context()
@@ -725,7 +806,6 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
 
 @implementation Context
 {
-   dispatch_semaphore_t _inflightSemaphore;
    id<MTLCommandQueue> _commandQueue;
    CAMetalLayer *_layer;
    id<CAMetalDrawable> _drawable;
@@ -739,7 +819,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
    id<MTLCommandBuffer> _blitCommandBuffer;
 
    NSUInteger _currentChain;
-   BufferChain *_chain[CHAIN_LENGTH];
+   buffer_chain_t _chain[CHAIN_LENGTH];
    MTLClearColor _clearColor;
 
    id<MTLRenderPipelineState> _states[GFX_MAX_SHADERS][2];
@@ -812,17 +892,16 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
    {
       int i;
 
-      _inflightSemaphore         = dispatch_semaphore_create(MAX_INFLIGHT);
-      _device                    = d;
-      _layer                     = layer;
-#ifdef OSX
+      _device                    = RARCH_RETAIN(d);
+      _layer                     = RARCH_RETAIN(layer);
+#if TARGET_OS_OSX
       _layer.framebufferOnly     = NO;
       _layer.displaySyncEnabled  = YES;
 #endif
       /* Configure drawable pool for triple-buffering */
-      if (@available(iOS 13.0, macOS 10.15.4, tvOS 13.0, *))
+      if (apple_runtime_available(APPLE_RUNTIME_VER(10, 15, 4), APPLE_RUNTIME_VER(13, 0, 0), APPLE_RUNTIME_VER(13, 0, 0)))
          _layer.maximumDrawableCount = MAX_INFLIGHT;
-      _library                   = l;
+      _library                   = RARCH_RETAIN(l);
       _commandQueue              = [_device newCommandQueue];
       _clearColor                = MTLClearColorMake(0, 0, 0, 1);
       _uniforms.projectionMatrix = matrix_proj_ortho(0, 1, 0, 1);
@@ -833,7 +912,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
       _mvp                       = matrix_proj_ortho(0, 1, 0, 1);
 
       {
-         MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new];
+         MTLSamplerDescriptor *sd = RARCH_AUTORELEASE_R([MTLSamplerDescriptor new]);
 
          sd.label = @"NEAREST";
          _samplers[TEXTURE_FILTER_NEAREST] = [d newSamplerStateWithDescriptor:sd];
@@ -854,16 +933,16 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
       }
 
       if (![self _initConversionFilters])
-         return nil;
+         RARCH_RETURN_INIT_FAILURE();
 
       if (![self _initClearState])
-         return nil;
+         RARCH_RETURN_INIT_FAILURE();
 
       if (![self _initMenuStates])
-         return nil;
+         RARCH_RETURN_INIT_FAILURE();
 
       for (i = 0; i < CHAIN_LENGTH; i++)
-         _chain[i] = [[BufferChain alloc] initWithDevice:_device blockLen:65536];
+         buffer_chain_init(&_chain[i], _device, 65536);
 
 #if METAL_HDR_AVAILABLE
       /* HDR composite & tonemap pipelines are compiled lazily the first
@@ -888,6 +967,48 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
 #endif
    }
    return self;
+}
+
+- (void)dealloc
+{
+   int i;
+   /* The buffer chains are C aggregates whose MTLBuffer references are
+    * owned through RARCH_STRUCT_ASSIGN; drop them explicitly in both modes. */
+   for (i = 0; i < CHAIN_LENGTH; i++)
+      buffer_chain_destroy(&_chain[i]);
+#if !__has_feature(objc_arc)
+   {
+   int j;
+   for (i = 0; i < (int)(TEXTURE_FILTER_MIPMAP_NEAREST + 1); i++)
+      [(id)_samplers[i] release];
+   for (i = 0; i < (int)RPixelFormatCount; i++)
+      [_filters[i] release];
+   for (i = 0; i < GFX_MAX_SHADERS; i++)
+   {
+      for (j = 0; j < 2; j++)
+         [(id)_states[i][j] release];
+   }
+   [(id)_clearState release];
+   [(id)_commandQueue release];
+   [(id)_layer release];
+   [(id)_device release];
+   [(id)_library release];
+   [(id)_drawable release];
+   [(id)_rce release];
+   [(id)_blitCommandBuffer release];
+   [(id)_commandBuffer release];
+   [(id)_backBuffer release];
+   [(id)_hdrReadbackTex release];
+   [(id)_sdrOverlayTex release];
+   [(id)_hdrCompositeStateHDR10 release];
+   [(id)_hdrCompositeStateSCRGB release];
+   [(id)_hdrMenuCompositeStateHDR10 release];
+   [(id)_hdrMenuCompositeStateSCRGB release];
+   [(id)_hdrTonemapState release];
+   [(id)_hdrSamplerLinear release];
+   }
+   RARCH_SUPER_DEALLOC();
+#endif
 }
 
 - (video_viewport_t *)viewport
@@ -1073,14 +1194,14 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
 
 - (void)setDisplaySyncEnabled:(bool)displaySyncEnabled
 {
-#ifdef OSX
+#if TARGET_OS_OSX
    _layer.displaySyncEnabled = displaySyncEnabled;
 #endif
 }
 
 - (bool)displaySyncEnabled
 {
-#ifdef OSX
+#if TARGET_OS_OSX
    return _layer.displaySyncEnabled;
 #else
    return NO;
@@ -1113,7 +1234,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
 
 - (MTLVertexDescriptor *)_spriteVertexDescriptor
 {
-   MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
+   MTLVertexDescriptor *vd = RARCH_AUTORELEASE_R([MTLVertexDescriptor new]);
    vd.attributes[0].offset = 0;
    vd.attributes[0].format = MTLVertexFormatFloat2;
    vd.attributes[1].offset = offsetof(SpriteVertex, texCoord);
@@ -1128,7 +1249,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
 {
    NSError *err;
    MTLVertexDescriptor          *vd = [self _spriteVertexDescriptor];
-   MTLRenderPipelineDescriptor *psd = [MTLRenderPipelineDescriptor new];
+   MTLRenderPipelineDescriptor *psd = RARCH_AUTORELEASE_R([MTLRenderPipelineDescriptor new]);
    psd.label                        = @"clear_state";
 
    MTLRenderPipelineColorAttachmentDescriptor *ca = psd.colorAttachments[0];
@@ -1137,8 +1258,8 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
    ca.pixelFormat       = MTLPixelFormatBGRA8Unorm;
 
    psd.vertexDescriptor = vd;
-   psd.vertexFunction   = [_library newFunctionWithName:@"stock_vertex"];
-   psd.fragmentFunction = [_library newFunctionWithName:@"stock_fragment_color"];
+   psd.vertexFunction   = RARCH_AUTORELEASE_R([_library newFunctionWithName:@"stock_vertex"]);
+   psd.fragmentFunction = RARCH_AUTORELEASE_R([_library newFunctionWithName:@"stock_fragment_color"]);
 
    if (!psd.vertexFunction || !psd.fragmentFunction)
    {
@@ -1160,7 +1281,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
 {
    NSError *err;
    MTLVertexDescriptor          *vd = [self _spriteVertexDescriptor];
-   MTLRenderPipelineDescriptor *psd = [MTLRenderPipelineDescriptor new];
+   MTLRenderPipelineDescriptor *psd = RARCH_AUTORELEASE_R([MTLRenderPipelineDescriptor new]);
    psd.label                      = @"stock";
 
    MTLRenderPipelineColorAttachmentDescriptor *ca = psd.colorAttachments[0];
@@ -1176,8 +1297,8 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
 
    psd.sampleCount      = 1;
    psd.vertexDescriptor = vd;
-   psd.vertexFunction   = [_library newFunctionWithName:@"stock_vertex"];
-   psd.fragmentFunction = [_library newFunctionWithName:@"stock_fragment"];
+   psd.vertexFunction   = RARCH_AUTORELEASE_R([_library newFunctionWithName:@"stock_vertex"]);
+   psd.fragmentFunction = RARCH_AUTORELEASE_R([_library newFunctionWithName:@"stock_fragment"]);
 
    if (!psd.vertexFunction || !psd.fragmentFunction)
    {
@@ -1206,7 +1327,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
    psd.label          = @"snow_simple";
    ca.blendingEnabled = YES;
    {
-      vals            = [MTLFunctionConstantValues new];
+      vals            = RARCH_AUTORELEASE_R([MTLFunctionConstantValues new]);
       float values[3] = {
          1.25f,   /* baseScale */
          0.50f,   /* density   */
@@ -1216,7 +1337,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
       [vals setConstantValue:&values[1] type:MTLDataTypeFloat withName:@"snowDensity"];
       [vals setConstantValue:&values[2] type:MTLDataTypeFloat withName:@"snowSpeed"];
    }
-   psd.fragmentFunction = [_library newFunctionWithName:@"snow_fragment" constantValues:vals error:&err];
+   psd.fragmentFunction = RARCH_AUTORELEASE_R([_library newFunctionWithName:@"snow_fragment" constantValues:vals error:&err]);
    _states[VIDEO_SHADER_MENU_3][1] = [_device newRenderPipelineStateWithDescriptor:psd error:&err];
    if (err != nil)
    {
@@ -1227,7 +1348,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
    psd.label          = @"snow";
    ca.blendingEnabled = YES;
    {
-      vals            = [MTLFunctionConstantValues new];
+      vals            = RARCH_AUTORELEASE_R([MTLFunctionConstantValues new]);
       float values[3] = {
          3.50f,   /* baseScale */
          0.70f,   /* density   */
@@ -1237,7 +1358,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
       [vals setConstantValue:&values[1] type:MTLDataTypeFloat withName:@"snowDensity"];
       [vals setConstantValue:&values[2] type:MTLDataTypeFloat withName:@"snowSpeed"];
    }
-   psd.fragmentFunction = [_library newFunctionWithName:@"snow_fragment" constantValues:vals error:&err];
+   psd.fragmentFunction = RARCH_AUTORELEASE_R([_library newFunctionWithName:@"snow_fragment" constantValues:vals error:&err]);
    _states[VIDEO_SHADER_MENU_4][1] = [_device newRenderPipelineStateWithDescriptor:psd error:&err];
    if (err != nil)
    {
@@ -1247,7 +1368,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
 
    psd.label                       = @"bokeh";
    ca.blendingEnabled              = YES;
-   psd.fragmentFunction            = [_library newFunctionWithName:@"bokeh_fragment"];
+   psd.fragmentFunction            = RARCH_AUTORELEASE_R([_library newFunctionWithName:@"bokeh_fragment"]);
    _states[VIDEO_SHADER_MENU_5][1] = [_device newRenderPipelineStateWithDescriptor:psd error:&err];
    if (err != nil)
    {
@@ -1257,7 +1378,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
 
    psd.label                       = @"snowflake";
    ca.blendingEnabled              = YES;
-   psd.fragmentFunction            = [_library newFunctionWithName:@"snowflake_fragment"];
+   psd.fragmentFunction            = RARCH_AUTORELEASE_R([_library newFunctionWithName:@"snowflake_fragment"]);
    _states[VIDEO_SHADER_MENU_6][1] = [_device newRenderPipelineStateWithDescriptor:psd error:&err];
    if (err != nil)
    {
@@ -1267,8 +1388,8 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
 
    psd.label                       = @"ribbon";
    ca.blendingEnabled              = NO;
-   psd.vertexFunction              = [_library newFunctionWithName:@"ribbon_vertex"];
-   psd.fragmentFunction            = [_library newFunctionWithName:@"ribbon_fragment"];
+   psd.vertexFunction              = RARCH_AUTORELEASE_R([_library newFunctionWithName:@"ribbon_vertex"]);
+   psd.fragmentFunction            = RARCH_AUTORELEASE_R([_library newFunctionWithName:@"ribbon_fragment"]);
    _states[VIDEO_SHADER_MENU][0]   = [_device newRenderPipelineStateWithDescriptor:psd error:&err];
    if (err != nil)
    {
@@ -1289,8 +1410,8 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
 
    psd.label                       = @"ribbon_simple";
    ca.blendingEnabled              = NO;
-   psd.vertexFunction              = [_library newFunctionWithName:@"ribbon_simple_vertex"];
-   psd.fragmentFunction            = [_library newFunctionWithName:@"ribbon_simple_fragment"];
+   psd.vertexFunction              = RARCH_AUTORELEASE_R([_library newFunctionWithName:@"ribbon_simple_vertex"]);
+   psd.fragmentFunction            = RARCH_AUTORELEASE_R([_library newFunctionWithName:@"ribbon_simple_fragment"]);
    _states[VIDEO_SHADER_MENU_2][0] = [_device newRenderPipelineStateWithDescriptor:psd error:&err];
    if (err != nil)
    {
@@ -1363,9 +1484,9 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
       return YES;
 
    NSError *err = nil;
-   id<MTLFunction> vs = [_library newFunctionWithName:@"hdr_composite_vertex"];
-   id<MTLFunction> fsComp = [_library newFunctionWithName:@"hdr_composite_fragment"];
-   id<MTLFunction> fsTone = [_library newFunctionWithName:@"hdr_tonemap_fragment"];
+   id<MTLFunction> vs = RARCH_AUTORELEASE_R([_library newFunctionWithName:@"hdr_composite_vertex"]);
+   id<MTLFunction> fsComp = RARCH_AUTORELEASE_R([_library newFunctionWithName:@"hdr_composite_fragment"]);
+   id<MTLFunction> fsTone = RARCH_AUTORELEASE_R([_library newFunctionWithName:@"hdr_tonemap_fragment"]);
    if (!vs || !fsComp || !fsTone)
    {
       RARCH_ERR("[Metal] HDR pipelines: missing shader functions.\n");
@@ -1380,7 +1501,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
    ^id<MTLRenderPipelineState>(MTLPixelFormat fmt, NSString *label, BOOL blend)
    {
       NSError *e = nil;
-      MTLRenderPipelineDescriptor *psd = [MTLRenderPipelineDescriptor new];
+      MTLRenderPipelineDescriptor *psd = RARCH_AUTORELEASE_R([MTLRenderPipelineDescriptor new]);
       psd.label            = label;
       psd.vertexFunction   = vs;
       psd.fragmentFunction = fsComp;
@@ -1425,7 +1546,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
 
    /* Tonemap (for screenshot/readback path). */
    {
-      MTLRenderPipelineDescriptor *psd = [MTLRenderPipelineDescriptor new];
+      MTLRenderPipelineDescriptor *psd = RARCH_AUTORELEASE_R([MTLRenderPipelineDescriptor new]);
       psd.label                        = @"HDR tonemap (readback)";
       psd.vertexFunction               = vs;
       psd.fragmentFunction             = fsTone;
@@ -1443,7 +1564,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
     * reuse _samplers[TEXTURE_FILTER_LINEAR] but tying ownership to the HDR
     * block keeps the resources a single cohesive group. */
    {
-      MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new];
+      MTLSamplerDescriptor *sd = RARCH_AUTORELEASE_R([MTLSamplerDescriptor new]);
       sd.label                 = @"HDR composite/tonemap";
       sd.minFilter             = MTLSamplerMinMagFilterLinear;
       sd.magFilter             = MTLSamplerMinMagFilterLinear;
@@ -1481,15 +1602,18 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
                                                                 width:w
                                                                height:h
                                                             mipmapped:NO];
-#ifdef OSX
+#if TARGET_OS_OSX
       td.storageMode = MTLStorageModeManaged;
 #else
       td.storageMode = MTLStorageModeShared;
 #endif
       td.usage       = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
-      id<MTLTexture> rb = [_device newTextureWithDescriptor:td];
+      id<MTLTexture> rb = RARCH_AUTORELEASE_R([_device newTextureWithDescriptor:td]);
       rb.label          = @"HDR readback";
-      STRUCT_ASSIGN(_hdrReadbackTex, rb);
+      /* Plain strong ivar: RARCH_ASSIGN, not RARCH_STRUCT_ASSIGN -- the
+       * bridge dance is for unretained struct slots and would pin an
+       * extra reference on a __strong ivar under ARC. */
+      RARCH_ASSIGN(_hdrReadbackTex, rb);
    }
 
    /* SDR overlay offscreen — BGRA8Unorm for direct compatibility with the
@@ -1506,9 +1630,9 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
                                                             mipmapped:NO];
       td.storageMode = MTLStorageModePrivate;
       td.usage       = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
-      id<MTLTexture> sdr = [_device newTextureWithDescriptor:td];
+      id<MTLTexture> sdr = RARCH_AUTORELEASE_R([_device newTextureWithDescriptor:td]);
       sdr.label          = @"SDR overlay (HDR)";
-      STRUCT_ASSIGN(_sdrOverlayTex, sdr);
+      RARCH_ASSIGN(_sdrOverlayTex, sdr);
    }
 
    _hdrUniforms.SourceSize = simd_make_float4((float)w, (float)h,
@@ -1540,7 +1664,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
 
    if (wantEnable)
    {
-      if (@available(macOS 11.0, iOS 16.0, tvOS 16.0, *))
+      if (apple_runtime_available(APPLE_RUNTIME_VER(11, 0, 0), APPLE_RUNTIME_VER(16, 0, 0), APPLE_RUNTIME_VER(16, 0, 0)))
       {
          if (mode == METAL_HDR_OUTPUT_HDR10)
          {
@@ -1587,7 +1711,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
     * treats sRGB 8-bit content as extended range. */
    _layer.pixelFormat = newFmt;
 #if METAL_HDR_AVAILABLE
-   if (@available(macOS 11.0, iOS 16.0, tvOS 16.0, *))
+   if (apple_runtime_available(APPLE_RUNTIME_VER(11, 0, 0), APPLE_RUNTIME_VER(16, 0, 0), APPLE_RUNTIME_VER(16, 0, 0)))
    {
       if (newCS)
          _layer.colorspace = newCS;
@@ -1614,8 +1738,8 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
    else
    {
       _hdrOffscreenFormat = MTLPixelFormatInvalid;
-      STRUCT_ASSIGN(_hdrReadbackTex,  nil);
-      STRUCT_ASSIGN(_sdrOverlayTex,   nil);
+      RARCH_ASSIGN(_hdrReadbackTex,  nil);
+      RARCH_ASSIGN(_sdrOverlayTex,   nil);
       _hdrReadbackW = _hdrReadbackH = 0;
       _sdrOverlayW  = _sdrOverlayH  = 0;
       _hdrUniforms.HDRMode        = 0u;
@@ -1662,7 +1786,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
    if (_rce)
    {
       [_rce endEncoding];
-      _rce = nil;
+      RARCH_RELEASE_NIL(_rce);
    }
 
    id<CAMetalDrawable> drawable = self.nextDrawable;
@@ -1672,7 +1796,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
       return;
    }
    if (_captureEnabled)
-      _backBuffer = drawable.texture;
+      RARCH_ASSIGN(_backBuffer, drawable.texture);
 
    const BOOL scRGB = (_hdrOutputMode == METAL_HDR_OUTPUT_SCRGB);
 
@@ -1684,7 +1808,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
     * uninitialised memory (visible as full green / blue on HDR). */
    if (source)
    {
-      MTLRenderPassDescriptor *rpd        = [MTLRenderPassDescriptor new];
+      MTLRenderPassDescriptor *rpd        = RARCH_AUTORELEASE_R([MTLRenderPassDescriptor new]);
       rpd.colorAttachments[0].texture     = drawable.texture;
       rpd.colorAttachments[0].loadAction  = MTLLoadActionClear;
       rpd.colorAttachments[0].clearColor  = _clearColor;
@@ -1701,8 +1825,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
                                             (float)_viewport.y,
                                             (float)_viewport.width,
                                             (float)_viewport.height);
-      /* Core content rotation.  Nonzero only for the no-shader source;
-       * the slang path pre-rotates via mvp_last_pass. */
+      /* Core content rotation.  Both sources arrive unrotated. */
       local.Rotation     = rotation & 3u;
 
       id<MTLRenderCommandEncoder> cre = [_commandBuffer renderCommandEncoderWithDescriptor:rpd];
@@ -1719,7 +1842,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
       /* Clear-only pass.  MTLLoadActionClear with no draws gives us a
        * drawable filled with _clearColor, which pass 2's load=Load can
        * then alpha-blend the menu over. */
-      MTLRenderPassDescriptor *rpd        = [MTLRenderPassDescriptor new];
+      MTLRenderPassDescriptor *rpd        = RARCH_AUTORELEASE_R([MTLRenderPassDescriptor new]);
       rpd.colorAttachments[0].texture     = drawable.texture;
       rpd.colorAttachments[0].loadAction  = MTLLoadActionClear;
       rpd.colorAttachments[0].clearColor  = _clearColor;
@@ -1732,7 +1855,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
    /* --- Pass 2: menu composite (alpha blending, load) --- */
    if (_sdrOverlayTex && _sdrOverlayDirty)
    {
-      MTLRenderPassDescriptor *rpd        = [MTLRenderPassDescriptor new];
+      MTLRenderPassDescriptor *rpd        = RARCH_AUTORELEASE_R([MTLRenderPassDescriptor new]);
       rpd.colorAttachments[0].texture     = drawable.texture;
       rpd.colorAttachments[0].loadAction  = MTLLoadActionLoad;
       rpd.colorAttachments[0].storeAction = MTLStoreActionStore;
@@ -1815,7 +1938,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
    id<MTLCommandBuffer> cb = [_commandQueue commandBuffer];
    cb.label = @"HDR tonemap (readback)";
 
-   MTLRenderPassDescriptor *rpd        = [MTLRenderPassDescriptor new];
+   MTLRenderPassDescriptor *rpd        = RARCH_AUTORELEASE_R([MTLRenderPassDescriptor new]);
    rpd.colorAttachments[0].texture     = dst;
    rpd.colorAttachments[0].loadAction  = MTLLoadActionDontCare;
    rpd.colorAttachments[0].storeAction = MTLStoreActionStore;
@@ -1831,7 +1954,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
    [cre drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
    [cre endEncoding];
 
-#ifdef OSX
+#if TARGET_OS_OSX
    /* Force a CPU-visible copy for Managed storage so getBytes works. */
    id<MTLBlitCommandEncoder> bce = [cb blitCommandEncoder];
    [bce synchronizeResource:dst];
@@ -1874,7 +1997,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
 
    BOOL mipmapped = filter == TEXTURE_FILTER_MIPMAP_LINEAR || filter == TEXTURE_FILTER_MIPMAP_NEAREST;
    Texture *tex   = [Texture new];
-   tex.texture    = [self newTexture:image mipmapped:mipmapped];
+   tex.texture    = RARCH_AUTORELEASE_R([self newTexture:image mipmapped:mipmapped]);
    tex.sampler    = _samplers[filter];
    return tex;
 }
@@ -1947,7 +2070,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
    }
 
    tex         = [Texture new];
-   tex.texture = t;
+   tex.texture = RARCH_AUTORELEASE_R(t);
    tex.sampler = _samplers[filter];
    return tex;
 }
@@ -1956,7 +2079,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
 - (id<CAMetalDrawable>)nextDrawable
 {
    if (_drawable == nil)
-      _drawable = _layer.nextDrawable;
+      RARCH_ASSIGN(_drawable, _layer.nextDrawable);
    return _drawable;
 }
 
@@ -1985,7 +2108,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
 {
    if (!_blitCommandBuffer)
    {
-      _blitCommandBuffer       = [_commandQueue commandBuffer];
+      RARCH_ASSIGN(_blitCommandBuffer, [_commandQueue commandBuffer]);
       _blitCommandBuffer.label = @"Blit command buffer";
    }
    return _blitCommandBuffer;
@@ -1994,7 +2117,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
 - (void)_nextChain
 {
    _currentChain = (_currentChain + 1) % CHAIN_LENGTH;
-   [_chain[_currentChain] discard];
+   buffer_chain_discard(&_chain[_currentChain]);
 }
 
 - (void)setCaptureEnabled:(bool)captureEnabled
@@ -2017,15 +2140,19 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
 {
    /* Read back the viewport region BGRA -> BGR and flip vertically.
     *
-    * We stream one row at a time from Metal into a small scratch
-    * buffer, converting as we go. Previously this allocated a
-    * full-frame BGRA copy (width * height * 4 bytes) via malloc(),
-    * which for a 4K capture is ~32 MiB of transient allocation
-    * pressure per screenshot. One row is typically a few KiB and
-    * fits comfortably on the stack (up to 16K width here; beyond
-    * that we fall back to heap for safety). */
+    * Rows are streamed from Metal in bounded chunks: each getBytes
+    * fetches as many whole rows as fit in the scratch buffer (up to
+    * METAL_READBACK_CHUNK bytes), and the BGRA->BGR conversion walks
+    * the chunk.  The previous per-row streaming issued one Metal API
+    * call per scanline -- 1000+ calls per frame at 1080p, and this
+    * path runs every frame while recording through read_viewport.
+    * Chunking cuts that to a handful of calls while keeping the
+    * transient allocation bounded (the original full-frame copy this
+    * replaced was ~32 MiB for a 4K capture; the chunk is at most
+    * 1 MiB, and small captures stay on the stack). */
+#define METAL_READBACK_CHUNK (1024 * 1024)
    size_t y;
-   NSUInteger rowBytes, dstStride;
+   NSUInteger rowBytes, dstStride, chunkRows, chunkBytes;
    uint8_t *dst;
    uint8_t  stackRow[16 * 1024];
    uint8_t *row        = stackRow;
@@ -2066,12 +2193,28 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
    }
 
    rowBytes  = srcTex.width * 4;
-   if (rowBytes > sizeof(stackRow))
+
+   /* Chunk geometry: whole rows only, at least one row, at most
+    * METAL_READBACK_CHUNK bytes.  Small captures fit the stack
+    * buffer outright; anything larger takes a single bounded heap
+    * allocation for the whole readback. */
+   chunkRows = 1;
+   if (rowBytes < METAL_READBACK_CHUNK)
+      chunkRows = METAL_READBACK_CHUNK / rowBytes;
+   chunkBytes = chunkRows * rowBytes;
+   if (chunkBytes > sizeof(stackRow))
    {
-      heapRow = (uint8_t *)malloc(rowBytes);
-      if (!heapRow)
-         return NO;
-      row     = heapRow;
+      heapRow = (uint8_t *)malloc(chunkBytes);
+      if (heapRow)
+         row = heapRow;
+      else
+      {
+         /* Degrade to whatever number of whole rows the stack
+          * buffer holds; fail only if not even one row fits. */
+         chunkRows = sizeof(stackRow) / rowBytes;
+         if (!chunkRows)
+            return NO;
+      }
    }
 
    dstStride = _viewport.width * 3;
@@ -2087,8 +2230,10 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
     * remainder black; the screenshot task crops the saved image back to the
     * on-screen size afterwards. */
    {
-      int texW     = (int)srcTex.width;
-      int texH     = (int)srcTex.height;
+      int texW      = (int)srcTex.width;
+      int texH      = (int)srcTex.height;
+      int chunkBase = 0;  /* first source row currently in the chunk */
+      int chunkEnd  = 0;  /* one past the last source row in the chunk */
       /* Output-column span [colStart, colEnd) whose source column
        * (_viewport.x + x) lands inside [0, texW). */
       int colStart = -_viewport.x;
@@ -2101,6 +2246,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
       for (y = 0; y < _viewport.height; y++, dst -= dstStride)
       {
          size_t x;
+         const uint8_t *src_row;
          int    srcRow = _viewport.y + (int)y;
 
          /* Row entirely outside the texture (top/bottom overscan) or no
@@ -2111,11 +2257,23 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
             continue;
          }
 
-         [srcTex getBytes:row
-              bytesPerRow:rowBytes
-               fromRegion:MTLRegionMake2D(0, (NSUInteger)srcRow,
-                                          (NSUInteger)texW, 1)
-              mipmapLevel:0];
+         /* Refill the chunk when the needed row is outside it.  The
+          * visible source rows advance monotonically with y, so each
+          * row is fetched exactly once. */
+         if (srcRow < chunkBase || srcRow >= chunkEnd)
+         {
+            chunkBase = srcRow;
+            chunkEnd  = srcRow + (int)chunkRows;
+            if (chunkEnd > texH)
+               chunkEnd = texH;
+            [srcTex getBytes:row
+                 bytesPerRow:rowBytes
+                  fromRegion:MTLRegionMake2D(0, (NSUInteger)chunkBase,
+                                             (NSUInteger)texW,
+                                             (NSUInteger)(chunkEnd - chunkBase))
+                 mipmapLevel:0];
+         }
+         src_row = row + (size_t)(srcRow - chunkBase) * rowBytes;
 
          /* Black out left/right overscan before copying the visible span. */
          if (colStart > 0 || colEnd < (int)_viewport.width)
@@ -2124,9 +2282,9 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
          for (x = (size_t)colStart; x < (size_t)colEnd; x++)
          {
             int srcCol     = _viewport.x + (int)x;
-            dst[3 * x + 0] = row[4 * srcCol + 0];
-            dst[3 * x + 1] = row[4 * srcCol + 1];
-            dst[3 * x + 2] = row[4 * srcCol + 2];
+            dst[3 * x + 0] = src_row[4 * srcCol + 0];
+            dst[3 * x + 1] = src_row[4 * srcCol + 1];
+            dst[3 * x + 2] = src_row[4 * srcCol + 2];
          }
       }
    }
@@ -2134,6 +2292,7 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
    free(heapRow);
 
    return YES;
+#undef METAL_READBACK_CHUNK
 }
 
 #if METAL_HDR_AVAILABLE
@@ -2213,8 +2372,9 @@ static float metal_hdr_pq_to_nits(float pq)
                 maxFALL:(float *)outMaxFALL
                 isSCRGB:(bool *)outIsSCRGB
 {
+#define METAL_READBACK_CHUNK (1024 * 1024)
    size_t y;
-   NSUInteger rowBytes;
+   NSUInteger rowBytes, chunkRows, chunkBytes;
    uint16_t *dst;
    size_t dstStride;
    uint8_t  stackRow[32 * 1024];
@@ -2235,14 +2395,25 @@ static float metal_hdr_pq_to_nits(float pq)
    else
       return NO;
 
-   /* Native rows: 8 bytes/px for RGBA16F, 4 for RGB10A2. */
-   rowBytes = srcTex.width * (isSCRGB ? 8 : 4);
-   if (rowBytes > sizeof(stackRow))
+   /* Native rows: 8 bytes/px for RGBA16F, 4 for RGB10A2.  Fetched in
+    * bounded multi-row chunks like readBackBuffer: -- one Metal call
+    * per chunk instead of one per scanline. */
+   rowBytes  = srcTex.width * (isSCRGB ? 8 : 4);
+   chunkRows = 1;
+   if (rowBytes < METAL_READBACK_CHUNK)
+      chunkRows = METAL_READBACK_CHUNK / rowBytes;
+   chunkBytes = chunkRows * rowBytes;
+   if (chunkBytes > sizeof(stackRow))
    {
-      heapRow = (uint8_t *)malloc(rowBytes);
-      if (!heapRow)
-         return NO;
-      row     = heapRow;
+      heapRow = (uint8_t *)malloc(chunkBytes);
+      if (heapRow)
+         row = heapRow;
+      else
+      {
+         chunkRows = sizeof(stackRow) / rowBytes;
+         if (!chunkRows)
+            return NO;
+      }
    }
 
    dstStride = (size_t)_viewport.width * 3;
@@ -2251,10 +2422,12 @@ static float metal_hdr_pq_to_nits(float pq)
    /* Same overscan clamping as readViewport: (issue #19038): off-texture
     * rows / columns are written as black (PQ code 0). */
    {
-      int texW     = (int)srcTex.width;
-      int texH     = (int)srcTex.height;
-      int colStart = -_viewport.x;
-      int colEnd   = texW - _viewport.x;
+      int texW      = (int)srcTex.width;
+      int texH      = (int)srcTex.height;
+      int chunkBase = 0;
+      int chunkEnd  = 0;
+      int colStart  = -_viewport.x;
+      int colEnd    = texW - _viewport.x;
       if (colStart < 0)
          colStart = 0;
       if (colEnd > (int)_viewport.width)
@@ -2263,6 +2436,7 @@ static float metal_hdr_pq_to_nits(float pq)
       for (y = 0; y < _viewport.height; y++, dst -= dstStride)
       {
          size_t x;
+         const uint8_t *src_row;
          int    srcRow = _viewport.y + (int)y;
 
          if (srcRow < 0 || srcRow >= texH || colEnd <= colStart)
@@ -2271,18 +2445,27 @@ static float metal_hdr_pq_to_nits(float pq)
             continue;
          }
 
-         [srcTex getBytes:row
-              bytesPerRow:rowBytes
-               fromRegion:MTLRegionMake2D(0, (NSUInteger)srcRow,
-                                          (NSUInteger)texW, 1)
-              mipmapLevel:0];
+         if (srcRow < chunkBase || srcRow >= chunkEnd)
+         {
+            chunkBase = srcRow;
+            chunkEnd  = srcRow + (int)chunkRows;
+            if (chunkEnd > texH)
+               chunkEnd = texH;
+            [srcTex getBytes:row
+                 bytesPerRow:rowBytes
+                  fromRegion:MTLRegionMake2D(0, (NSUInteger)chunkBase,
+                                             (NSUInteger)texW,
+                                             (NSUInteger)(chunkEnd - chunkBase))
+                 mipmapLevel:0];
+         }
+         src_row = row + (size_t)(srcRow - chunkBase) * rowBytes;
 
          if (colStart > 0 || colEnd < (int)_viewport.width)
             memset(dst, 0, dstStride * sizeof(uint16_t));
 
          if (isSCRGB)
          {
-            const uint16_t *srcPx = (const uint16_t *)row;
+            const uint16_t *srcPx = (const uint16_t *)src_row;
             for (x = (size_t)colStart; x < (size_t)colEnd; x++)
             {
                int   srcCol = _viewport.x + (int)x;
@@ -2303,7 +2486,7 @@ static float metal_hdr_pq_to_nits(float pq)
          }
          else
          {
-            const uint32_t *srcPx = (const uint32_t *)row;
+            const uint32_t *srcPx = (const uint32_t *)src_row;
             for (x = (size_t)colStart; x < (size_t)colEnd; x++)
             {
                /* MTLPixelFormatRGB10A2Unorm: R[9:0] G[19:10] B[29:20]
@@ -2328,6 +2511,7 @@ static float metal_hdr_pq_to_nits(float pq)
    }
 
    free(heapRow);
+#undef METAL_READBACK_CHUNK
 
    if (outMaxCLL)
       *outMaxCLL  = maxCLL;
@@ -2347,7 +2531,7 @@ static float metal_hdr_pq_to_nits(float pq)
    if (_commandBuffer != nil)
    {
       RARCH_WARN("[Metal] begin called with active command buffer - resetting\n");
-      _commandBuffer = nil;
+      RARCH_RELEASE_NIL(_commandBuffer);
    }
 
    /* Don't use semaphore for frame pacing - let nextDrawable handle it.
@@ -2357,9 +2541,9 @@ static float metal_hdr_pq_to_nits(float pq)
     * the semaphore signals on presentation but the drawable isn't
     * released until the NEXT vsync. */
 
-   _commandBuffer = [_commandQueue commandBuffer];
+   RARCH_ASSIGN(_commandBuffer, [_commandQueue commandBuffer]);
    _commandBuffer.label = @"Frame command buffer";
-   _backBuffer = nil;
+   RARCH_RELEASE_NIL(_backBuffer);
 }
 
 - (id<MTLRenderCommandEncoder>)rce
@@ -2386,14 +2570,14 @@ static float metal_hdr_pq_to_nits(float pq)
             RARCH_ERR("[Metal] HDR: SDR overlay offscreen missing.\n");
             return nil;
          }
-         MTLRenderPassDescriptor *rpd = [MTLRenderPassDescriptor new];
+         MTLRenderPassDescriptor *rpd = RARCH_AUTORELEASE_R([MTLRenderPassDescriptor new]);
          /* Clear to fully-transparent black so the core video shows
           * through where no UI is drawn. */
          rpd.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
          rpd.colorAttachments[0].loadAction = MTLLoadActionClear;
          rpd.colorAttachments[0].storeAction = MTLStoreActionStore;
          rpd.colorAttachments[0].texture    = _sdrOverlayTex;
-         _rce       = [_commandBuffer renderCommandEncoderWithDescriptor:rpd];
+         RARCH_ASSIGN(_rce, [_commandBuffer renderCommandEncoderWithDescriptor:rpd]);
          _rce.label = @"SDR overlay encoder (HDR frame)";
          _sdrOverlayDirty = true;
          return _rce;
@@ -2407,13 +2591,13 @@ static float metal_hdr_pq_to_nits(float pq)
          return nil;
       }
 
-      MTLRenderPassDescriptor *rpd = [MTLRenderPassDescriptor new];
+      MTLRenderPassDescriptor *rpd = RARCH_AUTORELEASE_R([MTLRenderPassDescriptor new]);
       rpd.colorAttachments[0].clearColor = _clearColor;
       rpd.colorAttachments[0].loadAction = MTLLoadActionClear;
       rpd.colorAttachments[0].texture = drawable.texture;
       if (_captureEnabled)
-         _backBuffer = drawable.texture;
-      _rce       = [_commandBuffer renderCommandEncoderWithDescriptor:rpd];
+         RARCH_ASSIGN(_backBuffer, drawable.texture);
+      RARCH_ASSIGN(_rce, [_commandBuffer renderCommandEncoderWithDescriptor:rpd]);
       _rce.label = @"Frame command encoder";
    }
    return _rce;
@@ -2474,11 +2658,11 @@ static float metal_hdr_pq_to_nits(float pq)
       return;
    }
 
-   [_chain[_currentChain] commitRanges];
+   buffer_chain_commit_ranges(&_chain[_currentChain]);
 
    if (_blitCommandBuffer)
    {
-#ifdef OSX
+#if TARGET_OS_OSX
       if (_captureEnabled)
       {
          id<MTLBlitCommandEncoder> bce = [_blitCommandBuffer blitCommandEncoder];
@@ -2490,13 +2674,13 @@ static float metal_hdr_pq_to_nits(float pq)
        * Metal command queues guarantee commit-order execution, so we don't
        * need to block the CPU waiting for completion. */
       [_blitCommandBuffer commit];
-      _blitCommandBuffer = nil;
+      RARCH_RELEASE_NIL(_blitCommandBuffer);
    }
 
    if (_rce)
    {
       [_rce endEncoding];
-      _rce = nil;
+      RARCH_RELEASE_NIL(_rce);
    }
 
    id<CAMetalDrawable> drawable = self.nextDrawable;
@@ -2516,7 +2700,7 @@ static float metal_hdr_pq_to_nits(float pq)
 
    [_commandBuffer commit];
 
-   _commandBuffer = nil;
+   RARCH_RELEASE_NIL(_commandBuffer);
    [self _nextChain];
 }
 
@@ -2529,83 +2713,87 @@ static float metal_hdr_pq_to_nits(float pq)
     * nextDrawable will block if no drawable is available (all 3 are
     * in-flight), which naturally paces us to the display refresh rate.
     * This blocking behavior is intentional for proper frame pacing. */
-   _drawable = nil;
-   _drawable = _layer.nextDrawable;
+   RARCH_RELEASE_NIL(_drawable);
+   RARCH_ASSIGN(_drawable, _layer.nextDrawable);
 }
 
 - (bool)allocRange:(BufferRange *)range length:(NSUInteger)length
 {
-   return [_chain[_currentChain] allocRange:range length:length];
+   return buffer_chain_alloc_range(&_chain[_currentChain], range, length);
 }
 
 @end
 
 @implementation Texture
-@end
 
-@implementation BufferNode
-
-- (instancetype)initWithBuffer:(id<MTLBuffer>)src
+#if !__has_feature(objc_arc)
+- (void)dealloc
 {
-   if (self = [super init])
-      _src = src;
-   return self;
+   [(id)_texture release];
+   [(id)_sampler release];
+   [(id)_staging release];
+   [super dealloc];
 }
-
-@end
-
-@implementation BufferChain
-{
-   id<MTLDevice> _device;
-   NSUInteger _blockLen;
-   BufferNode *_head;
-   NSUInteger _offset; /* offset into _current */
-   BufferNode *_current;
-   NSUInteger _length;
-   NSUInteger _allocated;
-}
-
-/* macOS requires constants in a buffer to have a 256 byte alignment. */
-#ifdef TARGET_OS_MAC
-static const NSUInteger kConstantAlignment = 256;
-#else
-static const NSUInteger kConstantAlignment = 4;
 #endif
 
-- (instancetype)initWithDevice:(id<MTLDevice>)device blockLen:(NSUInteger)blockLen
+@end
+
+static void buffer_chain_init(buffer_chain_t *chain,
+      id<MTLDevice> device, NSUInteger block_len)
 {
-   if (self = [super init])
+   memset(chain, 0, sizeof(*chain));
+   RARCH_STRUCT_ASSIGN(chain->device, device);
+   chain->block_len = block_len;
+}
+
+static void buffer_chain_destroy(buffer_chain_t *chain)
+{
+   buffer_node_t *n = chain->head;
+   while (n)
    {
-      _device   = device;
-      _blockLen = blockLen;
+      buffer_node_t *next = n->next;
+      RARCH_STRUCT_ASSIGN(n->src, nil);
+      free(n);
+      n = next;
    }
-   return self;
+   chain->head = NULL;
+   chain->cur  = NULL;
+   RARCH_STRUCT_ASSIGN(chain->device, nil);
 }
 
-- (NSString *)debugDescription
+static buffer_node_t *buffer_node_new(id<MTLBuffer> src)
 {
-   return [NSString stringWithFormat:@"length=%ld, allocated=%ld", _length, _allocated];
-}
-
-- (void)commitRanges
-{
-#ifdef OSX
-   BufferNode *n;
-   for (n = _head; n != nil; n = n.next)
+   buffer_node_t *n = (buffer_node_t *)calloc(1, sizeof(*n));
+   if (!n || !src)
    {
-      if (n.allocated > 0)
-         [n.src didModifyRange:NSMakeRange(0, n.allocated)];
+      free(n);
+      return NULL;
+   }
+   RARCH_STRUCT_ASSIGN(n->src, src);
+   return n;
+}
+
+static void buffer_chain_commit_ranges(buffer_chain_t *chain)
+{
+#if TARGET_OS_OSX
+   buffer_node_t *n;
+   for (n = chain->head; n; n = n->next)
+   {
+      if (n->allocated > 0)
+         [n->src didModifyRange:NSMakeRange(0, n->allocated)];
    }
 #endif
 }
 
-- (void)discard
+static void buffer_chain_discard(buffer_chain_t *chain)
 {
+   buffer_node_t *n;
+
    /* Trim the tail: any node that wasn't touched during this
     * chain's previous use (allocated == 0) is dropped. Nodes are
     * appended in alloc order, so once we see the first trailing
     * unused node the whole tail is unused. We only trim when the
-    * chain was actually used (_allocated > 0) so that a single
+    * chain was actually used (allocated > 0) so that a single
     * quiescent frame doesn't drop the entire chain and force
     * reallocation on the next use.
     *
@@ -2615,100 +2803,107 @@ static const NSUInteger kConstantAlignment = 4;
     * heavy shader pass or a brief geometry spike) kept its
     * oversized backing node alive for the lifetime of the driver,
     * across all CHAIN_LENGTH chains. */
-   if (_head && _allocated > 0)
+   if (chain->head && chain->allocated > 0)
    {
-      BufferNode *keep = _head;
-      BufferNode *n;
-      for (n = _head; n != nil; n = n.next)
+      buffer_node_t *keep = chain->head;
+      for (n = chain->head; n; n = n->next)
       {
-         if (n.allocated > 0)
+         if (n->allocated > 0)
             keep = n;
       }
-      if (keep.next)
+      if (keep->next)
       {
          NSUInteger dropped = 0;
-         for (n = keep.next; n != nil; n = n.next)
-            dropped += n.src.length;
-         _length -= dropped;
-         keep.next = nil;
+         buffer_node_t *t   = keep->next;
+         for (n = t; n; n = n->next)
+            dropped += n->src.length;
+         chain->length -= dropped;
+         keep->next     = NULL;
+         while (t)
+         {
+            n = t->next;
+            RARCH_STRUCT_ASSIGN(t->src, nil);
+            free(t);
+            t = n;
+         }
       }
    }
 
-   /* Reset per-node allocated so commitRanges on the next use of
+   /* Reset per-node allocated so commit_ranges on the next use of
     * this chain does not didModifyRange: a stale range from this
     * cycle into a node that gets partially refilled. */
-   {
-      BufferNode *n;
-      for (n = _head; n != nil; n = n.next)
-         n.allocated = 0;
-   }
+   for (n = chain->head; n; n = n->next)
+      n->allocated = 0;
 
-   _current   = _head;
-   _offset    = 0;
-   _allocated = 0;
+   chain->cur       = chain->head;
+   chain->offset    = 0;
+   chain->allocated = 0;
 }
 
-- (bool)allocRange:(BufferRange *)range length:(NSUInteger)length
+static BOOL buffer_chain_sub_alloc(buffer_chain_t *chain,
+      BufferRange *range, NSUInteger length)
 {
-   MTLResourceOptions opts = PLATFORM_METAL_RESOURCE_STORAGE_MODE;
-   memset(range, 0, sizeof(*range));
-
-   if (!_head)
+   NSUInteger next_offset = chain->offset + length;
+   id<MTLBuffer> src      = chain->cur->src;
+   if (next_offset <= src.length)
    {
-      _head    = [[BufferNode alloc] initWithBuffer:[_device newBufferWithLength:_blockLen options:opts]];
-      _length += _blockLen;
-      _current = _head;
-      _offset  = 0;
-   }
-
-   if ([self _subAllocRange:range length:length])
-      return YES;
-
-   while (_current.next)
-   {
-      [self _nextNode];
-      if ([self _subAllocRange:range length:length])
-         return YES;
-   }
-
-   NSUInteger blockLen = _blockLen;
-   if (length > blockLen)
-      blockLen = length;
-
-   _current.next = [[BufferNode alloc] initWithBuffer:[_device newBufferWithLength:blockLen options:opts]];
-   if (!_current.next)
-      return NO;
-
-   _length += blockLen;
-
-   [self _nextNode];
-   retro_assert([self _subAllocRange:range length:length]);
-   return YES;
-}
-
-- (void)_nextNode
-{
-   _current = _current.next;
-   _offset  = 0;
-}
-
-- (BOOL)_subAllocRange:(BufferRange *)range length:(NSUInteger)length
-{
-   NSUInteger nextOffset  = _offset + length;
-   if (nextOffset <= _current.src.length)
-   {
-      _current.allocated  = nextOffset;
-      _allocated         += length;
-      range->data         = _current.src.contents + _offset;
-      range->buffer       = _current.src;
-      range->offset       = _offset;
-      _offset             = MTL_ALIGN_BUFFER(nextOffset);
+      chain->cur->allocated = next_offset;
+      chain->allocated     += length;
+      range->data           = (uint8_t *)src.contents + chain->offset;
+      range->buffer         = src;
+      range->offset         = chain->offset;
+      chain->offset         = MTL_ALIGN_BUFFER(next_offset);
       return YES;
    }
    return NO;
 }
 
-@end
+static bool buffer_chain_alloc_range(buffer_chain_t *chain,
+      BufferRange *range, NSUInteger length)
+{
+   MTLResourceOptions opts = PLATFORM_METAL_RESOURCE_STORAGE_MODE;
+   memset(range, 0, sizeof(*range));
+
+   if (!chain->head)
+   {
+      chain->head = buffer_node_new(RARCH_AUTORELEASE_R(
+            [chain->device newBufferWithLength:chain->block_len options:opts]));
+      if (!chain->head)
+         return false;
+      chain->length += chain->block_len;
+      chain->cur     = chain->head;
+      chain->offset  = 0;
+   }
+
+   if (buffer_chain_sub_alloc(chain, range, length))
+      return true;
+
+   while (chain->cur->next)
+   {
+      chain->cur    = chain->cur->next;
+      chain->offset = 0;
+      if (buffer_chain_sub_alloc(chain, range, length))
+         return true;
+   }
+
+   {
+      NSUInteger block_len = chain->block_len;
+      if (length > block_len)
+         block_len = length;
+
+      chain->cur->next = buffer_node_new(RARCH_AUTORELEASE_R(
+            [chain->device newBufferWithLength:block_len options:opts]));
+      if (!chain->cur->next)
+         return false;
+
+      chain->length += block_len;
+   }
+
+   chain->cur    = chain->cur->next;
+   chain->offset = 0;
+   retro_assert(buffer_chain_sub_alloc(chain, range, length));
+   return true;
+}
 
 /*
  * FILTER
@@ -2725,18 +2920,18 @@ static const NSUInteger kConstantAlignment = 4;
 
 + (instancetype)newFilterWithFunctionName:(NSString *)name device:(id<MTLDevice>)device library:(id<MTLLibrary>)library error:(NSError **)error
 {
-   id<MTLFunction> function = [library newFunctionWithName:name];
-   id<MTLComputePipelineState> kernel = [device newComputePipelineStateWithFunction:function error:error];
+   id<MTLFunction> function = RARCH_AUTORELEASE_R([library newFunctionWithName:name]);
+   id<MTLComputePipelineState> kernel = RARCH_AUTORELEASE_R([device newComputePipelineStateWithFunction:function error:error]);
    if (*error != nil)
       return nil;
 
-   MTLSamplerDescriptor *sd    = [MTLSamplerDescriptor new];
+   MTLSamplerDescriptor *sd    = RARCH_AUTORELEASE_R([MTLSamplerDescriptor new]);
    sd.minFilter                = MTLSamplerMinMagFilterNearest;
    sd.magFilter                = MTLSamplerMinMagFilterNearest;
    sd.sAddressMode             = MTLSamplerAddressModeClampToEdge;
    sd.tAddressMode             = MTLSamplerAddressModeClampToEdge;
    sd.mipFilter                = MTLSamplerMipFilterNotMipmapped;
-   id<MTLSamplerState> sampler = [device newSamplerStateWithDescriptor:sd];
+   id<MTLSamplerState> sampler = RARCH_AUTORELEASE_R([device newSamplerStateWithDescriptor:sd]);
 
    return [[Filter alloc] initWithKernel:kernel sampler:sampler];
 }
@@ -2745,11 +2940,20 @@ static const NSUInteger kConstantAlignment = 4;
 {
    if (self = [super init])
    {
-      _kernel  = kernel;
-      _sampler = sampler;
+      _kernel  = RARCH_RETAIN(kernel);
+      _sampler = RARCH_RETAIN(sampler);
    }
    return self;
 }
+
+#if !__has_feature(objc_arc)
+- (void)dealloc
+{
+   [(id)_kernel release];
+   [(id)_sampler release];
+   [super dealloc];
+}
+#endif
 
 - (void)apply:(id<MTLCommandBuffer>)cb in:(id<MTLTexture>)tin out:(id<MTLTexture>)tout
 {
@@ -2807,13 +3011,21 @@ static const NSUInteger kConstantAlignment = 4;
 {
    if (self = [super init])
    {
-      _context                   = context;
+      _context                   = RARCH_RETAIN(context);
       _clearColor                = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
       _uniforms.projectionMatrix = matrix_proj_ortho(0, 1, 0, 1);
       _useScissorRect            = NO;
    }
    return self;
 }
+
+#if !__has_feature(objc_arc)
+- (void)dealloc
+{
+   [_context release];
+   [super dealloc];
+}
+#endif
 
 + (const float *)defaultVertices
 {
@@ -2961,9 +3173,10 @@ static const NSUInteger kConstantAlignment = 4;
 
    MTLViewport vp = {
       .originX = draw->x,
-      .originY = _context.viewport->full_height - draw->y - draw->height,
-      .width   = draw->width,
-      .height  = draw->height,
+      .originY = _context.viewport->full_height - draw->y
+               - VIDEO_SCALE_H(draw->dims),
+      .width   = VIDEO_SCALE_W(draw->dims),
+      .height  = VIDEO_SCALE_H(draw->dims),
       .znear   = 0,
       .zfar    = 1,
    };
@@ -3055,7 +3268,7 @@ static const NSUInteger kConstantAlignment = 4;
       _format       = d.format;
       _bpp          = RPixelFormatToBPP(_format);
       _filter       = d.filter;
-      _context      = c;
+      _context      = RARCH_RETAIN(c);
       _visible      = YES;
       if (   _format == RPixelFormatBGRA8Unorm
           || _format == RPixelFormatBGRX8Unorm
@@ -3068,6 +3281,16 @@ static const NSUInteger kConstantAlignment = 4;
    }
    return self;
 }
+
+#if !__has_feature(objc_arc)
+- (void)dealloc
+{
+   [_context release];
+   [(id)_texture release];
+   [(id)_src release];
+   [super dealloc];
+}
+#endif
 
 - (void)setSize:(CGSize)size
 {
@@ -3089,7 +3312,7 @@ static const NSUInteger kConstantAlignment = 4;
             height:(NSUInteger)size.height
             mipmapped:NO];
       td.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
-      _texture = [_context.device newTextureWithDescriptor:td];
+      RARCH_ASSIGN(_texture, RARCH_AUTORELEASE_R([_context.device newTextureWithDescriptor:td]));
    }
 
    if (   _format != RPixelFormatBGRA8Unorm
@@ -3100,7 +3323,7 @@ static const NSUInteger kConstantAlignment = 4;
                width:(NSUInteger)size.width
                height:(NSUInteger)size.height
                mipmapped:NO];
-      _src = [_context.device newTextureWithDescriptor:td];
+      RARCH_ASSIGN(_src, RARCH_AUTORELEASE_R([_context.device newTextureWithDescriptor:td]));
    }
 }
 
@@ -3275,7 +3498,7 @@ static void gfx_display_metal_scissor_end(void *data,
 
 @interface MetalRaster : NSObject
 {
-   __weak MetalDriver *_driver;
+   RARCH_WEAK MetalDriver *_driver;
    const font_renderer_driver_t *_font_driver;
    void *_font_data;
    struct font_atlas *_atlas;
@@ -3312,6 +3535,24 @@ static void gfx_display_metal_scissor_end(void *data,
 {
    if (_font_driver && _font_data)
       _font_driver->free(_font_data);
+   _font_data   = NULL;
+   _font_driver = NULL;
+}
+
+- (void)dealloc
+{
+   /* Idempotent: metal_raster_font_free already ran deinit on the
+    * normal path; this covers the init-failure path where ARC (or the
+    * MRC release below) tears down a half-constructed instance. */
+   [self deinit];
+#if !__has_feature(objc_arc)
+   [_context release];
+   [(id)_buffer release];
+   [(id)_texture release];
+   [(id)_state release];
+   [(id)_sampler release];
+   RARCH_SUPER_DEALLOC();
+#endif
 }
 
 - (instancetype)initWithDriver:(MetalDriver *)driver fontPath:(const char *)font_path fontSize:(unsigned)font_size
@@ -3319,10 +3560,10 @@ static void gfx_display_metal_scissor_end(void *data,
    if (self = [super init])
    {
       if (driver == nil)
-         return nil;
+         RARCH_RETURN_INIT_FAILURE();
 
       _driver  = driver;
-      _context = driver.context;
+      _context = RARCH_RETAIN(driver.context);
       {
          /* When outputting HDR (scRGB or HDR10), ask the font
           * renderer for a higher-precision coverage atlas; same
@@ -3332,7 +3573,7 @@ static void gfx_display_metal_scissor_end(void *data,
                   &_font_data, font_path, font_size,
                   _context.hdrEnabled
                   ? FONT_ATLAS_FORMAT_A16 : FONT_ATLAS_FORMAT_A8))
-            return nil;
+            RARCH_RETURN_INIT_FAILURE();
       }
 
       _uniforms.projectionMatrix = matrix_proj_ortho(0, 1, 0, 1);
@@ -3384,7 +3625,7 @@ static void gfx_display_metal_scissor_end(void *data,
       _texture  = [_buffer newTextureWithDescriptor:td offset:0 bytesPerRow:_stride];
 
       if (![self _initializeState])
-         return nil;
+         RARCH_RETURN_INIT_FAILURE();
    }
    return self;
 }
@@ -3393,7 +3634,7 @@ static void gfx_display_metal_scissor_end(void *data,
 {
    {
       NSError *err;
-      MTLVertexDescriptor *vd    = [MTLVertexDescriptor new];
+      MTLVertexDescriptor *vd    = RARCH_AUTORELEASE_R([MTLVertexDescriptor new]);
 
       vd.attributes[0].offset    = 0;
       vd.attributes[0].format    = MTLVertexFormatFloat2;
@@ -3404,7 +3645,7 @@ static void gfx_display_metal_scissor_end(void *data,
       vd.layouts[0].stride       = sizeof(SpriteVertex);
       vd.layouts[0].stepFunction = MTLVertexStepFunctionPerVertex;
 
-      MTLRenderPipelineDescriptor *psd = [MTLRenderPipelineDescriptor new];
+      MTLRenderPipelineDescriptor *psd = RARCH_AUTORELEASE_R([MTLRenderPipelineDescriptor new]);
       psd.label = @"font pipeline";
 
       MTLRenderPipelineColorAttachmentDescriptor *ca = psd.colorAttachments[0];
@@ -3423,11 +3664,11 @@ static void gfx_display_metal_scissor_end(void *data,
 
       psd.sampleCount                = 1;
       psd.vertexDescriptor           = vd;
-      psd.vertexFunction             = [_context.library newFunctionWithName:@"sprite_vertex"];
-      psd.fragmentFunction           = [_context.library newFunctionWithName:
+      psd.vertexFunction             = RARCH_AUTORELEASE_R([_context.library newFunctionWithName:@"sprite_vertex"]);
+      psd.fragmentFunction           = RARCH_AUTORELEASE_R([_context.library newFunctionWithName:
             (_atlas->format == FONT_ATLAS_FORMAT_A16)
                   ? @"sprite_fragment_a16"
-                  : @"sprite_fragment_a8"];
+                  : @"sprite_fragment_a8"]);
 
       if (!psd.vertexFunction || !psd.fragmentFunction)
          return NO;
@@ -3438,7 +3679,7 @@ static void gfx_display_metal_scissor_end(void *data,
    }
 
    {
-      MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new];
+      MTLSamplerDescriptor *sd = RARCH_AUTORELEASE_R([MTLSamplerDescriptor new]);
       sd.minFilter             = MTLSamplerMinMagFilterLinear;
       sd.magFilter             = MTLSamplerMinMagFilterLinear;
       _sampler                 = [_context.device newSamplerStateWithDescriptor:sd];
@@ -3821,20 +4062,26 @@ static void *metal_raster_font_init(void *data,
       const char *font_path, float font_size,
       bool is_threaded)
 {
-   MetalRaster *r = [[MetalRaster alloc] initWithDriver:(__bridge MetalDriver *)data fontPath:font_path fontSize:(unsigned)font_size];
+   @autoreleasepool
+   {
+      MetalRaster *r = [[MetalRaster alloc] initWithDriver:(__bridge MetalDriver *)data fontPath:font_path fontSize:(unsigned)font_size];
 
-   if (!r)
-      return NULL;
+      if (!r)
+         return NULL;
 
-   return (__bridge_retained void *)r;
+      return RARCH_BRIDGE_RETAINED(RARCH_AUTORELEASE_R(r));
+   }
 }
 
 static void metal_raster_font_free(void *data, bool is_threaded)
 {
-   MetalRaster *r = (__bridge_transfer MetalRaster *)data;
+   @autoreleasepool
+   {
+      MetalRaster *r = RARCH_BRIDGE_TRANSFER(MetalRaster *, data);
 
-   [r deinit];
-   r = nil;
+      [r deinit];
+      r = nil;
+   }
 }
 
 static int metal_raster_font_get_message_width(void *data, const char *msg,
@@ -4033,7 +4280,7 @@ static void metal_pull_cached_frame_cb(void *userdata,
             settings_t               *settings_ptr = config_get_ptr();
             int                       gpu_index    = settings_ptr
                ? settings_ptr->ints.metal_gpu_index : 0;
-            NSArray<id<MTLDevice>> *devices        = MTLCopyAllDevices();
+            NSArray<id<MTLDevice>> *devices        = RARCH_AUTORELEASE_R(MTLCopyAllDevices());
             NSUInteger                count        = devices ? [devices count] : 0;
             NSUInteger                i;
 
@@ -4053,7 +4300,7 @@ static void metal_pull_cached_frame_cb(void *userdata,
             if (count > 0 && gpu_index >= 0 && gpu_index < (int)count)
             {
                const char *picked_name;
-               _device     = [devices objectAtIndex:gpu_index];
+               _device     = RARCH_RETAIN([devices objectAtIndex:gpu_index]);
                picked_name = [[_device name] UTF8String];
                RARCH_LOG("[Metal] Using GPU #%d: \"%s\".\n",
                      gpu_index, picked_name ? picked_name : "Unknown");
@@ -4075,7 +4322,7 @@ static void metal_pull_cached_frame_cb(void *userdata,
       MetalView *view               = (MetalView *)apple_platform.renderView;
       view.device                   = _device;
       view.delegate                 = self;
-      _layer                        = (CAMetalLayer *)view.layer;
+      _layer                        = RARCH_RETAIN((CAMetalLayer *)view.layer);
 
       /* Configure the layer for HDR (or SDR) BEFORE building any pipelines.
        * Pipelines compiled inside _initMetal / Context initWithDevice: bake
@@ -4123,7 +4370,7 @@ static void metal_pull_cached_frame_cb(void *userdata,
 #endif
 
       if (![self _initMetal])
-         return nil;
+         RARCH_RETURN_INIT_FAILURE();
 
       _video                        = *video;
       _viewport                     = (video_viewport_t *)calloc(1, sizeof(video_viewport_t));
@@ -4133,11 +4380,12 @@ static void metal_pull_cached_frame_cb(void *userdata,
        * the first _context.viewport = _viewport assignment
        * downstream in setVideoMode / show_mouse / frame.
        * Return nil to fail the init - matches the pattern
-       * used by the _initMetal bailout just above.  ARC will
-       * tear down the partial instance (Metal library/queue
-       * ref-counts, string_list _gpu_list) via dealloc. */
+       * used by the _initMetal bailout just above.  Returning through
+       * RARCH_RETURN_INIT_FAILURE tears down the partial instance
+       * (Metal library/queue ref-counts, string_list _gpu_list) via
+       * dealloc in both modes. */
       if (!_viewport)
-         return nil;
+         RARCH_RETURN_INIT_FAILURE();
       _viewportMVP.projectionMatrix = matrix_proj_ortho(0, 1, 0, 1);
 
       _keepAspect                   = _video.force_aspect;
@@ -4174,7 +4422,7 @@ static void metal_pull_cached_frame_cb(void *userdata,
 
       /* Framebuffer view */
       {
-         ViewDescriptor *vd  = [ViewDescriptor new];
+         ViewDescriptor *vd  = RARCH_AUTORELEASE_R([ViewDescriptor new]);
          vd.format           = _video.source_10bit
                ? RPixelFormatBGR10A2Unorm
                : (_video.rgb32 ? RPixelFormatBGRX8Unorm : RPixelFormatB5G6R5Unorm);
@@ -4201,20 +4449,20 @@ static void metal_pull_cached_frame_cb(void *userdata,
        * uses these flags to gate the HDR menu options and to clamp the
        * user's selected mode to what the driver can actually do. */
       {
-         uint32_t disp_flags = video_driver_get_disp_flags();
+         uint32_t hdr_flags  = 0;
          bool edr_supported  = metal_display_supports_edr();
-         disp_flags &= ~(VIDEO_FLAG_HDR_SUPPORT
-                        | VIDEO_FLAG_HDR10_SUPPORT
-                        | VIDEO_FLAG_SCRGB_SUPPORT);
          if (edr_supported)
          {
             /* Both modes map to the same Metal surface path (swap the
              * CAMetalLayer pixel format + colour space), so whenever
              * EDR is available we advertise both. */
-            disp_flags |= VIDEO_FLAG_HDR10_SUPPORT | VIDEO_FLAG_SCRGB_SUPPORT;
-            disp_flags |= VIDEO_FLAG_HDR_SUPPORT;
+            hdr_flags |= VIDEO_FLAG_HDR10_SUPPORT | VIDEO_FLAG_SCRGB_SUPPORT;
+            hdr_flags |= VIDEO_FLAG_HDR_SUPPORT;
          }
-         video_driver_set_disp_flags(disp_flags);
+         video_driver_modify_disp_flags(hdr_flags,
+                 VIDEO_FLAG_HDR_SUPPORT
+               | VIDEO_FLAG_HDR10_SUPPORT
+               | VIDEO_FLAG_SCRGB_SUPPORT);
          RARCH_LOG("[Metal] HDR capability: display EDR %s, advertising HDR support %s.\n",
                edr_supported ? "detected" : "not detected",
                edr_supported ? "YES (HDR10 + scRGB)" : "NO");
@@ -4277,10 +4525,26 @@ static void metal_pull_cached_frame_cb(void *userdata,
 #if METAL_HDR_AVAILABLE
    /* Withdraw the HDR-capability flags so a subsequent driver init (e.g.
     * after the user switches to Vulkan and back) doesn't see stale bits. */
-   video_driver_set_disp_flags(video_driver_get_disp_flags()
-         & ~(VIDEO_FLAG_HDR_SUPPORT
-            | VIDEO_FLAG_HDR10_SUPPORT
-            | VIDEO_FLAG_SCRGB_SUPPORT));
+   video_driver_modify_disp_flags(0,
+           VIDEO_FLAG_HDR_SUPPORT
+         | VIDEO_FLAG_HDR10_SUPPORT
+         | VIDEO_FLAG_SCRGB_SUPPORT);
+#endif
+
+#if !__has_feature(objc_arc)
+   [_frameView release];
+   [_menu release];
+   [_overlay release];
+   [_display release];
+   [_context release];
+   [(id)_t_pipelineState release];
+   [(id)_t_pipelineStateNoAlpha release];
+   [(id)_samplerStateLinear release];
+   [(id)_samplerStateNearest release];
+   [(id)_layer release];
+   [(id)_library release];
+   [(id)_device release];
+   RARCH_SUPER_DEALLOC();
 #endif
 }
 
@@ -4295,14 +4559,14 @@ static void metal_pull_cached_frame_cb(void *userdata,
       NSError *err;
       MTLRenderPipelineDescriptor *psd;
       MTLRenderPipelineColorAttachmentDescriptor *ca;
-      MTLVertexDescriptor *vd        = [MTLVertexDescriptor new];
+      MTLVertexDescriptor *vd        = RARCH_AUTORELEASE_R([MTLVertexDescriptor new]);
       vd.attributes[0].offset        = 0;
       vd.attributes[0].format        = MTLVertexFormatFloat3;
       vd.attributes[1].offset        = offsetof(Vertex, texCoord);
       vd.attributes[1].format        = MTLVertexFormatFloat2;
       vd.layouts[0].stride           = sizeof(Vertex);
 
-      psd                            = [MTLRenderPipelineDescriptor new];
+      psd                            = RARCH_AUTORELEASE_R([MTLRenderPipelineDescriptor new]);
       psd.label                      = @"Pipeline+Alpha";
 
       ca                             = psd.colorAttachments[0];
@@ -4321,8 +4585,8 @@ static void metal_pull_cached_frame_cb(void *userdata,
 
       psd.sampleCount                = 1;
       psd.vertexDescriptor           = vd;
-      psd.vertexFunction             = [_library newFunctionWithName:@"basic_vertex_proj_tex"];
-      psd.fragmentFunction           = [_library newFunctionWithName:@"basic_fragment_proj_tex"];
+      psd.vertexFunction             = RARCH_AUTORELEASE_R([_library newFunctionWithName:@"basic_vertex_proj_tex"]);
+      psd.fragmentFunction           = RARCH_AUTORELEASE_R([_library newFunctionWithName:@"basic_fragment_proj_tex"]);
 
       if (!psd.vertexFunction || !psd.fragmentFunction)
       {
@@ -4348,7 +4612,7 @@ static void metal_pull_cached_frame_cb(void *userdata,
    }
 
    {
-      MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new];
+      MTLSamplerDescriptor *sd = RARCH_AUTORELEASE_R([MTLSamplerDescriptor new]);
       _samplerStateNearest     = [_device newSamplerStateWithDescriptor:sd];
 
       sd.minFilter             = MTLSamplerMinMagFilterLinear;
@@ -4390,6 +4654,10 @@ static void metal_pull_cached_frame_cb(void *userdata,
                 msg:(const char *)msg
                info:(video_frame_info_t *)video_info
 {
+   /* Travels with the frame, for set_texture_frame() to read rather
+    * than the setting the menu writes */
+   self.frameMenuLinearFilter = video_info->menu_linear_filter;
+
    @autoreleasepool
    {
       bool statistics_show = video_info->statistics_show;
@@ -4407,7 +4675,15 @@ static void metal_pull_cached_frame_cb(void *userdata,
          [_context begin];
       }
 
-      _frameView.frameCount = frameCount;
+      _frameView.frameCount      = frameCount;
+      /* The sub-frame index is 0 on the core frame and j on the j-th
+       * re-render below; the shader sees it 1-based, and each
+       * sub-frame is one more present on the display */
+      _frameView.swapCount       = video_info->swap_count
+                                 + video_info->current_subframe;
+      _frameView.totalSubframes  = video_info->shader_subframes > 1
+                                 ? video_info->shader_subframes : 1;
+      _frameView.currentSubframe = video_info->current_subframe + 1;
       if (frame && width && height)
       {
          _frameView.size      = CGSizeMake(width, height);
@@ -4531,16 +4807,14 @@ static void metal_pull_cached_frame_cb(void *userdata,
       if (hdrOn)
       {
          const HDRUniforms *u  = _context.currentHDRUniforms;
-         unsigned          rot = 0;
+         /* Both sources hold unrotated content, so the composite rotates
+          * the sampling.  Under HDR the last slang pass always owns an RT
+          * (it is the composite's input), and a pass that owns an RT
+          * renders with the unrotated mvp_last_pass. */
+         unsigned          rot = retroarch_get_rotation() & 3;
          id<MTLTexture>    src = _frameView.shaderOutputTexture;
          if (!src)
-         {
-            /* Raw frame texture: unrotated content, so the composite
-             * rotates the sampling.  The slang last pass (src != nil)
-             * already rendered rotated via mvp_last_pass. */
             src = _frameView.frameTexture;
-            rot = retroarch_get_rotation() & 3;
-         }
          [_context hdrComposite:u fromSource:src rotation:rot];
       }
 
@@ -4581,9 +4855,18 @@ static void metal_pull_cached_frame_cb(void *userdata,
 - (instancetype)initWithContext:(Context *)context
 {
    if (self = [super init])
-      _context = context;
+      _context = RARCH_RETAIN(context);
    return self;
 }
+
+#if !__has_feature(objc_arc)
+- (void)dealloc
+{
+   [_context release];
+   [_view release];
+   [super dealloc];
+}
+#endif
 
 - (bool)hasFrame { return _view != nil; }
 
@@ -4609,12 +4892,12 @@ static void metal_pull_cached_frame_cb(void *userdata,
       if (!(CGSizeEqualToSize(_view.size, size) &&
             _view.format == format &&
             _view.filter == filter))
-         _view = nil;
+         RARCH_RELEASE_NIL(_view);
    }
 
    if (!_view)
    {
-      ViewDescriptor *vd = [ViewDescriptor new];
+      ViewDescriptor *vd = RARCH_AUTORELEASE_R([ViewDescriptor new]);
       vd.format          = format;
       vd.filter          = filter;
       vd.size            = size;
@@ -4672,6 +4955,9 @@ typedef struct MTLALIGN(16)
       uint32_t rotation;
       float_t core_aspect;
       float_t core_aspect_rot;
+      uint32_t total_subframes;
+      uint32_t current_subframe;
+      uint32_t swap_count;
       pass_semantics_t semantics;
       MTLViewport viewport;
       __unsafe_unretained id<MTLRenderPipelineState> _state;
@@ -4752,7 +5038,7 @@ typedef struct MTLALIGN(16)
    self = [super init];
    if (self)
    {
-      _context              = c;
+      _context              = RARCH_RETAIN(c);
       _format               = d.format;
       _bpp                  = RPixelFormatToBPP(_format);
       _filter               = d.filter;
@@ -4782,10 +5068,45 @@ typedef struct MTLALIGN(16)
    return self;
 }
 
+- (void)dealloc
+{
+   int i;
+
+   /* The engine's unretained slots each own one reference placed there
+    * by RARCH_STRUCT_ASSIGN; they must be dropped explicitly in both modes.
+    * _freeVideoShader clears the per-pass slots and the LUTs and frees
+    * the C shader struct; the frame-history textures live outside the
+    * shader and are cleared here. */
+   [self _freeVideoShader:_shader];
+   _shader = NULL;
+   for (i = 0; i < GFX_MAX_FRAME_HISTORY + 1; i++)
+      RARCH_STRUCT_ASSIGN(_engine.frame.texture[i].view, nil);
+
+#if !__has_feature(objc_arc)
+   {
+      int w, m;
+      for (w = 0; w < RARCH_WRAP_MAX; w++)
+      {
+         for (m = 0; m < 2; m++)
+         {
+            /* The RARCH_FILTER_UNSPEC row aliases one of the two rows
+             * below (see setFilteringIndex:smooth:) and owns nothing. */
+            [(id)_samplers[RARCH_FILTER_LINEAR][w][m] release];
+            [(id)_samplers[RARCH_FILTER_NEAREST][w][m] release];
+         }
+      }
+   }
+   [_context release];
+   [(id)_texture release];
+   [(id)_src release];
+   RARCH_SUPER_DEALLOC();
+#endif
+}
+
 - (void)_initSamplers
 {
    int i;
-   MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new];
+   MTLSamplerDescriptor *sd = RARCH_AUTORELEASE_R([MTLSamplerDescriptor new]);
 
    /* Initialize samplers */
    for (i = 0; i < RARCH_WRAP_MAX; i++)
@@ -4875,7 +5196,7 @@ typedef struct MTLALIGN(16)
                                  width:(NSUInteger)size.width
                                  height:(NSUInteger)size.height
                                  mipmapped:NO];
-      _src = [_context.device newTextureWithDescriptor:td];
+      RARCH_ASSIGN(_src, RARCH_AUTORELEASE_R([_context.device newTextureWithDescriptor:td]));
    }
 }
 
@@ -5083,7 +5404,7 @@ typedef struct MTLALIGN(16)
 
 - (void)_initTexture:(texture_t *)t withDescriptor:(MTLTextureDescriptor *)td
 {
-   STRUCT_ASSIGN(t->view, [_context.device newTextureWithDescriptor:td]);
+   RARCH_STRUCT_ASSIGN(t->view, RARCH_AUTORELEASE_R([_context.device newTextureWithDescriptor:td]));
    t->size_data.x = td.width;
    t->size_data.y = td.height;
    t->size_data.z = 1.0f / td.width;
@@ -5104,7 +5425,7 @@ typedef struct MTLALIGN(16)
 - (void)drawWithContext:(Context *)ctx
 {
    size_t i;
-   _texture = _engine.frame.texture[0].view;
+   RARCH_ASSIGN(_texture, _engine.frame.texture[0].view);
 
    if (     (_format != RPixelFormatBGRA8Unorm)
          && (_format != RPixelFormatBGRX8Unorm)
@@ -5130,7 +5451,7 @@ typedef struct MTLALIGN(16)
 
    id<MTLCommandBuffer> cb = ctx.blitCommandBuffer;
 
-   MTLRenderPassDescriptor *rpd        = [MTLRenderPassDescriptor new];
+   MTLRenderPassDescriptor *rpd        = RARCH_AUTORELEASE_R([MTLRenderPassDescriptor new]);
    rpd.colorAttachments[0].loadAction  = MTLLoadActionDontCare;
    rpd.colorAttachments[0].storeAction = MTLStoreActionStore;
 
@@ -5158,6 +5479,10 @@ typedef struct MTLALIGN(16)
       _engine.pass[i].frame_count = (uint32_t)_frameCount;
       if (_shader->pass[i].frame_count_mod)
          _engine.pass[i].frame_count %= _shader->pass[i].frame_count_mod;
+      /* Not modulo'd: SwapCount counts what the display was shown */
+      _engine.pass[i].swap_count       = (uint32_t)_swapCount;
+      _engine.pass[i].total_subframes  = _totalSubframes;
+      _engine.pass[i].current_subframe = _currentSubframe;
 
 #ifdef HAVE_REWIND
       if (state_manager_frame_is_reversed())
@@ -5240,7 +5565,7 @@ typedef struct MTLALIGN(16)
          }
       }
 
-      _texture = _engine.pass[i].rt.view;
+      RARCH_ASSIGN(_texture, _engine.pass[i].rt.view);
    }
 
    if (_texture)
@@ -5259,8 +5584,8 @@ typedef struct MTLALIGN(16)
    /* Release existing targets */
    for (i = 0; i < _shader->passes; i++)
    {
-      STRUCT_ASSIGN(_engine.pass[i].rt.view, nil);
-      STRUCT_ASSIGN(_engine.pass[i].feedback.view, nil);
+      RARCH_STRUCT_ASSIGN(_engine.pass[i].rt.view, nil);
+      RARCH_STRUCT_ASSIGN(_engine.pass[i].feedback.view, nil);
       memset(&_engine.pass[i].rt, 0, sizeof(_engine.pass[i].rt));
       memset(&_engine.pass[i].feedback, 0, sizeof(_engine.pass[i].feedback));
    }
@@ -5412,22 +5737,22 @@ typedef struct MTLALIGN(16)
    for (i = 0; i < GFX_MAX_SHADERS; i++)
    {
       int j;
-      STRUCT_ASSIGN(_engine.pass[i].rt.view, nil);
-      STRUCT_ASSIGN(_engine.pass[i].feedback.view, nil);
+      RARCH_STRUCT_ASSIGN(_engine.pass[i].rt.view, nil);
+      RARCH_STRUCT_ASSIGN(_engine.pass[i].feedback.view, nil);
       memset(&_engine.pass[i].rt, 0, sizeof(_engine.pass[i].rt));
       memset(&_engine.pass[i].feedback, 0, sizeof(_engine.pass[i].feedback));
 
-      STRUCT_ASSIGN(_engine.pass[i]._state, nil);
+      RARCH_STRUCT_ASSIGN(_engine.pass[i]._state, nil);
 
       for (j = 0; j < SLANG_CBUFFER_MAX; j++)
       {
-         STRUCT_ASSIGN(_engine.pass[i].buffers[j], nil);
+         RARCH_STRUCT_ASSIGN(_engine.pass[i].buffers[j], nil);
       }
    }
 
    for (i = 0; i < GFX_MAX_TEXTURES; i++)
    {
-      STRUCT_ASSIGN(_engine.luts[i].view, nil);
+      RARCH_STRUCT_ASSIGN(_engine.luts[i].view, nil);
    }
 
    free(shader);
@@ -5526,6 +5851,23 @@ typedef struct MTLALIGN(16)
                &_engine.pass[i].rotation,        /* Rotation */
                &_engine.pass[i].core_aspect,     /* OriginalAspect */
                &_engine.pass[i].core_aspect_rot, /* OriginalAspectRotated */
+               &_engine.pass[i].total_subframes, /* TotalSubFrames */
+               &_engine.pass[i].current_subframe,/* CurrentSubFrame */
+               /* The HDR and sensor semantics have no Metal source yet;
+                * slang_process leaves an unwired slot at its zero
+                * default. The table is positional, so they are named
+                * here to keep SwapCount at its index. */
+               NULL,                             /* HDRMode */
+               NULL,                             /* BrightnessNits */
+               NULL,                             /* Scanlines */
+               NULL,                             /* SubpixelLayout */
+               NULL,                             /* ExpandGamut */
+               NULL,                             /* InverseTonemap */
+               NULL,                             /* HDR10 */
+               NULL,                             /* Gyroscope */
+               NULL,                             /* Accelerometer */
+               NULL,                             /* AccelerometerRest */
+               &_engine.pass[i].swap_count,      /* SwapCount */
             }
          };
          /* clang-format on */
@@ -5545,7 +5887,7 @@ typedef struct MTLALIGN(16)
          @try
          {
             NSError *err;
-            MTLVertexDescriptor *vd      = [MTLVertexDescriptor new];
+            MTLVertexDescriptor *vd      = RARCH_AUTORELEASE_R([MTLVertexDescriptor new]);
             vd.attributes[0].offset      = offsetof(VertexSlang, position);
             vd.attributes[0].format      = MTLVertexFormatFloat4;
             vd.attributes[0].bufferIndex = 4;
@@ -5555,7 +5897,7 @@ typedef struct MTLALIGN(16)
             vd.layouts[4].stride         = sizeof(VertexSlang);
             vd.layouts[4].stepFunction   = MTLVertexStepFunctionPerVertex;
 
-            MTLRenderPipelineDescriptor *psd = [MTLRenderPipelineDescriptor new];
+            MTLRenderPipelineDescriptor *psd = RARCH_AUTORELEASE_R([MTLRenderPipelineDescriptor new]);
 
             psd.label = [[NSString stringWithUTF8String:shader->pass[i].source.path]
                           stringByReplacingOccurrencesOfString:shadersPath withString:@""];
@@ -5618,7 +5960,7 @@ typedef struct MTLALIGN(16)
             psd.sampleCount                = 1;
             psd.vertexDescriptor           = vd;
 
-            id<MTLLibrary>             lib = [_context.device newLibraryWithSource:vs_src options:nil error:&err];
+            id<MTLLibrary>             lib = RARCH_AUTORELEASE_R([_context.device newLibraryWithSource:vs_src options:nil error:&err]);
             if (err != nil)
             {
                if (lib == nil)
@@ -5632,9 +5974,9 @@ typedef struct MTLALIGN(16)
 #endif
             }
 
-            psd.vertexFunction = [lib newFunctionWithName:@"main0"];
+            psd.vertexFunction = RARCH_AUTORELEASE_R([lib newFunctionWithName:@"main0"]);
 
-            lib = [_context.device newLibraryWithSource:fs_src options:nil error:&err];
+            lib = RARCH_AUTORELEASE_R([_context.device newLibraryWithSource:fs_src options:nil error:&err]);
             if (err != nil)
             {
                if (lib == nil)
@@ -5647,10 +5989,10 @@ typedef struct MTLALIGN(16)
                RARCH_WARN("[Metal] Warnings compiling fragment shader: %s.\n", err.localizedDescription.UTF8String);
 #endif
             }
-            psd.fragmentFunction = [lib newFunctionWithName:@"main0"];
+            psd.fragmentFunction = RARCH_AUTORELEASE_R([lib newFunctionWithName:@"main0"]);
 
-            STRUCT_ASSIGN(_engine.pass[i]._state,
-                          [_context.device newRenderPipelineStateWithDescriptor:psd error:&err]);
+            RARCH_STRUCT_ASSIGN(_engine.pass[i]._state,
+                          RARCH_AUTORELEASE_R([_context.device newRenderPipelineStateWithDescriptor:psd error:&err]));
             if (err != nil)
             {
                save_msl = true;
@@ -5665,8 +6007,8 @@ typedef struct MTLALIGN(16)
                if (size == 0)
                   continue;
 
-                id<MTLBuffer> buf = [_context.device newBufferWithLength:size options:PLATFORM_METAL_RESOURCE_STORAGE_MODE];
-               STRUCT_ASSIGN(_engine.pass[i].buffers[j], buf);
+                id<MTLBuffer> buf = RARCH_AUTORELEASE_R([_context.device newBufferWithLength:size options:PLATFORM_METAL_RESOURCE_STORAGE_MODE]);
+               RARCH_STRUCT_ASSIGN(_engine.pass[i].buffers[j], buf);
             }
          } @finally
          {
@@ -5789,24 +6131,69 @@ typedef struct MTLALIGN(16)
 - (instancetype)initWithContext:(Context *)context
 {
    if (self = [super init])
-      _context = context;
+      _context = RARCH_RETAIN(context);
    return self;
 }
+
+#if !__has_feature(objc_arc)
+- (void)dealloc
+{
+   [_context release];
+   [_images release];
+   [(id)_vert release];
+   [super dealloc];
+}
+#endif
 
 - (bool)loadImages:(const struct texture_image *)images count:(NSUInteger)count
 {
    size_t i;
    [self _freeImages];
 
-   _images = [NSMutableArray arrayWithCapacity:count];
+   /* Factory result is autoreleased -- must be retained into the ivar
+    * or an MRC build reads a dead array on the next frame. */
+   RARCH_ASSIGN(_images, [NSMutableArray arrayWithCapacity:count]);
 
    NSUInteger needed = sizeof(SpriteVertex) * count * 4;
    if (!_vert || _vert.length < needed)
-      _vert = [_context.device newBufferWithLength:needed options:PLATFORM_METAL_RESOURCE_STORAGE_MODE];
+      RARCH_ASSIGN(_vert, RARCH_AUTORELEASE_R([_context.device newBufferWithLength:needed options:PLATFORM_METAL_RESOURCE_STORAGE_MODE]));
 
    for (i = 0; i < count; i++)
    {
-      _images[i] = [_context newTexture:images[i] mipmapped:NO];
+      /* nil into an NSMutableArray is an exception, not an empty
+       * slot: a texture that could not be made ends the page here,
+       * with the images before it and nothing after. */
+      id<MTLTexture> tex = RARCH_AUTORELEASE_R([_context newTexture:images[i] mipmapped:NO]);
+      if (!tex)
+         return NO;
+      _images[i] = tex;
+      [self updateVertexX:0 y:0 w:1 h:1 index:i];
+      [self updateTextureCoordsX:0 y:0 w:1 h:1 index:i];
+      [self _updateColorRed:1.0 green:1.0 blue:1.0 alpha:1.0 index:i];
+   }
+
+   _vertDirty = YES;
+
+   return YES;
+}
+
+- (bool)loadTextures:(const uintptr_t *)textures count:(NSUInteger)count
+{
+   size_t i;
+   [self _freeImages];
+
+   RARCH_ASSIGN(_images, [NSMutableArray arrayWithCapacity:count]);
+
+   NSUInteger needed = sizeof(SpriteVertex) * count * 4;
+   if (!_vert || _vert.length < needed)
+      RARCH_ASSIGN(_vert, RARCH_AUTORELEASE_R([_context.device newBufferWithLength:needed options:PLATFORM_METAL_RESOURCE_STORAGE_MODE]));
+
+   for (i = 0; i < count; i++)
+   {
+      Texture *t = (__bridge Texture *)(void *)textures[i];
+      if (!t.texture)
+         return NO;
+      _images[i] = t.texture;
       [self updateVertexX:0 y:0 w:1 h:1 index:i];
       [self updateTextureCoordsX:0 y:0 w:1 h:1 index:i];
       [self _updateColorRed:1.0 green:1.0 blue:1.0 alpha:1.0 index:i];
@@ -5839,9 +6226,15 @@ typedef struct MTLALIGN(16)
    }
 }
 
+/* The four vertices of sprite @index, or NULL when the buffer has no
+ * such sprite: no page loaded, a buffer that could not be made, an
+ * index off the end. The setters are called whenever the frontend
+ * likes, not only after a load that worked. */
 - (SpriteVertex *)_getForIndex:(NSUInteger)index
 {
    SpriteVertex *pv = (SpriteVertex *)_vert.contents;
+   if (!pv || (index + 1) * 4 * sizeof(SpriteVertex) > _vert.length)
+      return NULL;
    return &pv[index * 4];
 }
 
@@ -5849,6 +6242,8 @@ typedef struct MTLALIGN(16)
 {
    simd_float4 color = simd_make_float4(r, g, b, a);
    SpriteVertex *pv  = [self _getForIndex:index];
+   if (!pv)
+      return;
    pv[0].color       = color;
    pv[1].color       = color;
    pv[2].color       = color;
@@ -5864,6 +6259,8 @@ typedef struct MTLALIGN(16)
 - (void)updateVertexX:(float)x y:(float)y w:(float)w h:(float)h index:(NSUInteger)index
 {
    SpriteVertex *pv = [self _getForIndex:index];
+   if (!pv)
+      return;
    pv[0].position   = simd_make_float2(x, y);
    pv[1].position   = simd_make_float2(x + w, y);
    pv[2].position   = simd_make_float2(x, y + h);
@@ -5874,6 +6271,8 @@ typedef struct MTLALIGN(16)
 - (void)updateTextureCoordsX:(float)x y:(float)y w:(float)w h:(float)h index:(NSUInteger)index
 {
    SpriteVertex *pv = [self _getForIndex:index];
+   if (!pv)
+      return;
    pv[0].texCoord   = simd_make_float2(x, y);
    pv[1].texCoord   = simd_make_float2(x + w, y);
    pv[2].texCoord   = simd_make_float2(x, y + h);
@@ -5881,7 +6280,7 @@ typedef struct MTLALIGN(16)
    _vertDirty       = YES;
 }
 
-- (void)_freeImages { _images = nil; }
+- (void)_freeImages { RARCH_RELEASE_NIL(_images); }
 
 @end
 
@@ -5960,9 +6359,12 @@ static void *metal_ctx_data = NULL;
 
 static void metal_ctx_swap_buffers(void *data)
 {
-   MetalDriver *md = (__bridge MetalDriver *)metal_ctx_data;
-   if (md)
-      [md.context swapBuffers];
+   @autoreleasepool
+   {
+      MetalDriver *md = (__bridge MetalDriver *)metal_ctx_data;
+      if (md)
+         [md.context swapBuffers];
+   }
 }
 
 static bool metal_set_shader(void *data,
@@ -6009,7 +6411,7 @@ static void metal_init_mainthread(void *userdata)
    /* Store reference for context swap_buffers calls */
    metal_ctx_data = (__bridge void *)md;
 
-   args->result   = (__bridge_retained void *)md;
+   args->result   = RARCH_BRIDGE_RETAINED(RARCH_AUTORELEASE_R(md));
 }
 
 static void *metal_init(
@@ -6073,13 +6475,17 @@ static bool metal_frame(void *data, const void *frame,
       metal_subframe_lock = true;
       for (j = 1; j < (int)video_info->shader_subframes; j++)
       {
-         /* Re-render and present with NULL frame data (reuse previous frame) */
+         /* Re-render and present with NULL frame data (reuse previous
+          * frame); the index tells the shader which sub-frame this is */
+         video_info->current_subframe = (unsigned)j;
          if (!metal_frame(data, NULL, 0, 0, frame_count, 0, msg, video_info))
          {
+            video_info->current_subframe = 0;
             metal_subframe_lock = false;
             return false;
          }
       }
+      video_info->current_subframe = 0;
       metal_subframe_lock = false;
    }
 
@@ -6136,24 +6542,27 @@ static bool metal_set_shader(void *data,
       enum rarch_shader_type type, const char *path)
 {
 #if defined(HAVE_SLANG) && defined(HAVE_SPIRV_CROSS)
-   MetalDriver *md = (__bridge MetalDriver *)data;
-   if (md)
+   @autoreleasepool
    {
-      if (type != RARCH_SHADER_SLANG)
+      MetalDriver *md = (__bridge MetalDriver *)data;
+      if (md)
       {
-         if (path && *path && type != RARCH_SHADER_SLANG)
-            RARCH_WARN("[Metal] Only Slang shaders are supported. Falling back to stock.\n");
-         path = NULL;
-      }
+         if (type != RARCH_SHADER_SLANG)
+         {
+            if (path && *path && type != RARCH_SHADER_SLANG)
+               RARCH_WARN("[Metal] Only Slang shaders are supported. Falling back to stock.\n");
+            path = NULL;
+         }
 
-      if (!path || !*path)
-      {
-         [md.frameView clearShader];
-         return true;
-      }
+         if (!path || !*path)
+         {
+            [md.frameView clearShader];
+            return true;
+         }
 
-      if ([md.frameView setShaderFromPath:[NSString stringWithUTF8String:path]])
-         return true;
+         if ([md.frameView setShaderFromPath:[NSString stringWithUTF8String:path]])
+            return true;
+      }
    }
 #endif
    return false;
@@ -6161,9 +6570,12 @@ static bool metal_set_shader(void *data,
 
 static void metal_free(void *data)
 {
-   __attribute__((unused)) MetalDriver *md = (__bridge_transfer MetalDriver *)data;
-   metal_ctx_data = NULL;
-   md = nil;
+   @autoreleasepool
+   {
+      __attribute__((unused)) MetalDriver *md = RARCH_BRIDGE_TRANSFER(MetalDriver *, data);
+      metal_ctx_data = NULL;
+      md = nil;
+   }
 }
 
 static void metal_set_viewport(void *data, unsigned vp_width, unsigned vp_height,
@@ -6189,15 +6601,21 @@ static void metal_viewport_info(void *data, struct video_viewport *vp)
 
 static bool metal_read_viewport(void *data, uint8_t *buffer, bool is_idle)
 {
-   MetalDriver *md = (__bridge MetalDriver *)data;
-   return [md.frameView readViewport:buffer isIdle:is_idle];
+   @autoreleasepool
+   {
+      MetalDriver *md = (__bridge MetalDriver *)data;
+      return [md.frameView readViewport:buffer isIdle:is_idle];
+   }
 }
 
 static bool metal_read_viewport_hdr(void *data, uint16_t *buffer,
       bool is_idle, struct rpng_hdr_metadata *out_meta)
 {
-   MetalDriver *md = (__bridge MetalDriver *)data;
-   return [md.frameView readViewportHDR:buffer isIdle:is_idle meta:out_meta];
+   @autoreleasepool
+   {
+      MetalDriver *md = (__bridge MetalDriver *)data;
+      return [md.frameView readViewportHDR:buffer isIdle:is_idle meta:out_meta];
+   }
 }
 
 #ifdef HAVE_THREADS
@@ -6231,9 +6649,12 @@ static uintptr_t metal_load_texture_internal(void *video_data, void *data,
    if (!img)
       return 0;
 
-   struct texture_image image = *img;
-   Texture *t = [md.context newTexture:image filter:filter_type];
-   return (uintptr_t)(__bridge_retained void *)(t);
+   @autoreleasepool
+   {
+      struct texture_image image = *img;
+      Texture *t = [md.context newTexture:image filter:filter_type];
+      return (uintptr_t)RARCH_BRIDGE_RETAINED(RARCH_AUTORELEASE_R(t));
+   }
 }
 
 #ifdef HAVE_THREADS
@@ -6254,13 +6675,22 @@ static uintptr_t metal_load_texture(void *video_data, void *data,
       bool threaded, enum texture_filter_type filter_type)
 {
 #ifdef HAVE_THREADS
-   /* When threaded video is active, dispatch to the video
-    * thread so Context.blitCommandBuffer access is serialised
-    * with the video thread's frame-end commit.  This is only
-    * required for mipmapped filters (which encode into the
-    * blit buffer), but we dispatch unconditionally for
-    * consistency and simplicity. */
-   if (threaded)
+   /* When threaded video is active, mipmapped loads must run on the
+    * video thread: they encode mipmap generation into the shared
+    * Context.blitCommandBuffer, and MTLCommandBuffer / encoders are
+    * single-thread-only, so the encode has to be serialised with the
+    * video thread's frame-end commit.
+    *
+    * Non-mipmapped loads never touch the shared command buffer --
+    * they only call MTLDevice newTextureWithDescriptor: (MTLDevice is
+    * documented thread-safe), replaceRegion: on the freshly created
+    * texture, and read the immutable sampler table -- so they run
+    * inline.  Menu icon and thumbnail loads are all non-mipmapped;
+    * routing each of them through a video-thread round-trip was a
+    * per-icon latency tax on menu population. */
+   if (      threaded
+         && (   filter_type == TEXTURE_FILTER_MIPMAP_LINEAR
+             || filter_type == TEXTURE_FILTER_MIPMAP_NEAREST))
    {
       metal_texture_cmd_t cmd;
       cmd.video_data  = video_data;
@@ -6281,13 +6711,151 @@ static void metal_unload_texture(void *data,
    if (!handle)
       return;
    /* Metal command buffers retain their referenced resources,
-    * so ARC-releasing the handle here does not free the
+    * so releasing the handle here does not free the
     * underlying MTLTexture if the video thread's command
     * buffer is still using it -- the Metal runtime refcounts
     * resources across CPU and GPU.  No cross-thread
     * serialisation needed for unload. */
-   __attribute__((unused)) Texture *t = (__bridge_transfer Texture *)(void *)handle;
-   t = nil;
+   @autoreleasepool
+   {
+      __attribute__((unused)) Texture *t = RARCH_BRIDGE_TRANSFER(Texture *, handle);
+      t = nil;
+   }
+}
+
+/* Same-size contents into a texture metal_load_texture made, the way
+ * the menu frame and an animated preview stream into the one texture
+ * every frame.
+ *
+ * The pixels go through a staging buffer and a GPU blit rather than
+ * replaceRegion:. replaceRegion: writes from the CPU the moment it is
+ * called, while the command buffers already committed may still be
+ * sampling that texture - a command buffer retains what it samples,
+ * which keeps the object alive but says nothing about its contents.
+ * The other backends each refuse that: Vulkan checks its fences,
+ * D3D11 maps with DO_NOT_WAIT, D3D12 compares a fence tag, and each
+ * drops the frame. A blit on the shared blit command buffer needs no
+ * such rule - it executes in commit order with the draws around it,
+ * and Metal's hazard tracking orders the write against the reads - so
+ * the frame is neither raced nor dropped.
+ *
+ * A mipmapped texture would need its levels regenerated after the
+ * copy: refused, so the caller loads a replacement.
+ *
+ * Must run on the thread that owns Context.blitCommandBuffer (see
+ * metal_load_texture_internal): metal_update_texture routes it to
+ * the video thread when threaded video is up. */
+static bool metal_update_texture_internal(void *video_data,
+      uintptr_t handle, const struct texture_image *ti)
+{
+   MetalDriver *md = (__bridge MetalDriver *)video_data;
+   if (!md || !handle || !ti || !ti->pixels)
+      return false;
+
+   @autoreleasepool
+   {
+      Texture *t          = (__bridge Texture *)(void *)handle;
+      id<MTLTexture> tex  = t.texture;
+      if (     !tex
+            || tex.mipmapLevelCount > 1
+            || tex.width  != ti->width
+            || tex.height != ti->height)
+         return false;
+      {
+         NSUInteger len = (NSUInteger)ti->width * ti->height * 4;
+         unsigned slot  = t->_stagingNext;
+         NSUInteger off = (NSUInteger)slot * len;
+         id<MTLCommandBuffer> cb;
+         id<MTLBlitCommandEncoder> bce;
+
+         /* The copy out of this slot from METAL_STAGING_SLOTS frames
+          * ago has not finished: the frame is dropped rather than
+          * written over the GPU's shoulder, which is the policy the
+          * other backends keep. */
+         if (__atomic_load_n(&t->_stagingBusy[slot], __ATOMIC_ACQUIRE))
+            return true;
+         if (t.staging.length < len * METAL_STAGING_SLOTS)
+         {
+            id<MTLBuffer> buf = [tex.device
+                  newBufferWithLength:len * METAL_STAGING_SLOTS
+                  options:PLATFORM_METAL_RESOURCE_STORAGE_MODE];
+            if (!buf)
+               return false;
+            t.staging = RARCH_AUTORELEASE_R(buf);
+         }
+         if (!(cb = md.context.blitCommandBuffer))
+            return false;
+         memcpy((uint8_t *)t.staging.contents + off, ti->pixels, len);
+#if TARGET_OS_OSX
+         if (t.staging.storageMode == MTLStorageModeManaged)
+            [t.staging didModifyRange:NSMakeRange(off, len)];
+#endif
+         bce = [cb blitCommandEncoder];
+         [bce copyFromBuffer:t.staging
+                sourceOffset:off
+           sourceBytesPerRow:4 * ti->width
+         sourceBytesPerImage:len
+                  sourceSize:MTLSizeMake(ti->width, ti->height, 1)
+                   toTexture:tex
+            destinationSlice:0
+            destinationLevel:0
+           destinationOrigin:MTLOriginMake(0, 0, 0)];
+         [bce endEncoding];
+         __atomic_store_n(&t->_stagingBusy[slot], 1, __ATOMIC_RELEASE);
+         t->_stagingNext = (slot + 1) % METAL_STAGING_SLOTS;
+         {
+            /* The slot is free again when this command buffer is done
+             * with it. The handler holds the Texture so the flag it
+             * clears is still there to clear. */
+            Texture *held = t;
+            [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
+               (void)done;
+               __atomic_store_n(&held->_stagingBusy[slot], 0,
+                     __ATOMIC_RELEASE);
+            }];
+         }
+      }
+   }
+   return true;
+}
+
+#ifdef HAVE_THREADS
+/* Runs on the video thread via CMD_CUSTOM_COMMAND; the result goes
+ * back through cmd->handle (0 = refused), as metal_texture_load_wrap
+ * does, since the int return channel is not wide enough for it. */
+static uintptr_t metal_texture_update_wrap(void *data)
+{
+   metal_texture_cmd_t *cmd = (metal_texture_cmd_t*)data;
+   cmd->handle = metal_update_texture_internal(cmd->video_data,
+         cmd->handle, cmd->image) ? cmd->handle : 0;
+   return 0;
+}
+#endif
+
+static bool metal_update_texture(void *video_data, uintptr_t handle,
+      const struct texture_image *ti, bool threaded)
+{
+   if (!handle || !ti)
+      return false;
+
+#ifdef HAVE_THREADS
+   /* The update encodes a blit into Context.blitCommandBuffer, which
+    * the video thread commits at frame end: the same single-thread
+    * rule metal_load_texture follows for mipmapped loads, so under
+    * threaded video it runs there too. */
+   if (threaded)
+   {
+      metal_texture_cmd_t cmd;
+      cmd.video_data  = video_data;
+      cmd.image       = (struct texture_image *)ti;
+      cmd.filter_type = TEXTURE_FILTER_LINEAR;
+      cmd.handle      = handle;
+      video_thread_texture_handle(&cmd, metal_texture_update_wrap);
+      return cmd.handle != 0;
+   }
+#endif
+
+   return metal_update_texture_internal(video_data, handle, ti);
 }
 
 /* TODO/FIXME - implement */
@@ -6333,12 +6901,12 @@ static void metal_set_texture_frame(void *data, const void *frame,
       float alpha)
 {
    MetalDriver *md         = (__bridge MetalDriver *)data;
-   settings_t *settings;
    bool menu_linear_filter;
    if (!md)
       return;
-   settings                = config_get_ptr();
-   menu_linear_filter      = settings->bools.menu_linear_filter;
+   /* What the last frame carried, not what the setting says now: the
+    * video thread applies this from thread_update_driver_state(). */
+   menu_linear_filter      = md.frameMenuLinearFilter;
 
    [md.menu updateWidth:width
                  height:height
@@ -6474,7 +7042,7 @@ static bool metal_supports_texture_format(void *video_data,
          return false;
    }
    dev = md.context.device;
-   if (@available(macOS 11.0, *))
+   if (apple_runtime_available(APPLE_RUNTIME_VER(11, 0, 0), 0, 0))
       return dev.supportsBCTextureCompression ? true : false;
    return true; /* BC always available on pre-11 (Intel) Macs */
 #else
@@ -6489,15 +7057,18 @@ static uintptr_t metal_load_texture_compressed(void *video_data,
       enum texture_filter_type filter_type)
 {
 #if TARGET_OS_OSX
-   MetalDriver *md = (__bridge MetalDriver *)video_data;
-   Texture     *t;
-   (void)threaded;
-   if (!md || !tc || tc->num_mips == 0)
-      return 0;
-   t = [md.context newTextureCompressed:tc filter:filter_type];
-   if (!t)
-      return 0;
-   return (uintptr_t)(__bridge_retained void *)(t);
+   @autoreleasepool
+   {
+      MetalDriver *md = (__bridge MetalDriver *)video_data;
+      Texture     *t;
+      (void)threaded;
+      if (!md || !tc || tc->num_mips == 0)
+         return 0;
+      t = [md.context newTextureCompressed:tc filter:filter_type];
+      if (!t)
+         return 0;
+      return (uintptr_t)RARCH_BRIDGE_RETAINED(RARCH_AUTORELEASE_R(t));
+   }
 #else
    (void)video_data;
    (void)tc;
@@ -6535,7 +7106,20 @@ static const video_poke_interface_t metal_poke_interface = {
    metal_set_hdr_scanlines,
    metal_set_hdr_subpixel_layout,
    metal_supports_texture_format,
-   metal_load_texture_compressed
+   metal_load_texture_compressed,
+   NULL, /* present_last */
+   NULL, /* get_last_present_time */
+   NULL, /* hw_ring_install */
+   NULL, /* hw_ring_fence_new */
+   NULL, /* hw_ring_fence_free */
+   NULL, /* hw_ring_fence_signal */
+   NULL, /* hw_ring_fence_wait */
+   NULL, /* hw_ring_capture */
+   NULL, /* hw_ring_present_slot */
+   NULL, /* hw_ring_context_new */
+   NULL, /* hw_ring_context_free */
+   NULL, /* hw_ring_framebuffer */
+   metal_update_texture
 };
 
 static void metal_get_poke_interface(void *data,
@@ -6560,6 +7144,16 @@ static bool metal_overlay_load(void *data,
       return NO;
 
    return [md.overlay loadImages:(const struct texture_image *)images count:num_images];
+}
+
+static bool metal_overlay_load_textures(void *data,
+      const uintptr_t *textures, unsigned num_textures)
+{
+   MetalDriver *md = (__bridge MetalDriver *)data;
+   if (!md)
+      return NO;
+
+   return [md.overlay loadTextures:textures count:num_textures];
 }
 
 static void metal_overlay_tex_geom(void *data, unsigned index,
@@ -6595,6 +7189,7 @@ static void metal_overlay_set_alpha(void *data, unsigned index, float mod)
 static const video_overlay_interface_t metal_overlay_interface = {
    metal_overlay_enable,
    metal_overlay_load,
+   metal_overlay_load_textures,
    metal_overlay_tex_geom,
    metal_overlay_vertex_geom,
    metal_overlay_full_screen,
@@ -6667,6 +7262,15 @@ gfx_display_ctx_driver_t gfx_display_ctx_metal = {
    GFX_VIDEO_DRIVER_METAL,
    "metal",
    false,
+   /* handles_vertex_strip: this driver's draw walks
+    * draw->coords->vertices rather than reading a fixed four, so a
+    * strip may be handed to it whole.
+    *
+    * It was missing entirely, which is what the pointer-to-bool
+    * warning was reporting: scissor_begin was landing in this bool,
+    * scissor_end in scissor_begin, and scissor_end was left null. The
+    * compiler had been saying so for a while. */
+   true,
    gfx_display_metal_scissor_begin,
    gfx_display_metal_scissor_end
 };
