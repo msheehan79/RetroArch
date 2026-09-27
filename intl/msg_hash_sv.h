@@ -1150,6 +1150,8 @@ static const struct
    char s_8d3a8b68[5];
    char s_68d27147[11];
    char s_f02f73fc[26];
+   char s_e5b971a0[7];
+   char s_17615fcf[7];
    char s_3a0a3fef[13];
    char s_1b6ed818[18];
    char s_89a75c21[19];
@@ -2084,6 +2086,10 @@ static const struct
    char s_60a38895[6];
    char s_db01e988[4];
    char s_e1c715da[4];
+   char s_b4d6cb93[30];
+   char s_ee1c318a[23];
+   char s_32b51618[24];
+   char s_a2906bd3[23];
    char s_e2f93e68[5];
    char s_47d26662[12];
    char s_0ca3b319[9];
@@ -3026,7 +3032,6 @@ static const struct
    char s_5aa622cc[201];
    char s_2b908073[258];
    char s_64bea160[176];
-   char s_2826de99[350];
    char s_97c62766[163];
    char s_6f458a85[92];
    char s_41702fdc[54];
@@ -3464,7 +3469,6 @@ static const struct
    char s_ffd591e0[48];
    char s_a51ab538[24];
    char s_55d6cc44[39];
-   char s_5a8f7fb9[203];
    char s_f2963d2d[31];
    char s_4c592ae1[90];
    char s_52ac4fb9[109];
@@ -3476,6 +3480,7 @@ static const struct
    char s_f77f7a41[65];
 #endif
    char s_e7cb5685[35];
+   char s_bd82a701[382];
    char s_8bb367a2[133];
    char s_2beab583[24];
    char s_a1c071eb[106];
@@ -3586,7 +3591,6 @@ static const struct
    char s_eec252b5[124];
    char s_f4e4e921[217];
    char s_7968f59d[42];
-   char s_8cee3615[148];
    char s_58c80718[291];
    char s_894ecb9a[376];
    char s_67d549fd[43];
@@ -5596,6 +5600,8 @@ static const struct
    "Meny",
    "Kioskl\303\244ge",
    "Stryp menyns bildfrekvens",
+   "Alltid",
+   "Aldrig",
    "Filhanterare",
    "Teckenf\303\244rg: Bl\303\245",
    "Teckenf\303\244rg: Gr\303\266n",
@@ -6539,6 +6545,10 @@ static const struct
    "vecka",
    "\303\245r",
    "\303\245r",
+   "Verifiering av TLS-certifikat",
+   "Inaktiverat (Os\303\244kert)",
+   "Valfritt (Varna endast)",
+   "Kr\303\244vs (Rekommenderas)",
    "Sant",
    "Halv period",
    "Klassisk",
@@ -7920,11 +7930,6 @@ static const struct
    "Spelar upp ljudsp\303\245ret f\303\266r animerade WebM-miniatyrbilder medan de visas. Ljud i Vor"
    "bis och Opus st\303\266ds. Ljudet loopas med animeringen och stoppas n\303\244r miniatyrbilden s"
    "t\303\244ngs.",
-   "Hur m\303\245nga tr\303\245dar som omvandlar varje bildruta i en animerad WebM- eller MP4-miniat"
-   "yrbild till pixlar. En tr\303\245d beh\303\245ller hela omvandlingen p\303\245 avkodningstr\303"
-   "\245den. Fler tr\303\245dar sprider den \303\266ver k\303\244rnor, vilket hj\303\244lper stora f"
-   "\303\266rhandsvisningar p\303\245 maskiner med lediga k\303\244rnor men kostar den k\303\266rand"
-   "e k\303\244rnan dessa tr\303\245dar p\303\245 maskiner utan s\303\245dana.",
    "Uppskala automatiskt miniatyrbilder med en bredd/h\303\266jd som \303\244r mindre \303\244n det "
    "angivna v\303\244rdet. F\303\266rb\303\244ttrar bildkvalit\303\251n. Har en m\303\245ttlig inver"
    "kan p\303\245 prestanda.",
@@ -8604,9 +8609,6 @@ static const struct
    "Visa information som \303\244r specifik f\303\266r enheten.",
    "Ta en bild av sk\303\244rmen.",
    "Utf\303\266r uppgifter p\303\245 en separat tr\303\245d.",
-   "H\303\245ll huvud- och ljudtr\303\245darna p\303\245 de snabbaste processork\303\244rnorna i en "
-   "processor med blandade k\303\244rntyper. Har ingen effekt p\303\245 processorer d\303\244r alla "
-   "k\303\244rnor \303\244r likadana. Tr\303\244der i kraft efter omstart.",
    "Typ av miniatyr som ska visas.",
    "Omslagsbilder, sk\303\244rmbilder och miniatyrbilder f\303\266r titelsk\303\244rmar lagras i den"
    "na katalog.",
@@ -8622,6 +8624,11 @@ static const struct
    "V\303\244lj din tidszon f\303\266r att justera datum och tid till din plats.",
 #endif
    "Visa aktuell tid i \303\266nskat format.",
+   "Styr hur servercertifikat kontrolleras vid s\303\244kra anslutningar (HTTPS) som anv\303\244nds "
+   "av Cloud Sync, RetroAchievements och Online Updater. Inst\303\244llningen \342\200\235Kr\303\244"
+   "vs\342\200\235 avvisar icke-betrodda certifikat och skyddar mot man-in-the-middle-attacker. S"
+   "\303\244nk endast denna s\303\244kerhetsniv\303\245 om du ansluter via en f\303\266retagsproxy e"
+   "ller till en v\303\244rd med sj\303\244lvsignerat certifikat som du litar p\303\245.",
    "Drivrutin f\303\266r kompletterande anv\303\244ndargr\303\244nssnitt p\303\245 skrivbordet som a"
    "nv\303\244nds n\303\244r skrivbordsmenyn \303\244r aktiverad. (Omstart kr\303\244vs)",
    "Visa f\303\266nstermenyf\303\244lt.",
@@ -8843,8 +8850,6 @@ static const struct
    "\245terg\303\245r slutligen till icke-heltalsskalning om underskalningsmarginalerna \303\244r f"
    "\303\266r stora.",
    "\303\204ndra inst\303\244llningar f\303\266r videoskalning.",
-   "Synkronisera videopresentationen med skannlinjens position. Minskar f\303\266rdr\303\266jningen "
-   "men \303\266kar risken f\303\266r bildrivning. VSync m\303\245ste vara avst\303\244ngt.",
    "VARNING: Snabbt flimmer kan orsaka bildbest\303\244ndighet p\303\245 vissa sk\303\244rmar. Anv"
    "\303\244nd p\303\245 egen risk // Simulerar en grundl\303\244ggande rullande skanningslinje \303"
    "\266ver flera underrutor genom att dela upp sk\303\244rmen vertikalt och rendera varje del av sk"
@@ -9611,7 +9616,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_sv_blob_check[
-      (sizeof(msg_hash_sv_blob) == (193611u
+      (sizeof(msg_hash_sv_blob) == (193406u
 #ifdef ANDROID
        + 361u
 #endif
@@ -11167,6 +11172,8 @@ static const uint32_t msg_hash_sv_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_DRIVER,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_ENABLE_KIOSK_MODE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_ENUM_THROTTLE_FRAMERATE,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_EXTENSION_DISPLAY_ALWAYS,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_EXTENSION_DISPLAY_NEVER,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_SETTINGS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FONT_COLOR_BLUE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FONT_COLOR_GREEN,
@@ -12100,6 +12107,10 @@ static const uint32_t msg_hash_sv_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_TIME_UNIT_WEEKS_SINGLE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_TIME_UNIT_YEARS_PLURAL,
    (uint32_t)MENU_ENUM_LABEL_VALUE_TIME_UNIT_YEARS_SINGLE,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_TLS_VERIFY_MODE,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_TLS_VERIFY_MODE_DISABLED,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_TLS_VERIFY_MODE_OPTIONAL,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_TLS_VERIFY_MODE_REQUIRED,
    (uint32_t)MENU_ENUM_LABEL_VALUE_TRUE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_TURBO_DUTY_CYCLE_HALF,
    (uint32_t)MENU_ENUM_LABEL_VALUE_TURBO_MODE_CLASSIC,
@@ -13036,7 +13047,6 @@ static const uint32_t msg_hash_sv_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_TEXTURE_MIPMAPPING,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_THUMBNAIL_BACKGROUND_ENABLE,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_THUMBNAIL_PREVIEW_AUDIO,
-   (uint32_t)MENU_ENUM_SUBLABEL_MENU_THUMBNAIL_PREVIEW_THREADS,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_THUMBNAIL_UPSCALE_THRESHOLD,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_TICKER_SMOOTH,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_TICKER_SPEED,
@@ -13474,7 +13484,6 @@ static const uint32_t msg_hash_sv_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_SYSTEM_INFORMATION,
    (uint32_t)MENU_ENUM_SUBLABEL_TAKE_SCREENSHOT,
    (uint32_t)MENU_ENUM_SUBLABEL_THREADED_DATA_RUNLOOP_ENABLE,
-   (uint32_t)MENU_ENUM_SUBLABEL_THREAD_PREFER_FAST_CORES,
    (uint32_t)MENU_ENUM_SUBLABEL_THUMBNAILS,
    (uint32_t)MENU_ENUM_SUBLABEL_THUMBNAILS_DIRECTORY,
    (uint32_t)MENU_ENUM_SUBLABEL_THUMBNAILS_MATERIALUI,
@@ -13486,6 +13495,7 @@ static const uint32_t msg_hash_sv_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_TIMEZONE,
 #endif
    (uint32_t)MENU_ENUM_SUBLABEL_TIME_SHOW,
+   (uint32_t)MENU_ENUM_SUBLABEL_TLS_VERIFY_MODE,
    (uint32_t)MENU_ENUM_SUBLABEL_UI_COMPANION_DRIVER,
    (uint32_t)MENU_ENUM_SUBLABEL_UI_MENUBAR_ENABLE,
    (uint32_t)MENU_ENUM_SUBLABEL_UNDO_LOAD_STATE,
@@ -13596,7 +13606,6 @@ static const uint32_t msg_hash_sv_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_SCALE_INTEGER_AXIS,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_SCALE_INTEGER_SCALING,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_SCALING_SETTINGS,
-   (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_SCANLINE_SYNC,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_SCAN_SUBFRAMES,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_SDL_DISPLAY_SERVER,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_SETTINGS,

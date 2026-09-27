@@ -273,7 +273,7 @@ static int play_pass(gfx_anim_preview_t *p, const uint32_t *ref,
       px = gfx_anim_preview_next(p, &dur, &argb);
       if (!px)
          break;
-      if (n < nref && crc32_buf(px, (size_t)p->width * p->height * 4)
+      if (n < nref && crc32_buf(px, VIDEO_SCALE_AREA(p->dims) * 4)
             != ref[n])
          (*mismatch)++;
       n++;

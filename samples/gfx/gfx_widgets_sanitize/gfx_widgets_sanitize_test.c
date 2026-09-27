@@ -79,7 +79,7 @@ static bool widgets_up(void)
    memset(s_settings, 0, sizeof(s_settings));
 
    return gfx_widgets_init(&s_disp, &s_anim, s_settings,
-         (uintptr_t)&s_disp, false, 1920, 1080, false,
+         (uintptr_t)&s_disp, false, VIDEO_SCALE_PACK(1920, 1080), false,
          "/tmp/nonexistent-assets", NULL);
 }
 
@@ -97,13 +97,13 @@ static void pump(int frames)
       video_frame_info_t video_info;
 
       gfx_widgets_iterate(&s_disp, s_settings,
-            1920, 1080, false, "/tmp/nonexistent-assets", NULL, false);
+            VIDEO_SCALE_PACK(1920, 1080), false,
+            "/tmp/nonexistent-assets", NULL, false);
 
       memset(&video_info, 0, sizeof(video_info));
       video_info.disp_userdata    = &s_disp;
       video_info.widgets_userdata = dispwidget_get_ptr();
-      video_info.width            = 1920;
-      video_info.height           = 1080;
+      video_info.dims             = VIDEO_SCALE_PACK(1920, 1080);
 
       gfx_widgets_frame(&video_info);
       iterations++;
@@ -258,7 +258,8 @@ static void test_icon_draw_size(void)
    stub_draw_dims  = 0;
    /* A texture handle of 0 is the one early return; any non-zero
     * value reaches the descriptor. */
-   gfx_widgets_draw_icon(NULL, &s_disp, 640, 480, 64, 16,
+   gfx_widgets_draw_icon(NULL, &s_disp, VIDEO_SCALE_PACK(640,
+         480), VIDEO_SCALE_PACK(64, 16),
          (uintptr_t)1, 8.0f, 8.0f, 0.0f, 1.0f, 0.0f, NULL);
 
    CHECK(stub_draw_count > before, "the icon draw never reached the driver");

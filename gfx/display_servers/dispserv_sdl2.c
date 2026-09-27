@@ -75,8 +75,9 @@ static bool sdl_display_server_mode_to_modeline(const SDL_DisplayMode *dm,
       video_modeline_t *mode)
 {
    memset(mode, 0, sizeof(*mode));
-   mode->width   = mode->hactive = dm->w;
-   mode->height  = mode->vactive = dm->h;
+   mode->dims    = VIDEO_SCALE_PACK(dm->w, dm->h);
+   mode->hactive = dm->w;
+   mode->vactive = dm->h;
    mode->refresh = dm->refresh_rate;
    mode->vfreq   = dm->refresh_rate;
    /* Labels only: SDL does not expose the timing behind a mode */
@@ -89,8 +90,10 @@ static bool sdl_display_server_mode_to_modeline(const SDL_DisplayMode *dm,
  * only state in which SDL2 honours a display mode, and it excludes
  * fullscreen-desktop, so the window flips to exclusive for the set. */
 static bool sdl_display_server_apply(dispserv_sdl_t *dispserv,
-      int w, int h, int refresh)
+      unsigned dims, int refresh)
 {
+   int w = (int)VIDEO_SCALE_W(dims);
+   int h = (int)VIDEO_SCALE_H(dims);
    SDL_DisplayMode want, got;
    SDL_Window *win = sdl_display_server_window();
    Uint32 flags;
@@ -138,7 +141,7 @@ static bool sdl_display_server_apply(dispserv_sdl_t *dispserv,
 }
 
 static bool sdl_display_server_set_resolution(void *data,
-      unsigned width, unsigned height, int int_hz, float hz,
+      unsigned dims, int int_hz, float hz,
       int center, int monitor_index, int xoffset, int padjust)
 {
    SDL_DisplayMode cur;
@@ -155,23 +158,23 @@ static bool sdl_display_server_set_resolution(void *data,
 
    memset(&cur, 0, sizeof(cur));
    SDL_GetCurrentDisplayMode(dispserv->display_index, &cur);
-   if (width == 0)
-      width = cur.w;
-   if (height == 0)
-      height = cur.h;
+   if (VIDEO_SCALE_W(dims) == 0)
+      VIDEO_SCALE_PUT_W(dims, cur.w);
+   if (VIDEO_SCALE_H(dims) == 0)
+      VIDEO_SCALE_PUT_H(dims, cur.h);
    if (int_hz == 0)
       int_hz = cur.refresh_rate;
 
-   return sdl_display_server_apply(dispserv, (int)width, (int)height, int_hz);
+   return sdl_display_server_apply(dispserv, dims, int_hz);
 }
 
 static int sdl_display_server_resolution_list_qsort(
       const video_display_config_t *a, const video_display_config_t *b)
 {
-   if (a->width != b->width)
-      return a->width < b->width ? -1 : 1;
-   if (a->height != b->height)
-      return a->height < b->height ? -1 : 1;
+   /* The width sits in the high half, so the word orders by width,
+    * then height. */
+   if (a->dims != b->dims)
+      return a->dims < b->dims ? -1 : 1;
    if (a->refreshrate != b->refreshrate)
       return a->refreshrate < b->refreshrate ? -1 : 1;
    return 0;
@@ -200,8 +203,7 @@ static void *sdl_display_server_get_resolution_list(void *data,
       SDL_DisplayMode dm;
       if (SDL_GetDisplayMode(display, i, &dm) != 0)
          continue;
-      conf[j].width             = dm.w;
-      conf[j].height            = dm.h;
+      conf[j].dims = VIDEO_SCALE_PACK(dm.w, dm.h);
       conf[j].bpp               = SDL_BITSPERPIXEL(dm.format);
       conf[j].refreshrate       = dm.refresh_rate;
       conf[j].refreshrate_float = (float)dm.refresh_rate;
@@ -227,16 +229,14 @@ static float sdl_display_server_get_refresh_rate(void *data)
 }
 
 static void sdl_display_server_get_video_output_size(void *data,
-      unsigned *width, unsigned *height, char *s, size_t len)
+      unsigned *dims, char *s, size_t len)
 {
    SDL_DisplayMode cur;
    memset(&cur, 0, sizeof(cur));
    if (SDL_GetCurrentDisplayMode(sdl_display_server_display_index(), &cur) != 0)
       return;
-   if (width)
-      *width  = cur.w;
-   if (height)
-      *height = cur.h;
+   if (dims)
+      *dims = VIDEO_SCALE_PACK(cur.w, cur.h);
 }
 
 static uint32_t sdl_display_server_get_flags(void *data)
@@ -266,8 +266,7 @@ static int sdl_display_server_modeline_list_outputs(void *data,
       {
          out[i].x      = r.x;
          out[i].y      = r.y;
-         out[i].width  = r.w;
-         out[i].height = r.h;
+         out[i].dims = VIDEO_SCALE_PACK(r.w, r.h);
       }
       out[i].primary = (i == window_display);
       strlcpy(out[i].name, name ? name : "", sizeof(out[i].name));
@@ -348,7 +347,7 @@ static int sdl_display_server_modeline_enum(void *data,
       /* One entry per WxH@R; SDL lists every pixel format */
       for (k = 0; k < j; k++)
       {
-         if (modes[k].width == dm.w && modes[k].height == dm.h
+         if (modes[k].dims == VIDEO_SCALE_PACK(dm.w, dm.h)
                && modes[k].refresh == dm.refresh_rate)
          {
             dup = true;
@@ -372,8 +371,7 @@ static bool sdl_display_server_modeline_set(void *data,
    dispserv_sdl_t *dispserv = (dispserv_sdl_t*)data;
    if (!dispserv || !dispserv->opened || !mode)
       return false;
-   return sdl_display_server_apply(dispserv, mode->width, mode->height,
-         mode->refresh);
+   return sdl_display_server_apply(dispserv, mode->dims, mode->refresh);
 }
 
 static bool sdl_display_server_modeline_flush(void *data)

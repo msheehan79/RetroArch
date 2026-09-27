@@ -62,7 +62,7 @@ static void      *dinput_vk        = NULL;
 int              win32_vk_interval = 0;
 
 /* FORWARD DECLARATIONS */
-void win32_get_video_size(void *data, unsigned *width, unsigned *height);
+void win32_get_video_size(void *data, unsigned *dims);
 
 static void gfx_ctx_w_vk_swap_interval(void *data, int interval)
 {
@@ -75,12 +75,12 @@ static void gfx_ctx_w_vk_swap_interval(void *data, int interval)
 }
 
 static void gfx_ctx_w_vk_check_window(void *data, bool *quit,
-      bool *resize, unsigned *width, unsigned *height)
+      bool *resize, unsigned *dims)
 {
    settings_t *settings     = config_get_ptr();
    float refresh_rate       = settings->floats.video_refresh_rate;
 
-   win32_check_window(NULL, quit, resize, width, height);
+   win32_check_window(NULL, quit, resize, dims);
 
    if (win32_vk.flags & VK_DATA_FLAG_NEED_NEW_SWAPCHAIN)
       *resize               = true;
@@ -98,8 +98,8 @@ static void gfx_ctx_w_vk_check_window(void *data, bool *quit,
          && (g_win32_refresh_rate)
          && (g_win32_refresh_rate  != refresh_rate)
          && (fabsf(g_win32_refresh_rate - refresh_rate) > 0.1f)
-         && (g_win32_resize_width  == *width)
-         && (g_win32_resize_height == *height))
+         && (g_win32_resize_width  == VIDEO_SCALE_W(*dims))
+         && (g_win32_resize_height == VIDEO_SCALE_H(*dims)))
    {
       g_win32_refresh_rate = settings->floats.video_refresh_rate;
       command_event(CMD_EVENT_REINIT, NULL);
@@ -135,10 +135,9 @@ static void gfx_ctx_w_vk_swap_buffers(void *data)
    vulkan_acquire_next_image(&win32_vk);
 }
 
-static bool gfx_ctx_w_vk_set_resize(void *data,
-      unsigned width, unsigned height)
+static bool gfx_ctx_w_vk_set_resize(void *data, unsigned dims)
 {
-   if (vulkan_create_swapchain(&win32_vk, width, height, win32_vk_interval))
+   if (vulkan_create_swapchain(&win32_vk, dims, win32_vk_interval))
    {
       if (win32_vk.flags & VK_DATA_FLAG_CREATED_NEW_SWAPCHAIN)
       {
@@ -224,7 +223,7 @@ error:
 }
 
 static bool gfx_ctx_w_vk_set_video_mode(void *data,
-      unsigned width, unsigned height,
+      unsigned dims,
       bool fullscreen)
 {
    if (fullscreen)
@@ -232,11 +231,11 @@ static bool gfx_ctx_w_vk_set_video_mode(void *data,
    else
       win32_vk.flags &= ~VK_DATA_FLAG_FULLSCREEN;
 
-   if (win32_set_video_mode(NULL, width, height, fullscreen))
+   if (win32_set_video_mode(NULL, dims, fullscreen))
    {
       /* Create a new swapchain in order to prevent fullscreen
        * emulated mailbox crash caused by refresh rate change */
-      vulkan_create_swapchain(&win32_vk, width, height, win32_vk_interval);
+      vulkan_create_swapchain(&win32_vk, dims, win32_vk_interval);
 
       gfx_ctx_w_vk_swap_interval(data, win32_vk_interval);
       return true;

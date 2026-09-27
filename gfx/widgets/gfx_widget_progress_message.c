@@ -234,8 +234,8 @@ static void gfx_widget_progress_message_frame(void *data, void *user_data)
       video_frame_info_t *video_info       = (video_frame_info_t*)data;
       dispgfx_widget_t *p_dispwidget       = (dispgfx_widget_t*)user_data;
 
-      unsigned video_width                 = video_info->width;
-      unsigned video_height                = video_info->height;
+      unsigned video_width                 = VIDEO_SCALE_W(video_info->dims);
+      unsigned video_height                = VIDEO_SCALE_H(video_info->dims);
       void *userdata                       = video_info->userdata;
       gfx_display_t *p_disp                = (gfx_display_t*)video_info->disp_userdata;
 
@@ -253,14 +253,11 @@ static void gfx_widget_progress_message_frame(void *data, void *user_data)
       gfx_display_draw_quad(
             p_disp,
             userdata,
-            video_width,
-            video_height,
+            VIDEO_SCALE_PACK(video_width, video_height),
             state->widget_x,
             state->widget_y,
-            state->widget_width,
-            state->widget_height,
-            video_width,
-            video_height,
+            VIDEO_SCALE_PACK(state->widget_width, state->widget_height),
+            VIDEO_SCALE_PACK(video_width, video_height),
             backdrop_color,
             NULL);
 
@@ -270,14 +267,11 @@ static void gfx_widget_progress_message_frame(void *data, void *user_data)
       gfx_display_draw_quad(
             p_disp,
             userdata,
-            video_width,
-            video_height,
+            VIDEO_SCALE_PACK(video_width, video_height),
             state->bar_bg_x,
             state->bar_bg_y,
-            state->bar_bg_width,
-            state->bar_bg_height,
-            video_width,
-            video_height,
+            VIDEO_SCALE_PACK(state->bar_bg_width, state->bar_bg_height),
+            VIDEO_SCALE_PACK(video_width, video_height),
             state->bar_bg_color,
             NULL);
 
@@ -296,14 +290,11 @@ static void gfx_widget_progress_message_frame(void *data, void *user_data)
       gfx_display_draw_quad(
             p_disp,
             userdata,
-            video_width,
-            video_height,
+            VIDEO_SCALE_PACK(video_width, video_height),
             state->bar_x,
             state->bar_y,
-            bar_width,
-            state->bar_height,
-            video_width,
-            video_height,
+            VIDEO_SCALE_PACK(bar_width, state->bar_height),
+            VIDEO_SCALE_PACK(video_width, video_height),
             bar_color,
             NULL);
 
@@ -313,8 +304,7 @@ static void gfx_widget_progress_message_frame(void *data, void *user_data)
             state->message,
             state->text_x,
             state->text_y,
-            video_width,
-            video_height,
+            VIDEO_SCALE_PACK(video_width, video_height),
             text_color,
             TEXT_ALIGN_CENTER,
             true);
@@ -322,7 +312,8 @@ static void gfx_widget_progress_message_frame(void *data, void *user_data)
       /* If the message queue is active, must flush the
        * text here to avoid overlaps */
       if (msg_queue_size > 0)
-         gfx_widgets_flush_text(video_width, video_height, font_regular);
+         gfx_widgets_flush_text(VIDEO_SCALE_PACK(video_width,
+               video_height), font_regular);
    }
 }
 

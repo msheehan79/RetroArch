@@ -256,7 +256,7 @@ static void command_network_poll(command_t *handle)
    }
 }
 
-command_t* command_network_new(uint16_t port)
+command_t* command_network_new(uint16_t port, const char *bind_address)
 {
    struct addrinfo     *res  = NULL;
    command_t            *cmd = NULL;
@@ -277,12 +277,21 @@ command_t* command_network_new(uint16_t port)
    if (!(netcmd = (command_network_t*)calloc(1, sizeof(command_network_t))))
       goto error;
 
-   fd = socket_init((void**)&res, port, NULL,
+   /* An empty bind address means every interface (NULL server ->
+    * AI_PASSIVE -> 0.0.0.0), which is what this interface has always
+    * done. Anyone on that network can then send LOAD_CORE or
+    * WRITE_CORE_RAM, so users who only drive RetroArch from the same
+    * machine can set network_cmd_bind_address = "127.0.0.1". */
+   if (bind_address && !*bind_address)
+      bind_address = NULL;
+
+   fd = socket_init((void**)&res, port, bind_address,
          SOCKET_TYPE_DATAGRAM, AF_INET);
 
-   RARCH_LOG("[NetCMD] %s %hu.\n",
+   RARCH_LOG("[NetCMD] %s %hu (%s).\n",
          msg_hash_to_str(MSG_BRINGING_UP_COMMAND_INTERFACE_ON_PORT),
-         (unsigned short)port);
+         (unsigned short)port,
+         bind_address ? bind_address : "all interfaces");
 
    if (fd < 0)
       goto error;
@@ -1023,6 +1032,13 @@ bool command_load_savefiles(command_t *cmd, const char* arg)
    return ret;
 }
 
+/* Largest byte count READ_CORE_RAM / READ_CORE_MEMORY will serve. The
+ * reply carries 3 characters per byte and goes out as one UDP datagram,
+ * so anything much bigger could not be delivered anyway; the cap also
+ * keeps `nbytes * 3` far from wrapping in unsigned int, which a request
+ * of ~1431655766 bytes did, allocating a few bytes and writing 4 GiB. */
+#define COMMAND_READ_NBYTES_MAX 16384u
+
 #if defined(HAVE_CHEEVOS)
 bool command_read_ram(command_t *cmd, const char *arg)
 {
@@ -1034,14 +1050,22 @@ bool command_read_ram(command_t *cmd, const char *arg)
    if (end && *end == ' ')
       nbytes          = (unsigned int)strtoul(end + 1, NULL, 10);
 
-   if (end && *end == ' ' && nbytes > 0)
+   if (end && *end == ' ' && nbytes > 0 && nbytes <= COMMAND_READ_NBYTES_MAX)
    {
       size_t _len             = 0;
       char *reply_at          = NULL;
-      const uint8_t *data     = NULL;
+      unsigned int avail      = 0;
+      const uint8_t *data     = rcheevos_patch_address_avail(addr, &avail);
+      unsigned int alloc_size;
+      char *reply;
+
+      /* Never read past the end of the region the address lives in. */
+      if (data && nbytes > avail)
+         nbytes = avail;
+
       /* We allocate more than needed, saving 20 bytes is not really relevant */
-      unsigned int alloc_size = 40 + nbytes * 3;
-      char *reply             = (char*)malloc(alloc_size);
+      alloc_size = 40 + nbytes * 3;
+      reply      = (char*)malloc(alloc_size);
       
       if (!reply)
       {
@@ -1053,7 +1077,7 @@ bool command_read_ram(command_t *cmd, const char *arg)
       reply_at                = reply + snprintf(
             reply, alloc_size - 1, "READ_CORE_RAM" " %x", addr);
 
-      if ((data = rcheevos_patch_address(addr)))
+      if (data && nbytes > 0)
       {
          size_t i;
          for (i = 0; i < nbytes; i++)
@@ -1063,7 +1087,7 @@ bool command_read_ram(command_t *cmd, const char *arg)
       }
       else
       {
-         strlcpy_lit(reply_at, " -1\n", sizeof(reply) - strlen(reply));
+         strlcpy_lit(reply_at, " -1\n", alloc_size - (size_t)(reply_at - reply));
          _len = reply_at + STRLEN_CONST(" -1\n") - reply;
       }
       cmd->replier(cmd, reply, _len);
@@ -1075,7 +1099,8 @@ bool command_read_ram(command_t *cmd, const char *arg)
 bool command_write_ram(command_t *cmd, const char *arg)
 {
    unsigned int addr    = (unsigned int)strtoul(arg, (char**)&arg, 16);
-   uint8_t *data        = (uint8_t *)rcheevos_patch_address(addr);
+   unsigned int avail   = 0;
+   uint8_t *data        = (uint8_t *)rcheevos_patch_address_avail(addr, &avail);
 
    if (!data)
       return false;
@@ -1086,11 +1111,17 @@ bool command_write_ram(command_t *cmd, const char *arg)
       rcheevos_pause_hardcore();
    }
 
-   while (*arg)
+   /* Stop at the end of the region: the payload length is whatever the
+    * sender put in the datagram. */
+   while (*arg && avail)
    {
       *data = strtoul(arg, (char**)&arg, 16);
       data++;
+      avail--;
    }
+   if (*arg)
+      RARCH_WARN("[Command] WRITE_CORE_RAM at %x reached the end of the "
+            "memory region; remainder of the payload ignored.\n", addr);
    return true;
 }
 #endif
@@ -1446,7 +1477,7 @@ bool command_read_memory(command_t *cmd, const char *arg)
       if (!(end && *end == ' '))
          return false;
       nbytes          = (unsigned int)strtoul(end + 1, NULL, 10);
-      if (nbytes == 0)
+      if (nbytes == 0 || nbytes > COMMAND_READ_NBYTES_MAX)
          return false;
    }
 
@@ -2745,22 +2776,22 @@ struct command_reinit_snapshot_ctx
 {
    void   **buf_p;       /* static cached_snapshot in the caller */
    size_t  *cap_p;       /* static cached_snapshot_cap in the caller */
-   unsigned w, h;
+   unsigned dims;
    size_t   p, size;
 };
 
 static void command_reinit_snapshot_cb(void *userdata,
       const void *data,
-      unsigned width, unsigned height, size_t pitch)
+      unsigned dims, size_t pitch)
 {
    struct command_reinit_snapshot_ctx *ctx
       = (struct command_reinit_snapshot_ctx*)userdata;
    size_t want;
 
-   if (!ctx || !data || !width || !height || !pitch)
+   if (!ctx || !data || !VIDEO_SCALE_W(dims) || !VIDEO_SCALE_H(dims) || !pitch)
       return;
 
-   want = pitch * height;
+   want = pitch * VIDEO_SCALE_H(dims);
    if (want > *ctx->cap_p)
    {
       void *tmp = realloc(*ctx->buf_p, want);
@@ -2773,8 +2804,7 @@ static void command_reinit_snapshot_cb(void *userdata,
       return;
 
    memcpy(*ctx->buf_p, data, want);
-   ctx->w    = width;
-   ctx->h    = height;
+   ctx->dims = dims;
    ctx->p    = pitch;
    ctx->size = want;
 }
@@ -2829,8 +2859,7 @@ void command_event_reinit(const int flags)
     * we don't even allocate. */
    static void  *cached_snapshot      = NULL;
    static size_t cached_snapshot_cap  = 0;
-   unsigned      cached_snapshot_w    = 0;
-   unsigned      cached_snapshot_h    = 0;
+   unsigned      cached_snapshot_dims = 0;
    size_t        cached_snapshot_p    = 0;
    size_t        cached_snapshot_size = 0;
    /* A reinit while the video driver is down must not create a
@@ -2867,13 +2896,11 @@ void command_event_reinit(const int flags)
       struct command_reinit_snapshot_ctx ctx;
       ctx.buf_p = &cached_snapshot;
       ctx.cap_p = &cached_snapshot_cap;
-      ctx.w     = 0;
-      ctx.h     = 0;
+      ctx.dims  = 0;
       ctx.p     = 0;
       ctx.size  = 0;
       video_driver_cached_frame_read(&ctx, command_reinit_snapshot_cb);
-      cached_snapshot_w    = ctx.w;
-      cached_snapshot_h    = ctx.h;
+      cached_snapshot_dims = ctx.dims;
       cached_snapshot_p    = ctx.p;
       cached_snapshot_size = ctx.size;
    }
@@ -2891,10 +2918,10 @@ void command_event_reinit(const int flags)
     * a teardown hook would mean wiring command_event_reinit's
     * statics into retroarch_deinit_drivers; the size cap makes the
     * leak benign in practice, so we leave it. */
-   if (cached_snapshot_p && cached_snapshot_h)
+   if (cached_snapshot_p && VIDEO_SCALE_H(cached_snapshot_dims))
    {
       video_driver_cached_frame_publish(cached_snapshot,
-            cached_snapshot_w, cached_snapshot_h, cached_snapshot_p);
+            cached_snapshot_dims, cached_snapshot_p);
 
 #ifdef HAVE_MENU
       /* If the menu is alive across the reinit, the runloop's
@@ -2933,14 +2960,11 @@ void command_event_reinit(const int flags)
        * premature render). */
       if (menu_st->flags & MENU_ST_FLAG_ALIVE)
       {
-         unsigned output_size = VIDEO_DRIVER_OUTPUT_SIZE(video_st);
+         unsigned output_size = VIDEO_DRIVER_OUTPUT_DIMS(video_st);
          if (     menu_st->driver_ctx
                && menu_st->driver_ctx->render)
             menu_st->driver_ctx->render(
-                  menu_st->userdata,
-                  VIDEO_DRIVER_OUTPUT_WIDTH(output_size),
-                  VIDEO_DRIVER_OUTPUT_HEIGHT(output_size),
-                  false);
+                  menu_st->userdata, output_size, false);
 
          if (     video_st->poke
                && video_st->poke->set_texture_enable)

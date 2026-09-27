@@ -166,7 +166,7 @@ static void sdl3_vk_ctx_swap_buffers(void *data)
 }
 
 static void sdl3_vk_ctx_check_window(void *data, bool *quit,
-      bool *resize, unsigned *width, unsigned *height)
+      bool *resize, unsigned *dims)
 {
    gfx_ctx_sdl3_vk_data_t *sdl = (gfx_ctx_sdl3_vk_data_t*)data;
 
@@ -175,18 +175,17 @@ static void sdl3_vk_ctx_check_window(void *data, bool *quit,
    if (sdl->vk.flags & VK_DATA_FLAG_NEED_NEW_SWAPCHAIN)
       *resize = true;
 
-   sdl3_ctx_check_window(data, quit, resize, width, height);
+   sdl3_ctx_check_window(data, quit, resize, dims);
 }
 
-static bool sdl3_vk_ctx_set_resize(void *data,
-      unsigned width, unsigned height)
+static bool sdl3_vk_ctx_set_resize(void *data, unsigned dims)
 {
    gfx_ctx_sdl3_vk_data_t *sdl = (gfx_ctx_sdl3_vk_data_t*)data;
 
    if (!sdl)
       return false;
 
-   if (!vulkan_create_swapchain(&sdl->vk, width, height, sdl->interval))
+   if (!vulkan_create_swapchain(&sdl->vk, dims, sdl->interval))
    {
       RARCH_ERR("[SDL3 Vulkan] Failed to update swapchain.\n");
       sdl->vk.swapchain           = VK_NULL_HANDLE;
@@ -203,25 +202,23 @@ static bool sdl3_vk_ctx_set_resize(void *data,
 }
 
 static bool sdl3_vk_ctx_set_video_mode(void *data,
-      unsigned width, unsigned height,
+      unsigned dims,
       bool fullscreen)
 {
    gfx_ctx_sdl3_vk_data_t *sdl = (gfx_ctx_sdl3_vk_data_t*)data;
-   unsigned win_width = 0;
-   unsigned win_height = 0;
+   unsigned win_dims           = 0;
 
    if (!sdl)
       return false;
 
-   if (!sdl3_window_set_video_mode(&sdl->win, width, height, fullscreen,
+   if (!sdl3_window_set_video_mode(&sdl->win, dims, fullscreen,
             SDL_WINDOW_VULKAN))
       goto error;
 
-   sdl3_window_get_video_size(sdl->win, &win_width, &win_height);
+   sdl3_window_get_video_size(sdl->win, &win_dims);
 
    if (!vulkan_surface_create(&sdl->vk, VULKAN_WSI_SDL3,
-            NULL, sdl->win,
-            win_width, win_height, sdl->interval))
+            NULL, sdl->win, win_dims, sdl->interval))
       goto error;
 
    return true;

@@ -34,7 +34,11 @@ enum display_server_flags
    DISPSERV_CTX_FLAGS_NONE = 0,
    /* The server can apply a video_modeline_t through its modeline_*
     * ops (the bit the CRT consumer and the menu look for). */
-   DISPSERV_CTX_MODELINE
+   DISPSERV_CTX_MODELINE,
+   /* The server has resolution list callbacks but nothing to list them
+    * from right now (the Wayland server away from GNOME): the menu and
+    * the refresh rate autoswitch treat it as having none. */
+   DISPSERV_CTX_NO_RESOLUTION_LIST
 };
 
 /* One-cycle alias for the bit's previous name. */
@@ -47,15 +51,14 @@ typedef struct video_output_info
    int  id;             /* server-specific handle (XRandR output index,
                            EnumDisplayMonitors index, DRM connector id) */
    int  x, y;           /* placement in desktop coordinates */
-   unsigned width, height;
+   unsigned dims;
    bool primary;
    char name[64];       /* connector name (DVI-0, \\.\DISPLAY1, HDMI-A-1) */
 } video_output_info_t;
 
 typedef struct video_display_config
 {
-   unsigned width;
-   unsigned height;
+   unsigned dims;
    unsigned bpp;
    unsigned refreshrate;
    unsigned idx;
@@ -72,8 +75,8 @@ typedef struct video_display_server
    bool (*set_window_opacity)(void *data, unsigned opacity);
    bool (*set_window_progress)(void *data, int progress, bool finished);
    bool (*set_window_decorations)(void *data, bool on);
-   bool (*set_resolution)(void *data, unsigned width,
-         unsigned height, int int_hz, float hz, int center, int monitor_index, int xoffset, int padjust );
+   bool (*set_resolution)(void *data, unsigned dims,
+         int int_hz, float hz, int center, int monitor_index, int xoffset, int padjust);
    void *(*get_resolution_list)(void *data,
          unsigned *size);
    const char *(*get_output_options)(void *data);
@@ -81,7 +84,7 @@ typedef struct video_display_server
    enum rotation (*get_screen_orientation)(void *data);
    float (*get_refresh_rate)(void *data);
    void (*get_video_output_size)(void *data,
-         unsigned *width, unsigned *height, char *s, size_t len);
+         unsigned *dims, char *s, size_t len);
    void (*get_video_output_prev)(void *data);
    void (*get_video_output_next)(void *data);
    bool (*get_metrics)(void *data, enum display_metric_types type,
@@ -178,7 +181,7 @@ bool video_display_server_set_window_progress(int progress, bool finished);
 bool video_display_server_set_window_decorations(bool on);
 
 bool video_display_server_set_resolution(
-      unsigned width, unsigned height,
+      unsigned dims,
       int int_hz, float hz, int center, int monitor_index, int xoffset, int padjust);
 
 void *video_display_server_get_resolution_list(unsigned *size);
@@ -191,8 +194,10 @@ void video_display_server_set_screen_orientation(enum rotation rotation);
 
 float video_display_server_get_refresh_rate(void);
 
+unsigned video_display_server_get_swap_interval_cap(void);
+
 bool video_display_server_get_video_output_size(
-      unsigned *width, unsigned *height, char *s, size_t len);
+      unsigned *dims, char *s, size_t len);
 
 bool video_display_server_get_video_output_prev(void);
 
@@ -237,12 +242,18 @@ extern const video_display_server_t dispserv_win32;
 extern const video_display_server_t dispserv_uwp;
 extern const video_display_server_t dispserv_x11;
 extern const video_display_server_t dispserv_wl;
+/* Starts the Wayland display server's DRM lease report - a log line,
+ * worked out on a thread of its own - once per instance. Called where
+ * the log is on to show it. */
+void wl_display_server_report_lease(void *data);
 extern const video_display_server_t dispserv_kms;
 extern const video_display_server_t dispserv_videocore;
 extern const video_display_server_t dispserv_android;
 extern const video_display_server_t dispserv_apple;
 extern const video_display_server_t dispserv_sdl2;
 extern const video_display_server_t dispserv_sdl3;
+extern const video_display_server_t dispserv_gx;
+extern const video_display_server_t dispserv_ps3;
 
 RETRO_END_DECLS
 

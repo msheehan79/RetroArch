@@ -102,7 +102,7 @@ void win32_monitor_from_window(void);
 void win32_monitor_init(void);
 
 bool win32_set_video_mode(void *data,
-      unsigned width, unsigned height,
+      unsigned dims,
       bool fullscreen);
 
 bool win32_suspend_screensaver(void *data, bool enable);
@@ -157,7 +157,7 @@ bool win32_hotplug_due(void);
 
 void win32_check_window(void *data,
       bool *quit,
-      bool *resize, unsigned *width, unsigned *height);
+      bool *resize, unsigned *dims);
 
 void win32_set_window(unsigned *width, unsigned *height,
       bool fullscreen, bool windowed_full, void *rect_data);

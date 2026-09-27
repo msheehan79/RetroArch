@@ -124,7 +124,7 @@ int main(void)
       return 1;
    }
    printf("[pass] list_outputs: %d, first '%s' %ux%u\n", nout,
-         outputs[0].name, outputs[0].width, outputs[0].height);
+         outputs[0].name, VIDEO_SCALE_W(outputs[0].dims), VIDEO_SCALE_H(outputs[0].dims));
 
    memset(&ds, 0, sizeof(ds));
    strcpy(ds.screen, "auto");
@@ -154,7 +154,7 @@ int main(void)
       if ((modes[i].type & MODELINE_DESKTOP) && pick2 < 0)
          pick2 = i;
       else if (!(modes[i].type & MODELINE_DESKTOP) && pick < 0
-            && modes[i].width != desktop.w)
+            && (int)VIDEO_SCALE_W(modes[i].dims) != desktop.w)
          pick = i;
    }
    if (pick2 < 0)
@@ -177,15 +177,15 @@ int main(void)
    /* Switch to a listed non-desktop mode and read the display back */
    if (!dispserv_sdl2.modeline_set(data, &modes[pick]))
    {
-      fprintf(stderr, "FAIL: modeline_set %dx%d@%d\n", modes[pick].width,
-            modes[pick].height, modes[pick].refresh);
+      fprintf(stderr, "FAIL: modeline_set %dx%d@%d\n", (int)VIDEO_SCALE_W(modes[pick].dims),
+            (int)VIDEO_SCALE_H(modes[pick].dims), modes[pick].refresh);
       return 1;
    }
    SDL_PumpEvents();
-   if (current_mode(&cur) != 0 || cur.w != modes[pick].width || cur.h != modes[pick].height)
+   if (current_mode(&cur) != 0 || cur.w != (int)VIDEO_SCALE_W(modes[pick].dims) || cur.h != (int)VIDEO_SCALE_H(modes[pick].dims))
    {
       fprintf(stderr, "FAIL: display reads %dx%d@%d after set of %dx%d@%d\n",
-            cur.w, cur.h, cur.refresh_rate, modes[pick].width, modes[pick].height,
+            cur.w, cur.h, cur.refresh_rate, (int)VIDEO_SCALE_W(modes[pick].dims), (int)VIDEO_SCALE_H(modes[pick].dims),
             modes[pick].refresh);
       return 1;
    }
@@ -220,17 +220,18 @@ int main(void)
    }
    for (i = 0; i < (int)nlist; i++)
    {
-      if (!list[i].current && list[i].width != (unsigned)desktop.w)
+      if (!list[i].current && VIDEO_SCALE_W(list[i].dims) != (unsigned)desktop.w)
       {
-         if (!dispserv_sdl2.set_resolution(data, list[i].width, list[i].height,
+         if (!dispserv_sdl2.set_resolution(data,
+               VIDEO_SCALE_PACK(VIDEO_SCALE_W(list[i].dims), VIDEO_SCALE_H(list[i].dims)),
                   (int)list[i].refreshrate, list[i].refreshrate_float, 0, 0, 0, 0))
          {
-            fprintf(stderr, "FAIL: set_resolution %ux%u@%u\n", list[i].width,
-                  list[i].height, list[i].refreshrate);
+            fprintf(stderr, "FAIL: set_resolution %ux%u@%u\n", VIDEO_SCALE_W(list[i].dims),
+                  VIDEO_SCALE_H(list[i].dims), list[i].refreshrate);
             return 1;
          }
          SDL_PumpEvents();
-         if (current_mode(&cur) != 0 || cur.w != (int)list[i].width)
+         if (current_mode(&cur) != 0 || cur.w != (int)VIDEO_SCALE_W(list[i].dims))
          {
             fprintf(stderr, "FAIL: set_resolution left the display at %dx%d\n",
                   cur.w, cur.h);

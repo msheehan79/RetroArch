@@ -39,8 +39,7 @@ struct vulkan_filter_chain_texture
    VkImage image;
    VkImageView view;
    VkImageLayout layout;
-   unsigned width;
-   unsigned height;
+   unsigned dims;                /* VIDEO_SCALE_PACK */
    VkFormat format;
 };
 
@@ -102,10 +101,7 @@ struct vulkan_filter_chain_create_info
    unsigned num_passes;
 
    VkFormat original_format;
-   struct
-   {
-      unsigned width, height;
-   } max_input_size;
+   unsigned max_input_dims;      /* VIDEO_SCALE_PACK */
    struct vulkan_filter_chain_swapchain_info swapchain;
 #ifdef VULKAN_HDR_SWAPCHAIN
    bool hdr_enabled;

@@ -90,10 +90,8 @@ static void sdl3_window_save_position(SDL_Window *win)
        || w <= 0 || h <= 0)
       return;
 
-   settings->uints.window_position_x = (unsigned)x;
-   settings->uints.window_position_y = (unsigned)y;
-   settings->uints.window_position_width = (unsigned)w;
-   settings->uints.window_position_height = (unsigned)h;
+   settings->uints.window_position_pos  = VIDEO_POS_PACK(x, y);
+   settings->uints.window_position_dims = VIDEO_SCALE_PACK(w, h);
 }
 
 void sdl3_pump_window_events(bool *quit, bool *resize)
@@ -260,13 +258,13 @@ static SDL_Window *sdl3_window_create(unsigned width, unsigned height,
     * in Wayland where windows are not manually positioned. */
    if (settings->bools.video_window_save_positions
          && !fullscreen
-         && settings->uints.window_position_width
-         && settings->uints.window_position_height
+         && VIDEO_SCALE_W(settings->uints.window_position_dims)
+         && VIDEO_SCALE_H(settings->uints.window_position_dims)
          && !string_is_equal(SDL_GetCurrentVideoDriver(), "wayland"))
    {
       SDL_SetWindowPosition(win,
-            (int)settings->uints.window_position_x,
-            (int)settings->uints.window_position_y);
+            VIDEO_POS_X(settings->uints.window_position_pos),
+            VIDEO_POS_Y(settings->uints.window_position_pos));
       SDL_SyncWindow(win);
    }
    else
@@ -313,9 +311,11 @@ static void sdl3_window_apply_fullscreen(SDL_Window *win,
 }
 
 bool sdl3_window_set_video_mode(SDL_Window **win,
-      unsigned width, unsigned height, bool fullscreen,
+      unsigned dims, bool fullscreen,
       SDL_WindowFlags backend_flags)
 {
+   unsigned width  = VIDEO_SCALE_W(dims);
+   unsigned height = VIDEO_SCALE_H(dims);
    if (*win)
       SDL_SetWindowBordered(*win, config_get_ptr()->bools.video_window_show_decorations);
    else if (!(*win = sdl3_window_create(width, height, fullscreen, backend_flags)))
@@ -329,7 +329,7 @@ bool sdl3_window_set_video_mode(SDL_Window **win,
 }
 
 void sdl3_window_get_video_size(SDL_Window *win,
-      unsigned *width, unsigned *height)
+      unsigned *dims)
 {
    const SDL_DisplayMode *mode;
 
@@ -337,8 +337,7 @@ void sdl3_window_get_video_size(SDL_Window *win,
    {
       int w, h;
       SDL_GetWindowSizeInPixels(win, &w, &h);
-      *width = w;
-      *height = h;
+      *dims = VIDEO_SCALE_PACK(w, h);
       return;
    }
 
@@ -346,8 +345,7 @@ void sdl3_window_get_video_size(SDL_Window *win,
    mode = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
    if (mode)
    {
-      *width = mode->w;
-      *height = mode->h;
+      *dims = VIDEO_SCALE_PACK(mode->w, mode->h);
    }
 }
 
@@ -472,10 +470,10 @@ static SDL_Window *sdl3_ctx_window(void *data)
    return data ? *(SDL_Window**)data : NULL;
 }
 
-void sdl3_ctx_get_video_size(void *data, unsigned *width, unsigned *height)
+void sdl3_ctx_get_video_size(void *data, unsigned *dims)
 {
    if (data)
-      sdl3_window_get_video_size(sdl3_ctx_window(data), width, height);
+      sdl3_window_get_video_size(sdl3_ctx_window(data), dims);
 }
 
 float sdl3_ctx_get_refresh_rate(void *data)
@@ -494,14 +492,14 @@ bool sdl3_ctx_has_focus(void *data)
 }
 
 void sdl3_ctx_check_window(void *data, bool *quit, bool *resize,
-      unsigned *width, unsigned *height)
+      unsigned *dims)
 {
    SDL_Window *win = sdl3_ctx_window(data);
 
    sdl3_pump_window_events(quit, resize);
 
    if (*resize && win)
-      sdl3_window_get_video_size(win, width, height);
+      sdl3_window_get_video_size(win, dims);
 }
 
 bool sdl3_ctx_get_metrics(void *data,

@@ -690,10 +690,12 @@ static ui_application_t ui_application_cocoa = {
       return;
 
    contentRect                            = [_window contentRectForFrameRect:[_window frame]];
-   settings->uints.window_position_x      = (unsigned)contentRect.origin.x;
-   settings->uints.window_position_y      = (unsigned)contentRect.origin.y;
-   settings->uints.window_position_width  = (unsigned)contentRect.size.width;
-   settings->uints.window_position_height = (unsigned)contentRect.size.height;
+   settings->uints.window_position_pos    = VIDEO_POS_PACK(
+         (int)contentRect.origin.x,
+         (int)contentRect.origin.y);
+   settings->uints.window_position_dims   = VIDEO_SCALE_PACK(
+         (unsigned)contentRect.size.width,
+         (unsigned)contentRect.size.height);
 }
 
 - (void)windowDidMove:(NSNotification *)notification   { [self rememberWindowGeometry]; }
@@ -1040,9 +1042,11 @@ static ui_application_t ui_application_cocoa = {
    }
 
    /* HACK(sgc): ensure MTKView posts a drawable resize event */
-   if (mode.width > 0)
-       [self.window setContentSize:NSMakeSize(mode.width-1, mode.height)];
-   [self.window setContentSize:NSMakeSize(mode.width, mode.height)];
+   if (VIDEO_SCALE_W(mode.dims) > 0)
+       [self.window setContentSize:NSMakeSize(VIDEO_SCALE_W(mode.dims) - 1,
+             VIDEO_SCALE_H(mode.dims))];
+   [self.window setContentSize:NSMakeSize(VIDEO_SCALE_W(mode.dims),
+         VIDEO_SCALE_H(mode.dims))];
    [self.window displayIfNeeded];
 }
 
@@ -1060,15 +1064,20 @@ static ui_application_t ui_application_cocoa = {
    {
       NSRect contentRect;
       NSRect frame;
-      contentRect.origin.x    = settings->uints.window_position_x;
-      contentRect.origin.y    = settings->uints.window_position_y;
-      contentRect.size.width  = settings->uints.window_position_width;
-      contentRect.size.height = settings->uints.window_position_height;
+      contentRect.origin.x    =
+            VIDEO_POS_X(settings->uints.window_position_pos);
+      contentRect.origin.y    =
+            VIDEO_POS_Y(settings->uints.window_position_pos);
+      contentRect.size.width  =
+            VIDEO_SCALE_W(settings->uints.window_position_dims);
+      contentRect.size.height =
+            VIDEO_SCALE_H(settings->uints.window_position_dims);
       frame                   = [self.window frameRectForContentRect:contentRect];
       [self.window setFrame:frame display:YES];
    }
    else
-      [self.window setContentSize:NSMakeSize(mode.width, mode.height)];
+      [self.window setContentSize:NSMakeSize(VIDEO_SCALE_W(mode.dims),
+            VIDEO_SCALE_H(mode.dims))];
 }
 
 - (void)setCursorVisible:(bool)v

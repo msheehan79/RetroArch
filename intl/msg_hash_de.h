@@ -1144,6 +1144,10 @@ static const struct
    char s_8d3a8b68[13];
    char s_68d27147[12];
    char s_f02f73fc[37];
+   char s_b5721b90[30];
+   char s_e5b971a0[6];
+   char s_8f27c71e[14];
+   char s_17615fcf[4];
    char s_3a0a3fef[13];
    char s_1b6ed818[19];
    char s_89a75c21[20];
@@ -1398,6 +1402,7 @@ static const struct
    char s_d9d847b8[32];
    char s_7a6a492f[23];
    char s_cf28bcf5[26];
+   char s_d3e7cd81[17];
    char s_821edb57[27];
    char s_5f080876[25];
    char s_9358d8ba[24];
@@ -2226,7 +2231,9 @@ static const struct
    char s_8a86d1de[18];
    char s_8fc1e4da[4];
    char s_14ed14d0[11];
+   char s_fad361a0[20];
    char s_bb929824[16];
+   char s_fe2ec9bd[34];
    char s_5741c1d0[14];
    char s_a1a7717d[26];
    char s_e6ca3876[36];
@@ -2669,6 +2676,7 @@ static const struct
    char s_79b8ce4a[87];
    char s_a1a8257e[103];
    char s_282f7955[108];
+   char s_d5231783[295];
    char s_a68d6d11[61];
    char s_74022c02[76];
    char s_8abad013[90];
@@ -2989,6 +2997,7 @@ static const struct
    char s_6895dfd6[54];
    char s_788364f5[90];
    char s_dd9ff22a[66];
+   char s_ff7d19fe[219];
    char s_db495a9d[35];
    char s_ddc672a7[60];
    char s_ccea261d[149];
@@ -3058,7 +3067,7 @@ static const struct
    char s_5aa622cc[254];
    char s_2b908073[300];
    char s_64bea160[226];
-   char s_2826de99[404];
+   char s_2826de99[430];
    char s_97c62766[167];
    char s_6f458a85[128];
    char s_41702fdc[62];
@@ -3496,7 +3505,6 @@ static const struct
    char s_ffd591e0[43];
    char s_a51ab538[32];
    char s_55d6cc44[42];
-   char s_5a8f7fb9[219];
    char s_f2963d2d[51];
    char s_4c592ae1[93];
    char s_52ac4fb9[123];
@@ -3589,8 +3597,10 @@ static const struct
    char s_cfa51e8c_1[13];
    char s_b62c2f7e[415];
    char s_456fcbc9[384];
+   char s_ba8ff8ce[322];
    char s_82fab47a[43];
    char s_72e21512[217];
+   char s_9f6de46b[376];
    char s_66f2b57e[56];
    char s_a776daeb[73];
    char s_88095324[73];
@@ -3621,7 +3631,6 @@ static const struct
    char s_eec252b5[125];
    char s_f4e4e921[255];
    char s_7968f59d[39];
-   char s_8cee3615[164];
    char s_58c80718[336];
    char s_894ecb9a[441];
    char s_67d549fd[36];
@@ -5615,6 +5624,10 @@ static const struct
    "Men\303\274treiber",
    "Kiosk-Modus",
    "Bildwiederholrate im Men\303\274 begrenzen",
+   "Anzeiger der Dateierweiterung",
+   "Immer",
+   "Nur Duplikate",
+   "Nie",
    "Dateibrowser",
    "Schriftfarbe: Blau",
    "Schriftfarbe: Gr\303\274n",
@@ -5869,6 +5882,7 @@ static const struct
    "Keine Core-Optionen verf\303\274gbar.",
    "Keine Disc ausgew\303\244hlt",
    "Keine Eintr\303\244ge vorhanden",
+   "Ohne Erweiterung",
    "Keine Favoriten verf\303\274gbar",
    "Kein Verlauf verf\303\274gbar.",
    "Keine Bilder verf\303\274gbar",
@@ -6707,7 +6721,9 @@ static const struct
    "Spitzenhelligkeit",
    "Aus",
    "Helligkeit",
+   "Bildluminanz senden",
    "Subpixel-Layout",
+   "Spitzenwert vom Display verwenden",
    "Video-Layouts",
    "Maximale Frame-Latenzzeit",
    "Maximale Anzahl von Zwischenbildern",
@@ -7311,6 +7327,10 @@ static const struct
    "kein Inhalt geladen ist.",
    "Durch diese Optionen bl\303\244ttern, um die horizontalen Einstellungen zur \303\204nderung der "
    "Bildgr\303\266\303\237e anzupassen.",
+   "Einen Videomodus generieren, der der Aufl\303\266sung und Bildwiederholfrequenz des Inhalts ents"
+   "pricht. 15/31 kHz gelten f\303\274r CRT-Bildschirme; die Optionen \342\200\236An Bildschirm anpa"
+   "ssen\342\200\234 und \342\200\236Nur Bildwiederholfrequenz anpassen\342\200\234 beziehen ihre Gr"
+   "enzwerte ausschlie\303\237lich aus der EDID des Bildschirms.",
    "Zwischen nativer und ultraweiter Superaufl\303\266sung umschalten.",
    "Eine in der Konfigurationsdatei definierte Bildwiederholfrequenz verwenden.",
    "Diese Optionen durchwechseln, falls das Bild nicht richtig auf dem Display zentriert ist.",
@@ -7789,6 +7809,9 @@ static const struct
    "Zu verwendender Men\303\274treiber. (Neustart erforderlich)",
    "Sch\303\274tzt das Setup, indem alle konfigurationsbezogenen Einstellungen ausgeblendet werden.",
    "Stellt sicher, dass die Bildwiederholrate im Men\303\274 begrenzt wird.",
+   "Festlegen, wann Dateiendungen beim Durchsuchen von Inhalten angezeigt werden sollen. In den Date"
+   "iauswahlfenstern f\303\274r Shader, Overlays, Konfigurationsdateien und andere Einstellungsdatei"
+   "en werden diese immer angezeigt.",
    "Dateibrowsereinstellungen \303\244ndern.",
    "\303\204ndert die Deckkraft des Standardhintergrunds f\303\274r Men\303\274s.",
    "Helligkeit des Men\303\274s in cd/m\302\262 (Nits) bei Nutzung eines HDR-Displays. Nur sichtbar,"
@@ -7904,11 +7927,11 @@ static const struct
    "Spielt die Audiospur von animierten WebM-Thumbnails ab, w\303\244hrend sie angezeigt werden. Vor"
    "bis- und Opus-Audio werden unterst\303\274tzt. Das Audio l\303\244uft mit der Animation in Schle"
    "ife und stoppt beim Schlie\303\237en der Miniaturansicht.",
-   "Die Anzahl der Threads, die jedes Einzelbild eines animierten WebM- oder MP4-Miniaturbilds in Pi"
-   "xel umwandeln. Bei nur einem Thread erfolgt die gesamte Umwandlung im Dekodierungs-Thread. Bei e"
-   "iner h\303\266heren Anzahl wird sie auf die Kerne verteilt, was bei Rechnern mit freien Kernen d"
-   "ie Darstellung gro\303\237er Vorschaubilder erleichtert, bei Rechnern ohne freie Kerne jedoch zu"
-   " Lasten der aktiven Kerne geht.",
+   "Anzahl der Threads, auf denen ein animiertes Vorschaubild decodiert werden kann. Bei einem Threa"
+   "d erfolgt die gesamte Decodierung in einem eigenen Thread. Bei einer h\303\266heren Anzahl wird "
+   "der Vorgang auf mehrere Kerne verteilt, wodurch eine gro\303\237e Vorschau z\303\274gig wiederge"
+   "geben werden kann. W\303\244hrend ein Kern ausgelastet ist, l\303\244uft die Vorschau weiterhin "
+   "in einem einzigen Thread, sodass dem Spiel die Kerne zur Verf\303\274gung stehen.",
    "Skaliert automatisch Vorschaubilder mit einer Breite/H\303\266he, die kleiner als der angegebene"
    " Wert ist. Verbessert die Bildqualit\303\244t. Bringt moderate Leistungseinbu\303\237en.",
    "Eine fl\303\274ssige Bildlaufanimation verwenden, wenn langer Men\303\274text angezeigt wird. Ha"
@@ -8562,9 +8585,6 @@ static const struct
    "Informationen \303\274ber dieses Ger\303\244t ansehen.",
    "Foto des Bildschirms aufnehmen.",
    "Aufgaben in separaten Threads ausf\303\274hren.",
-   "Die Haupt- und Audiothreads werden auf den schnellsten CPU-Kernen eines Mixed-Core-Prozessors au"
-   "sgef\303\274hrt. Hat keine Auswirkungen auf Prozessoren, deren Kerne alle gleich sind. Die \303"
-   "\204nderung wird beim Neustart wirksam.",
    "Art der Vorschaubilder, die verwendet werden soll.",
    "Box-Art-, Screenshot- und Titelbild-Vorschaubilder werden in diesem Verzeichnis gespeichert.",
    "Haupttyp der Vorschaubilder, die jedem Wiedergabelisteneintrag zugeordnet werden. Dienen normale"
@@ -8739,10 +8759,19 @@ static const struct
    "chirms abdunkelt und HDR einen Teil der verlorenen Helligkeit wiederherstellt. F\303\274r eine d"
    "etailliertere Steuerung der Scanlines k\303\266nnen die von RetroArch bereitgestellten benutzerd"
    "efinierten Shader verwendet werden.",
+   "Einem Wayland-Compositor \303\274ber den Helligkeitsbereich des Bildes informieren, damit er HDR"
+   "-Inhalte anhand der tats\303\244chlichen Bilddaten und nicht anhand von Annahmen abbildet. Ist d"
+   "iese Option deaktiviert, wird das Bild wie bisher als Windows-scRGB beschrieben. Die \303\204nde"
+   "rung wird beim Neustart des Grafiktreibers wirksam.",
    "Die Hochkontrastbildeinstellungen \303\244ndern.",
    "Subpixel-Layout des Bildschirms ausw\303\244hlen. Dies wirkt sich nur auf Scanlines aus. Falls d"
    "as \342\200\236Subpixel-Layout\342\200\234 des Bildschirms nicht bekannt ist, k\303\266nnen ents"
    "prechende Informationen auf Rtings.com gefunden werden",
+   "Die vom Display gemeldete Spitzenhelligkeit sollte anstelle der Einstellung \342\200\236Spitzenh"
+   "elligkeit\342\200\234 verwendet werden, sofern das Display einen Wert meldet: Dies ist der Wert,"
+   " der den Cores mitgeteilt wird und der in den an das Display gesendeten HDR-Metadaten enthalten "
+   "ist. Ist diese Option deaktiviert, wird die Einstellung \342\200\236Spitzenhelligkeit\342\200"
+   "\234 wie festgelegt verwendet.",
    "Video-Layouts werden in diesem Verzeichnis gespeichert.",
    "Zwingt den Videotreiber dazu, einen bestimmten Framebuffer zu verwenden.",
    "Zwingt den Videotreiber dazu, einen bestimmten Framebuffer zu verwenden.",
@@ -8793,8 +8822,6 @@ static const struct
    "ich auf eine nicht ganzzahlige Skalierung zur\303\274ck, wenn die Unterskalierungsr\303\244nder "
    "zu gro\303\237 sind.",
    "Videoskalierungseinstellungen \303\244ndern.",
-   "Die Videodarstellung wird mit der Scanline-Position synchronisiert. Dies verringert die Latenz, "
-   "erh\303\266ht jedoch das Risiko von Tearing. VSync muss deaktiviert sein.",
    "WARNUNG: Schnelles Flackern kann auf manchen Bildschirmen zu einem Nachleuchten des Bildes f\303"
    "\274hren. Verwendung auf eigene Gefahr // Simuliert eine einfache rollende Scanline \303\274ber "
    "mehrere Unterbilder, indem der Bildschirm vertikal aufgeteilt wird und jeder Teil des Bildschirm"
@@ -9538,7 +9565,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_de_blob_check[
-      (sizeof(msg_hash_de_blob) == (209967u
+      (sizeof(msg_hash_de_blob) == (210947u
 #ifdef ANDROID
        + 358u
 #endif
@@ -11094,6 +11121,10 @@ static const uint32_t msg_hash_de_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_DRIVER,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_ENABLE_KIOSK_MODE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_ENUM_THROTTLE_FRAMERATE,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_EXTENSION_DISPLAY,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_EXTENSION_DISPLAY_ALWAYS,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_EXTENSION_DISPLAY_DUPLICATES_ONLY,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_EXTENSION_DISPLAY_NEVER,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_SETTINGS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FONT_COLOR_BLUE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FONT_COLOR_GREEN,
@@ -11348,6 +11379,7 @@ static const uint32_t msg_hash_de_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_NO_CORE_OPTIONS_AVAILABLE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_NO_DISK,
    (uint32_t)MENU_ENUM_LABEL_VALUE_NO_ENTRIES_TO_DISPLAY,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_NO_EXTENSION,
    (uint32_t)MENU_ENUM_LABEL_VALUE_NO_FAVORITES_AVAILABLE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_NO_HISTORY_AVAILABLE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_NO_IMAGES_AVAILABLE,
@@ -12175,7 +12207,9 @@ static const uint32_t msg_hash_de_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_MAX_NITS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_MODE_OFF,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_PAPER_WHITE_NITS,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_SEND_LUMINANCE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_SUBPIXEL_LAYOUT,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_USE_DISPLAY_PEAK,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_LAYOUT_DIRECTORY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_MAX_FRAME_LATENCY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_MAX_SWAPCHAIN_IMAGES,
@@ -12610,6 +12644,7 @@ static const uint32_t msg_hash_de_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_CRT_SWITCHRES_SETTINGS,
    (uint32_t)MENU_ENUM_SUBLABEL_CRT_SWITCH_HIRES_MENU,
    (uint32_t)MENU_ENUM_SUBLABEL_CRT_SWITCH_PORCH_ADJUST,
+   (uint32_t)MENU_ENUM_SUBLABEL_CRT_SWITCH_RESOLUTION,
    (uint32_t)MENU_ENUM_SUBLABEL_CRT_SWITCH_RESOLUTION_SUPER,
    (uint32_t)MENU_ENUM_SUBLABEL_CRT_SWITCH_RESOLUTION_USE_CUSTOM_REFRESH_RATE,
    (uint32_t)MENU_ENUM_SUBLABEL_CRT_SWITCH_VERTICAL_ADJUST,
@@ -12930,6 +12965,7 @@ static const uint32_t msg_hash_de_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_DRIVER,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_ENABLE_KIOSK_MODE,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_ENUM_THROTTLE_FRAMERATE,
+   (uint32_t)MENU_ENUM_SUBLABEL_MENU_FILE_BROWSER_EXTENSION_DISPLAY,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_FILE_BROWSER_SETTINGS,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_FRAMEBUFFER_OPACITY,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_HDR_BRIGHTNESS_NITS,
@@ -13437,7 +13473,6 @@ static const uint32_t msg_hash_de_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_SYSTEM_INFORMATION,
    (uint32_t)MENU_ENUM_SUBLABEL_TAKE_SCREENSHOT,
    (uint32_t)MENU_ENUM_SUBLABEL_THREADED_DATA_RUNLOOP_ENABLE,
-   (uint32_t)MENU_ENUM_SUBLABEL_THREAD_PREFER_FAST_CORES,
    (uint32_t)MENU_ENUM_SUBLABEL_THUMBNAILS,
    (uint32_t)MENU_ENUM_SUBLABEL_THUMBNAILS_DIRECTORY,
    (uint32_t)MENU_ENUM_SUBLABEL_THUMBNAILS_MATERIALUI,
@@ -13527,8 +13562,10 @@ static const uint32_t msg_hash_de_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_MAX_NITS,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_PAPER_WHITE_NITS,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_SCANLINES,
+   (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_SEND_LUMINANCE,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_SETTINGS,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_SUBPIXEL_LAYOUT,
+   (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_USE_DISPLAY_PEAK,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_LAYOUT_DIRECTORY,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_MAX_FRAME_LATENCY,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_MAX_SWAPCHAIN_IMAGES,
@@ -13559,7 +13596,6 @@ static const uint32_t msg_hash_de_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_SCALE_INTEGER_AXIS,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_SCALE_INTEGER_SCALING,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_SCALING_SETTINGS,
-   (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_SCANLINE_SYNC,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_SCAN_SUBFRAMES,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_SDL_DISPLAY_SERVER,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_SETTINGS,

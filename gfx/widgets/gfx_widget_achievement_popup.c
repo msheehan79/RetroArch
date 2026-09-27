@@ -168,8 +168,8 @@ static void gfx_widget_achievement_popup_frame(void* data, void* userdata)
          1.00, 1.00, 1.00, 1.00,
       };
       const video_frame_info_t* video_info = (const video_frame_info_t*)data;
-      const unsigned video_width           = video_info->width;
-      const unsigned video_height          = video_info->height;
+      const unsigned video_width           = VIDEO_SCALE_W(video_info->dims);
+      const unsigned video_height          = VIDEO_SCALE_H(video_info->dims);
       gfx_display_t* p_disp                = (gfx_display_t*)video_info->disp_userdata;
       gfx_display_ctx_driver_t* dispctx    = p_disp->dispctx;
       dispgfx_widget_t* p_dispwidget       = (dispgfx_widget_t*)userdata;
@@ -242,14 +242,11 @@ static void gfx_widget_achievement_popup_frame(void* data, void* userdata)
          gfx_display_draw_quad(
             p_disp,
             video_info->userdata,
-            video_width,
-            video_height,
+            VIDEO_SCALE_PACK(video_width, video_height),
             screen_pos_x,
             screen_pos_y,
-            state->height,
-            state->height,
-            video_width,
-            video_height,
+            VIDEO_SCALE_PACK(state->height, state->height),
+            VIDEO_SCALE_PACK(video_width, video_height),
             p_dispwidget->backdrop_orig,
             NULL);
 
@@ -261,10 +258,8 @@ static void gfx_widget_achievement_popup_frame(void* data, void* userdata)
             gfx_widgets_draw_icon(
                video_info->userdata,
                p_disp,
-               video_width,
-               video_height,
-               state->height,
-               state->height,
+               VIDEO_SCALE_PACK(video_width, video_height),
+               VIDEO_SCALE_PACK(state->height, state->height),
                p_dispwidget->gfx_widgets_icons_textures[
                   MENU_WIDGETS_ICON_ACHIEVEMENT],
                screen_pos_x,
@@ -284,14 +279,11 @@ static void gfx_widget_achievement_popup_frame(void* data, void* userdata)
          gfx_display_draw_quad(
             p_disp,
             video_info->userdata,
-            video_width,
-            video_height,
+            VIDEO_SCALE_PACK(video_width, video_height),
             screen_pos_x,
             screen_pos_y,
-            state->height,
-            state->height,
-            video_width,
-            video_height,
+            VIDEO_SCALE_PACK(state->height, state->height),
+            VIDEO_SCALE_PACK(video_width, video_height),
             p_dispwidget->backdrop_orig,
             NULL);
 
@@ -300,10 +292,8 @@ static void gfx_widget_achievement_popup_frame(void* data, void* userdata)
          gfx_widgets_draw_icon(
             video_info->userdata,
             p_disp,
-            video_width,
-            video_height,
-            state->height,
-            state->height,
+            VIDEO_SCALE_PACK(video_width, video_height),
+            VIDEO_SCALE_PACK(state->height, state->height),
             state->queue[state->queue_read_index].badge,
             screen_pos_x,
             screen_pos_y,
@@ -320,26 +310,23 @@ static void gfx_widget_achievement_popup_frame(void* data, void* userdata)
          gfx_display_scissor_begin(
             p_disp,
             video_info->userdata,
-            video_width,
-            video_height,
+            VIDEO_SCALE_PACK(video_width, video_height),
             screen_pos_x + state->height,
             screen_pos_y,
-            (unsigned)((float)(state->width) * state->unfold),
-            state->height);
+            VIDEO_SCALE_PACK(
+                  (unsigned)((float)(state->width) * state->unfold),
+                  state->height));
       }
 
       /* Backdrop */
       gfx_display_draw_quad(
          p_disp,
          video_info->userdata,
-         video_width,
-         video_height,
+         VIDEO_SCALE_PACK(video_width, video_height),
          screen_pos_x + state->height,
          screen_pos_y,
-         state->width,
-         state->height,
-         video_width,
-         video_height,
+         VIDEO_SCALE_PACK(state->width, state->height),
+         VIDEO_SCALE_PACK(video_width, video_height),
          p_dispwidget->backdrop_orig,
          NULL);
 
@@ -352,8 +339,7 @@ static void gfx_widget_achievement_popup_frame(void* data, void* userdata)
          screen_pos_y
          + p_dispwidget->gfx_widget_fonts.regular.line_height
          + p_dispwidget->gfx_widget_fonts.regular.line_ascender,
-         video_width,
-         video_height,
+         VIDEO_SCALE_PACK(video_width, video_height),
          TEXT_COLOR_FAINT,
          TEXT_ALIGN_LEFT,
          true);
@@ -369,20 +355,19 @@ static void gfx_widget_achievement_popup_frame(void* data, void* userdata)
          screen_pos_y + state->height
          - p_dispwidget->gfx_widget_fonts.regular.line_height
          - p_dispwidget->gfx_widget_fonts.regular.line_descender,
-         video_width,
-         video_height,
+         VIDEO_SCALE_PACK(video_width, video_height),
          TEXT_COLOR_INFO,
          TEXT_ALIGN_LEFT,
          true);
 
       if (is_folding)
       {
-         gfx_widgets_flush_text(video_width, video_height,
+         gfx_widgets_flush_text(VIDEO_SCALE_PACK(video_width, video_height),
             &p_dispwidget->gfx_widget_fonts.regular);
 
          if (dispctx && dispctx->scissor_end)
             dispctx->scissor_end(video_info->userdata,
-               video_width, video_height);
+               VIDEO_SCALE_PACK(video_width, video_height));
       }
    }
 
@@ -633,7 +618,7 @@ void gfx_widgets_push_achievement(const char* title, const char* subtitle, const
  * start for a ring that was empty - the one thread animation state
  * may be touched from. */
 static void gfx_widget_achievement_popup_iterate(void *user_data,
-      unsigned width, unsigned height, bool fullscreen,
+      unsigned dims, bool fullscreen,
       const char *dir_assets, char *font_path, bool is_threaded)
 {
    gfx_widget_achievement_popup_state_t *state = &p_w_achievement_popup_st;

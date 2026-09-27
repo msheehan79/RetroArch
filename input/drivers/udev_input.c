@@ -14,18 +14,12 @@
  *  If not, see <http://www.gnu.org/licenses/>.
  */
 
-/* TODO/FIXME - set this once the kqueue codepath is implemented and working properly,
- * also remove libepoll-shim from the Makefile when that happens. */
-#if 1
-#define HAVE_EPOLL
-#else
-#ifdef __linux__
-#define HAVE_EPOLL 1
-#endif
-
-#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined (__NetBSD__)
+/* Linux multiplexes the evdev fds with epoll; the BSDs and macOS use
+ * kqueue natively so no libepoll-shim is needed there. */
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__)
 #define HAVE_KQUEUE 1
-#endif
+#else
+#define HAVE_EPOLL 1
 #endif
 
 #include <stdint.h>
@@ -43,6 +37,13 @@
 #include <sys/epoll.h>
 #elif defined(HAVE_KQUEUE)
 #include <sys/event.h>
+#include <sys/time.h>
+/* NetBSD declares kevent.udata as intptr_t, everyone else as void *. */
+#if defined(__NetBSD__)
+#define UDEV_KQ_UDATA(ptr) ((intptr_t)(ptr))
+#else
+#define UDEV_KQ_UDATA(ptr) ((void*)(ptr))
+#endif
 #endif
 #include <poll.h>
 
@@ -71,7 +72,11 @@
 
 #include "../input_keymaps.h"
 
+#ifdef __linux__
+/* The illuminance sensor reads sysfs IIO nodes, and linux_common.o is
+ * only built on Linux; libudev also exists on FreeBSD (libudev-devd). */
 #include "../common/linux_common.h"
+#endif
 
 #include "../../configuration.h"
 #include "../../retroarch.h"
@@ -570,7 +575,9 @@ typedef struct udev_input
    bool xkb_handling;
 #endif
 
+#ifdef __linux__
    linux_illuminance_sensor_t *illuminance_sensor;
+#endif
 } udev_input_t;
 
 #ifdef UDEV_XKB_HANDLING
@@ -711,10 +718,10 @@ static void udev_mouse_set_x(udev_input_mouse_t *mouse, int32_t x, bool abs)
       {
          mouse->x_abs += x;
 
-         if (mouse->x_abs < vp.x)
-            mouse->x_abs = vp.x;
-         else if (mouse->x_abs >= (vp.x + (int)vp.full_width))
-            mouse->x_abs = vp.x + vp.full_width - 1;
+         if (mouse->x_abs < VIDEO_POS_X(vp.pos))
+            mouse->x_abs = VIDEO_POS_X(vp.pos);
+         else if (mouse->x_abs >= (VIDEO_POS_X(vp.pos) + (int)VIDEO_SCALE_W(vp.full_dims)))
+            mouse->x_abs = VIDEO_POS_X(vp.pos) + VIDEO_SCALE_W(vp.full_dims) - 1;
       }
    }
 }
@@ -731,9 +738,9 @@ static int16_t udev_mouse_get_x(const udev_input_mouse_t *mouse)
    if (mouse->abs) /* mouse coords are absolute */
       src_width = mouse->x_max - mouse->x_min + 1;
    else
-      src_width = vp.full_width;
+      src_width = VIDEO_SCALE_W(vp.full_dims);
 
-   x = (double)vp.width / src_width * mouse->x_rel;
+   x = (double)VIDEO_SCALE_W(vp.dims) / src_width * mouse->x_rel;
 
    return x + (x < 0 ? -0.5 : 0.5);
 }
@@ -754,10 +761,10 @@ static void udev_mouse_set_y(udev_input_mouse_t *mouse, int32_t y, bool abs)
       {
          mouse->y_abs += y;
 
-         if (mouse->y_abs < vp.y)
-            mouse->y_abs = vp.y;
-         else if (mouse->y_abs >= (vp.y + (int)vp.full_height))
-            mouse->y_abs = vp.y + vp.full_height - 1;
+         if (mouse->y_abs < VIDEO_POS_Y(vp.pos))
+            mouse->y_abs = VIDEO_POS_Y(vp.pos);
+         else if (mouse->y_abs >= (VIDEO_POS_Y(vp.pos) + (int)VIDEO_SCALE_H(vp.full_dims)))
+            mouse->y_abs = VIDEO_POS_Y(vp.pos) + VIDEO_SCALE_H(vp.full_dims) - 1;
       }
    }
 }
@@ -774,9 +781,9 @@ static int16_t udev_mouse_get_y(const udev_input_mouse_t *mouse)
    if (mouse->abs) /* mouse coords are absolute */
       src_height = mouse->y_max - mouse->y_min + 1;
    else
-      src_height = vp.full_height;
+      src_height = VIDEO_SCALE_H(vp.full_dims);
 
-   y = (double)vp.height / src_height * mouse->y_rel;
+   y = (double)VIDEO_SCALE_H(vp.dims) / src_height * mouse->y_rel;
 
    return y + (y < 0 ? -0.5 : 0.5);
 }
@@ -800,8 +807,8 @@ static bool udev_mouse_get_pointer(const udev_input_mouse_t *mouse,
    {
       /* mouse coordinates are relative to the full screen; convert them
        * to be relative to the viewport */
-      scaled_x = vp.full_width  * (mouse->x_abs - mouse->x_min) / (mouse->x_max - mouse->x_min + 1);
-      scaled_y = vp.full_height * (mouse->y_abs - mouse->y_min) / (mouse->y_max - mouse->y_min + 1);
+      scaled_x = VIDEO_SCALE_W(vp.full_dims)  * (mouse->x_abs - mouse->x_min) / (mouse->x_max - mouse->x_min + 1);
+      scaled_y = VIDEO_SCALE_H(vp.full_dims) * (mouse->y_abs - mouse->y_min) / (mouse->y_max - mouse->y_min + 1);
    }
    else /* mouse coords are viewport relative */
    {
@@ -1852,8 +1859,8 @@ static bool udev_translate_touch_pos(
     *   One way to fix this is to add or remove 0.5, but this needs floating
     *   point operations which might not be desirable.
     */
-   int32_t ma_pos_x   = (((((pointer_pos_x + src_touch->info_x_limits.min) * 0x7fff) / src_touch->info_x_limits.range) * target_vp->full_width) / 0x7fff);
-   int32_t ma_pos_y   = (((((pointer_pos_y + src_touch->info_y_limits.min) * 0x7fff) / src_touch->info_y_limits.range) * target_vp->full_height) / 0x7fff);
+   int32_t ma_pos_x   = (((((pointer_pos_x + src_touch->info_x_limits.min) * 0x7fff) / src_touch->info_x_limits.range) * VIDEO_SCALE_W(target_vp->full_dims)) / 0x7fff);
+   int32_t ma_pos_y   = (((((pointer_pos_y + src_touch->info_y_limits.min) * 0x7fff) / src_touch->info_y_limits.range) * VIDEO_SCALE_H(target_vp->full_dims)) / 0x7fff);
 
    /* Calculate relative offsets. */
    *pointer_ma_rel_x += ma_pos_x - *pointer_ma_pos_x;
@@ -2518,13 +2525,13 @@ static void udev_report_touch(udev_input_t *udev, udev_input_device_t *dev)
                   touch->touchpad_pos_x   += touch->pointer_ma_rel_x * touch->touchpad_sensitivity;
                   if (touch->touchpad_pos_x < 0.0f)
                      touch->touchpad_pos_x = 0.0f;
-                  else if (touch->touchpad_pos_x > vp.full_width)
-                     touch->touchpad_pos_x = vp.full_width;
+                  else if (touch->touchpad_pos_x > VIDEO_SCALE_W(vp.full_dims))
+                     touch->touchpad_pos_x = VIDEO_SCALE_W(vp.full_dims);
                   touch->touchpad_pos_y += touch->pointer_ma_rel_y * touch->touchpad_sensitivity;
                   if (touch->touchpad_pos_y < 0.0f)
                      touch->touchpad_pos_y = 0.0f;
-                  else if (touch->touchpad_pos_y > vp.full_height)
-                     touch->touchpad_pos_y = vp.full_height;
+                  else if (touch->touchpad_pos_y > VIDEO_SCALE_H(vp.full_dims))
+                     touch->touchpad_pos_y = VIDEO_SCALE_H(vp.full_dims);
 
                   /* Backup last values for delta. */
                   last_mouse_pos_x   = touch->mouse_pos_x;
@@ -3289,7 +3296,7 @@ static int udev_input_add_device(udev_input_t *udev,
             fd, strerror(errno));
    }
 #elif defined(HAVE_KQUEUE)
-   EV_SET(&event, fd, EVFILT_READ, EV_ADD, 0, 0, LISTENSOCKET);
+   EV_SET(&event, fd, EVFILT_READ, EV_ADD, 0, 0, UDEV_KQ_UDATA(device));
    if (kevent(udev->fd, &event, 1, NULL, 0, NULL) == -1)
    {
       RARCH_ERR("[udev] Failed to add FD (%d) to kqueue list (%s).\n",
@@ -3454,10 +3461,10 @@ static void udev_input_adopt_rel_pointer_position_from_mouse(
          && (dx || dy)
          && video_driver_display_type_get() != RARCH_DISPLAY_X11)
    {
-      int minX      = view.x;
-      int maxX      = view.x + view.width;
-      int minY      = view.y;
-      int maxY      = view.y + view.height;
+      int minX      = VIDEO_POS_X(view.pos);
+      int maxX      = VIDEO_POS_X(view.pos) + VIDEO_SCALE_W(view.dims);
+      int minY      = VIDEO_POS_Y(view.pos);
+      int maxY      = VIDEO_POS_Y(view.pos) + VIDEO_SCALE_H(view.dims);
       /* Not running in a window. */
       noX11DispX    = noX11DispX + dx;
       if (noX11DispX < minX)
@@ -3534,8 +3541,9 @@ static void udev_input_poll(void *data)
    ret = epoll_wait(udev->fd, events, ARRAY_SIZE(events), 0);
 #elif defined(HAVE_KQUEUE)
    {
+      /* Zero timeout: drain what is pending, never block the frame. */
       struct timespec timeoutspec;
-      timeoutspec.tv_sec  = timeout;
+      timeoutspec.tv_sec  = 0;
       timeoutspec.tv_nsec = 0;
       ret                 = kevent(udev->fd, NULL, 0, events,
             ARRAY_SIZE(events), &timeoutspec);
@@ -3544,8 +3552,12 @@ static void udev_input_poll(void *data)
 
    for (i = 0; i < ret; i++)
    {
-      /* TODO/FIXME - add HAVE_EPOLL/HAVE_KQUEUE codepaths here */
+#if defined(HAVE_EPOLL)
       if (events[i].events & EPOLLIN)
+#elif defined(HAVE_KQUEUE)
+      if (     events[i].filter == EVFILT_READ
+            && !(events[i].flags & EV_ERROR))
+#endif
       {
          int j, len;
          struct input_event input_events[32];
@@ -3573,9 +3585,9 @@ static bool udev_pointer_is_off_window(const udev_input_t *udev)
    bool r = video_driver_get_viewport_info(&view);
    if (r)
       return (udev->pointer_x < 0
-           || udev->pointer_x >= (int)view.full_width
+           || udev->pointer_x >= (int)VIDEO_SCALE_W(view.full_dims)
            || udev->pointer_y < 0
-           || udev->pointer_y >= (int)view.full_height);
+           || udev->pointer_y >= (int)VIDEO_SCALE_H(view.full_dims));
 #endif
    return false;
 }
@@ -3960,7 +3972,9 @@ static void udev_input_free(void *data)
 
    udev_input_kb_free(udev);
 
+#ifdef __linux__
    linux_close_illuminance_sensor(udev->illuminance_sensor);
+#endif
 
    free(udev);
 }
@@ -3975,14 +3989,17 @@ static bool udev_set_sensor_state(void *data, unsigned port, enum retro_sensor_a
    switch (action)
    {
       case RETRO_SENSOR_ILLUMINANCE_DISABLE:
+#ifdef __linux__
          /* If already disabled, then do nothing */
          linux_close_illuminance_sensor(udev->illuminance_sensor); /* noop if NULL */
          udev->illuminance_sensor = NULL;
+#endif
       case RETRO_SENSOR_GYROSCOPE_DISABLE:
       case RETRO_SENSOR_ACCELEROMETER_DISABLE:
          /** Unimplemented sensor actions that probably shouldn't fail */
          return true;
 
+#ifdef __linux__
       case RETRO_SENSOR_ILLUMINANCE_ENABLE:
          if (udev->illuminance_sensor)
             /* If we already have a sensor, just set the rate */
@@ -3991,6 +4008,7 @@ static bool udev_set_sensor_state(void *data, unsigned port, enum retro_sensor_a
             udev->illuminance_sensor = linux_open_illuminance_sensor(rate);
 
          return udev->illuminance_sensor != NULL;
+#endif
       default:
          break;
    }
@@ -4000,6 +4018,7 @@ static bool udev_set_sensor_state(void *data, unsigned port, enum retro_sensor_a
 
 static float udev_get_sensor_input(void *data, unsigned port, unsigned id)
 {
+#ifdef __linux__
    udev_input_t *udev = (udev_input_t*)data;
 
    if (!udev)
@@ -4013,6 +4032,7 @@ static float udev_get_sensor_input(void *data, unsigned port, unsigned id)
       default:
          break;
    }
+#endif
 
    return 0.0f;
 }

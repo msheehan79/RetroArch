@@ -34,19 +34,17 @@ typedef struct gl3_filter_chain gl3_filter_chain_t;
 struct gl3_filter_chain_texture
 {
    GLuint image;
-   unsigned width;
-   unsigned height;
-   unsigned padded_width;
-   unsigned padded_height;
+   unsigned dims;        /* VIDEO_SCALE_PACK */
+   unsigned padded_dims; /* VIDEO_SCALE_PACK */
    GLenum format;
 };
 
 struct gl3_viewport
 {
-   GLint x;
-   GLint y;
-   GLsizei width;
-   GLsizei height;
+   /* The origin and the drawn area, one word each, in
+    * VIDEO_POS_PACK's and VIDEO_SCALE_PACK's layouts. */
+   unsigned pos;
+   unsigned dims;
 };
 
 struct gl3_filter_chain_pass_info

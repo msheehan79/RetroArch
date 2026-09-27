@@ -83,12 +83,10 @@
 #define VIDEO_DRIVER_GET_HW_CONTEXT_INTERNAL(video_st) (&video_st->hw_render)
 
 /* The output size as one value, from one load of
- * video_driver_state_t::output_size_packed. Take it once and read both
+ * video_driver_state_t::output_dims. Take it once and read both
  * halves from it: two loads could pair a width with another size's
  * height. */
-#define VIDEO_DRIVER_OUTPUT_SIZE(video_st) ((unsigned)retro_atomic_load_acquire_int(&(video_st)->output_size_packed))
-#define VIDEO_DRIVER_OUTPUT_WIDTH(size)    VIDEO_SCALE_W(size)
-#define VIDEO_DRIVER_OUTPUT_HEIGHT(size)   VIDEO_SCALE_H(size)
+#define VIDEO_DRIVER_OUTPUT_DIMS(video_st) ((unsigned)retro_atomic_load_acquire_int(&(video_st)->output_dims))
 
 #define VIDEO_HAS_FOCUS(video_st) ((video_st->current_video && video_st->data && video_st->current_video->focus) ? (video_st->current_video->focus(video_st->data)) : true)
 
@@ -170,6 +168,8 @@ enum video_driver_state_flags
 enum video_driver_scanline
 {
    SCANLINE_NEXT = 0,
+   SCANLINE_PREV,
+   SCANLINE_ACTIVE,
    SCANLINE_TOTAL,
    SCANLINE_HOLD,
    SCANLINE_LAST
@@ -178,7 +178,8 @@ enum video_driver_scanline
 struct LinkInfo
 {
    struct video_shader_pass *pass;
-   unsigned tex_w, tex_h;
+   /* The size of the texture the pass renders into, packed. */
+   unsigned tex_dims;
 };
 
 struct shader_program_info
@@ -289,14 +290,11 @@ typedef struct video_shader_ctx_params
    const void *prev_info;
    const void *feedback_info;
    const void *fbo_info;
-   unsigned vp_width;
-   unsigned vp_height;
-   unsigned width;
-   unsigned height;
-   unsigned tex_width;
-   unsigned tex_height;
-   unsigned out_width;
-   unsigned out_height;
+   /* Each size is one word in VIDEO_SCALE_PACK's layout. */
+   unsigned vp_dims;
+   unsigned dims;
+   unsigned tex_dims;
+   unsigned out_dims;
    unsigned frame_counter;
    /* Presents the display had seen before this frame's first one; see
     * video_frame_info_t::swap_count. Zero when the caller has none. */
@@ -326,17 +324,10 @@ typedef struct video_info
    int swap_interval;
 
 
-   /* Width of window.
-    * If fullscreen mode is requested,
-    * a width of 0 means the resolution of the
-    * desktop should be used. */
-   unsigned width;
-
-   /* Height of window.
-    * If fullscreen mode is requested,
-    * a height of 0 means the resolutiof the desktop should be used.
-    */
-   unsigned height;
+   /* The window size, both axes in one word, VIDEO_SCALE_PACK's
+    * layout. If fullscreen mode is requested, a zero axis means the
+    * resolution of the desktop should be used for it. */
+   unsigned dims;
 
 #ifdef GEKKO
    /* TODO - we can't really have driver system-specific
@@ -421,10 +412,45 @@ typedef struct video_info
  * settings for a caller on the main thread, and into the frame's own
  * copies for one on the video thread - the wrapper repoints them as
  * it hands the frame over, as it does the widget paths. */
+/* Flags of video_frame_menu_settings_t.flags, one per menu bool. */
+enum video_frame_menu_flags
+{
+   VIDEO_MENU_FLAG_RGUI_SHADOWS                                 = (1u << 0),
+   VIDEO_MENU_FLAG_RGUI_EXTENDED_ASCII                          = (1u << 1),
+   VIDEO_MENU_FLAG_RGUI_TRANSPARENCY                            = (1u << 2),
+   VIDEO_MENU_FLAG_RGUI_BACKGROUND_FILLER_THICKNESS_ENABLE      = (1u << 3),
+   VIDEO_MENU_FLAG_RGUI_BORDER_FILLER_THICKNESS_ENABLE          = (1u << 4),
+   VIDEO_MENU_FLAG_RGUI_BORDER_FILLER_ENABLE                    = (1u << 5),
+   VIDEO_MENU_FLAG_RGUI_PARTICLE_EFFECT_SCREENSAVER             = (1u << 6),
+   VIDEO_MENU_FLAG_NETWORK_ON_DEMAND_THUMBNAILS                 = (1u << 7),
+   VIDEO_MENU_FLAG_MOUSE_ENABLE                                 = (1u << 8),
+   VIDEO_MENU_FLAG_POINTER_ENABLE                               = (1u << 9),
+   VIDEO_MENU_FLAG_THUMBNAIL_BACKGROUND_ENABLE                  = (1u << 10),
+   VIDEO_MENU_FLAG_CORE_ENABLE                                  = (1u << 11),
+   VIDEO_MENU_FLAG_XMB_SHOW_TITLE_HEADER                        = (1u << 12),
+   VIDEO_MENU_FLAG_XMB_VERTICAL_THUMBNAILS                      = (1u << 13),
+   VIDEO_MENU_FLAG_TICKER_SMOOTH                                = (1u << 14),
+   VIDEO_MENU_FLAG_XMB_ENTRY_ICONS                              = (1u << 15),
+   VIDEO_MENU_FLAG_XMB_SWITCH_ICONS                             = (1u << 16),
+   VIDEO_MENU_FLAG_OZONE_SORT_AFTER_TRUNCATE_PLAYLIST_NAME      = (1u << 17),
+   VIDEO_MENU_FLAG_OZONE_SCROLL_CONTENT_METADATA                = (1u << 18),
+   VIDEO_MENU_FLAG_SHOW_SUBLABELS_CURRENT_SELECTION_ONLY        = (1u << 19),
+   VIDEO_MENU_FLAG_DISABLE_SEARCH_BUTTON                        = (1u << 20),
+   VIDEO_MENU_FLAG_PLAYLIST_SHOW_ENTRY_IDX                      = (1u << 21),
+   VIDEO_MENU_FLAG_KIOSK_MODE_ENABLE                            = (1u << 22),
+   VIDEO_MENU_FLAG_CONTENT_RUNTIME_LOG                          = (1u << 23),
+   VIDEO_MENU_FLAG_CONTENT_RUNTIME_LOG_AGGREGATE                = (1u << 24),
+   VIDEO_MENU_FLAG_XMB_FONT_IS_DEFAULT                          = (1u << 25),
+   VIDEO_MENU_FLAG_USE_PREFERRED_SYSTEM_COLOR_THEME             = (1u << 26),
+   VIDEO_MENU_FLAG_SAVESTATE_THUMBNAIL_ENABLE                   = (1u << 27),
+   VIDEO_MENU_FLAG_SHOW_SUBLABELS                               = (1u << 28)
+};
+
 typedef struct video_frame_menu_settings
 {
    const char *rgui_theme_preset;
    const char *dynamic_wallpapers_dir;
+   const char *ozone_color_theme;
    unsigned rgui_color_theme;
    unsigned rgui_aspect_ratio;
    unsigned rgui_aspect_ratio_lock;
@@ -446,43 +472,14 @@ typedef struct video_frame_menu_settings
    unsigned ozone_header_separator;
    unsigned input_turbo_button;
    int      input_turbo_bind;
-   unsigned ozone_color_theme;
    unsigned startup_page;
    int      xmb_title_margin;
    int      xmb_title_margin_horizontal_offset;
-   bool     rgui_shadows;
-   bool     rgui_extended_ascii;
-   bool     rgui_transparency;
-   bool     rgui_background_filler_thickness_enable;
-   bool     rgui_border_filler_thickness_enable;
-   bool     rgui_border_filler_enable;
-   bool     rgui_particle_effect_screensaver;
-   bool     network_on_demand_thumbnails;
-   bool     mouse_enable;
-   bool     pointer_enable;
-   bool     thumbnail_background_enable;
-   bool     core_enable;
-   bool     xmb_show_title_header;
-   bool     xmb_vertical_thumbnails;
-   bool     ticker_smooth;
-   bool     xmb_entry_icons;
-   bool     xmb_switch_icons;
-   bool     ozone_sort_after_truncate_playlist_name;
-   bool     ozone_scroll_content_metadata;
-   bool     show_sublabels_current_selection_only;
-   bool     disable_search_button;
-   bool     playlist_show_entry_idx;
-   bool     kiosk_mode_enable;
-   bool     content_runtime_log;
-   bool     content_runtime_log_aggregate;
+   uint32_t flags; /* enum video_frame_menu_flags */
    /* Derived: whether path_menu_xmb_font is the FILE_PATH_UNKNOWN
     * placeholder, i.e. no custom menu font is configured. The path
     * itself stays out of the per-frame snapshot; the one frame-path
     * consumer only ever asks this predicate. */
-   bool     xmb_font_is_default;
-   bool     use_preferred_system_color_theme;
-   bool     savestate_thumbnail_enable;
-   bool     show_sublabels;
 } video_frame_menu_settings_t;
 
 typedef struct video_frame_info
@@ -523,17 +520,15 @@ typedef struct video_frame_info
    unsigned monitor_index;
    unsigned crt_switch_resolution;
    unsigned crt_switch_resolution_super;
-   unsigned width;
-   unsigned height;
-   unsigned scale_width;
-   unsigned scale_height;
+   /* The output size the frame was built for, and the axes each of the
+    * three below mean, all in one word, VIDEO_SCALE_PACK's layout. */
+   unsigned dims;
+   unsigned scale_dims;
    unsigned xmb_color_theme;
    unsigned menu_shader_pipeline;
    unsigned materialui_color_theme;
-   unsigned custom_vp_width;
-   unsigned custom_vp_height;
-   unsigned custom_vp_full_width;
-   unsigned custom_vp_full_height;
+   /* Both axes in one word, VIDEO_SCALE_PACK's layout. */
+   unsigned custom_vp_dims;
    unsigned black_frame_insertion;
    unsigned bfi_dark_frames;
    unsigned shader_subframes;
@@ -660,6 +655,8 @@ typedef struct video_frame_info
     * never reads the recording state the main thread writes. */
    bool gpu_recording;
    bool threaded_present_repeat;
+   /* The threaded presenter is holding each push to the display's
+    * vblank: the setting is on and the wrapper is running. */
    bool threaded_display_pacing;
    bool present_timing_from_display;
 } video_frame_info_t;
@@ -667,7 +664,7 @@ typedef struct video_frame_info
 typedef void (*update_window_title_cb)(void*);
 typedef bool (*get_metrics_cb)(void *data, enum display_metric_types type,
       float *value);
-typedef bool (*set_resize_cb)(void*, unsigned, unsigned);
+typedef bool (*set_resize_cb)(void*, unsigned dims);
 
 typedef struct gfx_ctx_driver
 {
@@ -688,16 +685,18 @@ typedef struct gfx_ctx_driver
    /* Sets the swap interval. */
    void (*swap_interval)(void *data, int);
 
-   /* Sets video mode. Creates a window, etc. */
-   bool (*set_video_mode)(void*, unsigned, unsigned, bool);
+   /* Sets video mode. Creates a window, etc. The size is one word,
+    * VIDEO_SCALE_PACK's layout. */
+   bool (*set_video_mode)(void*, unsigned, bool);
 
    /* Gets current window size.
     * If not initialized yet, it returns current screen size. */
-   void (*get_video_size)(void*, unsigned*, unsigned*);
+   /* Writes the size as one word, VIDEO_SCALE_PACK's layout. */
+   void (*get_video_size)(void*, unsigned*);
 
    float (*get_refresh_rate)(void*);
 
-   void (*get_video_output_size)(void*, unsigned*, unsigned*, char *, size_t);
+   void (*get_video_output_size)(void*, unsigned*, char *, size_t);
 
    void (*get_video_output_prev)(void*);
 
@@ -716,9 +715,9 @@ typedef struct gfx_ctx_driver
    update_window_title_cb update_window_title;
 
    /* Queries for resize and quit events.
-    * Also processes events. */
-   void (*check_window)(void*, bool*, bool*,
-         unsigned*, unsigned*);
+    * Also processes events. The size is one word in
+    * VIDEO_SCALE_PACK's layout, read and written through it. */
+   void (*check_window)(void*, bool*, bool*, unsigned*);
 
    /* Acknowledge a resize event. This is needed for some APIs.
     * Most backends will ignore this. */
@@ -824,8 +823,7 @@ typedef struct gfx_ctx_driver
 
 typedef struct gfx_ctx_mode
 {
-   unsigned width;
-   unsigned height;
+   unsigned dims; /* VIDEO_SCALE_PACK(width, height) */
    bool fullscreen;
 } gfx_ctx_mode_t;
 
@@ -849,12 +847,12 @@ typedef struct video_poke_interface
    uintptr_t (*load_texture)(void *video_data, void *data,
          bool threaded, enum texture_filter_type filter_type);
    void (*unload_texture)(void *data, bool threaded, uintptr_t id);
-   void (*set_video_mode)(void *data, unsigned width,
-         unsigned height, bool fullscreen);
+   /* dims is one word, VIDEO_SCALE_PACK's layout. */
+   void (*set_video_mode)(void *data, unsigned dims, bool fullscreen);
    float (*get_refresh_rate)(void *data);
    void (*set_filtering)(void *data, unsigned index, bool smooth, bool ctx_scaling);
    void (*get_video_output_size)(void *data,
-         unsigned *width, unsigned *height, char *s, size_t len);
+         unsigned *dims, char *s, size_t len);
 
    /* Move index to previous resolution */
    void (*get_video_output_prev)(void *data);
@@ -869,7 +867,7 @@ typedef struct video_poke_interface
 
    /* Update texture. */
    void (*set_texture_frame)(void *data, const void *frame, bool rgb32,
-         unsigned width, unsigned height, float alpha);
+         unsigned dims, float alpha);
    /* Enable or disable rendering. */
    void (*set_texture_enable)(void *data, bool enable, bool full_screen);
    void (*set_osd_msg)(void *data,
@@ -982,13 +980,21 @@ typedef struct video_poke_interface
     * reports that so callers never post updates it cannot run. */
    bool (*update_texture)(void *video_data, uintptr_t id,
          const struct texture_image *ti, bool threaded);
+
+   /* The largest swap interval this driver can hold a frame for, or 0
+    * when it has no limit of its own. The D3D APIs carry the interval
+    * as a present parameter that stops at four, so those drivers
+    * report that bound and the derived interval stays inside it - a
+    * value the driver cannot express would otherwise present at one
+    * while the audio rate was scaled for the full multiple. Drivers
+    * that hold a frame for as long as they are asked leave it NULL. */
+   unsigned (*get_swap_interval_cap)(void *data);
 } video_poke_interface_t;
 
-/* msg is for showing a message on the screen
- * along with the video frame. */
+/* dims is the frame's size, VIDEO_SCALE_PACK'd; msg is for showing a
+ * message on the screen along with the video frame. */
 typedef bool (*video_driver_frame_t)(void *data,
-      const void *frame, unsigned width,
-      unsigned height, uint64_t frame_count,
+      const void *frame, unsigned dims, uint64_t frame_count,
       unsigned pitch, const char *msg, video_frame_info_t *video_info);
 
 /* ---- Deferred (per-frame) shader loading ---- */
@@ -1064,7 +1070,7 @@ typedef struct video_driver
    /* Human-readable identifier. */
    const char *ident;
 
-   void (*set_viewport)(void *data, unsigned width, unsigned height,
+   void (*set_viewport)(void *data, unsigned dims,
          bool force_full, bool allow_rotate);
 
    void (*set_rotation)(void *data, unsigned rotation);
@@ -1072,13 +1078,6 @@ typedef struct video_driver
 
    /* Reads out in BGR byte order (24bpp). */
    bool (*read_viewport)(void *data, uint8_t *buffer, bool is_idle);
-
-   /* Returns a pointer to a newly allocated buffer that can
-    * (and must) be passed to free() by the caller, containing a
-    * copy of the current raw frame in the active pixel format
-    * and sets width, height and pitch to the correct values. */
-   void* (*read_frame_raw)(void *data, unsigned *width,
-   unsigned *height, size_t *pitch);
 
 #ifdef HAVE_OVERLAY
    void (*overlay_interface)(void *data,
@@ -1148,8 +1147,21 @@ typedef struct video_driver
 
 /* Slots of video_driver_state_t::vp_params_bits in use. The array has
  * headroom above this so a parameter can be added without moving
- * anything after it; the count is what the publish and the read walk. */
-#define VIDEO_VP_PARAM_SLOTS 15
+ * anything after it; the count is what the publish and the read walk.
+ *
+ * The portrait bias pair is read only under RARCH_MOBILE -- the two
+ * sites that reach for it pick it on the window being taller than it
+ * is wide, and both are inside that #if -- so off mobile it is not
+ * published at all rather than published as a copy of the landscape
+ * pair. Those two sit last so every other slot keeps its index on
+ * both. */
+#if defined(RARCH_MOBILE)
+#define VIDEO_VP_SLOT_BIAS_PORTRAIT_X 8
+#define VIDEO_VP_SLOT_BIAS_PORTRAIT_Y 9
+#define VIDEO_VP_PARAM_SLOTS 10
+#else
+#define VIDEO_VP_PARAM_SLOTS 8
+#endif
 
 typedef struct
 {
@@ -1260,11 +1272,11 @@ typedef struct
     * 16, one value so a reader gets a matching pair without a lock.
     * Set by the drivers - on the video thread under the threaded video
     * wrapper - and read by the main thread, the menu and tasks, through
-    * video_driver_set_output_size() / video_driver_get_output_size(). */
-   retro_atomic_int_t output_size_packed;
+    * video_driver_set_output_dims() / video_driver_get_output_dims(). */
+   retro_atomic_int_t output_dims;
    /* Where the statistics overlay's text is built, for the frame
     * descriptor to point at (video_frame_info_t::stat_text) */
-   char stat_text[1536];
+   char stat_text[VIDEO_STAT_TEXT_SIZE];
 #ifdef HAVE_OVERLAY
    /* The active overlay's viewport override, published by the main
     * thread whenever the active overlay changes
@@ -1377,7 +1389,7 @@ typedef struct
    char title_buf[64];
    char cached_driver_id[32];
 
-   int16_t scanline[SCANLINE_LAST];
+   uint16_t scanline[SCANLINE_LAST];
 
    uint16_t frame_drop_count;
    uint16_t frame_time_reserve;
@@ -1508,7 +1520,7 @@ void video_driver_cached_frame(void);
  * Safe to call from any thread.
  */
 bool video_driver_cached_frame_info(
-      unsigned *width, unsigned *height, size_t *pitch,
+      unsigned *dims, size_t *pitch,
       bool *has_cpu_pixels);
 
 /**
@@ -1537,7 +1549,7 @@ void video_driver_cached_frame_read(
       void *userdata,
       void (*cb)(void *userdata,
                  const void *data,
-                 unsigned width, unsigned height, size_t pitch));
+                 unsigned dims, size_t pitch));
 
 /**
  * video_driver_cached_frame_is_hw_render:
@@ -1572,7 +1584,7 @@ bool video_driver_cached_frame_is_hw_render(void);
  * cached_frame_read callback has returned.
  */
 void video_driver_cached_frame_publish(
-      const void *data, unsigned width, unsigned height, size_t pitch);
+      const void *data, unsigned dims, size_t pitch);
 
 /**
  * video_driver_cached_frame_invalidate:
@@ -1627,7 +1639,7 @@ uint64_t video_driver_presents_per_frame(const video_frame_info_t *video_info);
  * buffer; returns it and its stride, or NULL if it could not grow */
 const void *video_driver_convert_xrgb2101010(
       video_driver_state_t *video_st,
-      const void *data, unsigned width, unsigned height,
+      const void *data, unsigned dims,
       size_t in_pitch, size_t *out_pitch);
 
 /**
@@ -1661,24 +1673,27 @@ void video_driver_shader_deferred_tick(void);
 
 bool video_driver_set_rotation(unsigned rotation);
 
-bool video_driver_set_video_mode(unsigned width,
-      unsigned height, bool fullscreen);
+bool video_driver_set_video_mode(unsigned dims, bool fullscreen);
+
+/* Appends printf-formatted text at @len to a statistics buffer of
+ * VIDEO_STAT_TEXT_SIZE, returning the new length. The buffer stays
+ * terminated; once it is full nothing more is written and the length
+ * stays at its last byte. */
+size_t video_driver_stat_appendf(char *s, size_t len, const char *fmt, ...);
 
 bool video_driver_get_video_output_size(
-      unsigned *width, unsigned *height, char *s, size_t len);
-
-void * video_driver_read_frame_raw(unsigned *width,
-   unsigned *height, size_t *pitch);
+      unsigned *dims, char *s, size_t len);
 
 void video_driver_set_filtering(unsigned index, bool smooth, bool ctx_scaling);
 
 const char *video_driver_get_ident(void);
 
 /**
- * video_driver_get_output_size / video_driver_set_output_size:
+ * video_driver_get_output_dims / video_driver_set_output_dims:
  *
- * Get or set the output dimensions -- the size of the area where
- * the active video driver presents pixels to the user.
+ * Get or set the output size -- the area where the active video
+ * driver presents pixels to the user -- as one word, width in the
+ * high half and height in the low, VIDEO_SCALE_PACK's layout.
  *
  * Per-driver mapping of "output area":
  *   desktop GL/D3D/Vulkan/Metal -- the window's client area
@@ -1700,12 +1715,12 @@ const char *video_driver_get_ident(void);
  * against the visible output area; and other video drivers for
  * cross-driver coordination.
  *
- * Threaded video: the read and write are protected by
- * video_st->display_lock; safe to call from any thread.
+ * Threaded video: published with a release store and read with an
+ * acquire load, so both are safe to call from any thread.
  */
-void video_driver_get_output_size(unsigned *width, unsigned *height);
+unsigned video_driver_get_output_dims(void);
 
-void video_driver_set_output_size(unsigned width, unsigned height);
+void video_driver_set_output_dims(unsigned dims);
 
 #ifdef HAVE_OVERLAY
 struct overlay;
@@ -1744,8 +1759,7 @@ void video_driver_menu_settings(void **list_data, void *list_info_data,
 /**
  * video_viewport_get_scaled_aspect2:
  * @vp            : Viewport handle. Fields x, y, width, height will be written, and full_width or full_height might be read.
- * @width         : Viewport width.
- * @height        : Viewport height.
+ * @dims          : Viewport size, packed with VIDEO_SCALE_PACK.
  * @ydown         : Positive y goes "down".
  * @device_aspect : Device aspect ratio.
  * @desired_aspect: Target aspect ratio.
@@ -1754,7 +1768,7 @@ void video_driver_menu_settings(void **list_data, void *list_info_data,
  * scaled non-integer aspect ratio.
  **/
 void video_viewport_get_scaled_aspect2(struct video_viewport *vp,
-      unsigned width, unsigned height, bool ydown,
+      unsigned dims, bool ydown,
       float device_aspect, float desired_aspect);
 
 /**
@@ -2001,6 +2015,33 @@ void video_driver_force_fallback(const char *driver);
 
 /* string list stays owned by the caller and must be available at all times after the video driver is inited */
 void video_driver_set_gpu_api_devices(enum gfx_ctx_api api, struct string_list *list);
+
+/* The display's peak luminance as its context learned it (a sink's
+ * EDID, a compositor's description of the output), in whole nits;
+ * 0 while unknown. For the user's information: nothing applies it. */
+void video_driver_set_display_peak_nits(float nits);
+unsigned video_driver_get_display_peak_nits(void);
+
+/* The peak to tell cores: the display's where Use Display Peak is on
+ * and one is known, else the Peak Brightness setting. */
+float video_driver_get_hdr_max_nits(void);
+
+/* The peak for the HDR metadata a driver sends its display: the
+ * display's where Use Display Peak is on and one is known, else the
+ * driver's own fixed value, unchanged. */
+float video_driver_hdr_metadata_peak(float driver_value);
+
+/* The GPU index to use for 'api' out of the devices in 'list'.
+ *
+ * An index alone is a position in a list that a driver update, a BIOS
+ * change or another GPU reorders, after which it names a different
+ * device. The device the index was chosen as is remembered with it:
+ * where that name has moved, its new position is returned; where it is
+ * gone, 0 with a warning, rather than whatever now sits at the index.
+ * The name is kept up to date with what was resolved.
+ */
+int video_driver_gpu_index_resolve(enum gfx_ctx_api api, int index,
+      struct string_list *list);
 
 struct string_list* video_driver_get_gpu_api_devices(enum gfx_ctx_api api);
 

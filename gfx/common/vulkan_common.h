@@ -217,15 +217,6 @@ typedef struct vulkan_context
    VkPhysicalDevice gpu;
    VkDevice device;
    VkQueue queue;
-   /* The queue presents go to. Distinct from queue where the device
-    * offers a second queue in the graphics family - requested on the
-    * default path, and accepted as presentation_queue from a core that
-    * creates the device - so vkQueuePresentKHR needs no lock at all:
-    * only the frame thread touches it, and a hardware core submitting
-    * through lock_queue is never held behind a present that is waiting
-    * on the display. Equal to queue when the family has one queue, in
-    * which case the present shares queue_lock as before. */
-   VkQueue present_queue;
 
    VkPhysicalDeviceProperties gpu_properties;
    VkPhysicalDeviceMemoryProperties memory_properties;
@@ -237,6 +228,12 @@ typedef struct vulkan_context
     * array above is rewritten by the thread that draws, while the main
     * thread is the one asking. */
    retro_atomic_int_t supports_adaptive_vsync;
+   /* Swapchains made and thrown away without a frame ever reaching the
+    * display: says the chosen GPU cannot present here, which no Vulkan
+    * query reports in advance. */
+   unsigned swapchain_never_presented;
+   /* The device in use, as the GPU list numbers it */
+   int gpu_index;
    VkImage swapchain_images[VULKAN_MAX_SWAPCHAIN_IMAGES];
    VkFence swapchain_fences[VULKAN_MAX_SWAPCHAIN_IMAGES];
    VkFormat swapchain_format;
@@ -264,6 +261,13 @@ typedef struct vulkan_context
     * drained the whole device to be destroyed. */
    VkSemaphore swapchain_stale_acquire_semaphores[VULKAN_MAX_SWAPCHAIN_IMAGES];
    unsigned    num_stale_acquire_semaphores;
+   /* Fence an empty submission on the queue signals, taken behind
+    * the presents when a swapchain is rebuilt or torn down: a present
+    * is a queue operation that vkQueuePresentKHR returns ahead of, its
+    * wait on the frame's swapchain semaphore is not covered by any
+    * frame fence, and the semaphore and the swapchain must outlive it.
+    * Nothing per frame. See vulkan_context_wait_frames(). */
+   VkFence     present_fence;
 
    /* Only used under VULKAN_DEBUG, but always present: this struct
     * is shared by every TU that includes this header, and a member
@@ -276,8 +280,7 @@ typedef struct vulkan_context
    uint32_t current_swapchain_index;
    uint32_t current_frame_index;
 
-   unsigned swapchain_width;
-   unsigned swapchain_height;
+   unsigned swapchain_dims;      /* VIDEO_SCALE_PACK */
    unsigned num_recycled_acquire_semaphores;
    /* Present mode the current swapchain was created with; compared
     * against the mode a new swap_interval resolves to so a request
@@ -288,6 +291,8 @@ typedef struct vulkan_context
    uint8_t flags;
 
    bool swapchain_fences_signalled[VULKAN_MAX_SWAPCHAIN_IMAGES];
+   /* A present was queued since present_fence was last waited on. */
+   bool present_pending;
 } vulkan_context_t;
 
 struct vulkan_emulated_mailbox
@@ -341,8 +346,7 @@ typedef struct gfx_ctx_vulkan_data
 
 struct vulkan_display_surface_info
 {
-   unsigned width;
-   unsigned height;
+   unsigned dims;                /* VIDEO_SCALE_PACK; 0 for the largest mode */
    unsigned monitor_index;
    unsigned refresh_rate_x1000;
 };
@@ -422,8 +426,7 @@ void vulkan_context_destroy(gfx_ctx_vulkan_data_t *vk,
 bool vulkan_surface_create(gfx_ctx_vulkan_data_t *vk,
       enum vulkan_wsi_type type,
       void *display, void *surface,
-      unsigned width, unsigned height,
-      int8_t swap_interval);
+      unsigned dims, int8_t swap_interval);
 
 bool vulkan_surface_destroy(gfx_ctx_vulkan_data_t *vk);
 
@@ -451,9 +454,10 @@ unsigned vulkan_context_take_acquire_waits(struct vulkan_context *ctx,
       unsigned frame_index, VkSemaphore *sems,
       VkPipelineStageFlags *stages, VkPipelineStageFlags stage);
 
+/* dims is the size wanted, VIDEO_SCALE_PACK'd; used where the surface
+ * leaves the extent to the swapchain. */
 bool vulkan_create_swapchain(gfx_ctx_vulkan_data_t *vk,
-      unsigned width, unsigned height,
-      int8_t swap_interval);
+      unsigned dims, int8_t swap_interval);
 
 void vulkan_debug_mark_image(VkDevice device, VkImage image);
 void vulkan_debug_mark_memory(VkDevice device, VkDeviceMemory memory);

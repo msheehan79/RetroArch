@@ -965,12 +965,50 @@ static INLINE bool audio_driver_pipe_ahead(const audio_driver_state_t *audio_st,
    return d && d <= audio_st->pipe_ring.capacity;
 }
 
-/* The ring's positions restart with it; so do the marks in them. */
+/* The main thread's side of the resume mark: a new sequence, armed at
+ * @at or not armed at all. The main thread is the mark's only writer. */
+static void audio_driver_pipe_fade_publish(audio_driver_state_t *audio_st,
+      bool armed, size_t at)
+{
+   unsigned seq = ((unsigned)retro_atomic_load_relaxed_int(
+            &audio_st->pipe_fade_in_mark) >> 1) + 1;
+   if (armed)
+      retro_atomic_store_release_size(&audio_st->pipe_fade_in_at, at);
+   retro_atomic_store_release_int(&audio_st->pipe_fade_in_mark,
+         (int)((seq << 1) | (armed ? 1u : 0u)));
+}
+
+/* The consumer's side: the resume point a mark still asks for, and the
+ * mark's sequence to record once it is acted on. The position is taken
+ * between two reads of the mark that agree, so it is that mark's. */
+static bool audio_driver_pipe_fade_pending(audio_driver_state_t *audio_st,
+      size_t *at, unsigned *seq)
+{
+   for (;;)
+   {
+      unsigned mark = (unsigned)retro_atomic_load_acquire_int(
+            &audio_st->pipe_fade_in_mark);
+      if (!(mark & 1u) || (mark >> 1) == audio_st->pipe_fade_in_seen)
+         return false;
+      *at = retro_atomic_load_acquire_size(&audio_st->pipe_fade_in_at);
+      if ((unsigned)retro_atomic_load_acquire_int(
+               &audio_st->pipe_fade_in_mark) == mark)
+      {
+         *seq = mark >> 1;
+         return true;
+      }
+   }
+}
+
+/* The ring's positions restart with it; so do the marks in them. Both
+ * owners are parked. */
 static void audio_driver_pipe_marks_clear(audio_driver_state_t *audio_st)
 {
    audio_st->pipe_discard_seen =
          retro_atomic_load_acquire_int(&audio_st->pipe_discard_gen);
-   retro_atomic_store_release_int(&audio_st->pipe_fade_in_set, 0);
+   audio_st->pipe_fade_in_seen =
+         (unsigned)retro_atomic_load_acquire_int(
+               &audio_st->pipe_fade_in_mark) >> 1;
    audio_st->pipe_arm_fade     = false;
 }
 #endif
@@ -4517,18 +4555,7 @@ bool audio_driver_init_internal(void *settings_data, bool audio_cb_inited)
                ? (double)audio_driver_st.buffer_size / frame_bytes
                   * 1000.0 / out_rate
                : 0.0;
-         const char *ident     = audio_driver_st.current_audio->ident;
-#ifdef HAVE_THREADS
-         /* Name the driver the user chose, not the wrapper it runs
-          * under. */
-         if (string_is_equal(ident, "audio-thread"))
-         {
-            const audio_driver_t *inner = audio_thread_wrapped_driver(
-                  audio_driver_st.context_audio_data);
-            if (inner)
-               ident           = inner->ident;
-         }
-#endif
+         const char *ident     = audio_driver_get_ident();
          RARCH_LOG("[Audio] Driver \"%s\" reports a %u-byte buffer: "
                "%.1f ms of %u-channel %s at %u Hz against a %u ms latency setting%s; "
                "rate control %s it near %.1f ms.\n",
@@ -4977,7 +5004,7 @@ void audio_driver_pause_fade(bool paused)
    retro_atomic_store_release_size(&audio_st->pipe_discard_to,
          retro_atomic_load_acquire_size(&audio_st->pipe_ring.head));
    retro_atomic_fetch_add_int(&audio_st->pipe_discard_gen, 1);
-   retro_atomic_store_release_int(&audio_st->pipe_fade_in_set, 0);
+   audio_driver_pipe_fade_publish(audio_st, false, 0);
 #endif
 
    /* Only when something was playing is there a step to smooth. */
@@ -5503,9 +5530,8 @@ static void audio_driver_submit_width(audio_driver_state_t *audio_st,
        * whatever the consumer flushes next: mark where that starts. */
       if (from_core && audio_st->fade_in_pending)
       {
-         retro_atomic_store_release_size(&audio_st->pipe_fade_in_at,
+         audio_driver_pipe_fade_publish(audio_st, true,
                retro_atomic_load_relaxed_size(&audio_st->pipe_ring.head));
-         retro_atomic_store_release_int(&audio_st->pipe_fade_in_set, 1);
          audio_st->fade_in_pending = false;
       }
 
@@ -6149,20 +6175,23 @@ static void audio_driver_transport_consume(audio_driver_state_t *st)
       /* Never across the point the core's audio resumes at: there the
        * stage drops the silence it holds and the ramp is armed for what
        * it renders next. */
-      if (retro_atomic_load_acquire_int(&st->pipe_fade_in_set))
       {
-         size_t at = retro_atomic_load_acquire_size(&st->pipe_fade_in_at);
-         if (audio_driver_pipe_ahead(st, tail, at))
+         size_t   at;
+         unsigned seq;
+         if (audio_driver_pipe_fade_pending(st, &at, &seq))
          {
-            size_t upto = (at - tail) / st->pipe_frame_bytes;
-            if (input_budget > upto)
-               input_budget = upto;
-         }
-         else
-         {
-            audio_driver_transport_discard(0, false);
-            st->pipe_arm_fade = true;
-            retro_atomic_store_release_int(&st->pipe_fade_in_set, 0);
+            if (audio_driver_pipe_ahead(st, tail, at))
+            {
+               size_t upto = (at - tail) / st->pipe_frame_bytes;
+               if (input_budget > upto)
+                  input_budget = upto;
+            }
+            else
+            {
+               audio_driver_transport_discard(0, false);
+               st->pipe_arm_fade     = true;
+               st->pipe_fade_in_seen = seq;
+            }
          }
       }
    }
@@ -6424,19 +6453,22 @@ static void audio_driver_pipeline_consume(audio_driver_state_t *audio_st)
       }
       /* Never across the point the core's audio resumes at: the ramp is
        * armed for the chunk that starts there. */
-      if (retro_atomic_load_acquire_int(&audio_st->pipe_fade_in_set))
       {
-         size_t at = retro_atomic_load_acquire_size(&audio_st->pipe_fade_in_at);
-         if (audio_driver_pipe_ahead(audio_st, tail, at))
+         size_t   at;
+         unsigned seq;
+         if (audio_driver_pipe_fade_pending(audio_st, &at, &seq))
          {
-            size_t upto = (at - tail) / audio_st->pipe_frame_bytes;
-            if (have > upto)
-               have = upto;
-         }
-         else
-         {
-            audio_st->pipe_arm_fade = true;
-            retro_atomic_store_release_int(&audio_st->pipe_fade_in_set, 0);
+            if (audio_driver_pipe_ahead(audio_st, tail, at))
+            {
+               size_t upto = (at - tail) / audio_st->pipe_frame_bytes;
+               if (have > upto)
+                  have = upto;
+            }
+            else
+            {
+               audio_st->pipe_arm_fade     = true;
+               audio_st->pipe_fade_in_seen = seq;
+            }
          }
       }
    }
@@ -8261,7 +8293,7 @@ bool audio_driver_start(bool is_shutdown)
    }
 
    RARCH_DBG("[Audio] Started audio driver \"%s\" (is_shutdown=%s)\n",
-         audio->ident, is_shutdown ? "true" : "false");
+         audio_driver_get_ident(), is_shutdown ? "true" : "false");
 
    return true;
 
@@ -8695,7 +8727,8 @@ bool audio_driver_stop(void)
          audio_driver_state_unlock();
       }
       AUDIO_FLAGS_CLEAR(audio_st, AUDIO_FLAG_STARTED);
-      RARCH_DBG("[Audio] Stopped audio driver \"%s\".\n", audio->ident);
+      RARCH_DBG("[Audio] Stopped audio driver \"%s\".\n",
+            audio_driver_get_ident());
    }
 
    return stopped;

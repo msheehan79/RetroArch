@@ -241,7 +241,12 @@ typedef struct
    {
       D3D10Buffer      vbo;
       d3d10_texture_t* textures;
+      /* The page's sprites as the setters leave them; uploaded whole
+       * by the draw when dirty, so a setter is a store and a frame is
+       * at most one map. */
+      d3d10_sprite_t*  shadow;
       int              count;
+      bool             dirty;
    } overlays;
 #endif
 
@@ -410,16 +415,16 @@ static void d3d10_init_texture(D3D10Device device, d3d10_texture_t* texture)
 
    if (texture->desc.MiscFlags & D3D10_RESOURCE_MISC_GENERATE_MIPS)
    {
-      unsigned width, height;
+      /* Either axis above 1 is a bit above bit 0 in their OR, so
+       * the two halve together as one word. */
+      unsigned span;
 
       texture->desc.BindFlags |= D3D10_BIND_RENDER_TARGET;
-      width                    = texture->desc.Width  >> 5;
-      height                   = texture->desc.Height >> 5;
+      span = (texture->desc.Width | texture->desc.Height) >> 5;
 
-      while ((width > 1) || (height > 1))
+      while (span > 1)
       {
-         width  >>= 1;
-         height >>= 1;
+         span >>= 1;
          texture->desc.MipLevels++;
       }
    }
@@ -595,7 +600,7 @@ static void gfx_display_d3d10_blend_end(void *data)
 }
 
 static void gfx_display_d3d10_draw(gfx_display_ctx_draw_t *draw,
-      void *data, unsigned video_width, unsigned video_height)
+      void *data, unsigned video_dims)
 {
    UINT offset = 0, stride = 0;
    int vertex_count        = 1;
@@ -661,9 +666,9 @@ static void gfx_display_d3d10_draw(gfx_display_ctx_draw_t *draw,
 
       if (vertex_count == 1)
       {
-         sprite->pos.x       = draw->x / (float)d3d10->viewport.Width;
+         sprite->pos.x       = VIDEO_POS_X(draw->pos) / (float)d3d10->viewport.Width;
          sprite->pos.y       =
-               (d3d10->viewport.Height - draw->y - VIDEO_SCALE_H(draw->dims))
+               (d3d10->viewport.Height - VIDEO_POS_Y(draw->pos) - VIDEO_SCALE_H(draw->dims))
                / (float)d3d10->viewport.Height;
          sprite->pos.w       = VIDEO_SCALE_W(draw->dims)  / (float)d3d10->viewport.Width;
          sprite->pos.h       = VIDEO_SCALE_H(draw->dims) / (float)d3d10->viewport.Height;
@@ -740,7 +745,7 @@ static void gfx_display_d3d10_draw(gfx_display_ctx_draw_t *draw,
 
 static void gfx_display_d3d10_draw_pipeline(gfx_display_ctx_draw_t* draw,
       gfx_display_t *p_disp,
-      void *data, unsigned video_width, unsigned video_height)
+      void *data, unsigned video_dims)
 {
    UINT stride = 0, offset   = 0;
    d3d10_video_t* d3d10 = (d3d10_video_t*)data;
@@ -819,10 +824,11 @@ static void gfx_display_d3d10_draw_pipeline(gfx_display_ctx_draw_t* draw,
    }
 }
 
-void gfx_display_d3d10_scissor_begin(void *data,
-      unsigned video_width, unsigned video_height,
-      int x, int y, unsigned width, unsigned height)
+void gfx_display_d3d10_scissor_begin(void *data, unsigned video_dims,
+      int x, int y, unsigned dims)
 {
+   unsigned width        = VIDEO_SCALE_W(dims);
+   unsigned height       = VIDEO_SCALE_H(dims);
    D3D10_RECT rect;
    d3d10_video_t *d3d10 = (d3d10_video_t*)data;
 
@@ -837,9 +843,10 @@ void gfx_display_d3d10_scissor_begin(void *data,
    d3d10->device->lpVtbl->RSSetScissorRects(d3d10->device, 1, &rect);
 }
 
-void gfx_display_d3d10_scissor_end(void *data,
-      unsigned video_width, unsigned video_height)
+void gfx_display_d3d10_scissor_end(void *data, unsigned video_dims)
 {
+   unsigned video_width  = VIDEO_SCALE_W(video_dims);
+   unsigned video_height = VIDEO_SCALE_H(video_dims);
    D3D10_RECT rect;
    d3d10_video_t *d3d10  = (d3d10_video_t*)data;
 
@@ -1013,8 +1020,8 @@ static void d3d10_font_render_msg(
    float inv_tex_w, inv_tex_h;
    d3d10_font_t *font          = (d3d10_font_t*)data;
    d3d10_video_t *d3d10        = (d3d10_video_t*)userdata;
-   unsigned width              = d3d10->vp.full_width;
-   unsigned height             = d3d10->vp.full_height;
+   unsigned width              = VIDEO_SCALE_W(d3d10->vp.full_dims);
+   unsigned height             = VIDEO_SCALE_H(d3d10->vp.full_dims);
 
    if (!font || !msg || !*msg)
       return;
@@ -1321,83 +1328,71 @@ static void d3d10_free_overlays(d3d10_video_t* d3d10)
    /* The array as well as what it holds: every page load made a new
     * one over this one. */
    free(d3d10->overlays.textures);
+   free(d3d10->overlays.shadow);
    d3d10->overlays.textures = NULL;
+   d3d10->overlays.shadow   = NULL;
    d3d10->overlays.count    = 0;
+   d3d10->overlays.dirty    = false;
 
    Release(d3d10->overlays.vbo);
    d3d10->overlays.vbo      = NULL;
 }
 
-/* A page's sprite buffer, mapped to write sprite @index - or NULL
- * when there is no such sprite: no page loaded, a page whose load
- * failed, an index off the end of it, a device that will not map. The
- * setters below are called whenever the frontend likes, not only
- * after a load that worked. */
-static d3d10_sprite_t *d3d10_overlay_sprite_map(d3d10_video_t *d3d10,
+/* Sprite @index of the page, to be written - or NULL when there is no
+ * such sprite: no page loaded, a page whose load failed, an index off
+ * the end of it. The setters are called whenever the frontend likes,
+ * not only after a load that worked. */
+static d3d10_sprite_t *d3d10_overlay_sprite(d3d10_video_t *d3d10,
       unsigned index)
 {
-   d3d10_sprite_t *sprites = NULL;
    if (     !d3d10
-         || !d3d10->overlays.vbo
+         || !d3d10->overlays.shadow
          || (int)index >= d3d10->overlays.count)
       return NULL;
-   if (FAILED(d3d10->overlays.vbo->lpVtbl->Map(d3d10->overlays.vbo,
-               D3D10_MAP_WRITE_NO_OVERWRITE, 0, (void**)&sprites)))
-      return NULL;
-   if (!sprites)
-      d3d10->overlays.vbo->lpVtbl->Unmap(d3d10->overlays.vbo);
-   return sprites;
+   d3d10->overlays.dirty = true;
+   return &d3d10->overlays.shadow[index];
 }
 
 static void
 d3d10_overlay_vertex_geom(void* data,
       unsigned index, float x, float y, float w, float h)
 {
-   d3d10_video_t*  d3d10   = (d3d10_video_t*)data;
-   d3d10_sprite_t* sprites = d3d10_overlay_sprite_map(d3d10, index);
+   d3d10_sprite_t* sprite = d3d10_overlay_sprite((d3d10_video_t*)data, index);
 
-   if (!sprites)
+   if (!sprite)
       return;
 
-   sprites[index].pos.x = x;
-   sprites[index].pos.y = y;
-   sprites[index].pos.w = w;
-   sprites[index].pos.h = h;
-
-   d3d10->overlays.vbo->lpVtbl->Unmap(d3d10->overlays.vbo);
+   sprite->pos.x = x;
+   sprite->pos.y = y;
+   sprite->pos.w = w;
+   sprite->pos.h = h;
 }
 
 static void d3d10_overlay_tex_geom(void* data,
       unsigned index, float u, float v, float w, float h)
 {
-   d3d10_video_t*  d3d10   = (d3d10_video_t*)data;
-   d3d10_sprite_t* sprites = d3d10_overlay_sprite_map(d3d10, index);
+   d3d10_sprite_t* sprite = d3d10_overlay_sprite((d3d10_video_t*)data, index);
 
-   if (!sprites)
+   if (!sprite)
       return;
 
-   sprites[index].coords.u = u;
-   sprites[index].coords.v = v;
-   sprites[index].coords.w = w;
-   sprites[index].coords.h = h;
-
-   d3d10->overlays.vbo->lpVtbl->Unmap(d3d10->overlays.vbo);
+   sprite->coords.u = u;
+   sprite->coords.v = v;
+   sprite->coords.w = w;
+   sprite->coords.h = h;
 }
 
 static void d3d10_overlay_set_alpha(void* data, unsigned index, float mod)
 {
-   d3d10_video_t*  d3d10   = (d3d10_video_t*)data;
-   d3d10_sprite_t* sprites = d3d10_overlay_sprite_map(d3d10, index);
+   d3d10_sprite_t* sprite = d3d10_overlay_sprite((d3d10_video_t*)data, index);
 
-   if (!sprites)
+   if (!sprite)
       return;
 
-   sprites[index].colors[0] = DXGI_COLOR_RGBA(0xFF, 0xFF, 0xFF, mod * 0xFF);
-   sprites[index].colors[1] = sprites[index].colors[0];
-   sprites[index].colors[2] = sprites[index].colors[0];
-   sprites[index].colors[3] = sprites[index].colors[0];
-
-   d3d10->overlays.vbo->lpVtbl->Unmap(d3d10->overlays.vbo);
+   sprite->colors[0] = DXGI_COLOR_RGBA(0xFF, 0xFF, 0xFF, VIDEO_ALPHA_BYTE(mod));
+   sprite->colors[1] = sprite->colors[0];
+   sprite->colors[2] = sprite->colors[0];
+   sprite->colors[3] = sprite->colors[0];
 }
 
 static bool d3d10_overlay_load(void* data,
@@ -1418,27 +1413,31 @@ static bool d3d10_overlay_load(void* data,
       return true;
    d3d10->overlays.textures = (d3d10_texture_t*)calloc(
          num_images, sizeof(d3d10_texture_t));
-   if (!d3d10->overlays.textures)
+   d3d10->overlays.shadow   = (d3d10_sprite_t*)malloc(
+         num_images * sizeof(d3d10_sprite_t));
+   if (!d3d10->overlays.textures || !d3d10->overlays.shadow)
+   {
+      d3d10_free_overlays(d3d10);
       return false;
+   }
 
    desc.ByteWidth           = sizeof(d3d10_sprite_t) * num_images;
    desc.Usage               = D3D10_USAGE_DYNAMIC;
    desc.BindFlags           = D3D10_BIND_VERTEX_BUFFER;
    desc.CPUAccessFlags      = D3D10_CPU_ACCESS_WRITE;
    desc.MiscFlags           = 0;
-   /* A page with no buffer, or one that will not map, is no page:
-    * count stays 0, so nothing draws it and the setters refuse it. */
+   /* A page with no buffer is no page: count stays 0, so nothing
+    * draws it and the setters refuse it. */
    if (     FAILED(d3d10->device->lpVtbl->CreateBuffer(d3d10->device, &desc,
                NULL, &d3d10->overlays.vbo))
-         || !d3d10->overlays.vbo
-         || FAILED(d3d10->overlays.vbo->lpVtbl->Map(d3d10->overlays.vbo,
-               D3D10_MAP_WRITE_DISCARD, 0, (void**)&sprites))
-         || !sprites)
+         || !d3d10->overlays.vbo)
    {
       d3d10_free_overlays(d3d10);
       return false;
    }
    d3d10->overlays.count    = num_images;
+   d3d10->overlays.dirty    = true;
+   sprites                  = d3d10->overlays.shadow;
 
    for (i = 0; i < (unsigned)num_images; i++)
    {
@@ -1475,7 +1474,6 @@ static bool d3d10_overlay_load(void* data,
       sprites[i].colors[2]       = sprites[i].colors[0];
       sprites[i].colors[3]       = sprites[i].colors[0];
    }
-   d3d10->overlays.vbo->lpVtbl->Unmap(d3d10->overlays.vbo);
 
    return true;
 }
@@ -1521,6 +1519,25 @@ static void d3d10_render_overlay(d3d10_video_t *d3d10)
 {
    int i;
    UINT offset = 0, stride = 0;
+
+   /* What the setters changed since the last frame, in one map. A
+    * discard hands this frame a buffer of its own, so the last frame's
+    * draw keeps what it read. */
+   if (d3d10->overlays.dirty && d3d10->overlays.count > 0)
+   {
+      void *sprites = NULL;
+      if (SUCCEEDED(d3d10->overlays.vbo->lpVtbl->Map(
+                  d3d10->overlays.vbo, D3D10_MAP_WRITE_DISCARD, 0, &sprites)))
+      {
+         if (sprites)
+         {
+            memcpy(sprites, d3d10->overlays.shadow,
+                  d3d10->overlays.count * sizeof(d3d10_sprite_t));
+            d3d10->overlays.dirty = false;
+         }
+         d3d10->overlays.vbo->lpVtbl->Unmap(d3d10->overlays.vbo);
+      }
+   }
 
    if (d3d10->flags & D3D10_ST_FLAG_OVERLAYS_FULLSCREEN)
       d3d10->device->lpVtbl->RSSetViewports(d3d10->device, 1, &d3d10->viewport);
@@ -1596,21 +1613,21 @@ static void d3d10_update_viewport(d3d10_video_t *d3d10, bool force_full)
    video_driver_update_viewport(&d3d10->vp, force_full,
          (d3d10->flags & D3D10_ST_FLAG_KEEP_ASPECT) ? true : false, true);
 
-   d3d10->frame.viewport.TopLeftX  = d3d10->vp.x;
-   d3d10->frame.viewport.TopLeftY  = d3d10->vp.y;
-   d3d10->frame.viewport.Width     = d3d10->vp.width;
-   d3d10->frame.viewport.Height    = d3d10->vp.height;
+   d3d10->frame.viewport.TopLeftX  = VIDEO_POS_X(d3d10->vp.pos);
+   d3d10->frame.viewport.TopLeftY  = VIDEO_POS_Y(d3d10->vp.pos);
+   d3d10->frame.viewport.Width     = VIDEO_SCALE_W(d3d10->vp.dims);
+   d3d10->frame.viewport.Height    = VIDEO_SCALE_H(d3d10->vp.dims);
    d3d10->frame.viewport.MinDepth  = 0.0f;
    d3d10->frame.viewport.MaxDepth  = 1.0f;
 
-   if (d3d10->shader_preset && (d3d10->frame.output_size.x != d3d10->vp.width
-            || d3d10->frame.output_size.y != d3d10->vp.height))
+   if (d3d10->shader_preset && (d3d10->frame.output_size.x != VIDEO_SCALE_W(d3d10->vp.dims)
+            || d3d10->frame.output_size.y != VIDEO_SCALE_H(d3d10->vp.dims)))
       d3d10->flags                |= D3D10_ST_FLAG_RESIZE_RTS;
 
-   d3d10->frame.output_size.x      = d3d10->vp.width;
-   d3d10->frame.output_size.y      = d3d10->vp.height;
-   d3d10->frame.output_size.z      = 1.0f / d3d10->vp.width;
-   d3d10->frame.output_size.w      = 1.0f / d3d10->vp.height;
+   d3d10->frame.output_size.x      = VIDEO_SCALE_W(d3d10->vp.dims);
+   d3d10->frame.output_size.y      = VIDEO_SCALE_H(d3d10->vp.dims);
+   d3d10->frame.output_size.z      = 1.0f / VIDEO_SCALE_W(d3d10->vp.dims);
+   d3d10->frame.output_size.w      = 1.0f / VIDEO_SCALE_H(d3d10->vp.dims);
    d3d10->flags                   &= ~D3D10_ST_FLAG_RESIZE_VIEWPORT;
 }
 
@@ -2359,20 +2376,19 @@ static void *d3d10_gfx_init(const video_info_t* video,
    win32_monitor_info(&current_mon, &hm_to_use, &d3d10->cur_mon_id);
 #endif
 
-   d3d10->vp.full_width  = video->width;
-   d3d10->vp.full_height = video->height;
+   d3d10->vp.full_dims   = video->dims;
 
 #ifdef HAVE_MONITOR
-   if (!d3d10->vp.full_width)
-      d3d10->vp.full_width =
-         current_mon.rcMonitor.right - current_mon.rcMonitor.left;
-   if (!d3d10->vp.full_height)
-      d3d10->vp.full_height =
-         current_mon.rcMonitor.bottom - current_mon.rcMonitor.top;
+   if (!VIDEO_SCALE_W(d3d10->vp.full_dims))
+      VIDEO_SCALE_PUT_W(d3d10->vp.full_dims,
+            current_mon.rcMonitor.right - current_mon.rcMonitor.left);
+   if (!VIDEO_SCALE_H(d3d10->vp.full_dims))
+      VIDEO_SCALE_PUT_H(d3d10->vp.full_dims,
+            current_mon.rcMonitor.bottom - current_mon.rcMonitor.top);
 #endif
 
    if (!win32_set_video_mode(d3d10,
-            d3d10->vp.full_width, d3d10->vp.full_height, video->fullscreen))
+            d3d10->vp.full_dims, video->fullscreen))
    {
       RARCH_ERR("[D3D10] win32_set_video_mode failed.\n");
       goto error;
@@ -2381,8 +2397,8 @@ static void *d3d10_gfx_init(const video_info_t* video,
    d3d_input_driver(settings->arrays.input_driver, settings->arrays.input_joypad_driver, input, input_data);
 
    if (!d3d10_init_swapchain(d3d10,
-            d3d10->vp.full_width,
-            d3d10->vp.full_height,
+            VIDEO_SCALE_W(d3d10->vp.full_dims),
+            VIDEO_SCALE_H(d3d10->vp.full_dims),
 #ifdef HAVE_WINDOW
             main_window.hwnd
 #else
@@ -2403,9 +2419,9 @@ static void *d3d10_gfx_init(const video_info_t* video,
    d3d10->device->lpVtbl->OMSetRenderTargets(d3d10->device, 1,
          &d3d10->renderTargetView, NULL);
 
-   video_driver_set_output_size(d3d10->vp.full_width, d3d10->vp.full_height);
-   d3d10->viewport.Width  = d3d10->vp.full_width;
-   d3d10->viewport.Height = d3d10->vp.full_height;
+   video_driver_set_output_dims(d3d10->vp.full_dims);
+   d3d10->viewport.Width  = VIDEO_SCALE_W(d3d10->vp.full_dims);
+   d3d10->viewport.Height = VIDEO_SCALE_H(d3d10->vp.full_dims);
    d3d10->flags          |= D3D10_ST_FLAG_RESIZE_VIEWPORT;
    if (video->force_aspect)
       d3d10->flags       |=  D3D10_ST_FLAG_KEEP_ASPECT;
@@ -2760,6 +2776,11 @@ static void *d3d10_gfx_init(const video_info_t* video,
 
       video_driver_set_gpu_api_devices(GFX_CTX_DIRECT3D10_API, d3d10->gpu_list);
 
+      /* The device the index was chosen as, wherever the list now
+       * puts it */
+      gpu_index = video_driver_gpu_index_resolve(GFX_CTX_DIRECT3D10_API,
+            gpu_index, d3d10->gpu_list);
+
       if (0 <= gpu_index && gpu_index <= i && (gpu_index < D3D10_MAX_GPU_COUNT))
       {
          RARCH_LOG("[D3D10] Using GPU #%d: \"%s\".\n", gpu_index, d3d10->gpu_list->elems[gpu_index].data);
@@ -2819,7 +2840,7 @@ static void d3d10_init_render_targets(d3d10_video_t* d3d10,
                break;
 
             case RARCH_SCALE_VIEWPORT:
-               width = d3d10->vp.width * pass->fbo.scale_x;
+               width = VIDEO_SCALE_W(d3d10->vp.dims) * pass->fbo.scale_x;
                break;
 
             case RARCH_SCALE_ABSOLUTE:
@@ -2831,7 +2852,7 @@ static void d3d10_init_render_targets(d3d10_video_t* d3d10,
          }
 
          if (!width)
-            width = d3d10->vp.width;
+            width = VIDEO_SCALE_W(d3d10->vp.dims);
 
          switch (pass->fbo.type_y)
          {
@@ -2840,7 +2861,7 @@ static void d3d10_init_render_targets(d3d10_video_t* d3d10,
                break;
 
             case RARCH_SCALE_VIEWPORT:
-               height = d3d10->vp.height * pass->fbo.scale_y;
+               height = VIDEO_SCALE_H(d3d10->vp.dims) * pass->fbo.scale_y;
                break;
 
             case RARCH_SCALE_ABSOLUTE:
@@ -2852,19 +2873,19 @@ static void d3d10_init_render_targets(d3d10_video_t* d3d10,
          }
 
          if (!height)
-            height = d3d10->vp.height;
+            height = VIDEO_SCALE_H(d3d10->vp.dims);
       }
       else if (i == (d3d10->shader_preset->passes - 1))
       {
-         width  = d3d10->vp.width;
-         height = d3d10->vp.height;
+         width  = VIDEO_SCALE_W(d3d10->vp.dims);
+         height = VIDEO_SCALE_H(d3d10->vp.dims);
       }
 
       RARCH_LOG("[D3D10] Updating framebuffer size %ux%u.\n", width, height);
 
       if (     (i != (d3d10->shader_preset->passes - 1))
-            || (width  != d3d10->vp.width)
-            || (height != d3d10->vp.height))
+            || (width  != VIDEO_SCALE_W(d3d10->vp.dims))
+            || (height != VIDEO_SCALE_H(d3d10->vp.dims)))
       {
          d3d10->pass[i].viewport.Width    = width;
          d3d10->pass[i].viewport.Height   = height;
@@ -2901,20 +2922,21 @@ static void d3d10_init_render_targets(d3d10_video_t* d3d10,
 static bool d3d10_gfx_frame(
       void*               data,
       const void*         frame,
-      unsigned            width,
-      unsigned            height,
+      unsigned dims,
       uint64_t            frame_count,
       unsigned            pitch,
       const char*         msg,
       video_frame_info_t* video_info)
 {
+   unsigned width = VIDEO_SCALE_W(dims);
+   unsigned height = VIDEO_SCALE_H(dims);
    unsigned           i, k, m;
    UINT offset = 0, stride    = 0;
    d3d10_texture_t*   texture = NULL;
    d3d10_video_t      * d3d10 = (d3d10_video_t*)data;
    D3D10Device       context  = d3d10->device;
-   unsigned video_width       = video_info->width;
-   unsigned video_height      = video_info->height;
+   unsigned video_width       = VIDEO_SCALE_W(video_info->dims);
+   unsigned video_height      = VIDEO_SCALE_H(video_info->dims);
    bool statistics_show       = video_info->statistics_show;
    struct font_params
       *osd_params             = (struct font_params*)
@@ -2961,7 +2983,7 @@ static bool d3d10_gfx_frame(
       d3d10->flags                       &= ~D3D10_ST_FLAG_RESIZE_CHAIN;
       d3d10->flags                       |=  D3D10_ST_FLAG_RESIZE_VIEWPORT;
 
-      video_driver_set_output_size(video_width, video_height);
+      video_driver_set_output_dims(VIDEO_SCALE_PACK(video_width, video_height));
    }
 
 #if 0
@@ -3464,7 +3486,7 @@ static bool d3d10_gfx_frame(
          d3d10->flags |= D3D10_ST_FLAG_FRAME_DUPE_LOCK;
          while (bfi_light_frames > 0)
          {
-            if (!(d3d10_gfx_frame(d3d10, NULL, 0, 0, frame_count, 0, msg, video_info)))
+            if (!(d3d10_gfx_frame(d3d10, NULL, 0, frame_count, 0, msg, video_info)))
             {
                d3d10->flags &= ~D3D10_ST_FLAG_FRAME_DUPE_LOCK;
                return false;
@@ -3512,7 +3534,7 @@ static bool d3d10_gfx_frame(
                d3d10->pass[m].current_subframe = k+1;
                d3d10->pass[m].swap_count       = (uint32_t)(video_info->swap_count + k);
             }
-         if (!d3d10_gfx_frame(d3d10, NULL, 0, 0, frame_count, 0, msg,
+         if (!d3d10_gfx_frame(d3d10, NULL, 0, frame_count, 0, msg,
                   video_info))
          {
             d3d10->flags &= ~D3D10_ST_FLAG_FRAME_DUPE_LOCK;
@@ -3552,9 +3574,7 @@ static bool d3d10_gfx_alive(void* data)
    bool resize_chain    = false;
    d3d10_video_t* d3d10 = (d3d10_video_t*)data;
 
-   win32_check_window(NULL,
-         &quit, &resize_chain, &d3d10->vp.full_width,
-         &d3d10->vp.full_height);
+   win32_check_window(NULL, &quit, &resize_chain, &d3d10->vp.full_dims);
 
    if (resize_chain)
       d3d10->flags |=  D3D10_ST_FLAG_RESIZE_CHAIN;
@@ -3562,9 +3582,9 @@ static bool d3d10_gfx_alive(void* data)
       d3d10->flags &= ~D3D10_ST_FLAG_RESIZE_CHAIN;
 
    if (     (d3d10->flags & D3D10_ST_FLAG_RESIZE_CHAIN)
-         && (d3d10->vp.full_width  != 0)
-         && (d3d10->vp.full_height != 0))
-      video_driver_set_output_size(d3d10->vp.full_width, d3d10->vp.full_height);
+         && (VIDEO_SCALE_W(d3d10->vp.full_dims)  != 0)
+         && (VIDEO_SCALE_H(d3d10->vp.full_dims) != 0))
+      video_driver_set_output_dims(d3d10->vp.full_dims);
 
    return !quit;
 }
@@ -3591,8 +3611,10 @@ static void d3d10_gfx_viewport_info(void* data, struct video_viewport* vp)
 
 static void d3d10_set_menu_texture_frame(
       void* data, const void* frame, bool rgb32,
-      unsigned width, unsigned height, float alpha)
+      unsigned dims, float alpha)
 {
+   unsigned width = VIDEO_SCALE_W(dims);
+   unsigned height = VIDEO_SCALE_H(dims);
    d3d10_video_t* d3d10    = (d3d10_video_t*)data;
    settings_t*    settings = config_get_ptr();
    DXGI_FORMAT    format   = rgb32 ? DXGI_FORMAT_B8G8R8A8_UNORM :
@@ -3935,6 +3957,15 @@ static uintptr_t d3d10_gfx_load_texture_compressed(void* video_data,
    return (uintptr_t)texture;
 }
 
+/* DXGI carries the present interval as the SyncInterval argument of
+ * Present, whose largest value is four, so this driver holds a frame
+ * for at most four display intervals. */
+static unsigned d3d10_get_swap_interval_cap(void *data)
+{
+   (void)data;
+   return 4;
+}
+
 static const video_poke_interface_t d3d10_poke_interface = {
    d3d10_get_flags,
    d3d10_gfx_load_texture,
@@ -3978,7 +4009,21 @@ static const video_poke_interface_t d3d10_poke_interface = {
    NULL, /* set_hdr_scanlines */
    NULL, /* set_hdr_subpixel_layout */
    d3d10_gfx_supports_texture_format,
-   d3d10_gfx_load_texture_compressed
+   d3d10_gfx_load_texture_compressed,
+   NULL, /* present_last */
+   NULL, /* get_last_present_time */
+   NULL, /* hw_ring_install */
+   NULL, /* hw_ring_fence_new */
+   NULL, /* hw_ring_fence_free */
+   NULL, /* hw_ring_fence_signal */
+   NULL, /* hw_ring_fence_wait */
+   NULL, /* hw_ring_capture */
+   NULL, /* hw_ring_present_slot */
+   NULL, /* hw_ring_context_new */
+   NULL, /* hw_ring_context_free */
+   NULL, /* hw_ring_framebuffer */
+   NULL, /* update_texture */
+   d3d10_get_swap_interval_cap
 };
 
 static void d3d10_gfx_get_poke_interface(void* data, const video_poke_interface_t** iface)
@@ -4021,7 +4066,6 @@ video_driver_t video_d3d10 = {
    d3d10_gfx_set_rotation,
    d3d10_gfx_viewport_info,
    NULL, /* read_viewport  */
-   NULL, /* read_frame_raw */
 #ifdef HAVE_OVERLAY
    d3d10_get_overlay_interface,
 #endif

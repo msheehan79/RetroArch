@@ -54,7 +54,7 @@ static void gfx_ctx_wl_destroy_resources(gfx_ctx_wayland_data_t *wl)
 }
 
 static void gfx_ctx_wl_check_window(void *data, bool *quit,
-      bool *resize, unsigned *width, unsigned *height)
+      bool *resize, unsigned *dims)
 {
    gfx_ctx_wayland_data_t *wl = (gfx_ctx_wayland_data_t*)data;
 
@@ -62,12 +62,12 @@ static void gfx_ctx_wl_check_window(void *data, bool *quit,
     * central place, so use that to trigger swapchain reinit. */
    *resize = wl->vk.flags & VK_DATA_FLAG_NEED_NEW_SWAPCHAIN;
 
-   gfx_ctx_wl_check_window_common(wl, gfx_ctx_wl_get_video_size_common, quit, resize, 
-      width, height);
+   gfx_ctx_wl_check_window_common(wl, gfx_ctx_wl_get_video_size_common,
+         quit, resize, dims);
 
 }
 
-static bool gfx_ctx_wl_set_resize(void *data, unsigned width, unsigned height)
+static bool gfx_ctx_wl_set_resize(void *data, unsigned dims)
 {
    gfx_ctx_wayland_data_t *wl = (gfx_ctx_wayland_data_t*)data;
 
@@ -76,7 +76,7 @@ static bool gfx_ctx_wl_set_resize(void *data, unsigned width, unsigned height)
    if (!wl->fractional_scale)
       wl_surface_set_buffer_scale(wl->surface, wl->buffer_scale);
 
-   if (vulkan_create_swapchain(&wl->vk, width, height, wl->swap_interval))
+   if (vulkan_create_swapchain(&wl->vk, dims, wl->swap_interval))
    {
       wl->ignore_configuration = false;
       if (wl->vk.flags & VK_DATA_FLAG_CREATED_NEW_SWAPCHAIN)
@@ -154,9 +154,11 @@ static void gfx_ctx_wl_set_swap_interval(void *data, int swap_interval)
 }
 
 static bool gfx_ctx_wl_set_video_mode(void *data,
-      unsigned width, unsigned height,
+      unsigned dims,
       bool fullscreen)
 {
+   unsigned width  = VIDEO_SCALE_W(dims);
+   unsigned height = VIDEO_SCALE_H(dims);
    gfx_ctx_wayland_data_t *wl   = (gfx_ctx_wayland_data_t*)data;
 
    if (!gfx_ctx_wl_set_video_mode_common_size(wl, width, height, fullscreen))
@@ -171,9 +173,7 @@ static bool gfx_ctx_wl_set_video_mode(void *data,
 
    if (!vulkan_surface_create(&wl->vk, VULKAN_WSI_WAYLAND,
          wl->input.dpy, wl->surface,
-         wl->buffer_width,
-         wl->buffer_height,
-         wl->swap_interval))
+         wl->buffer_dims, wl->swap_interval))
       goto error;
 
    /* Fullscreen is compositor-sized on Wayland.

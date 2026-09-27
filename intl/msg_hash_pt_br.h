@@ -1092,6 +1092,8 @@ static const struct
    char s_136eaaf4[24];
    char s_68d27147[14];
    char s_f02f73fc[32];
+   char s_e5b971a0[7];
+   char s_17615fcf[6];
    char s_3a0a3fef[22];
    char s_1b6ed818[19];
    char s_89a75c21[20];
@@ -3397,7 +3399,6 @@ static const struct
    char s_ffd591e0[53];
    char s_a51ab538[26];
    char s_55d6cc44[55];
-   char s_5a8f7fb9[150];
    char s_f2963d2d[33];
    char s_4c592ae1[89];
    char s_52ac4fb9[107];
@@ -3514,7 +3515,6 @@ static const struct
    char s_eec252b5[108];
    char s_f4e4e921[245];
    char s_7968f59d[47];
-   char s_8cee3615[172];
    char s_58c80718[269];
    char s_67d549fd[47];
    char s_afac733c[30];
@@ -5453,6 +5453,8 @@ static const struct
    "Desativar modo quiosque",
    "Modo quiosque",
    "Limitar Taxa de Quadros no Menu",
+   "Sempre",
+   "Nunca",
    "Navegador de arquivos",
    "Cor da Fonte: Azul",
    "Cor da Fonte: Verde",
@@ -8329,8 +8331,6 @@ static const struct
    "Mostra as informa\303\247\303\265es espec\303\255ficas do dispositivo.",
    "Salva uma imagem da tela.",
    "Executar tarefas em linhas de processamento paralelas.",
-   "Mant\303\251m as threads de \303\241udio e as principais nos n\303\272cleos mais r\303\241pidos "
-   "da CPU. N\303\243o funciona em processadores com n\303\272cleos iguais. Requer rein\303\255cio.",
    "Tipo de miniatura a ser exibida.",
    "Arte das caixas, captura de tela e miniaturas de tela s\303\243o armazenadas neste diret\303\263"
    "rio.",
@@ -8542,9 +8542,6 @@ static const struct
    "\247\303\243o 'Smart' reduz a escala quando a imagem sofre um corte excessivo e, por fim, recorr"
    "e \303\240 escala n\303\243o inteira se as margens da escala reduzida forem muito grandes.",
    "Altera as configura\303\247\303\265es de escala de v\303\255deo.",
-   "Sincronize a apresenta\303\247\303\243o de v\303\255deo com a posi\303\247\303\243o da scanline."
-   " Reduz a lat\303\252ncia ao custo de um risco maior de tearing (rasgos na tela). O VSync deve es"
-   "tar desativado.",
    "AVISO: Tremula\303\247\303\243o r\303\241pida pode causar persist\303\252ncia de imagem em algum"
    "as telas. Use por sua conta em risco // Simula uma varredura b\303\241sica sobre v\303\241rios s"
    "ubquadros dividindo a tela verticalmente e renderizando cada parte da tela de acordo com quantos"
@@ -9281,7 +9278,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_pt_br_blob_check[
-      (sizeof(msg_hash_pt_br_blob) == (194302u
+      (sizeof(msg_hash_pt_br_blob) == (193993u
 #ifdef ANDROID
        + 352u
 #endif
@@ -10782,6 +10779,8 @@ static const uint32_t msg_hash_pt_br_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_DISABLE_KIOSK_MODE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_ENABLE_KIOSK_MODE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_ENUM_THROTTLE_FRAMERATE,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_EXTENSION_DISPLAY_ALWAYS,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_EXTENSION_DISPLAY_NEVER,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_SETTINGS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FONT_COLOR_BLUE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FONT_COLOR_GREEN,
@@ -13085,7 +13084,6 @@ static const uint32_t msg_hash_pt_br_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_SYSTEM_INFORMATION,
    (uint32_t)MENU_ENUM_SUBLABEL_TAKE_SCREENSHOT,
    (uint32_t)MENU_ENUM_SUBLABEL_THREADED_DATA_RUNLOOP_ENABLE,
-   (uint32_t)MENU_ENUM_SUBLABEL_THREAD_PREFER_FAST_CORES,
    (uint32_t)MENU_ENUM_SUBLABEL_THUMBNAILS,
    (uint32_t)MENU_ENUM_SUBLABEL_THUMBNAILS_DIRECTORY,
    (uint32_t)MENU_ENUM_SUBLABEL_THUMBNAILS_MATERIALUI,
@@ -13202,7 +13200,6 @@ static const uint32_t msg_hash_pt_br_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_SCALE_INTEGER_AXIS,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_SCALE_INTEGER_SCALING,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_SCALING_SETTINGS,
-   (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_SCANLINE_SYNC,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_SCAN_SUBFRAMES,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_SETTINGS,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_SHADERS_ENABLE,

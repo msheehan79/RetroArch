@@ -231,24 +231,6 @@ static size_t menu_action_setting_disp_set_label_shader_filter_pass(
    return 0;
 }
 
-static size_t menu_action_setting_disp_set_label_shader_watch_for_changes(
-      file_list_t* list,
-      unsigned *w, unsigned type, unsigned i,
-      const char *label,
-      char *s, size_t len,
-      const char *path,
-      char *s2, size_t len2)
-{
-   menu_file_list_cbs_t *cbs = (menu_file_list_cbs_t*)
-      list->list[i].actiondata;
-   *w = 19;
-   if (path && *path)
-      strlcpy(s2, path, len2);
-   if (cbs && cbs->setting && *cbs->setting->value.target.boolean)
-      return strlcpy(s, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_TRUE), len);
-   return strlcpy(s, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_FALSE), len);
-}
-
 static size_t menu_action_setting_disp_set_label_shader_num_passes(
       file_list_t* list,
       unsigned *w, unsigned type, unsigned i,
@@ -1144,7 +1126,7 @@ static size_t menu_action_setting_disp_set_label_menu_video_resolution(
       char *s2, size_t len2)
 {
    size_t _len    = 0;
-   unsigned width = 0, height = 0;
+   unsigned dims  = 0;
    char desc[64]  = {0};
    *w = 19;
    *s = '\0';
@@ -1152,20 +1134,20 @@ static size_t menu_action_setting_disp_set_label_menu_video_resolution(
    if (path && *path)
       strlcpy(s2, path, len2);
 
-   if (video_driver_get_video_output_size(&width, &height, desc, sizeof(desc)))
+   if (video_driver_get_video_output_size(&dims, desc, sizeof(desc)))
    {
 #ifdef GEKKO
-      if (width == 0 || height == 0)
+      if (!VIDEO_SCALE_W(dims) || !VIDEO_SCALE_H(dims))
          _len = strlcpy(s, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_DONT_CARE), len);
       else
 #endif
       {
          if (*desc)
             _len = snprintf(s, len, msg_hash_to_str(MSG_SCREEN_RESOLUTION_FORMAT_DESC),
-               width, height, desc);
+               VIDEO_SCALE_W(dims), VIDEO_SCALE_H(dims), desc);
          else
             _len = snprintf(s, len, msg_hash_to_str(MSG_SCREEN_RESOLUTION_FORMAT_NO_DESC),
-               width, height);
+               VIDEO_SCALE_W(dims), VIDEO_SCALE_H(dims));
       }
    }
    else
@@ -2029,7 +2011,7 @@ static int menu_cbs_init_bind_get_string_representation_compare_label(
          case MENU_ENUM_LABEL_SHADER_WATCH_FOR_CHANGES:
 #if defined(HAVE_CG) || defined(HAVE_GLSL) || defined(HAVE_SLANG) || defined(HAVE_HLSL)
             BIND_ACTION_GET_VALUE(cbs,
-                  menu_action_setting_disp_set_label_shader_watch_for_changes);
+                  menu_action_setting_disp_set_label_setting_bool);
 #endif
             break;
          case MENU_ENUM_LABEL_VIDEO_SHADER_PASS:

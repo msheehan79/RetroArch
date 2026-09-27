@@ -357,8 +357,7 @@ static void qt_dock_state_write(QMainWindow *win, QDockWidget * const *docks,
    st.area   = dock->isFloating() ? COMPANION_DOCK_FLOAT
       : qt_dock_area_to_core(win->dockWidgetArea(dock));
    st.shown  = dock->isVisible();
-   st.width  = dock->width();
-   st.height = dock->height();
+   st.dims   = VIDEO_SCALE_PACK(dock->width(), dock->height());
    if (!dock->isFloating())
       st.order = qt_dock_slot(win, docks, self);
    if (dock->isFloating())
@@ -367,8 +366,7 @@ static void qt_dock_state_write(QMainWindow *win, QDockWidget * const *docks,
        * it (pos() is the frame corner: saving that walked the dock by
        * one frame width per launch). */
       QRect g = dock->geometry();
-      st.x    = g.x();
-      st.y    = g.y();
+      st.pos  = VIDEO_POS_PACK(g.x(), g.y());
    }
 
    if (!dock->isFloating())
@@ -394,12 +392,9 @@ static void qt_dock_state_write(QMainWindow *win, QDockWidget * const *docks,
          /* A hidden dock keeps the size its row already has, so the
           * size it was last shown at survives a spell hidden. */
          companion_dock_state_t old;
-         st.width = st.height = 0;
+         st.dims = 0;
          if (!dock->isVisible() && companion_dock_row_parse(s, &old))
-         {
-            st.width  = old.width;
-            st.height = old.height;
-         }
+            st.dims = old.dims;
       }
       else if (!tabs.isEmpty())
       {
@@ -422,7 +417,8 @@ static void qt_dock_state_write(QMainWindow *win, QDockWidget * const *docks,
             if (     (tg.top() >= dg.bottom() && tg.top() <= dg.bottom() + 4)
                   || (tg.bottom() <= dg.top() && tg.bottom() >= dg.top() - 4))
             {
-               st.height += tb->height();
+               VIDEO_SCALE_PUT_H(st.dims,
+                     VIDEO_SCALE_H(st.dims) + tb->height());
                break;
             }
          }
@@ -3477,9 +3473,9 @@ void MainWindow::onCurrentItemChanged(const PlaylistEntry &entry)
        * widget waiting on this path. */
       {
          ThumbnailWidget *tw = findChild<ThumbnailWidget*>(qt_thumbnail_widget_names[0]);
-         int w = (tw && tw->width()  > 32) ? tw->width()  : 256;
-         int h = (tw && tw->height() > 32) ? tw->height() : 256;
-         m_playlistModel->animateImage(path, w, h);
+         m_playlistModel->animateImage(path, VIDEO_SCALE_PACK(
+               (tw && tw->width()  > 32) ? tw->width()  : 256,
+               (tw && tw->height() > 32) ? tw->height() : 256));
       }
    }
    else
@@ -3512,25 +3508,25 @@ void MainWindow::showSidebarImage(int idx, const QString &path, bool acceptDrop)
 {
    ThumbnailWidget *tw = findChild<ThumbnailWidget*>(qt_thumbnail_widget_names[idx]);
    QPixmap pm;
-   int w, h;
+   unsigned dims;
    m_sidebarPending[idx] = path;
    m_sidebarAcceptDrop   = acceptDrop;
    if (!tw)
       return;
-   w = tw->width()  > 32 ? tw->width()  : 256;
-   h = tw->height() > 32 ? tw->height() : 256;
+   dims = VIDEO_SCALE_PACK(tw->width()  > 32 ? tw->width()  : 256,
+                           tw->height() > 32 ? tw->height() : 256);
    if (path.isEmpty() || !m_playlistModel)
    {
       setThumbnail(qt_thumbnail_widget_names[idx], pm, acceptDrop);
       return;
    }
-   if (m_playlistModel->imageAt(path, w, h, &pm))
+   if (m_playlistModel->imageAt(path, dims, &pm))
    {
       setThumbnail(qt_thumbnail_widget_names[idx], pm, acceptDrop);
       return;
    }
    setThumbnail(qt_thumbnail_widget_names[idx], pm, acceptDrop); /* blank */
-   m_playlistModel->requestImage(path, w, h);
+   m_playlistModel->requestImage(path, dims);
 }
 
 void MainWindow::onFrameReady(const QString &path, const QPixmap &frame)
@@ -3549,15 +3545,14 @@ void MainWindow::onThumbnailReady(const QString &path)
    {
       ThumbnailWidget *tw;
       QPixmap pm;
-      int w, h;
       if (m_sidebarPending[i] != path)
          continue;
       tw = findChild<ThumbnailWidget*>(qt_thumbnail_widget_names[i]);
       if (!tw)
          continue;
-      w = tw->width()  > 32 ? tw->width()  : 256;
-      h = tw->height() > 32 ? tw->height() : 256;
-      if (m_playlistModel->imageAt(path, w, h, &pm))
+      if (m_playlistModel->imageAt(path, VIDEO_SCALE_PACK(
+                  tw->width()  > 32 ? tw->width()  : 256,
+                  tw->height() > 32 ? tw->height() : 256), &pm))
          setThumbnail(qt_thumbnail_widget_names[i], pm, m_sidebarAcceptDrop);
    }
 }
@@ -3933,10 +3928,10 @@ void MainWindow::persistSettings()
          && width() > 0 && height() > 0)
    {
       QRect g = geometry();
-      settings->uints.desktop_menu_window_x      = (unsigned)(g.x()      < 0 ? 0 : g.x());
-      settings->uints.desktop_menu_window_y      = (unsigned)(g.y()      < 0 ? 0 : g.y());
-      settings->uints.desktop_menu_window_width  = (unsigned)g.width();
-      settings->uints.desktop_menu_window_height = (unsigned)g.height();
+      settings->uints.desktop_menu_window_pos    = VIDEO_POS_PACK(
+            (g.x() < 0 ? 0 : g.x()), (g.y() < 0 ? 0 : g.y()));
+      settings->uints.desktop_menu_window_dims   = VIDEO_SCALE_PACK(
+            g.width(), g.height());
    }
    if (settings->bools.desktop_menu_save_last_tab)
       settings->uints.desktop_menu_last_tab =
@@ -4062,9 +4057,10 @@ void MainWindow::restoreDockLayout()
          docks[i]->setFloating(true);
          /* Its own window: put it back where it was, clamped so a
           * position saved on a monitor that is gone stays reachable. */
-         if (st[i].width > 0 && st[i].height > 0)
+         if (VIDEO_SCALE_W(st[i].dims) > 0 && VIDEO_SCALE_H(st[i].dims) > 0)
          {
-            QRect r(st[i].x, st[i].y, st[i].width, st[i].height);
+            QRect r(VIDEO_POS_X(st[i].pos), VIDEO_POS_Y(st[i].pos),
+                  (int)VIDEO_SCALE_W(st[i].dims), (int)VIDEO_SCALE_H(st[i].dims));
             QRect avail = ui_qt_available_geometry_at(r.topLeft());
             if (avail.isValid())
             {
@@ -4110,15 +4106,15 @@ void MainWindow::restoreDockLayout()
        * carries the group's size, whichever row it is). */
       if (st[i].area == COMPANION_DOCK_FLOAT || !st[i].shown)
          continue;
-      if (st[i].width > 0)
+      if (VIDEO_SCALE_W(st[i].dims) > 0)
       {
          hdocks << docks[i];
-         hsizes << st[i].width;
+         hsizes << (int)VIDEO_SCALE_W(st[i].dims);
       }
-      if (st[i].height > 0)
+      if (VIDEO_SCALE_H(st[i].dims) > 0)
       {
          vdocks << docks[i];
-         vsizes << st[i].height;
+         vsizes << (int)VIDEO_SCALE_H(st[i].dims);
       }
    }
 #if (QT_VERSION >= QT_VERSION_CHECK(5, 6, 0))
@@ -5060,13 +5056,13 @@ static void qt_companion_restore_settings(MainWindow *mainwindow)
          (int)settings->uints.desktop_menu_thumbnail_cache_limit);
 
    if (     settings->bools.desktop_menu_save_geometry
-         && settings->uints.desktop_menu_window_width  > 0
-         && settings->uints.desktop_menu_window_height > 0)
+         && VIDEO_SCALE_W(settings->uints.desktop_menu_window_dims) > 0
+         && VIDEO_SCALE_H(settings->uints.desktop_menu_window_dims) > 0)
       mainwindow->setGeometry(
-            (int)settings->uints.desktop_menu_window_x,
-            (int)settings->uints.desktop_menu_window_y,
-            (int)settings->uints.desktop_menu_window_width,
-            (int)settings->uints.desktop_menu_window_height);
+            VIDEO_POS_X(settings->uints.desktop_menu_window_pos),
+            VIDEO_POS_Y(settings->uints.desktop_menu_window_pos),
+            (int)VIDEO_SCALE_W(settings->uints.desktop_menu_window_dims),
+            (int)VIDEO_SCALE_H(settings->uints.desktop_menu_window_dims));
 
    mainwindow->fileTableView()->horizontalHeader()->resizeSection(0, 300);
 
@@ -5644,16 +5640,20 @@ void LoadCoreWindow::initCoreList(const QString &contentPath)
          + frame_h;
       m_table->horizontalHeader()->setStretchLastSection(true);
 
-      avail.x = avail_rect.x(); avail.y = avail_rect.y();
-      avail.w = avail_rect.width(); avail.h = avail_rect.height();
-      ownr.x  = owner->frameGeometry().x();
-      ownr.y  = owner->frameGeometry().y();
-      ownr.w  = owner->frameGeometry().width();
-      ownr.h  = owner->frameGeometry().height();
-      companion_place_window(&avail, &ownr, need_w, need_h,
-            LOAD_CORE_WINDOW_MIN_W, LOAD_CORE_WINDOW_MIN_H, &out);
+      avail.pos  = VIDEO_POS_PACK(avail_rect.x(), avail_rect.y());
+      avail.dims = VIDEO_SCALE_PACK(avail_rect.width(), avail_rect.height());
+      ownr.pos   = VIDEO_POS_PACK(owner->frameGeometry().x(),
+            owner->frameGeometry().y());
+      ownr.dims  = VIDEO_SCALE_PACK(owner->frameGeometry().width(),
+            owner->frameGeometry().height());
+      companion_place_window(&avail, &ownr,
+            VIDEO_SCALE_PACK(need_w, need_h),
+            VIDEO_SCALE_PACK(LOAD_CORE_WINDOW_MIN_W, LOAD_CORE_WINDOW_MIN_H),
+            &out);
       /* out is the frame rectangle; setGeometry() takes the client. */
-      setGeometry(out.x + frame_l, out.y + frame_t,
-            out.w - frame_w, out.h - frame_h);
+      setGeometry(VIDEO_POS_X(out.pos) + frame_l,
+            VIDEO_POS_Y(out.pos) + frame_t,
+            (int)VIDEO_SCALE_W(out.dims) - frame_w,
+            (int)VIDEO_SCALE_H(out.dims) - frame_h);
    }
 }

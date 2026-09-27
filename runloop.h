@@ -186,6 +186,12 @@ struct runloop
    retro_time_t core_runtime_last;
    retro_time_t core_runtime_usec;
    retro_time_t core_run_time;
+   /* GPU device-loss recovery: when the driver may next be rebuilt,
+    * and how many losses have come in quick succession. A loss long
+    * after the previous one starts the count over. */
+   retro_time_t gpu_lost_retry_at;
+   retro_time_t gpu_lost_last;
+   unsigned     gpu_lost_count;
    retro_time_t frame_limit_minimum_time;
    /* The same period and anchor in nanoseconds, for the gap limiter's
     * schedule: a period rounded to whole microseconds is 21 ppm off
@@ -415,7 +421,7 @@ enum runloop_pace_source
    RUNLOOP_PACE_DISPLAY  = (1 << 6)
 };
 
-/* The three pacing decisions the runloop makes every iteration, here
+/* The pacing decisions the runloop makes every iteration, here
  * rather than in runloop.c so samples/runloop/pacing can run the
  * shipping versions instead of a copy that drifts from them. Each is
  * pure: no state, no clock, nothing to mock. */
@@ -524,6 +530,98 @@ static INLINE retro_time_t runloop_pace_margin_update(retro_time_t margin,
 static INLINE bool runloop_pace_sample_usable(retro_time_t delta_us)
 {
    return delta_us > 0 && delta_us < 250000;
+}
+
+/* The swap interval 'Auto' derives for a display/content pair: the
+ * number of display frames one content frame is held for. Meaningful
+ * only as the whole multiple the display rate actually is of the
+ * content rate, within @max_timing_skew, and only up to @ceiling, which
+ * the display drivers present a frame that many times to honour.
+ *
+ * 1 for everything else, so vsync paces at the display rate and rate
+ * control absorbs the difference. A multiple that is short of the true
+ * one is worse than none: it holds each content frame for fewer display
+ * frames than the rate calls for and paces the loop fast, so a ratio
+ * past @ceiling falls back rather than clamping into range. */
+static INLINE unsigned runloop_video_swap_interval_for(float timing_fps,
+      float input_fps, float max_timing_skew, unsigned ceiling)
+{
+   float    swap_ratio;
+   float    timing_skew;
+   unsigned swap_integer;
+
+   if (     (input_fps  <= 0.0f)
+         || (timing_fps <= 0.0f)
+         || (input_fps   > timing_fps))
+      return 1;
+
+   swap_ratio   = timing_fps / input_fps;
+   swap_integer = (unsigned)(swap_ratio + 0.5f);
+
+   if ((swap_integer < 1) || (swap_integer > ceiling))
+      return 1;
+
+   timing_skew  = 1.0f - input_fps / (timing_fps / (float)swap_integer);
+   if (timing_skew < 0.0f)
+      timing_skew = -timing_skew;
+
+   return (timing_skew <= max_timing_skew) ? swap_integer : 1;
+}
+
+/* How a display/content pair is synced, decided whenever the rates are
+ * set. VSYNC_HOLDS: vsync can pace the content without the loop being
+ * forced nonblocking. EXACT_RATE: the content runs at its own rate, so
+ * audio takes the core's sample rate unskewed. WITHIN_SKEW: the content
+ * rate is within @max_timing_skew of the rate the display presents it
+ * at.
+ *
+ * @multiple is how many display frames one content frame occupies -
+ * black frame insertion, swap interval and shader subframes multiplied
+ * - and applies only when the display is near a whole multiple of the
+ * content rate, as the audio skew does.
+ *
+ * With Sync to Exact Content Framerate (@vrr) the content keeps its own
+ * rate while the display can present it. Past that but within the skew
+ * tolerance - a 60.0988 Hz core at swap interval 2 on a 120 Hz panel -
+ * vsync paces it and audio is skewed as it is without VRR: dropping
+ * vsync over a fraction of a percent tears, and where a driver emulates
+ * the interval by presenting a frame again, presents unpaced. Only a
+ * content rate beyond the tolerance keeps its own rate with vsync off. */
+enum runloop_sync_plan
+{
+   RUNLOOP_SYNC_VSYNC_HOLDS = (1 << 0),
+   RUNLOOP_SYNC_EXACT_RATE  = (1 << 1),
+   RUNLOOP_SYNC_WITHIN_SKEW = (1 << 2)
+};
+
+static INLINE unsigned runloop_sync_plan_for(float display_hz,
+      float input_fps, float multiple, float max_timing_skew, bool vrr)
+{
+   float    target = display_hz;
+   float    timing_skew;
+   unsigned plan   = 0;
+
+   if ((input_fps <= 0.0f) || (display_hz <= 0.0f) || (multiple <= 0.0f))
+      return RUNLOOP_SYNC_VSYNC_HOLDS | (vrr ? RUNLOOP_SYNC_EXACT_RATE : 0);
+
+   if ((unsigned)(display_hz / input_fps + 0.5f) > 1)
+      target /= multiple;
+
+   timing_skew = 1.0f - input_fps / target;
+   if (timing_skew < 0.0f)
+      timing_skew = -timing_skew;
+   if (timing_skew <= max_timing_skew)
+      plan |= RUNLOOP_SYNC_WITHIN_SKEW;
+
+   if (input_fps <= target)
+      plan |= RUNLOOP_SYNC_VSYNC_HOLDS
+            | (vrr ? RUNLOOP_SYNC_EXACT_RATE : 0);
+   else if (plan & RUNLOOP_SYNC_WITHIN_SKEW)
+      plan |= RUNLOOP_SYNC_VSYNC_HOLDS;
+   else if (vrr)
+      plan |= RUNLOOP_SYNC_EXACT_RATE;
+
+   return plan;
 }
 
 /* Everything the pace decision reads, gathered once per iteration into

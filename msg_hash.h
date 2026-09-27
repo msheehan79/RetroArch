@@ -1780,6 +1780,7 @@ enum msg_hash_enums
    MENU_ENUM_LABEL_VALUE_OVERLAY,
    MENU_ENUM_LABEL_VALUE_AUTO,
    MENU_ENUM_LABEL_VALUE_ALWAYS,
+   MENU_ENUM_LABEL_VALUE_NO_EXTENSION,
    MENU_ENUM_LABEL_VALUE_MIN_ABBREV,
    MENU_ENUM_LABEL_VALUE_MAX_ABBREV,
    MENU_ENUM_LABEL_VALUE_XMB_LAYOUT_CONSOLE,
@@ -2119,6 +2120,7 @@ enum msg_hash_enums
 
    /* System information */
    MENU_LABEL(CPU_CORES),
+   MENU_LABEL(CPU_THREADS),
    MENU_LABEL(CPU_ARCHITECTURE),
    MENU_LABEL(JIT_AVAILABLE),
    MENU_LABEL(BUNDLE_IDENTIFIER),
@@ -7112,6 +7114,7 @@ enum msg_hash_enums
 #define S_BOOL(f, T, n, d, sd, df, c, us, sub) MENU_LABEL(T),
 #define S_BOOL_NS(f, T, n, d, sd, df, c, us) MENU_LABEL(T),
 #define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) MENU_LABEL(T),
+#define S_UINT_AT_EX(offs, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, sta, sel, lf, rt, ui, us, sub) MENU_LABEL(T),
 #define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) MENU_LABEL(T),
 #define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) MENU_LABEL(T),
 #define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) MENU_LABEL(T),
@@ -7148,6 +7151,7 @@ enum msg_hash_enums
 #undef S_BOOL_H
 #undef S_BOOL_NS_H
 #undef S_UINT
+#undef S_UINT_AT_EX
 #undef S_UINT_NS
 #undef S_UINT_H
 #undef S_UINT_NS_H
@@ -16781,6 +16785,10 @@ enum msg_hash_enums
 #undef SETTINGS_DEF_STRINGS_PASS
 #undef SETTINGS_DEF_ENUM_PASS
 
+   MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_EXTENSION_DISPLAY_ALWAYS,
+   MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_EXTENSION_DISPLAY_DUPLICATES_ONLY,
+   MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_EXTENSION_DISPLAY_NEVER,
+
    /* Playlists */
    /* GENERATED REGION: playlist sorting group enum rows (see settings/settings_def_playlist_sorting.h). */
 #define SETTINGS_DEF_ENUM_PASS
@@ -22565,6 +22573,9 @@ enum msg_hash_enums
    MENU_ENUM_LABEL_VALUE_NETPLAY_SHARE_DIGITAL_VOTE,
    MENU_ENUM_LABEL_VALUE_NETPLAY_SHARE_ANALOG_MAX,
    MENU_ENUM_LABEL_VALUE_NETPLAY_SHARE_ANALOG_AVERAGE,
+   MENU_ENUM_LABEL_VALUE_TLS_VERIFY_MODE_REQUIRED,
+   MENU_ENUM_LABEL_VALUE_TLS_VERIFY_MODE_OPTIONAL,
+   MENU_ENUM_LABEL_VALUE_TLS_VERIFY_MODE_DISABLED,
 
    MENU_LABEL(SORT_SAVEFILES_ENABLE),
    MENU_LABEL(SORT_SAVESTATES_ENABLE),

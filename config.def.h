@@ -504,6 +504,21 @@
  */
 #define DEFAULT_SWAP_INTERVAL 1
 
+/* The range a swap interval may take, whether the user picks one or
+ * 'Auto' derives it from the display/content ratio. The ceiling covers
+ * the highest whole multiple a panel presents content at: 480 Hz
+ * against 30 fps is 16, 360 Hz against 24 fps is 15.
+ * runloop_video_swap_interval_for() reads it too, so the range offered
+ * and the range derived cannot drift apart.
+ */
+#define MINIMUM_SWAP_INTERVAL 1
+#define MAXIMUM_SWAP_INTERVAL 16
+
+/* Worker threads a CPU video filter runs on; 0 (Automatic) uses one
+ * per detected CPU core. */
+#define DEFAULT_VIDEO_FILTER_THREADS 0
+#define MAXIMUM_VIDEO_FILTER_THREADS 16
+
 /* Threaded video: the core runs on one thread and the video driver
  * presents on another. Off by default, as it has always been; the
  * Switch keeps its own default. When it is on, hardware-rendered cores
@@ -611,6 +626,11 @@
  * roughly what mid-range HDR panels reach, so it is a safe default for a value
  * the frontend cannot query - no platform exposes it portably. */
 #define DEFAULT_VIDEO_HDR_MAX_NITS 1000.0f
+/* Off: the Peak Brightness setting is used as set, as it always was */
+#define DEFAULT_VIDEO_HDR_USE_DISPLAY_PEAK false
+/* Off: the Wayland compositor is told the frame is Windows-scRGB and
+ * maps it as it always has */
+#define DEFAULT_VIDEO_HDR_SEND_LUMINANCE false
 
 /* Should we expand the colour gamut when using hdr */
 #define DEFAULT_VIDEO_HDR_EXPAND_GAMUT 0
@@ -762,8 +782,11 @@
 #endif
 
 #include "runtime_file_defines.h"
-#ifdef HAVE_MENU
+/* Outside the HAVE_MENU gate: the single-source setting rows in
+ * configuration.c are expanded in every build, so the enums their
+ * defaults name have to be visible without the menu too. */
 #include "menu/menu_defines.h"
+#ifdef HAVE_MENU
 
 #ifdef HAVE_LIBNX
 #define DEFAULT_MENU_USE_PREFERRED_SYSTEM_COLOR_THEME true
@@ -772,8 +795,7 @@
 #endif
 
 #ifdef HAVE_OZONE
-/* Ozone colour theme: 1 == Basic Black */
-#define DEFAULT_OZONE_COLOR_THEME 1
+#define DEFAULT_OZONE_COLOR_THEME "basic_black"
 #define DEFAULT_OZONE_PADDING_FACTOR 1.0f
 #define DEFAULT_OZONE_HEADER_ICON 1
 #define DEFAULT_OZONE_HEADER_SEPARATOR 1
@@ -1560,6 +1582,11 @@
 
 #define DEFAULT_NETPLAY_SHARE_DIGITAL RARCH_NETPLAY_SHARE_DIGITAL_NO_SHARING
 #define DEFAULT_NETPLAY_SHARE_ANALOG  RARCH_NETPLAY_SHARE_ANALOG_NO_SHARING
+
+/* TLS certificate-verification policy - 0 == TLS_VERIFY_REQUIRED (the safe,
+ * fail-closed default; see network/tls_config.h). Literal here so config.def.h
+ * needn't pull in a network header. */
+#define DEFAULT_TLS_VERIFY_MODE 0
 #endif
 
 /* On save state load, block SRAM from being overwritten.
@@ -2014,6 +2041,11 @@
 #define DEFAULT_VULKAN_GPU_INDEX 0
 #endif
 
+#ifdef HAVE_EGL
+/* 0: the EGL implementation chooses, as before a GPU could be picked */
+#define DEFAULT_GL_GPU_INDEX 0
+#endif
+
 #ifdef HAVE_D3D10
 #define DEFAULT_D3D10_GPU_INDEX 0
 #endif
@@ -2172,6 +2204,7 @@
 #endif
 
 #define DEFAULT_FILTER_BY_CURRENT_CORE false
+#define DEFAULT_MENU_FILE_BROWSER_EXTENSION_DISPLAY MENU_FILE_BROWSER_EXTENSION_DISPLAY_ALWAYS
 
 #endif
 

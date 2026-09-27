@@ -353,19 +353,19 @@ typedef struct coreaudio
    /* Render callbacks handed invalid output buffers. */
    retro_atomic_size_t format_errors;
 
-   /* The worst a callback came up short by, in samples, and how full
-    * the ring was that time. Written by the render thread with two
-    * atomic stores and read once at teardown - never logged from
-    * there. A buzz is a callback finding less than a period and
-    * padding the rest with silence, so these two numbers say whether
-    * that is what is happening and by how much, which "it buzzes"
-    * cannot. Out here rather than beside period_frames, which is the
+   /* The worst a callback came up short by and how full the ring was
+    * that time, in frames: the shortfall in the high 16 bits, the ring
+    * in the low 16, each saturating at 0xFFFF. One word, so the two
+    * always come from the same callback. Written by the render thread
+    * and read once at teardown - never logged from there. A buzz is a
+    * callback finding less than a period and padding the rest with
+    * silence, so these two numbers say whether that is what is
+    * happening and by how much, which "it buzzes" cannot. Out here rather than beside period_frames, which is the
     * HAL's and macOS-only: the callback and the teardown log read
     * these on every Apple platform, so declaring them under
     * !TARGET_OS_IPHONE left the iOS and tvOS builds referring to
     * members that were not there. */
-   retro_atomic_size_t worst_short;
-   retro_atomic_size_t worst_short_avail;
+   retro_atomic_int_t worst_short;
 
    /* The output unit: ComponentInstance or AudioComponentInstance,
     * both of which are this type on every SDK. */
@@ -420,14 +420,12 @@ typedef struct coreaudio
    uint64_t          ct_anchor_host;
    int               ct_have_anchor;
    double            ct_sx, ct_sy, ct_sxx, ct_sxy, ct_n;
-   retro_atomic_int_t ct_ppm;
-   retro_atomic_int_t ct_valid;
+   retro_atomic_int_t ct_ppm;        /* AUDIO_CLOCK_PPM_NONE until known */
    /* What the HAL says itself, where it fills it in: mRateScalar is
     * the device clock against nominal, already computed by someone
     * with better information than this fit has. Kept beside it rather
     * than instead of it, so the two can be compared on hardware. */
-   retro_atomic_int_t ct_scalar_ppm;
-   retro_atomic_int_t ct_scalar_valid;
+   retro_atomic_int_t ct_scalar_ppm; /* AUDIO_CLOCK_PPM_NONE until known */
    unsigned output_rate;  /* Hardware output rate */
    /* The layout the output unit's input bus was set to, as the
     * frontend's mask, and its channel count: the unit routes each
@@ -580,6 +578,8 @@ static void coreaudio_free(void *data)
 {
    coreaudio_t *dev = (coreaudio_t*)data;
    size_t       n;
+   int          clk_ppm;
+   unsigned     worst;
 
    if (!dev)
       return;
@@ -589,11 +589,12 @@ static void coreaudio_free(void *data)
     * shortfall against the ring and the period, which is what says
     * whether a buzz is the ring being too small for the device's
     * period rather than the source being late. */
+   worst = (unsigned)retro_atomic_load_acquire_int(&dev->worst_short);
    if ((n = retro_atomic_load_acquire_size(&dev->underruns)))
       RARCH_LOG("[CoreAudio] The callback came up short %u time%s; at worst it wanted %u samples more than the %u it found, against a %u-sample ring and a %u-frame device period.\n",
             (unsigned)n, n == 1 ? "" : "s",
-            (unsigned)retro_atomic_load_acquire_size(&dev->worst_short),
-            (unsigned)retro_atomic_load_acquire_size(&dev->worst_short_avail),
+            (worst >> 16) * dev->channels,
+            (worst & 0xFFFFu) * dev->channels,
             (unsigned)dev->usable,
 #if !TARGET_OS_IPHONE
             (unsigned)dev->period_frames
@@ -609,17 +610,18 @@ static void coreaudio_free(void *data)
     * measurements, and a clock estimate that is wrong is worse than
     * one that is absent. Where both appear they should agree, and a
     * disagreement is the interesting result. */
-   if (retro_atomic_load_acquire_int(&dev->ct_valid))
+   clk_ppm = retro_atomic_load_acquire_int(&dev->ct_ppm);
+   if (clk_ppm != AUDIO_CLOCK_PPM_NONE)
       RARCH_LOG("[CoreAudio] Device clock, fitted from the callback's"
             " timestamps: %+d ppm against %u Hz.\n",
-            retro_atomic_load_acquire_int(&dev->ct_ppm), dev->output_rate);
+            clk_ppm, dev->output_rate);
    else
       RARCH_LOG("[CoreAudio] Device clock: not enough usable timestamps"
             " to fit one.\n");
-   if (retro_atomic_load_acquire_int(&dev->ct_scalar_valid))
+   clk_ppm = retro_atomic_load_acquire_int(&dev->ct_scalar_ppm);
+   if (clk_ppm != AUDIO_CLOCK_PPM_NONE)
       RARCH_LOG("[CoreAudio] Device clock, as the HAL reports it"
-            " (mRateScalar): %+d ppm.\n",
-            retro_atomic_load_acquire_int(&dev->ct_scalar_ppm));
+            " (mRateScalar): %+d ppm.\n", clk_ppm);
 
    /* What the device was said to be able to ask for, and what it did
     * ask for. Said whether or not anything went wrong, because the
@@ -681,7 +683,6 @@ static OSStatus coreaudio_audio_write_cb(void *userdata,
       {
          retro_atomic_store_release_int(&dev->ct_scalar_ppm,
                (int)((time_stamp->mRateScalar - 1.0) * 1000000.0));
-         retro_atomic_store_release_int(&dev->ct_scalar_valid, 1);
       }
 
       if (     (f & kAudioTimeStampSampleTimeValid)
@@ -726,7 +727,6 @@ static OSStatus coreaudio_audio_write_cb(void *userdata,
                if (ppm > -100000.0 && ppm < 100000.0)
                {
                   retro_atomic_store_release_int(&dev->ct_ppm, (int)ppm);
-                  retro_atomic_store_release_int(&dev->ct_valid, 1);
                }
             }
          }
@@ -819,12 +819,18 @@ static OSStatus coreaudio_audio_write_cb(void *userdata,
          *action_flags |= kAudioUnitRenderAction_OutputIsSilence;
       retro_atomic_fetch_add_size(&dev->underruns, 1);
       {
-         size_t shortfall = frames_needed - avail;
-         if (shortfall > retro_atomic_load_acquire_size(&dev->worst_short))
-         {
-            retro_atomic_store_release_size(&dev->worst_short, shortfall);
-            retro_atomic_store_release_size(&dev->worst_short_avail, avail);
-         }
+         /* Whole frames both: avail was rounded down above, and
+          * frames_needed is a multiple of the channel count. */
+         size_t shortfall = (frames_needed - avail) / dev->channels;
+         size_t have      = avail / dev->channels;
+         if (shortfall > 0xFFFF)
+            shortfall = 0xFFFF;
+         if (have > 0xFFFF)
+            have = 0xFFFF;
+         if (shortfall > ((unsigned)retro_atomic_load_acquire_int(
+                     &dev->worst_short) >> 16))
+            retro_atomic_store_release_int(&dev->worst_short,
+                  (int)((shortfall << 16) | have));
       }
    }
    else
@@ -1377,10 +1383,8 @@ static void *coreaudio_init(const char *device,
    }
    dev->ct_have_anchor = 0;
    dev->ct_n           = 0.0;
-   retro_atomic_int_init(&dev->ct_ppm, 0);
-   retro_atomic_int_init(&dev->ct_valid, 0);
-   retro_atomic_int_init(&dev->ct_scalar_ppm, 0);
-   retro_atomic_int_init(&dev->ct_scalar_valid, 0);
+   retro_atomic_int_init(&dev->ct_ppm, AUDIO_CLOCK_PPM_NONE);
+   retro_atomic_int_init(&dev->ct_scalar_ppm, AUDIO_CLOCK_PPM_NONE);
    retro_atomic_size_init(&dev->underruns, 0);
    /* Taken here, on the main thread, for the HAL's listeners. */
    dev->reinit_request = &audio_state_get_ptr()->reinit_request;
@@ -1395,8 +1399,7 @@ static void *coreaudio_init(const char *device,
    retro_atomic_size_init(&dev->max_pull_observed, 0);
    retro_atomic_size_init(&dev->oversized_pulls, 0);
    retro_atomic_size_init(&dev->format_errors, 0);
-   retro_atomic_size_init(&dev->worst_short, 0);
-   retro_atomic_size_init(&dev->worst_short_avail, 0);
+   retro_atomic_int_init(&dev->worst_short, 0);
    dev->write_ptr = 0;
    dev->read_ptr  = 0;
 
@@ -1798,19 +1801,16 @@ static void coreaudio_device_list_free(void *data, void *array_list_data)
 static bool coreaudio_device_clock_ppm(void *data, double *ppm)
 {
    coreaudio_t *dev = (coreaudio_t*)data;
+   int v;
    if (!dev)
       return false;
-   if (retro_atomic_load_acquire_int(&dev->ct_scalar_valid))
-   {
-      *ppm = (double)retro_atomic_load_acquire_int(&dev->ct_scalar_ppm);
-      return true;
-   }
-   if (retro_atomic_load_acquire_int(&dev->ct_valid))
-   {
-      *ppm = (double)retro_atomic_load_acquire_int(&dev->ct_ppm);
-      return true;
-   }
-   return false;
+   v = retro_atomic_load_acquire_int(&dev->ct_scalar_ppm);
+   if (v == AUDIO_CLOCK_PPM_NONE)
+      v = retro_atomic_load_acquire_int(&dev->ct_ppm);
+   if (v == AUDIO_CLOCK_PPM_NONE)
+      return false;
+   *ppm = (double)v;
+   return true;
 }
 
 static size_t coreaudio_frames_consumed(void *data)

@@ -253,10 +253,10 @@ static bool wasapi_imm_start_thread(wasapi_t *w)
    {
 #ifdef HAVE_THREADS
       w->imm_thread = sthread_create(mmdevice_thread,
-            &audio_state_get_ptr()->reinit_request);
+            (void*)&audio_state_get_ptr()->reinit_request);
 #else
       w->imm_thread = CreateThread(NULL, 0, mmdevice_thread,
-            &audio_state_get_ptr()->reinit_request, 0, NULL);
+            (void*)&audio_state_get_ptr()->reinit_request, 0, NULL);
 #endif
       if (!w->imm_thread)
          return false;
@@ -306,6 +306,8 @@ static INLINE void wasapi_ac3_drained(wasapi_t *w, size_t bytes)
    }
 }
 
+#ifdef HAVE_MICROPHONE
+/* Only the microphone path reports Win32 errors through this. */
 static const char* wasapi_error(DWORD error)
 {
    /* One buffer per thread via __declspec(thread) would be ideal,
@@ -330,6 +332,7 @@ static const char* wasapi_error(DWORD error)
    }
    return s;
 }
+#endif
 
 /* The speaker mask: mono, or the frontend's layout, whose bits are
  * WAVEFORMATEXTENSIBLE's own. */
@@ -2252,7 +2255,7 @@ static HANDLE wasapi_pump_mmcss_begin(HMODULE *avrt,
       return NULL;
    if (!(*avrt = LoadLibraryA("avrt.dll")))
       return NULL;
-   if ((set = (wasapi_av_set_t)(void*)GetProcAddress(*avrt,
+   if ((set = (wasapi_av_set_t)GetProcAddress(*avrt,
                "AvSetMmThreadCharacteristicsW")))
       task = set(L"Pro Audio", &idx);
    if (!task || task == INVALID_HANDLE_VALUE)
@@ -2268,7 +2271,7 @@ static void wasapi_pump_mmcss_end(HMODULE avrt, HANDLE task)
 {
    if (avrt)
    {
-      wasapi_av_revert_t revert = (wasapi_av_revert_t)(void*)GetProcAddress(
+      wasapi_av_revert_t revert = (wasapi_av_revert_t)GetProcAddress(
             avrt, "AvRevertMmThreadCharacteristics");
       if (revert && task)
          revert(task);

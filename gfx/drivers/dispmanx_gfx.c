@@ -475,10 +475,12 @@ static void *dispmanx_init(const video_info_t *video,
    return _dispvars;
 }
 
-static bool dispmanx_frame(void *data, const void *frame, unsigned width,
-      unsigned height, uint64_t frame_count, unsigned pitch, const char *msg,
+static bool dispmanx_frame(void *data, const void *frame,
+      unsigned dims, uint64_t frame_count, unsigned pitch, const char *msg,
       video_frame_info_t *video_info)
 {
+   unsigned width = VIDEO_SCALE_W(dims);
+   unsigned height = VIDEO_SCALE_H(dims);
    struct dispmanx_video *_dispvars = data;
    float                     aspect = video_driver_get_aspect_ratio();
    unsigned    max_swapchain_images = video_info->max_swapchain_images;
@@ -544,7 +546,7 @@ static void dispmanx_set_texture_enable(void *data, bool state, bool full_screen
 }
 
 static void dispmanx_set_texture_frame(void *data, const void *frame, bool rgb32,
-      unsigned width, unsigned height, float alpha)
+      unsigned dims, float alpha)
 {
    struct dispmanx_video *_dispvars = data;
 
@@ -554,14 +556,14 @@ static void dispmanx_set_texture_frame(void *data, const void *frame, bool rgb32
    /* If menu is active in this frame but our menu surface is NULL, we allocate a new one.*/
    if (!_dispvars->menu_surface)
    {
-      _dispvars->menu_width  = width;
-      _dispvars->menu_height = height;
-      _dispvars->menu_pitch  = width * (rgb32 ? 4 : 2);
+      _dispvars->menu_width  = VIDEO_SCALE_W(dims);
+      _dispvars->menu_height = VIDEO_SCALE_H(dims);
+      _dispvars->menu_pitch  = VIDEO_SCALE_W(dims) * (rgb32 ? 4 : 2);
 
       /* Menu surface only needs a page as it will be updated asynchronously. */
       dispmanx_surface_setup(_dispvars,
-            width,
-            height,
+            VIDEO_SCALE_W(dims),
+            VIDEO_SCALE_H(dims),
             _dispvars->menu_pitch,
             16,
             VC_IMAGE_RGBA16,
@@ -591,10 +593,10 @@ static void dispmanx_viewport_info(void *data, struct video_viewport *vp)
    if (!vid)
       return;
 
-   vp->x = vp->y = 0;
+   vp->pos = VIDEO_POS_PACK(0, 0);
 
-   vp->width  = vp->full_width  = vid->core_width;
-   vp->height = vp->full_height = vid->core_height;
+   vp->dims   = vp->full_dims   = VIDEO_SCALE_PACK(vid->core_width,
+         vid->core_height);
 }
 
 static bool dispmanx_suppress_screensaver(void *data, bool enable) { return false; }
@@ -681,7 +683,6 @@ video_driver_t video_dispmanx = {
    NULL, /* set_rotation */
    dispmanx_viewport_info,
    NULL, /* read_viewport */
-   NULL, /* read_frame_raw */
 #ifdef HAVE_OVERLAY
    NULL, /* overlay_interface */
 #endif

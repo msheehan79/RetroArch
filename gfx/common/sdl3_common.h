@@ -27,9 +27,12 @@
 
 enum sdl3_flags
 {
-   SDL3_FLAG_QUITTING       = (1 << 0),
-   SDL3_FLAG_SHOULD_RESIZE  = (1 << 1),
-   SDL3_FLAG_ADAPTIVE_VSYNC = (1 << 2)
+   SDL3_FLAG_QUITTING         = (1 << 0),
+   SDL3_FLAG_SHOULD_RESIZE    = (1 << 1),
+   SDL3_FLAG_ADAPTIVE_VSYNC   = (1 << 2),
+   /* The overlay textures are the overlay pack's (load_textures),
+    * not this driver's to destroy. */
+   SDL3_FLAG_OVERLAY_BORROWED = (1 << 3)
 };
 
 typedef struct sdl3_tex
@@ -41,6 +44,18 @@ typedef struct sdl3_tex
    bool active;
    bool rgb32;
 } sdl3_tex_t;
+
+#ifdef HAVE_OVERLAY
+/* On-screen overlay for SDL3. */
+struct sdl3_overlay
+{
+   SDL_Texture *tex;
+   SDL_FRect tex_coords; /* Normalized 0..1 for the source. */
+   SDL_FRect vert_coords; /* Normalized 0..1 within the base area. */
+   float alpha_mod;
+   bool fullscreen;
+};
+#endif
 
 typedef struct _sdl3_video
 {
@@ -55,6 +70,12 @@ typedef struct _sdl3_video
    sdl3_tex_t menu;  /* ptr alignment */
 
    SDL_Renderer *renderer;
+
+#ifdef HAVE_OVERLAY
+   struct sdl3_overlay *overlays;
+   unsigned overlays_size;
+   bool overlays_enabled;
+#endif
 
    uint8_t flags;
 } sdl3_video_t;
@@ -76,13 +97,13 @@ void sdl3_pump_window_events(bool *quit, bool *resize);
 
 /* Creates or resizes the window, or toggles fullscreen. */
 bool sdl3_window_set_video_mode(SDL_Window **win,
-      unsigned width, unsigned height, bool fullscreen,
+      unsigned dims, bool fullscreen,
       SDL_WindowFlags backend_flags);
 
 /* Retrieves the window size in pixels, or the desktop mode when the
  * window doesn't exist yet. */
 void sdl3_window_get_video_size(SDL_Window *win,
-      unsigned *width, unsigned *height);
+      unsigned *dims);
 
 /* Get the refresh rate of the display the window is on, in Hz.
  * Returns 0.0f when there is no window or when we can't tell. */
@@ -111,12 +132,12 @@ void sdl3_ctx_input_driver(void *data, const char *name,
  * as the context driver. */
 bool sdl3_ctx_enabled(const char *ctx_ident);
 
-void sdl3_ctx_get_video_size(void *data, unsigned *width, unsigned *height);
+void sdl3_ctx_get_video_size(void *data, unsigned *dims);
 float sdl3_ctx_get_refresh_rate(void *data);
 void sdl3_ctx_update_title(void *data);
 bool sdl3_ctx_has_focus(void *data);
 void sdl3_ctx_check_window(void *data, bool *quit, bool *resize,
-      unsigned *width, unsigned *height);
+      unsigned *dims);
 
 /* Retrieve the DISPLAY_METRIC_DPI for the window's display scale.
  * This usually ends up being scale * 96 DPI, or false otherwise. */

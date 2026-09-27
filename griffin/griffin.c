@@ -280,6 +280,7 @@ CHEATS
 #include "../libretro-common/hash/lrc_hash.c"
 
 #include "../gfx/video_driver.c"
+#include "../gfx/common/video_mode_select.c"
 /*============================================================
 UI COMMON CONTEXT
 ============================================================ */
@@ -324,6 +325,8 @@ VIDEO CONTEXT
 #elif defined(__EMSCRIPTEN__)
 #include "../gfx/drivers_context/emscriptenegl_ctx.c"
 #elif defined(__PS3__)
+#include "../gfx/display_servers/dispserv_ps3_modes.c"
+#include "../gfx/display_servers/dispserv_ps3.c"
 #include "../gfx/drivers_context/ps3_ctx.c"
 #endif
 
@@ -358,6 +361,7 @@ VIDEO CONTEXT
 #if defined(HAVE_KMS)
 #include "../gfx/drivers_context/drm_ctx.c"
 #include "../gfx/display_servers/dispserv_kms.c"
+#include "../gfx/common/drm_hdr.c"
 #endif
 
 #if defined(HAVE_VIDEOCORE)
@@ -386,9 +390,6 @@ VIDEO CONTEXT
 #include "../gfx/common/xinerama_common.c"
 #include "../gfx/display_servers/dispserv_x11.c"
 
-#ifdef HAVE_DBUS
-#include "../gfx/common/dbus_common.c"
-#endif
 
 #ifndef HAVE_OPENGLES
 #include "../gfx/drivers_context/x_ctx.c"
@@ -690,6 +691,8 @@ VIDEO DRIVER
 #if defined(HAVE_GCM)
 #include "../gfx/drivers/rsx_gfx.c"
 #elif defined(GEKKO)
+#include "../gfx/display_servers/dispserv_gx_modes.c"
+#include "../gfx/display_servers/dispserv_gx.c"
 #include "../gfx/drivers/gx_gfx.c"
 #elif defined(PSP)
 #include "../gfx/drivers/psp1_gfx.c"
@@ -735,6 +738,7 @@ INPUT
 
 #include "../input/input_driver.c"
 #include "../input/input_overlay_textures.c"
+#include "../input/input_overlay_alpha.c"
 #ifdef HAVE_BSV_MOVIE
 #include "../input/bsv/bsvmovie.c"
 #include "../input/bsv/uint32s_index.c"
@@ -967,7 +971,7 @@ CAMERA
 #ifdef HAVE_V4L2
 #include "../camera/drivers/video4linux2.c"
 #endif
-#ifdef HAVE_PIPEWIRE
+#if defined(HAVE_PIPEWIRE) && defined(HAVE_PIPEWIRE_STABLE)
 #include "../camera/drivers/pipewire.c"
 #endif
 
@@ -1467,6 +1471,15 @@ THREAD
 #include "../gfx/video_thread_wrapper.c"
 #include "../gfx/video_thread_hw.c"
 #include "../audio/audio_thread_wrapper.c"
+#include "../frontend/thread_elevation.c"
+#if defined(__linux__) || defined(__FreeBSD__) \
+   || defined(__OpenBSD__) || defined(__NetBSD__)
+#include "../gfx/common/dbus_runtime.c"
+#include "../gfx/common/dbus_common.c"
+#include "../gfx/common/mutter_displayconfig.c"
+#include "../frontend/thread_elevation/rtkit.c"
+#include "../frontend/thread_elevation/eevdf.c"
+#endif
 #endif
 
 /* needed for playlists, netplay lobbies and achievements */
@@ -1476,6 +1489,7 @@ THREAD
 NETPLAY
 ============================================================ */
 #ifdef HAVE_NETWORKING
+#include "../network/natt_desc.c"
 #include "../network/natt.c"
 #include "../network/netplay/netplay_frontend.c"
 #include "../network/netplay/netplay_room_parse.c"
@@ -1800,6 +1814,7 @@ SSL
 #endif
 
 #include "../libretro-common/net/net_socket_ssl_mbed.c"
+#include "../network/tls_log.c"
 #endif
 #endif
 
@@ -1857,6 +1872,7 @@ CLOUD SYNC
 ============================================================ */
 #ifdef HAVE_CLOUDSYNC
 #include "../tasks/task_cloudsync.c"
+#include "../tasks/task_cloudsync_path.c"
 #include "../network/cloud_sync_driver.c"
 #include "../network/cloud_sync/webdav.c"
 #ifdef HAVE_SSL

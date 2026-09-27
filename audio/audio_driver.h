@@ -413,6 +413,12 @@ typedef struct audio_driver
    bool (*device_clock_ppm)(void *data, double *ppm);
 } audio_driver_t;
 
+/* What a driver's device-clock word holds until it has an estimate.
+ * Every estimate is kept inside +-100000 ppm, so the estimate and
+ * whether there is one share one int: one store publishes, one load
+ * reads, and no reader can pair a flag with a stale value. */
+#define AUDIO_CLOCK_PPM_NONE (-0x7FFFFFFF - 1)
+
 /* The layout the user asked for, one of the AUDIO_LAYOUT_ masks. A
  * driver opening a device reads this; a driver without the layout
  * hook is not asked. */
@@ -982,12 +988,16 @@ typedef struct
     * has been published since. The core's first audio after a resume
     * starts at pipe_fade_in_at: the consumer never takes a chunk across
     * it and arms the resume ramp on reaching it, through pipe_arm_fade,
-    * consumer thread only. */
+    * consumer thread only. pipe_fade_in_mark is (sequence << 1) | armed,
+    * written by the main thread alone; the consumer records the sequence
+    * it has acted on in pipe_fade_in_seen instead of clearing the mark,
+    * so a mark published while it reads is never cleared unseen. */
    retro_atomic_size_t pipe_discard_to;
    retro_atomic_int_t  pipe_discard_gen;
    int                 pipe_discard_seen;
    retro_atomic_size_t pipe_fade_in_at;
-   retro_atomic_int_t  pipe_fade_in_set;
+   retro_atomic_int_t  pipe_fade_in_mark;
+   unsigned            pipe_fade_in_seen;
    bool                pipe_arm_fade;
    uint8_t pipe_transport_follow;
    /* Mutually exclusive with pipe_transport; shares its output storage. */

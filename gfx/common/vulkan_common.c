@@ -25,12 +25,6 @@
 #include "../../config.h"
 #endif
 
-#ifdef HAVE_X11
-#ifdef HAVE_XCB
-#include <X11/Xlib-xcb.h>
-#endif
-#endif
-
 #include "vulkan_common.h"
 #include "../include/vulkan/vulkan.h"
 #include "vksym.h"
@@ -81,10 +75,6 @@ static dylib_t                       vulkan_library;
 static VkInstance                    cached_instance_vk;
 static VkDevice                      cached_device_vk;
 static retro_vulkan_destroy_device_t cached_destroy_device_vk;
-/* Index in the graphics family of the present queue the cached device
- * was created with; 0 means it shares the graphics queue. A queue is
- * only a handle, so the index is what survives a cached reuse. */
-static uint32_t                      cached_present_queue_index_vk;
 
 #ifdef __APPLE__
 /* On Apple platforms the Vulkan implementation is provided by MoltenVK
@@ -706,10 +696,15 @@ static bool vulkan_context_init_gpu(gfx_ctx_vulkan_data_t *vk)
 
    video_driver_set_gpu_api_devices(GFX_CTX_VULKAN_API, vk->gpu_list);
 
+   /* The device the index was chosen as, wherever the list now puts it */
+   gpu_index = video_driver_gpu_index_resolve(GFX_CTX_VULKAN_API,
+         gpu_index, vk->gpu_list);
+
    if (0 <= gpu_index && gpu_index < (int)gpu_count)
    {
       RARCH_LOG("[Vulkan] Using GPU #%d: \"%s\".\n", gpu_index, vk->gpu_list->elems[gpu_index].data);
-      vk->context.gpu = gpus[gpu_index];
+      vk->context.gpu       = gpus[gpu_index];
+      vk->context.gpu_index = gpu_index;
    }
    else
    {
@@ -811,8 +806,7 @@ static bool vulkan_context_init_device(gfx_ctx_vulkan_data_t *vk)
    const char *enabled_device_extensions[8];
    VkDeviceCreateInfo device_info;
    VkDeviceQueueCreateInfo queue_info;
-   static const float priorities[2]        = { 1.0f, 1.0f };
-   uint32_t present_queue_index            = 0;
+   static const float one                  = 1.0f;
    bool found_queue                        = false;
 #ifdef VULKAN_HDR_SWAPCHAIN
    bool hdr_metadata_enabled               = false;
@@ -916,28 +910,15 @@ static bool vulkan_context_init_device(gfx_ctx_vulkan_data_t *vk)
          vk->context.destroy_device       = iface->destroy_device;
 
          vk->context.device               = context.device;
+         vk->context.queue                = context.queue;
          vk->context.gpu                  = context.gpu;
          vk->context.graphics_queue_index = context.queue_family_index;
          vk->context.queue                = context.queue;
-         vk->context.present_queue        = context.queue;
 
-         /* A separate presentation queue is taken when it is in the
-          * graphics family: the swapchain images then need no
-          * ownership transfer between the queue that renders them and
-          * the one that presents them. Another family would need one
-          * around every frame, and is not supported. */
          if (context.presentation_queue != context.queue)
          {
-            if (context.presentation_queue_family_index
-                  != context.queue_family_index)
-            {
-               RARCH_ERR("[Vulkan] Present queue is in queue family %u, graphics queue in %u. This is not supported.\n",
-                     context.presentation_queue_family_index,
-                     context.queue_family_index);
-               return false;
-            }
-            vk->context.present_queue = context.presentation_queue;
-            RARCH_LOG("[Vulkan] Core provided a separate presentation queue.\n");
+            RARCH_ERR("[Vulkan] Present queue != graphics queue. This is currently not supported.\n");
+            return false;
          }
       }
       else
@@ -1023,10 +1004,6 @@ static bool vulkan_context_init_device(gfx_ctx_vulkan_data_t *vk)
             vk->context.graphics_queue_index = i;
             RARCH_LOG("[Vulkan] Queue family %u supports %u sub-queues.\n",
                   i, queue_properties[i].queueCount);
-            /* A second queue of the family, when there is one, takes
-             * the presents off the graphics queue and its lock. */
-            if (queue_properties[i].queueCount >= 2)
-               present_queue_index = 1;
             found_queue = true;
             break;
          }
@@ -1083,8 +1060,8 @@ static bool vulkan_context_init_device(gfx_ctx_vulkan_data_t *vk)
 #endif
 
       queue_info.queueFamilyIndex         = vk->context.graphics_queue_index;
-      queue_info.queueCount               = present_queue_index ? 2 : 1;
-      queue_info.pQueuePriorities         = priorities;
+      queue_info.queueCount               = 1;
+      queue_info.pQueuePriorities         = &one;
 
       device_info.queueCreateInfoCount    = 1;
       device_info.pQueueCreateInfos       = &queue_info;
@@ -1094,10 +1071,8 @@ static bool vulkan_context_init_device(gfx_ctx_vulkan_data_t *vk)
 
       if (cached_device_vk)
       {
-         vk->context.device  = cached_device_vk;
-         cached_device_vk    = NULL;
-         /* The device was created once, with the queues it has. */
-         present_queue_index = cached_present_queue_index_vk;
+         vk->context.device = cached_device_vk;
+         cached_device_vk   = NULL;
 
          if (cached_destroy_device_vk)
          {
@@ -1153,19 +1128,7 @@ static bool vulkan_context_init_device(gfx_ctx_vulkan_data_t *vk)
    {
       vkGetDeviceQueue(vk->context.device,
             vk->context.graphics_queue_index, 0, &vk->context.queue);
-      vk->context.present_queue = vk->context.queue;
-      if (present_queue_index)
-      {
-         vkGetDeviceQueue(vk->context.device,
-               vk->context.graphics_queue_index, present_queue_index,
-               &vk->context.present_queue);
-         RARCH_LOG("[Vulkan] Presenting on queue %u of family %u.\n",
-               present_queue_index, vk->context.graphics_queue_index);
-      }
    }
-   else if (vk->context.present_queue == VK_NULL_HANDLE)
-      vk->context.present_queue = vk->context.queue;
-   cached_present_queue_index_vk = present_queue_index;
 
 #ifdef HAVE_THREADS
    vk->context.queue_lock = slock_new();
@@ -1359,51 +1322,40 @@ end:
 }
 
 static bool vulkan_update_display_mode(
-      unsigned *width,
-      unsigned *height,
+      unsigned *dims,
       const VkDisplayModePropertiesKHR *mode,
       const struct vulkan_display_surface_info *info)
 {
-   unsigned visible_width  = mode->parameters.visibleRegion.width;
-   unsigned visible_height = mode->parameters.visibleRegion.height;
+   unsigned vis_w = mode->parameters.visibleRegion.width;
+   unsigned vis_h = mode->parameters.visibleRegion.height;
+   int want_w     = (int)VIDEO_SCALE_W(info->dims);
+   int want_h     = (int)VIDEO_SCALE_H(info->dims);
 
-   if (!info->width || !info->height)
+   if (!want_w || !want_h)
    {
       /* Strategy here is to pick something which is largest resolution. */
-      unsigned area = visible_width * visible_height;
-      if (area > (*width) * (*height))
-      {
-         *width     = visible_width;
-         *height    = visible_height;
-         return true;
-      }
+      if (vis_w * vis_h <= VIDEO_SCALE_W(*dims) * VIDEO_SCALE_H(*dims))
+         return false;
    }
    else
    {
-      unsigned visible_rate = mode->parameters.refreshRate;
       /* For particular resolutions, find the closest. */
-      int delta_x           = (int)info->width  - (int)visible_width;
-      int delta_y           = (int)info->height - (int)visible_height;
-      int old_delta_x       = (int)info->width  - (int)*width;
-      int old_delta_y       = (int)info->height - (int)*height;
-      int delta_rate        = abs((int)info->refresh_rate_x1000 - (int)visible_rate);
-
-      int dist              = delta_x     * delta_x     + delta_y     * delta_y;
-      int old_dist          = old_delta_x * old_delta_x + old_delta_y * old_delta_y;
-
-      if (dist < old_dist && delta_rate < 1000)
-      {
-         *width       = visible_width;
-         *height      = visible_height;
-         return true;
-      }
+      int dx     = want_w - (int)vis_w;
+      int dy     = want_h - (int)vis_h;
+      int old_dx = want_w - (int)VIDEO_SCALE_W(*dims);
+      int old_dy = want_h - (int)VIDEO_SCALE_H(*dims);
+      if (     dx * dx + dy * dy >= old_dx * old_dx + old_dy * old_dy
+            || abs((int)info->refresh_rate_x1000
+               - (int)mode->parameters.refreshRate) >= 1000)
+         return false;
    }
 
-   return false;
+   *dims = VIDEO_SCALE_PACK(vis_w, vis_h);
+   return true;
 }
 
 static bool vulkan_create_display_surface(gfx_ctx_vulkan_data_t *vk,
-      unsigned *width, unsigned *height,
+      unsigned *dims,
       const struct vulkan_display_surface_info *info)
 {
    unsigned dpy, i, j;
@@ -1420,8 +1372,7 @@ static bool vulkan_create_display_surface(gfx_ctx_vulkan_data_t *vk,
    VkDisplayModeKHR best_mode                = VK_NULL_HANDLE;
    /* Monitor index starts on 1, 0 is auto. */
    unsigned monitor_index                    = info->monitor_index;
-   unsigned saved_width                      = *width;
-   unsigned saved_height                     = *height;
+   unsigned saved_dims                       = *dims;
 
    VULKAN_SYMBOL_WRAPPER_LOAD_INSTANCE_EXTENSION_SYMBOL(vk->context.instance,
          vkGetPhysicalDeviceDisplayPropertiesKHR);
@@ -1488,7 +1439,7 @@ retry:
       for (i = 0; i < mode_count; i++)
       {
          const VkDisplayModePropertiesKHR *mode = &modes[i];
-         if (vulkan_update_display_mode(width, height, mode, info))
+         if (vulkan_update_display_mode(dims, mode, info))
             best_mode = modes[i].displayMode;
       }
 
@@ -1559,8 +1510,7 @@ out:
       RARCH_WARN("[Vulkan] Retrying first suitable monitor.\n");
       monitor_index = 0;
       best_mode = VK_NULL_HANDLE;
-      *width = saved_width;
-      *height = saved_height;
+      *dims = saved_dims;
       goto retry;
    }
 
@@ -1578,8 +1528,8 @@ out:
    create_info.transform          = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
    create_info.globalAlpha        = 1.0f;
    create_info.alphaMode          = alpha_mode;
-   create_info.imageExtent.width  = *width;
-   create_info.imageExtent.height = *height;
+   create_info.imageExtent.width  = VIDEO_SCALE_W(*dims);
+   create_info.imageExtent.height = VIDEO_SCALE_H(*dims);
 
    if (vkCreateDisplayPlaneSurfaceKHR(vk->context.instance,
             &create_info, NULL, &vk->vk_surface) != VK_SUCCESS)
@@ -1599,8 +1549,9 @@ end:
  * swapchain, and is not drained for it. Needs no queue lock. */
 static void vulkan_context_wait_frames(gfx_ctx_vulkan_data_t *vk)
 {
-   VkFence fences[VULKAN_MAX_SWAPCHAIN_IMAGES];
-   unsigned count = 0;
+   VkFence fences[VULKAN_MAX_SWAPCHAIN_IMAGES + 1];
+   unsigned count     = 0;
+   bool reset_present = false;
    unsigned i;
 
    if (vk->context.device == VK_NULL_HANDLE)
@@ -1611,9 +1562,57 @@ static void vulkan_context_wait_frames(gfx_ctx_vulkan_data_t *vk)
             && vk->context.swapchain_fences[i] != VK_NULL_HANDLE)
          fences[count++] = vk->context.swapchain_fences[i];
    }
+
+   /* The presents are not on those fences. vkQueuePresentKHR returns
+    * before the presentation engine has waited on the frame's
+    * swapchain semaphore, and that wait is a queue operation, behind
+    * the last frame's fence rather than under it. Destroying the
+    * semaphore, or the swapchain, while that wait is pending is what
+    * Mali's Android WSI answered with a failed
+    * QueueSignalReleaseImageANDROID on every present after (#19601).
+    * An empty submission behind the presents signals its fence once
+    * they have executed; the rest of the device is still not
+    * drained. */
+   if (vk->context.present_pending)
+   {
+      VkFence present_fence = vk->context.present_fence;
+
+      if (present_fence == VK_NULL_HANDLE)
+      {
+         VkFenceCreateInfo fence_info;
+         fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+         fence_info.pNext = NULL;
+         fence_info.flags = 0;
+         if (vkCreateFence(vk->context.device, &fence_info, NULL,
+                  &present_fence) != VK_SUCCESS)
+            present_fence = VK_NULL_HANDLE;
+         vk->context.present_fence = present_fence;
+      }
+
+      if (present_fence != VK_NULL_HANDLE)
+      {
+         VkResult res;
+#ifdef HAVE_THREADS
+         slock_lock(vk->context.queue_lock);
+#endif
+         res = vkQueueSubmit(vk->context.queue, 0, NULL, present_fence);
+#ifdef HAVE_THREADS
+         slock_unlock(vk->context.queue_lock);
+#endif
+         if (res == VK_SUCCESS)
+         {
+            fences[count++] = present_fence;
+            reset_present    = true;
+         }
+      }
+      vk->context.present_pending = false;
+   }
+
    if (count)
       vkWaitForFences(vk->context.device, count, fences, VK_TRUE,
             UINT64_MAX);
+   if (reset_present)
+      vkResetFences(vk->context.device, 1, &vk->context.present_fence);
 }
 
 static void vulkan_destroy_swapchain(gfx_ctx_vulkan_data_t *vk)
@@ -1885,8 +1884,7 @@ void vulkan_debug_mark_memory(VkDevice device, VkDeviceMemory memory)
 bool vulkan_surface_create(gfx_ctx_vulkan_data_t *vk,
       enum vulkan_wsi_type type,
       void *display, void *surface,
-      unsigned width, unsigned height,
-      int8_t swap_interval)
+      unsigned dims, int8_t swap_interval)
 {
    switch (type)
    {
@@ -1988,7 +1986,9 @@ bool vulkan_surface_create(gfx_ctx_vulkan_data_t *vk,
             surf_info.sType      = VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR;
             surf_info.pNext      = NULL;
             surf_info.flags      = 0;
-            surf_info.connection = XGetXCBConnection((Display*)display);
+            /* The caller's connection, which need not be the one
+             * its window was made on. */
+            surf_info.connection = (xcb_connection_t*)display;
             surf_info.window     = *(const xcb_window_t*)surface;
 
             if (create(vk->context.instance,
@@ -2024,7 +2024,7 @@ bool vulkan_surface_create(gfx_ctx_vulkan_data_t *vk,
          if (!vulkan_context_init_gpu(vk))
             return false;
          if (!vulkan_create_display_surface(vk,
-                  &width, &height,
+                  &dims,
                   (const struct vulkan_display_surface_info*)display))
             return false;
          break;
@@ -2090,8 +2090,7 @@ bool vulkan_surface_create(gfx_ctx_vulkan_data_t *vk,
       }
    }
 
-   if (!vulkan_create_swapchain(
-            vk, width, height, swap_interval))
+   if (!vulkan_create_swapchain(vk, dims, swap_interval))
       goto error_swapchain;
 
    vulkan_acquire_next_image(vk);
@@ -2170,8 +2169,8 @@ retry:
    if (vk->swapchain == VK_NULL_HANDLE)
    {
       /* We don't have a swapchain, try to create one now. */
-      if (!vulkan_create_swapchain(vk, vk->context.swapchain_width,
-               vk->context.swapchain_height, vk->context.swap_interval))
+      if (!vulkan_create_swapchain(vk, vk->context.swapchain_dims,
+               vk->context.swap_interval))
       {
 #ifdef VULKAN_DEBUG
          RARCH_ERR("[Vulkan] Failed to create new swapchain.\n");
@@ -2341,8 +2340,7 @@ bool vulkan_is_hdr10_format(VkFormat format)
 #endif /* VULKAN_HDR_SWAPCHAIN */
 
 bool vulkan_create_swapchain(gfx_ctx_vulkan_data_t *vk,
-      unsigned width, unsigned height,
-      int8_t swap_interval)
+      unsigned dims, int8_t swap_interval)
 {
    unsigned i;
    uint32_t format_count;
@@ -2500,8 +2498,7 @@ bool vulkan_create_swapchain(gfx_ctx_vulkan_data_t *vk,
 
    if (       (vk->swapchain != VK_NULL_HANDLE)
          && (!(vk->context.flags & VK_CTX_FLAG_INVALID_SWAPCHAIN))
-         &&   (vk->context.swapchain_width  == width)
-         &&   (vk->context.swapchain_height == height)
+         &&   (vk->context.swapchain_dims == dims)
          &&   (   (vk->context.swap_interval          == swap_interval)
                || (vk->context.swapchain_present_mode == swapchain_present_mode)))
    {
@@ -2858,8 +2855,8 @@ bool vulkan_create_swapchain(gfx_ctx_vulkan_data_t *vk,
 
    if (surface_properties.currentExtent.width == UINT32_MAX)
    {
-      swapchain_size.width     = width;
-      swapchain_size.height    = height;
+      swapchain_size.width     = VIDEO_SCALE_W(dims);
+      swapchain_size.height    = VIDEO_SCALE_H(dims);
    }
    else
       swapchain_size           = surface_properties.currentExtent;
@@ -2891,8 +2888,7 @@ bool vulkan_create_swapchain(gfx_ctx_vulkan_data_t *vk,
       if (vk->swapchain != VK_NULL_HANDLE)
          vkDestroySwapchainKHR(vk->context.device, vk->swapchain, NULL);
       vk->swapchain                    = VK_NULL_HANDLE;
-      vk->context.swapchain_width      = width;
-      vk->context.swapchain_height     = height;
+      vk->context.swapchain_dims       = dims;
       vk->context.num_swapchain_images = 1;
 
       memset(vk->context.swapchain_images, 0, sizeof(vk->context.swapchain_images));
@@ -3062,8 +3058,8 @@ bool vulkan_create_swapchain(gfx_ctx_vulkan_data_t *vk,
       vkDestroySwapchainKHR(vk->context.device, old_swapchain, NULL);
 #endif
 
-   vk->context.swapchain_width        = swapchain_size.width;
-   vk->context.swapchain_height       = swapchain_size.height;
+   vk->context.swapchain_dims         = VIDEO_SCALE_PACK(swapchain_size.width,
+         swapchain_size.height);
    vk->context.swapchain_present_mode = swapchain_present_mode;
 #ifdef VULKAN_HDR_SWAPCHAIN
    vk->context.swapchain_colour_space = format.colorSpace;
@@ -3200,10 +3196,11 @@ bool vulkan_create_swapchain(gfx_ctx_vulkan_data_t *vk,
       meta.displayPrimaryBlue.y      = 0.046f;
       meta.whitePoint.x              = 0.3127f;
       meta.whitePoint.y              = 0.3290f;
-      meta.maxLuminance              = 1000.0f;
+      /* 1000 nits unless Use Display Peak supplies the display's */
+      meta.maxLuminance              = video_driver_hdr_metadata_peak(1000.0f);
       meta.minLuminance              = 0.001f;
-      meta.maxContentLightLevel      = 1000.0f;
-      meta.maxFrameAverageLightLevel = 1000.0f;
+      meta.maxContentLightLevel      = meta.maxLuminance;
+      meta.maxFrameAverageLightLevel = meta.maxLuminance;
       vk->set_hdr_metadata(vk->context.device, 1, &vk->swapchain, &meta);
    }
 #endif
@@ -3429,8 +3426,16 @@ void vulkan_context_destroy(gfx_ctx_vulkan_data_t *vk,
 
    if (vk->context.device)
       vkDeviceWaitIdle(vk->context.device);
+   /* Drained above; the fence would only be waited on again. */
+   vk->context.present_pending = false;
 
    vulkan_destroy_swapchain(vk);
+
+   if (vk->context.present_fence != VK_NULL_HANDLE)
+   {
+      vkDestroyFence(vk->context.device, vk->context.present_fence, NULL);
+      vk->context.present_fence = VK_NULL_HANDLE;
+   }
 
    if (     destroy_surface
          && (vk->vk_surface != VK_NULL_HANDLE))
@@ -3532,7 +3537,6 @@ retro_time_t vulkan_last_present_time(gfx_ctx_vulkan_data_t *vk)
 
 void vulkan_present(gfx_ctx_vulkan_data_t *vk, unsigned index)
 {
-   VkQueue present_queue;
    VkPresentInfoKHR present;
    VkPresentTimesInfoGOOGLE times;
    VkPresentTimeGOOGLE ptime;
@@ -3560,18 +3564,15 @@ void vulkan_present(gfx_ctx_vulkan_data_t *vk, unsigned index)
       present.pNext              = &times;
    }
 
-   /* On its own queue the present holds no lock, and a blocking
-    * present (the exclusive-fullscreen path on some drivers waits for
-    * the display inside the call) holds nothing a hardware core's
-    * submissions need. Sharing the graphics queue it takes queue_lock,
-    * as any use of that queue must. */
-   present_queue = vk->context.present_queue
-      ? vk->context.present_queue : vk->context.queue;
+   /* Better hope QueuePresent doesn't block D: */
 #ifdef HAVE_THREADS
-   if (present_queue == vk->context.queue)
-      slock_lock(vk->context.queue_lock);
+   slock_lock(vk->context.queue_lock);
 #endif
-   err = vkQueuePresentKHR(present_queue, &present);
+   err = vkQueuePresentKHR(vk->context.queue, &present);
+   /* Queued whatever it returned: a failed present has still put its
+    * semaphore wait on the queue, or may have, and the fence taken
+    * before the next rebuild covers either. */
+   vk->context.present_pending = true;
 
    /* VK_SUBOPTIMAL_KHR can be returned on
     * Android 10 when prerotate is not dealt with.
@@ -3588,10 +3589,29 @@ void vulkan_present(gfx_ctx_vulkan_data_t *vk, unsigned index)
    trigger_spurious_error_vkresult(&err);
 #endif
 
+   if (err == VK_SUCCESS && result == VK_SUCCESS)
+      vk->context.swapchain_never_presented = 0;
+
    if (err != VK_SUCCESS || result != VK_SUCCESS)
    {
       RARCH_LOG("[Vulkan] QueuePresent failed (err = %d, result = %d), destroying swapchain.\n",
             (int)err, (int)result);
+      /* Swapchain after swapchain with nothing ever shown: the GPU the
+       * index picked cannot present to this display, whatever it
+       * answered when asked. Say so once rather than loop in silence. */
+      if (++vk->context.swapchain_never_presented == 8)
+      {
+         struct string_list *gpus = video_driver_get_gpu_api_devices(
+               GFX_CTX_VULKAN_API);
+         int idx                  = vk->context.gpu_index;
+         RARCH_ERR("[Vulkan] Nothing has reached the display through %u swapchains.\n",
+               vk->context.swapchain_never_presented);
+         if (gpus && idx > 0 && idx < (int)gpus->size)
+            RARCH_ERR("[Vulkan] GPU #%d (\"%s\") cannot present here; set GPU Index back to 0 in Video -> Output.\n",
+                  idx, gpus->elems[idx].data);
+         else
+            RARCH_ERR("[Vulkan] The GPU in use cannot present to this display.\n");
+      }
       /* A lost device does not come back with a new swapchain: the
        * whole driver has to, and the runloop does that when it sees
        * the flag (after a TDR, a GPU reset). */
@@ -3601,7 +3621,6 @@ void vulkan_present(gfx_ctx_vulkan_data_t *vk, unsigned index)
    }
 
 #ifdef HAVE_THREADS
-   if (present_queue == vk->context.queue)
-      slock_unlock(vk->context.queue_lock);
+   slock_unlock(vk->context.queue_lock);
 #endif
 }

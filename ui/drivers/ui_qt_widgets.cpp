@@ -129,6 +129,39 @@ static inline void add_sublabel_and_whats_this(
       widget->setWhatsThis(tmp);
 }
 
+/* A setting's range is stored as float; converting a float outside
+ * int range to int is undefined, and on x86 it produces INT_MIN, which
+ * collapses a spin box's range to a single unreachable value. Bounds are
+ * therefore clamped in double, where every int is exact, and an
+ * unenforced or NaN bound takes the widget's own default. */
+static int qt_setting_bound(const rarch_setting_t *setting,
+      unsigned flag, double value, int fallback)
+{
+   if (!(setting->flags & flag) || value != value)
+      return fallback;
+   if (value >= (double)INT_MAX)
+      return INT_MAX;
+   if (value <= (double)INT_MIN)
+      return INT_MIN;
+   return (int)value;
+}
+
+/* The most choices a radio-button group lays out. */
+#define QT_RADIO_BUTTONS_MAX 256
+
+/* The value a spin box can show for a stored value: the stored value
+ * clamped to the box's range. The paint-time resync compares against
+ * this, so an out-of-range stored value is shown at the nearest bound
+ * once instead of being re-set (and repainted) on every paint. */
+static int qt_spinbox_shown(const QSpinBox *box, double value)
+{
+   if (value >= (double)box->maximum())
+      return box->maximum();
+   if (value <= (double)box->minimum())
+      return box->minimum();
+   return (int)value;
+}
+
 static inline QString sanitize_ampersand(QString input)
 {
    return input.replace("&", "&&");
@@ -512,7 +545,6 @@ void StringComboBox::paintEvent(QPaintEvent *event)
 UIntComboBox::UIntComboBox(rarch_setting_t *setting, QWidget *parent) :
    QComboBox(parent)
    ,m_setting(setting)
-   ,m_value(setting->value.target.unsigned_integer)
 {
    float min = (setting->flags & SD_FLAG_ENFORCE_MINRANGE) ? setting->min : 0.00f;
    float max = (setting->flags & SD_FLAG_ENFORCE_MAXRANGE) ? setting->max : 999.00f;
@@ -527,7 +559,6 @@ UIntComboBox::UIntComboBox(rarch_setting_t *setting, QWidget *parent) :
 UIntComboBox::UIntComboBox(rarch_setting_t *setting, double min, double max, QWidget *parent) :
     QComboBox(parent)
    ,m_setting(setting)
-   ,m_value(setting->value.target.unsigned_integer)
 {
    populate(min, max);
 
@@ -539,7 +570,7 @@ UIntComboBox::UIntComboBox(rarch_setting_t *setting, double min, double max, QWi
 void UIntComboBox::populate(double min, double max)
 {
    float i;
-   unsigned orig_value = *m_setting->value.target.unsigned_integer;
+   unsigned orig_value = setting_uint_get(m_setting);
    float          step = m_setting->step;
    bool  checked_found = false;
    unsigned      count = 0;
@@ -551,7 +582,7 @@ void UIntComboBox::populate(double min, double max)
          char val_s[NAME_MAX_LENGTH];
          unsigned val = (unsigned)i;
 
-         *m_setting->value.target.unsigned_integer = val;
+         setting_uint_set(m_setting, val);
 
          m_setting->actions->repr(m_setting, val_s, sizeof(val_s));
 
@@ -567,7 +598,7 @@ void UIntComboBox::populate(double min, double max)
          count++;
       }
 
-      *m_setting->value.target.unsigned_integer = orig_value;
+      setting_uint_set(m_setting, orig_value);
    }
 }
 
@@ -583,24 +614,24 @@ void UIntComboBox::onCurrentIndexChanged(int index)
 {
    (void)(index);
 
-   *m_value = currentData().toUInt();
+   setting_uint_set(m_setting, currentData().toUInt());
 
    setting_generic_handle_change(m_setting);
 }
 
 void UIntComboBox::paintEvent(QPaintEvent *event)
 {
-   setCurrentText(m_hash.value(*m_value));
+   setCurrentText(m_hash.value(setting_uint_get(m_setting)));
    QComboBox::paintEvent(event);
 }
 
 UIntSpinBox::UIntSpinBox(rarch_setting_t *setting, QWidget *parent) :
    QSpinBox(parent)
    ,m_setting(setting)
-   ,m_value(setting->value.target.unsigned_integer)
 {
-   setMinimum((setting->flags & SD_FLAG_ENFORCE_MINRANGE) ? setting->min : 0.00f);
-   setMaximum((setting->flags & SD_FLAG_ENFORCE_MAXRANGE) ? setting->max : INT_MAX);
+   setRange(
+         qt_setting_bound(setting, SD_FLAG_ENFORCE_MINRANGE, setting->min, 0),
+         qt_setting_bound(setting, SD_FLAG_ENFORCE_MAXRANGE, setting->max, INT_MAX));
 
    setSingleStep(setting->step);
 
@@ -614,17 +645,19 @@ UIntSpinBox::UIntSpinBox(msg_hash_enums enum_idx, QWidget *parent) :
 
 void UIntSpinBox::onValueChanged(int value)
 {
-   *m_value = value;
+   setting_uint_set(m_setting, (unsigned)value);
    setting_generic_handle_change(m_setting);
 }
 
 void UIntSpinBox::paintEvent(QPaintEvent *event)
 {
-   if ((unsigned)value() != *m_value)
+   int shown = qt_spinbox_shown(this, (double)setting_uint_get(m_setting));
+
+   if (value() != shown)
    {
       blockSignals(true);
 
-      setValue(*m_value);
+      setValue(shown);
 
       blockSignals(false);
    }
@@ -638,10 +671,11 @@ SizeSpinBox::SizeSpinBox(rarch_setting_t *setting, unsigned scale, QWidget *pare
    ,m_value(setting->value.target.sizet)
    ,m_scale(scale)
 {
-   setMinimum((setting->flags & SD_FLAG_ENFORCE_MINRANGE)
-		   ? setting->min / m_scale : 0.00f);
-   setMaximum((setting->flags & SD_FLAG_ENFORCE_MAXRANGE)
-		   ? setting->max / m_scale : INT_MAX);
+   setRange(
+         qt_setting_bound(setting, SD_FLAG_ENFORCE_MINRANGE,
+            (double)setting->min / m_scale, 0),
+         qt_setting_bound(setting, SD_FLAG_ENFORCE_MAXRANGE,
+            (double)setting->max / m_scale, INT_MAX));
 
    setSingleStep(setting->step / m_scale);
 
@@ -663,11 +697,13 @@ void SizeSpinBox::onValueChanged(int value)
 
 void SizeSpinBox::paintEvent(QPaintEvent *event)
 {
-   if ((value() * m_scale) != *m_value)
+   int shown = qt_spinbox_shown(this, (double)(*m_value / m_scale));
+
+   if (value() != shown)
    {
       blockSignals(true);
 
-      setValue(*m_value / m_scale);
+      setValue(shown);
 
       blockSignals(false);
    }
@@ -678,17 +714,16 @@ void SizeSpinBox::paintEvent(QPaintEvent *event)
 UIntRadioButton::UIntRadioButton(msg_hash_enums enum_idx, unsigned value, QWidget *parent) :
    QRadioButton(parent)
    ,m_setting(menu_setting_find_enum(enum_idx))
-   ,m_target(m_setting->value.target.unsigned_integer)
    ,m_value(value)
 {
    char val_s[NAME_MAX_LENGTH];
-   unsigned orig_value = *m_setting->value.target.unsigned_integer;
+   unsigned orig_value = setting_uint_get(m_setting);
 
-   *m_setting->value.target.unsigned_integer = value;
+   setting_uint_set(m_setting, value);
 
    m_setting->actions->repr(m_setting, val_s, sizeof(val_s));
 
-   *m_setting->value.target.unsigned_integer = orig_value;
+   setting_uint_set(m_setting, orig_value);
 
    setText(val_s);
 
@@ -702,7 +737,6 @@ UIntRadioButton::UIntRadioButton(const QString &text,
 	rarch_setting_t *setting, unsigned value, QWidget *parent) :
    QRadioButton(text, parent)
    ,m_setting(setting)
-   ,m_target(setting->value.target.unsigned_integer)
    ,m_value(value)
 {
    connect(this, SIGNAL(clicked(bool)), this, SLOT(onClicked(bool)));
@@ -710,13 +744,13 @@ UIntRadioButton::UIntRadioButton(const QString &text,
 
 void UIntRadioButton::onClicked(bool)
 {
-   *m_target = m_value;
+   setting_uint_set(m_setting, m_value);
    setting_generic_handle_change(m_setting);
 }
 
 void UIntRadioButton::paintEvent(QPaintEvent *event)
 {
-   if (*m_target == m_value)
+   if (setting_uint_get(m_setting) == m_value)
       setChecked(true);
    else
       setChecked(false);
@@ -727,31 +761,46 @@ void UIntRadioButton::paintEvent(QPaintEvent *event)
 UIntRadioButtons::UIntRadioButtons(rarch_setting_t *setting, QWidget *parent) :
    QGroupBox(setting->short_description, parent)
    ,m_setting(setting)
-   ,m_value(setting->value.target.unsigned_integer)
    ,m_buttonGroup(new QButtonGroup(this))
 {
    QVBoxLayout *layout = new QVBoxLayout(this);
-   /* from menu_displaylist */
-   float i;
-   unsigned orig_value = *setting->value.target.unsigned_integer;
-   float          step = setting->step;
-   float           min = (setting->flags & SD_FLAG_ENFORCE_MINRANGE) ? setting->min : 0.00f;
-   float           max = (setting->flags & SD_FLAG_ENFORCE_MAXRANGE) ? setting->max : UINT_MAX;
+   /* The choices are enumerated in unsigned integers: a float counter
+    * stops advancing past 2^24, and a missing or non-positive step
+    * would never reach the end. The button id is an int, so the range
+    * is bounded to [0, INT_MAX], and at most QT_RADIO_BUTTONS_MAX
+    * buttons are made, which also bounds a row with no enforced
+    * maximum. */
+   unsigned orig_value = setting_uint_get(setting);
+   unsigned        min = (unsigned)qt_setting_bound(setting,
+         SD_FLAG_ENFORCE_MINRANGE, setting->min < 0.0f ? 0.0 : setting->min, 0);
+   unsigned        max = (unsigned)qt_setting_bound(setting,
+         SD_FLAG_ENFORCE_MAXRANGE, setting->max < 0.0f ? 0.0 : setting->max,
+         INT_MAX);
+   unsigned       step = 1;
    bool  checked_found = false;
 
-   if (setting->actions->repr)
+   if (setting->step >= (float)INT_MAX)
+      step = INT_MAX;
+   else if (setting->step >= 1.0f)
+      step = (unsigned)setting->step;
+
+   if (setting->actions->repr && min <= max)
    {
-      for (i = min; i <= max; i += step)
+      unsigned i     = min;
+      unsigned count = 0;
+
+      for (;;)
       {
          char val_s[NAME_MAX_LENGTH];
+         QRadioButton *button = NULL;
 
-         *setting->value.target.unsigned_integer = i;
+         setting_uint_set(setting, i);
 
          setting->actions->repr(setting, val_s, sizeof(val_s));
 
-         QRadioButton *button = new QRadioButton(QString(val_s), this);
+         button = new QRadioButton(QString(val_s), this);
 
-         m_buttonGroup->addButton(button, i);
+         m_buttonGroup->addButton(button, (int)i);
 
          layout->addWidget(button);
 
@@ -760,9 +809,13 @@ UIntRadioButtons::UIntRadioButtons(rarch_setting_t *setting, QWidget *parent) :
             button->setChecked(true);
             checked_found = true;
          }
+
+         if (++count >= QT_RADIO_BUTTONS_MAX || max - i < step)
+            break;
+         i += step;
       }
 
-      *setting->value.target.unsigned_integer = orig_value;
+      setting_uint_set(setting, orig_value);
    }
    add_sublabel_and_whats_this(this, m_setting);
 #if (QT_VERSION >= QT_VERSION_CHECK(6, 0, 0))
@@ -777,7 +830,7 @@ UIntRadioButtons::UIntRadioButtons(msg_hash_enums enum_idx, QWidget *parent) :
 
 void UIntRadioButtons::onButtonClicked(int id)
 {
-   *m_value = id;
+   setting_uint_set(m_setting, (unsigned)id);
 
    setting_generic_handle_change(m_setting);
 }
@@ -785,10 +838,10 @@ void UIntRadioButtons::onButtonClicked(int id)
 IntSpinBox::IntSpinBox(rarch_setting_t *setting, QWidget *parent) :
    QSpinBox(parent)
    ,m_setting(setting)
-   ,m_value(setting->value.target.integer)
 {
-   setMinimum((setting->flags & SD_FLAG_ENFORCE_MINRANGE) ? setting->min : INT_MIN);
-   setMaximum((setting->flags & SD_FLAG_ENFORCE_MAXRANGE) ? setting->max : INT_MAX);
+   setRange(
+         qt_setting_bound(setting, SD_FLAG_ENFORCE_MINRANGE, setting->min, INT_MIN),
+         qt_setting_bound(setting, SD_FLAG_ENFORCE_MAXRANGE, setting->max, INT_MAX));
 
    setSingleStep(setting->step);
 
@@ -799,16 +852,18 @@ IntSpinBox::IntSpinBox(rarch_setting_t *setting, QWidget *parent) :
 
 void IntSpinBox::onValueChanged(int value)
 {
-   *m_value = value;
+   setting_int_set(m_setting, value);
    setting_generic_handle_change(m_setting);
 }
 
 void IntSpinBox::paintEvent(QPaintEvent *event)
 {
-   if (value() != *m_value)
+   int shown = qt_spinbox_shown(this, (double)setting_int_get(m_setting));
+
+   if (value() != shown)
    {
       blockSignals(true);
-      setValue(*m_value);
+      setValue(shown);
       blockSignals(false);
    }
 
@@ -6555,7 +6610,9 @@ QWidget *VideoPage::widget()
       for (i = 0; i < size; i++)
       {
          char val_d[NAME_MAX_LENGTH], str[NAME_MAX_LENGTH];
-         snprintf(str, sizeof(str), "%dx%d (%d Hz)", list[i].width, list[i].height, list[i].refreshrate);
+         snprintf(str, sizeof(str), "%dx%d (%d Hz)",
+               VIDEO_SCALE_W(list[i].dims), VIDEO_SCALE_H(list[i].dims),
+               list[i].refreshrate);
          snprintf(val_d, sizeof(val_d), "%d", i);
 
          m_resolutionCombo->addItem(str);
@@ -7016,7 +7073,7 @@ QVariant PlaylistModel::data(const QModelIndex &index, int role) const
                /* The engine's pixels for this row at the grid's size,
                 * converted to a QPixmap once and kept in m_cache. */
                QPixmap *pm = pixmapFor(getCurrentTypeThumbnailPath(index),
-                     m_thumbSize, m_thumbSize);
+                     VIDEO_SCALE_PACK(m_thumbSize, m_thumbSize));
                if (pm)
                   return *pm;
             }
@@ -7212,20 +7269,20 @@ void PlaylistModel::loadThumbnail(const QModelIndex &index)
    if (!m_engine || path.isEmpty())
       return;
    if (companion_thumbs_get(m_engine, path.toUtf8().constData(),
-            m_thumbSize, m_thumbSize))
+            VIDEO_SCALE_PACK(m_thumbSize, m_thumbSize)))
       return;                         /* data() serves it from the cache */
    if (m_pendingRows.contains(path))
       return;
    m_pendingRows.insert(path, QPersistentModelIndex(index));
    companion_thumbs_request(m_engine, path.toUtf8().constData(),
-         m_thumbSize, m_thumbSize, 0, true, 0x00000000u);
+         VIDEO_SCALE_PACK(m_thumbSize, m_thumbSize), 0, true, 0x00000000u);
    if (!m_pollTimer.isActive())
       m_pollTimer.start();
 }
 
 #define QT_TAG_ANIM_FRAME ((uintptr_t)1 << (sizeof(uintptr_t) * 8 - 1))
 
-void PlaylistModel::onEngineDone(void *ud, const char *path, int w, int h,
+void PlaylistModel::onEngineDone(void *ud, const char *path, unsigned dims,
       uintptr_t tag, const uint32_t *bits)
 {
    PlaylistModel *self = static_cast<PlaylistModel*>(ud);
@@ -7236,7 +7293,9 @@ void PlaylistModel::onEngineDone(void *ud, const char *path, int w, int h,
        * rather than copying it once more first. */
       if (bits)
       {
-         QImage img((const uchar*)bits, w, h, w * 4, QImage::Format_ARGB32);
+         int w = (int)VIDEO_SCALE_W(dims);
+         QImage img((const uchar*)bits, w, (int)VIDEO_SCALE_H(dims), w * 4,
+               QImage::Format_ARGB32);
          emit self->frameReady(QString::fromUtf8(path), QPixmap::fromImage(img));
       }
       return;
@@ -7244,11 +7303,12 @@ void PlaylistModel::onEngineDone(void *ud, const char *path, int w, int h,
    self->thumbnailArrived(QString::fromUtf8(path));
 }
 
-void PlaylistModel::animateImage(const QString &path, int w, int h)
+void PlaylistModel::animateImage(const QString &path, unsigned dims)
 {
-   if (!m_engine || path.isEmpty() || w < 1 || h < 1)
+   if (     !m_engine || path.isEmpty()
+         || !VIDEO_SCALE_W(dims) || !VIDEO_SCALE_H(dims))
       return;
-   companion_thumbs_animate(m_engine, path.toUtf8().constData(), w, h,
+   companion_thumbs_animate(m_engine, path.toUtf8().constData(), dims,
          QT_TAG_ANIM_FRAME, 0x00000000u);
    if (!m_pollTimer.isActive())
       m_pollTimer.start();
@@ -7260,8 +7320,10 @@ void PlaylistModel::stopAnimation()
       companion_thumbs_animate_stop(m_engine);
 }
 
-QPixmap *PlaylistModel::pixmapFor(const QString &path, int w, int h) const
+QPixmap *PlaylistModel::pixmapFor(const QString &path, unsigned dims) const
 {
+   int w       = (int)VIDEO_SCALE_W(dims);
+   int h       = (int)VIDEO_SCALE_H(dims);
    QString key = path + QLatin1Char('@') + QString::number(w)
       + QLatin1Char('x') + QString::number(h);
    QPixmap *pm = m_cache.object(key);
@@ -7270,7 +7332,7 @@ QPixmap *PlaylistModel::pixmapFor(const QString &path, int w, int h) const
       return pm;
    if (!m_engine || path.isEmpty())
       return NULL;
-   bits = companion_thumbs_get(m_engine, path.toUtf8().constData(), w, h);
+   bits = companion_thumbs_get(m_engine, path.toUtf8().constData(), dims);
    if (!bits)
       return NULL;
    {
@@ -7286,9 +7348,9 @@ QPixmap *PlaylistModel::pixmapFor(const QString &path, int w, int h) const
    return pm;
 }
 
-bool PlaylistModel::imageAt(const QString &path, int w, int h, QPixmap *out) const
+bool PlaylistModel::imageAt(const QString &path, unsigned dims, QPixmap *out) const
 {
-   QPixmap *pm = pixmapFor(path, w, h);
+   QPixmap *pm = pixmapFor(path, dims);
    if (!pm)
       return false;
    if (out)
@@ -7303,11 +7365,12 @@ void PlaylistModel::abandonPending()
    m_pendingRows.clear();
 }
 
-void PlaylistModel::requestImage(const QString &path, int w, int h)
+void PlaylistModel::requestImage(const QString &path, unsigned dims)
 {
-   if (!m_engine || path.isEmpty() || w < 1 || h < 1)
+   if (     !m_engine || path.isEmpty()
+         || !VIDEO_SCALE_W(dims) || !VIDEO_SCALE_H(dims))
       return;
-   companion_thumbs_request(m_engine, path.toUtf8().constData(), w, h, 0,
+   companion_thumbs_request(m_engine, path.toUtf8().constData(), dims, 0,
          true, 0x00000000u);
    if (!m_pollTimer.isActive())
       m_pollTimer.start();

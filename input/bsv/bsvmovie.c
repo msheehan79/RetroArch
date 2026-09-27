@@ -332,6 +332,15 @@ bool bsv_movie_reset_playback(bsv_movie_t *handle)
       if (!bsv_movie_load_checkpoint(handle, compression, encoding, REPLAY_CPBEHAVIOR_DESERIALIZE))
          return false;
    }
+   /* A recording halted before its first frame is a header and a
+    * checkpoint with no frame after it.  That is what the recorder
+    * writes, so it is a valid replay of zero frames, not a short
+    * read: leave the checkpoint pending (the first frame restores it
+    * and then hits the end of the file, which ends playback the way
+    * every replay ends) instead of failing here with MOVIE_END raised
+    * for a handle that will never be installed. */
+   if (intfstream_tell(handle->file) >= intfstream_get_size(handle->file))
+      return true;
    return bsv_movie_read_next_events(handle, REPLAY_CPBEHAVIOR_DESERIALIZE, true);
 }
 
@@ -1410,8 +1419,25 @@ bool replay_set_serialized_data(void *buf)
       if (ident == handle->identifier) /* is compatible? */
       {
          int32_t loaded_len    = swap_if_big32(((int32_t *)buffer)[0]);
-         int64_t handle_idx    = intfstream_tell(handle->file);
-         bool same_timeline    = replay_check_same_timeline(handle, (uint8_t *)header, loaded_len);
+         int64_t handle_idx;
+         bool same_timeline;
+
+         /* loaded_len is the byte length of the entire embedded replay
+          * (header + body) as recorded by replay_get_serialized_data.
+          * A malicious save state can declare a negative length (which
+          * casts to huge size_t in the downstream intfstream_write)
+          * or a length smaller than the replay header itself. Refuse
+          * before any seek/write picks it up. */
+         if (loaded_len < (int32_t)REPLAY_HEADER_LEN_BYTES)
+         {
+            RARCH_ERR("[Replay] Refusing malformed replay state "
+                  "(loaded_len=%d, must be >= %d)\n",
+                  (int)loaded_len, (int)REPLAY_HEADER_LEN_BYTES);
+            return false;
+         }
+
+         handle_idx            = intfstream_tell(handle->file);
+         same_timeline         = replay_check_same_timeline(handle, (uint8_t *)header, loaded_len);
          /* If the state is part of this replay, go back to that state
             and fast forward/rewind the replay.
 

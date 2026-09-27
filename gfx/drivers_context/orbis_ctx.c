@@ -65,7 +65,6 @@ typedef struct
 #endif
     SceWindow native_window;
     bool resize;
-    unsigned width, height;
     float refresh_rate;
 } orbis_ctx_data_t;
 
@@ -84,13 +83,12 @@ void orbis_ctx_destroy(void *data)
 }
 
 static void orbis_ctx_get_video_size(void *data,
-      unsigned *width, unsigned *height)
+      unsigned *dims)
 {
    orbis_ctx_data_t
       *ctx_orbis = (orbis_ctx_data_t *)data;
 
-   *width        = ATTR_ORBISGL_WIDTH;
-   *height       = ATTR_ORBISGL_HEIGHT;
+   *dims = VIDEO_SCALE_PACK(ATTR_ORBISGL_WIDTH, ATTR_ORBISGL_HEIGHT);
 }
 
 static void *orbis_ctx_init(void *video_driver)
@@ -178,16 +176,14 @@ error:
 }
 
 static void orbis_ctx_check_window(void *data, bool *quit,
-      bool *resize, unsigned *width, unsigned *height)
+      bool *resize, unsigned *dims)
 {
-    unsigned new_width, new_height;
+    unsigned new_dims;
+    orbis_ctx_get_video_size(data, &new_dims);
 
-    orbis_ctx_get_video_size(data, &new_width, &new_height);
-
-    if (new_width != *width || new_height != *height)
-    {
-        *width  = new_width;
-        *height = new_height;
+    if (new_dims != *dims)
+   {
+      *dims  = new_dims;
         *resize = true;
     }
 
@@ -195,9 +191,11 @@ static void orbis_ctx_check_window(void *data, bool *quit,
 }
 
 static bool orbis_ctx_set_video_mode(void *data,
-      unsigned width, unsigned height,
+      unsigned dims,
       bool fullscreen)
 {
+   unsigned width  = VIDEO_SCALE_W(dims);
+   unsigned height = VIDEO_SCALE_H(dims);
     /* Create an EGL rendering context */
     static const EGLint
        contextAttributeList[]       =
@@ -211,11 +209,8 @@ static bool orbis_ctx_set_video_mode(void *data,
 
     orbis_ctx_data_t *ctx_orbis     = (orbis_ctx_data_t *)data;
 
-    ctx_orbis->width                = ATTR_ORBISGL_WIDTH;
-    ctx_orbis->height               = ATTR_ORBISGL_HEIGHT;
-
-    ctx_orbis->native_window.width  = ctx_orbis->width;
-    ctx_orbis->native_window.height = ctx_orbis->height;
+    ctx_orbis->native_window.width  = ATTR_ORBISGL_WIDTH;
+    ctx_orbis->native_window.height = ATTR_ORBISGL_HEIGHT;
 
     ctx_orbis->refresh_rate = 60;
 

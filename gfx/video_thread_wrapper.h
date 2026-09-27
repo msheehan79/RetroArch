@@ -36,6 +36,14 @@
 
 RETRO_BEGIN_DECLS
 
+enum video_thread_win_flags
+{
+   VIDEO_THREAD_WIN_ALIVE        = (1 << 0),
+   VIDEO_THREAD_WIN_FOCUS        = (1 << 1),
+   VIDEO_THREAD_WIN_PRESENTABLE  = (1 << 2),
+   VIDEO_THREAD_WIN_HAS_WINDOWED = (1 << 3)
+};
+
 enum thread_cmd
 {
    CMD_VIDEO_NONE = 0,
@@ -73,6 +81,7 @@ enum thread_cmd
    CMD_POKE_SET_HDR_SCANLINES,
    CMD_POKE_SET_HDR_SUBPIXEL_LAYOUT,
    CMD_SET_NONBLOCK,
+   CMD_SUPPRESS_SCREENSAVER,
 
    CMD_DUMMY = INT_MAX
 };
@@ -278,8 +287,7 @@ enum video_thread_stat_slot
  * cannot be read half updated even before the sequence is checked. */
 enum video_thread_vp_slot
 {
-   VIDEO_THREAD_VP_X = 0,
-   VIDEO_THREAD_VP_Y,
+   VIDEO_THREAD_VP_POS = 0,
    VIDEO_THREAD_VP_WH,
    VIDEO_THREAD_VP_FULL_WH,
    VIDEO_THREAD_VP_SLOTS
@@ -300,6 +308,9 @@ enum video_thread_vp_slot
  * separation holds wherever the fields land rather than depending on
  * an offset. */
 #define VIDEO_THREAD_LINE 64
+
+/* frame.lent when the loan is the spare buffer rather than a ring slot */
+#define VIDEO_THREAD_LEND_SPARE 2
 
 typedef struct thread_video
 {
@@ -475,6 +486,11 @@ typedef struct thread_video
     * thread out of its frame call, so plain reads of both are safe
     * everywhere. */
    retro_atomic_int_t *alpha_mod;
+   /* Video thread only: the float bits last handed to the driver for
+    * each image, alpha_mods of them, so an apply passes on only what
+    * changed. NULL when it could not be had, and every image is set
+    * at every apply. */
+   int *alpha_applied;
 
    struct
    {
@@ -569,6 +585,13 @@ typedef struct thread_video
        * no push behind them - set_texture_enable() and
        * apply_state_changes(). Not the ring: 'lock' guards that. */
       slock_t *lock;
+      /* A third buffer of buffer_size bytes, outside the ring, lent to
+       * the core when both slots are taken (one queued, one being
+       * rendered - a driver whose present blocks until vblank keeps
+       * the ring that way). The push that returns it swaps it into the
+       * slot it picks, and the buffer it displaces becomes the spare.
+       * Allocated on the first ask that needs it; main thread only. */
+      uint8_t *spare;
       /* Bytes allocated for each slot buffer at thread_init, from the
        * core's declared maximum geometry. A core that hands over a
        * larger frame than it declared is clamped to this. */
@@ -587,9 +610,16 @@ typedef struct thread_video
           * which holds whatever frame was last put in it, an old one. */
          bool dupe;
          uint8_t *buffer;
+         /* Where the frame starts inside buffer: 0 for a copied frame,
+          * and for a lent frame whatever the core pushed, which may sit
+          * past the start (a core that crops by pointer offset). */
+         size_t   offset;
          unsigned dims;
          unsigned pitch;
          char msg[NAME_MAX_LENGTH];
+#ifdef HAVE_OZONE
+         char menu_ozone_color_theme[32];
+#endif
 #ifdef HAVE_GFX_WIDGETS
          /* The on-screen panels' text for the widgets, which this
           * thread draws; zero length leaves what they show */
@@ -627,7 +657,7 @@ typedef struct thread_video
           * thread's buffer will not hold by the time this thread draws:
           * video_info.stat_text points here. Only copied when there is
           * text, so a frame without the overlay carries none. */
-         char stat_text[1024];
+         char stat_text[VIDEO_STAT_TEXT_SIZE];
       } slot[2];
       /* Slot the video thread claims next. Claiming flips it. */
       unsigned tail;
@@ -637,9 +667,10 @@ typedef struct thread_video
        * set, the slot being rendered is tail ^ 1. */
       bool busy;
       /* Zero-copy: the slot handed to the core through
-       * get_current_software_framebuffer, -1 for none. Held free until
-       * the core pushes a frame: a push whose data is that slot's
-       * buffer publishes it without a copy; any other push clears the
+       * get_current_software_framebuffer, VIDEO_THREAD_LEND_SPARE for
+       * the spare, -1 for none. A lent slot is held free until the core
+       * pushes a frame: a push whose data is inside the lent buffer
+       * publishes it without a copy; any other push clears the
        * reservation first. Guarded by 'lock'. */
       int lent;
       /* Hardware-rendered cores. The core's sync index space is this
@@ -653,6 +684,10 @@ typedef struct thread_video
    } frame;
 
    bool apply_state_changes;
+   /* Video thread only: the driver was handed a page since the last
+    * apply, so it holds none of alpha_applied - the next apply sets
+    * every image. */
+   bool alpha_reset;
 
    /* Textures the frontend has released since the last frame was handed
     * over, waiting for one to carry them to the video thread. Held
@@ -684,21 +719,18 @@ typedef struct thread_video
    } waiter_call;
 
    /* Published by the video thread after each frame and read by the
-    * main thread, every frame, without 'lock': each is a flag of its
-    * own. presentable is the context's answer to "have you anything to
-    * present to"; the context data belongs to the video thread, and
+    * main thread, every frame, without 'lock': the window's four
+    * answers in one word of VIDEO_THREAD_WIN_* bits, one store for all
+    * of them. PRESENTABLE is the context's answer to "have you anything
+    * to present to"; the context data belongs to the video thread, and
     * asking it directly from the runloop would read a swapchain handle
     * while this thread rebuilds it. */
-   retro_atomic_int_t alive;
+   retro_atomic_int_t win_flags;
    /* The worker still takes commands: set before it starts, cleared as
     * it handles CMD_FREE. Not 'alive', which is the driver's answer for
     * the window and goes false - on a close or a quit signal - while the
     * worker still runs and holds the context */
    retro_atomic_int_t worker_running;
-   retro_atomic_int_t focus;
-   retro_atomic_int_t presentable;
-   retro_atomic_int_t suppress_screensaver;
-   retro_atomic_int_t has_windowed;
 
    /* The flags above are published by the video thread every frame;
     * the two below, and the ring's head after them, are the main
@@ -746,6 +778,15 @@ typedef struct thread_video
  *
  * Returns: true (1) if successful, otherwise false (0).
  **/
+/**
+ * video_thread_set_prefer_fast_cores:
+ *
+ * Asks that the video thread, once spawned by video_init_thread(), be
+ * placed on the fast cores of a mixed-core processor (see
+ * sthread_prefer_fast_cores). Off by default.
+ */
+void video_thread_set_prefer_fast_cores(bool prefer);
+
 bool video_init_thread(
       const video_driver_t **out_driver, void **out_data,
       input_driver_t **input, void **input_data,
@@ -867,7 +908,7 @@ void video_thread_wait_idle(void);
  * when the driver has no recording reader, for the caller to use
  * read_viewport(). Starts the readbacks on first use and again at a new
  * output size. Viewport changes are scaled and letterboxed by the worker. */
-int video_thread_record_take(void *data, unsigned width, unsigned height,
+int video_thread_record_take(void *data, unsigned dims,
       const uint8_t **frame);
 /* Stops the readbacks; the buffers go once no frame names them. */
 void video_thread_record_stop(void *data);

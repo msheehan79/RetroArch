@@ -272,10 +272,16 @@ gfx/common/wayland/drm-lease-v1.c
 # samples/: built harness executables and objects. Each directory's
 # test is <dir>_test; nothing built there is source.
 samples/**/*_test
+samples/**/*_test_*
 samples/audio/stretch/stretch_bench
 samples/**/*.o
 libretro-common/samples/**/*_test
+libretro-common/samples/**/*_test_*
 !libretro-common/samples/**/*_test/
+!samples/**/*_test_*.c
+!libretro-common/samples/**/*_test_*.c
+!samples/**/*_test_*.h
+!libretro-common/samples/**/*_test_*.h
 # Harness executables that are not named <dir>_test. This one had been
 # committed as a built binary, which made any make clean in that
 # directory show up as a deletion.
@@ -331,3 +337,10 @@ gfx/drivers/rsx_shaders/modern_opaque.vpo
 pkg/psl1ght/pkg/USRDIR/shaders_cg/
 !pkg/psl1ght/pkg/USRDIR/system/
 samples/audio/embedded_alsa/ealsa_abi.h
+
+# Python bytecode caches, written by tools/*.py whenever they run.
+__pycache__/
+*.pyc
+samples/audio/asio_clock/asio_clock_driver.h
+samples/gfx/integer_scale_axis/integer_scale_driver.h
+samples/gfx/integer_scale_axis/integer_scale_axis_test

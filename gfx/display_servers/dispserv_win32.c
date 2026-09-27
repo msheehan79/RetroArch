@@ -132,8 +132,7 @@ typedef struct
    win32_modeline_t ml;
 #endif
    int crt_center;
-   unsigned orig_width;
-   unsigned orig_height;
+   unsigned orig_dims;
    unsigned orig_refresh;
    uint8_t flags;
 } dispserv_win32_t;
@@ -313,12 +312,11 @@ static void win32_display_server_destroy(void *data)
    win32_display_server_modeline_close(dispserv);
 #endif
 
-   if (   dispserv->orig_width   > 0
-       && dispserv->orig_height  > 0
+   if (   VIDEO_SCALE_W(dispserv->orig_dims) > 0
+       && VIDEO_SCALE_H(dispserv->orig_dims) > 0
        && dispserv->orig_refresh > 0)
       video_display_server_set_resolution(
-            dispserv->orig_width,
-            dispserv->orig_height,
+            dispserv->orig_dims,
             dispserv->orig_refresh,
             (float)dispserv->orig_refresh,
             dispserv->crt_center, 0, 0, 0);
@@ -444,7 +442,7 @@ static bool win32_get_video_output(DEVMODE *dm, int mode)
 }
 
 static bool win32_display_server_set_resolution(void *data,
-      unsigned width, unsigned height, int int_hz, float hz, int center, int monitor_index, int xoffset, int padjust)
+      unsigned dims, int int_hz, float hz, int center, int monitor_index, int xoffset, int padjust)
 {
    MONITORINFOEX current_mon;
    HMONITOR hm_to_use         = NULL;
@@ -463,21 +461,21 @@ static bool win32_display_server_set_resolution(void *data,
 
    win32_get_video_output(&dm, -1);
 
-   if (serv->orig_width == 0)
-      serv->orig_width   = GetSystemMetrics(SM_CXSCREEN);
-   if (serv->orig_height == 0)
-      serv->orig_height  = GetSystemMetrics(SM_CYSCREEN);
+   if (!VIDEO_SCALE_W(serv->orig_dims))
+      VIDEO_SCALE_PUT_W(serv->orig_dims, GetSystemMetrics(SM_CXSCREEN));
+   if (!VIDEO_SCALE_H(serv->orig_dims))
+      VIDEO_SCALE_PUT_H(serv->orig_dims, GetSystemMetrics(SM_CYSCREEN));
    if (serv->orig_refresh == 0)
       serv->orig_refresh = video_driver_get_refresh_rate();
 
    /* Used to stop super resolution bug */
-   if (width == dm.dmPelsWidth)
-      width = 0;
+   if (VIDEO_SCALE_W(dims) == dm.dmPelsWidth)
+      VIDEO_SCALE_PUT_W(dims, 0);
 
-   if (width == 0)
-      width = dm.dmPelsWidth;
-   if (height == 0)
-      height = dm.dmPelsHeight;
+   if (VIDEO_SCALE_W(dims) == 0)
+      VIDEO_SCALE_PUT_W(dims, dm.dmPelsWidth);
+   if (VIDEO_SCALE_H(dims) == 0)
+      VIDEO_SCALE_PUT_H(dims, dm.dmPelsHeight);
    if (curr_bpp == 0)
       curr_bpp = dm.dmBitsPerPel;
    if (int_hz == 0)
@@ -489,9 +487,9 @@ static bool win32_display_server_set_resolution(void *data,
 
    for (i = 0; win32_get_video_output(&dm, i); i++)
    {
-      if (dm.dmPelsWidth        != width)
+      if (dm.dmPelsWidth        != VIDEO_SCALE_W(dims))
          continue;
-      if (dm.dmPelsHeight       != height)
+      if (dm.dmPelsHeight       != VIDEO_SCALE_H(dims))
          continue;
       if (dm.dmBitsPerPel       != curr_bpp)
          continue;
@@ -550,13 +548,13 @@ static int resolution_list_qsort_func(
    str_a[0] = str_b[0] = '\0';
 
    snprintf(str_a, sizeof(str_a), "%04dx%04d (%d Hz)",
-         a->width,
-         a->height,
+         VIDEO_SCALE_W(a->dims),
+         VIDEO_SCALE_H(a->dims),
          a->refreshrate);
 
    snprintf(str_b, sizeof(str_b), "%04dx%04d (%d Hz)",
-         b->width,
-         b->height,
+         VIDEO_SCALE_W(b->dims),
+         VIDEO_SCALE_H(b->dims),
          b->refreshrate);
 
    return strcasecmp(str_a, str_b);
@@ -569,8 +567,7 @@ static void *win32_display_server_get_resolution_list(
    unsigned i                 = 0;
    unsigned count             = 0;
    unsigned capacity          = 64;
-   unsigned curr_width        = 0;
-   unsigned curr_height       = 0;
+   unsigned curr_dims         = 0;
    unsigned curr_bpp          = 0;
    unsigned curr_refreshrate  = 0;
 #if _WIN32_WINNT >= 0x0500
@@ -581,8 +578,7 @@ static void *win32_display_server_get_resolution_list(
 
    if (win32_get_video_output(&dm, -1))
    {
-      curr_width        = dm.dmPelsWidth;
-      curr_height       = dm.dmPelsHeight;
+      curr_dims       = VIDEO_SCALE_PACK(dm.dmPelsWidth, dm.dmPelsHeight);
       curr_bpp          = dm.dmBitsPerPel;
       curr_refreshrate  = dm.dmDisplayFrequency;
 #if _WIN32_WINNT >= 0x0500
@@ -628,8 +624,7 @@ static void *win32_display_server_get_resolution_list(
          conf = tmp;
       }
 
-      conf[count].width            = dm.dmPelsWidth;
-      conf[count].height           = dm.dmPelsHeight;
+      conf[count].dims = VIDEO_SCALE_PACK(dm.dmPelsWidth, dm.dmPelsHeight);
       conf[count].bpp              = dm.dmBitsPerPel;
       conf[count].refreshrate      = dm.dmDisplayFrequency;
       /* It may be possible to get exact refresh rate via different API - for now, it is integer only */
@@ -643,8 +638,7 @@ static void *win32_display_server_get_resolution_list(
 #endif
       conf[count].dblscan          = false; /* no flag for doublescan on this platform */
 
-      if (   (conf[count].width       == curr_width)
-          && (conf[count].height      == curr_height)
+      if (   (conf[count].dims == curr_dims)
           && (conf[count].bpp         == curr_bpp)
           && (conf[count].refreshrate == curr_refreshrate)
           && (conf[count].interlaced  == curr_interlaced)
@@ -790,7 +784,8 @@ static float win32_display_server_get_refresh_rate(void *data)
             GetProcAddress(user32, "GetDisplayConfigBufferSizes");
    }
 #else
-   static QUERYDISPLAYCONFIG          pQueryDisplayConfig          = QueryDisplayConfig;
+   static QUERYDISPLAYCONFIG          pQueryDisplayConfig          =
+      (QUERYDISPLAYCONFIG)QueryDisplayConfig;
    static GETDISPLAYCONFIGBUFFERSIZES pGetDisplayConfigBufferSizes = GetDisplayConfigBufferSizes;
 #endif
 
@@ -838,13 +833,12 @@ static float win32_display_server_get_refresh_rate(void *data)
 }
 
 static void win32_display_server_get_video_output_size(void *data,
-      unsigned *width, unsigned *height, char *s, size_t len)
+      unsigned *dims, char *s, size_t len)
 {
    DEVMODE dm;
    if (win32_get_video_output(&dm, -1))
    {
-      *width  = dm.dmPelsWidth;
-      *height = dm.dmPelsHeight;
+      *dims = VIDEO_SCALE_PACK(dm.dmPelsWidth, dm.dmPelsHeight);
    }
 }
 
@@ -857,19 +851,16 @@ static void win32_display_server_get_video_output_prev(void *data)
    DEVMODE dm;
    DEVMODE prev_dm;
    bool have_prev        = false;
-   unsigned curr_width   = 0;
-   unsigned curr_height  = 0;
+   unsigned curr_dims    = 0;
 
    if (win32_get_video_output(&dm, -1))
    {
-      curr_width  = dm.dmPelsWidth;
-      curr_height = dm.dmPelsHeight;
+      curr_dims = VIDEO_SCALE_PACK(dm.dmPelsWidth, dm.dmPelsHeight);
    }
 
    for (i = 0; win32_get_video_output(&dm, i); i++)
    {
-      if (   dm.dmPelsWidth  == curr_width
-          && dm.dmPelsHeight == curr_height)
+      if (   VIDEO_SCALE_PACK(dm.dmPelsWidth, dm.dmPelsHeight) == curr_dims)
       {
          if (have_prev)
             break;
@@ -897,21 +888,18 @@ static void win32_display_server_get_video_output_next(void *data)
    int i;
    DEVMODE dm;
    bool found           = false;
-   unsigned curr_width  = 0;
-   unsigned curr_height = 0;
+   unsigned curr_dims   = 0;
 
    if (win32_get_video_output(&dm, -1))
    {
-      curr_width  = dm.dmPelsWidth;
-      curr_height = dm.dmPelsHeight;
+      curr_dims = VIDEO_SCALE_PACK(dm.dmPelsWidth, dm.dmPelsHeight);
    }
 
    for (i = 0; win32_get_video_output(&dm, i); i++)
    {
       if (found)
       {
-         if (   dm.dmPelsWidth  != curr_width
-             || dm.dmPelsHeight != curr_height)
+         if (   VIDEO_SCALE_PACK(dm.dmPelsWidth, dm.dmPelsHeight) != curr_dims)
          {
             win32_monitor_info(&current_mon, &hm_to_use, &mon_id);
             win32_change_display_settings(
@@ -920,8 +908,7 @@ static void win32_display_server_get_video_output_next(void *data)
          }
       }
 
-      if (   dm.dmPelsWidth  == curr_width
-          && dm.dmPelsHeight == curr_height)
+      if (   VIDEO_SCALE_PACK(dm.dmPelsWidth, dm.dmPelsHeight) == curr_dims)
          found = true;
    }
 }
@@ -1030,8 +1017,7 @@ static BOOL CALLBACK win32_modeline_output_enum(HMONITOR h_monitor,
    o->id      = e->n;
    o->x       = info.rcMonitor.left;
    o->y       = info.rcMonitor.top;
-   o->width   = info.rcMonitor.right - info.rcMonitor.left;
-   o->height  = info.rcMonitor.bottom - info.rcMonitor.top;
+   o->dims = VIDEO_SCALE_PACK(info.rcMonitor.right - info.rcMonitor.left, info.rcMonitor.bottom - info.rcMonitor.top);
    o->primary = (info.dwFlags & MONITORINFOF_PRIMARY) ? true : false;
    strlcpy(o->name, info.szDevice, sizeof(o->name));
    e->n++;
@@ -1236,12 +1222,10 @@ static int win32_display_server_modeline_enum(void *data,
       return -1;
 
    memset(&desktop, 0, sizeof(desktop));
-   desktop.width     = (ml->devmode.dmDisplayOrientation == DMDO_DEFAULT
+   desktop.dims      = (ml->devmode.dmDisplayOrientation == DMDO_DEFAULT
          || ml->devmode.dmDisplayOrientation == DMDO_180)
-      ? ml->devmode.dmPelsWidth : ml->devmode.dmPelsHeight;
-   desktop.height    = (ml->devmode.dmDisplayOrientation == DMDO_DEFAULT
-         || ml->devmode.dmDisplayOrientation == DMDO_180)
-      ? ml->devmode.dmPelsHeight : ml->devmode.dmPelsWidth;
+      ? VIDEO_SCALE_PACK(ml->devmode.dmPelsWidth, ml->devmode.dmPelsHeight)
+      : VIDEO_SCALE_PACK(ml->devmode.dmPelsHeight, ml->devmode.dmPelsWidth);
    desktop.refresh   = ml->devmode.dmDisplayFrequency;
    desktop.interlace = (ml->devmode.dmDisplayFlags & DM_INTERLACED) ? 1 : 0;
 
@@ -1261,22 +1245,20 @@ static int win32_display_server_modeline_enum(void *data,
 
       memset(&m, 0, sizeof(m));
       m.interlace = (dm.dmDisplayFlags & DM_INTERLACED) ? 1 : 0;
-      m.width     = (dm.dmDisplayOrientation == DMDO_DEFAULT
+      m.dims      = (dm.dmDisplayOrientation == DMDO_DEFAULT
             || dm.dmDisplayOrientation == DMDO_180)
-         ? dm.dmPelsWidth : dm.dmPelsHeight;
-      m.height    = (dm.dmDisplayOrientation == DMDO_DEFAULT
-            || dm.dmDisplayOrientation == DMDO_180)
-         ? dm.dmPelsHeight : dm.dmPelsWidth;
+         ? VIDEO_SCALE_PACK(dm.dmPelsWidth, dm.dmPelsHeight)
+         : VIDEO_SCALE_PACK(dm.dmPelsHeight, dm.dmPelsWidth);
       m.refresh   = dm.dmDisplayFrequency;
-      m.hactive   = m.width;
-      m.vactive   = m.height;
+      m.hactive   = (int)VIDEO_SCALE_W(m.dims);
+      m.vactive   = (int)VIDEO_SCALE_H(m.dims);
       m.vfreq     = m.refresh;
       m.type     |= (dm.dmDisplayOrientation == DMDO_90
             || dm.dmDisplayOrientation == DMDO_270) ? MODELINE_ROTATED : MODELINE_OK;
 
       for (i = 0; i < n; i++)
       {
-         if (modes[i].width == m.width && modes[i].height == m.height
+         if (modes[i].dims == m.dims
                && modes[i].refresh == m.refresh && modes[i].interlace == m.interlace)
          {
             dup = true;
@@ -1286,7 +1268,7 @@ static int win32_display_server_modeline_enum(void *data,
       if (dup)
          continue;
 
-      if (m.width == desktop.width && m.height == desktop.height
+      if (m.dims == desktop.dims
             && m.refresh == desktop.refresh && m.interlace == desktop.interlace)
          m.type |= MODELINE_DESKTOP;
 
@@ -1358,8 +1340,10 @@ static bool win32_display_server_modeline_set(void *data,
 
    memset(&dm, 0, sizeof(dm));
    dm.dmSize             = sizeof(dm);
-   dm.dmPelsWidth        = (mode->type & MODELINE_ROTATED) ? mode->height : mode->width;
-   dm.dmPelsHeight       = (mode->type & MODELINE_ROTATED) ? mode->width : mode->height;
+   dm.dmPelsWidth        = (mode->type & MODELINE_ROTATED)
+      ? VIDEO_SCALE_H(mode->dims) : VIDEO_SCALE_W(mode->dims);
+   dm.dmPelsHeight       = (mode->type & MODELINE_ROTATED)
+      ? VIDEO_SCALE_W(mode->dims) : VIDEO_SCALE_H(mode->dims);
    dm.dmDisplayFrequency = mode->refresh;
    dm.dmDisplayFlags     = mode->interlace ? DM_INTERLACED : 0;
    dm.dmFields           = DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY | DM_DISPLAYFLAGS;

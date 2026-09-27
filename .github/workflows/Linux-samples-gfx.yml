@@ -633,6 +633,79 @@ jobs:
           timeout 60 ./display_servers_test
           echo "[pass] display_servers_test"
 
+      - name: Build and run dispserv_gx_test (ASan + UBSan)
+        shell: bash
+        working-directory: samples/gfx/dispserv_gx
+        run: |
+          set -eu
+          # The GameCube/Wii display server (dispserv_gx.c and the mode
+          # rules in dispserv_gx_modes.c), linked as they ship against
+          # stubbed libogc queries, on every TV standard: the list holds
+          # only modes the standard shows, one of them current, and each
+          # entry - through the label the menu prints and the parse the
+          # menu does - selects exactly that mode, stores its config id
+          # and reports the refresh rate it listed.
+          #
+          # The menu's parse used to run strtoul() inside
+          # VIDEO_SCALE_PUT_H, whose PACK evaluates its argument twice;
+          # the second call returned 0 and every pick from the list
+          # went out as Wx0. Guard the shape as well as the behaviour.
+          if grep -nE 'VIDEO_SCALE_(PUT_[WH]|PACK)\([^;]*strto' \
+                ../../../menu/cbs/menu_cbs_ok.c; then
+             echo "::error::strtoul inside a VIDEO_SCALE macro runs twice"
+             exit 1
+          fi
+          make clean all SANITIZER=address,undefined
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
+             timeout 60 ./dispserv_gx_test
+          make clean
+
+      - name: Build and run dispserv_ps3_test (ASan + UBSan)
+        shell: bash
+        working-directory: samples/gfx/dispserv_ps3
+        run: |
+          set -eu
+          # The PS3 display server (dispserv_ps3.c and the mode rules in
+          # dispserv_ps3_modes.c), linked as they ship against stubbed
+          # PSL1GHT video output queries, for displays taking different
+          # sets of modes with the system menu in each: the list holds
+          # exactly what the display takes with the mode in use marked,
+          # each entry - through the menu's label and parse - selects
+          # that mode and reinitialises the driver once, and
+          # ps3_display_server_resolution(), which the RSX driver
+          # configures the output from, follows the choice (before, the
+          # RSX driver ignored the setting and kept the system menu's
+          # mode) and falls back to the system mode when the display
+          # does not take it.
+          make clean all SANITIZER=address,undefined
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
+             timeout 60 ./dispserv_ps3_test
+          make clean
+
+      - name: X11 window poll sends no requests (Xvfb, ASan + UBSan)
+        shell: bash
+        run: |
+          set -eu
+          # x11_check_window() and x11_has_focus() run every frame; a
+          # reply-bearing request there waits behind whatever else is
+          # queued on the connection (a software Vulkan WSI's whole
+          # PutImage frame). Focus comes from FocusIn/FocusOut, so the
+          # X contexts must select FocusChangeMask.
+          for f in x_ctx.c x_vk_ctx.c xegl_ctx.c; do
+             grep -q FocusChangeMask gfx/drivers_context/$f \
+                || { echo "::error::$f does not select FocusChangeMask"; exit 1; }
+          done
+          sudo apt-get install -y -qq xvfb > /dev/null
+          Xvfb :97 -screen 0 1024x768x24 > /tmp/xvfb97.log 2>&1 &
+          XVFB_PID=$!
+          sleep 1
+          (cd samples/gfx/x11_frame_poll \
+             && make clean all SANITIZER=address,undefined \
+             && DISPLAY=:97 ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1 \
+                timeout 60 ./x11_frame_poll_test)
+          kill $XVFB_PID
+          echo "[pass] x11_frame_poll_test"
+
       - name: Live mode switching on an Xorg dummy server (X11 + SDL)
         shell: bash
         run: |
@@ -645,7 +718,10 @@ jobs:
           # cannot stand in).  The X11 sample runs the modeline engine
           # end to end - generate a 15 kHz timing, put it on the wire
           # through dispserv_x11, read the crtc back and compare every
-          # field, switch again, restore - and the SDL sample switches
+          # field, switch again, restore - then the Screen Resolution
+          # callbacks: the listed modes, a smaller, a larger and a
+          # rate-only switch with the framebuffer following, an
+          # unlisted size refused, and back.  The SDL sample switches
           # a real SDL2 window among the listed modes through
           # dispserv_sdl2 (and dispserv_sdl3 on an SDL3 build), for the
           # modeline path and the menu picker.
@@ -670,6 +746,18 @@ jobs:
              && ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1 \
                 timeout 120 ./display_servers_x11_live_test)
           echo "[pass] display_servers_x11_live_test"
+          # The refresh rate a core polls every frame: answered from
+          # memory once the X event pump drains the connection, with no
+          # request to the server, and changed by the next pump after
+          # another client switches the mode - under a reader on a
+          # second thread, once under ASan+UBSan and once under TSan.
+          (cd samples/gfx/x11_refresh_rate \
+             && make clean all SANITIZER=address,undefined \
+             && ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
+                timeout 120 ./x11_refresh_rate_test \
+             && make clean all SANITIZER=thread \
+             && TSAN_OPTIONS=halt_on_error=1 timeout 120 ./x11_refresh_rate_test)
+          echo "[pass] x11_refresh_rate_test"
           (cd samples/gfx/display_servers_sdl2_live \
              && make clean all SANITIZER=address,undefined \
              && ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1 \
@@ -726,6 +814,36 @@ jobs:
           fi
           pkill openbox || true
           sudo kill "$XORG_PID" || true
+
+      - name: Screen Resolution through Mutter's DisplayConfig (ASan + UBSan)
+        shell: bash
+        run: |
+          set -eu
+          # Under GNOME's Wayland session the X11 driver runs on
+          # XWayland, which lists every mode at the desktop's current
+          # rate and only scales the window when "switched", and the
+          # Wayland driver had no resolution list at all; Mutter's
+          # org.gnome.Mutter.DisplayConfig D-Bus interface is the only
+          # way to the monitor's real modes.  mock_mutter.py carries
+          # Mutter's signatures and its ApplyMonitorsConfig checks; the
+          # test drives gfx/common/mutter_displayconfig.c directly and
+          # through dispserv_x11 (real Xorg dummy server, and Xwayland
+          # under a headless Weston) and dispserv_wl, with and without
+          # Mutter on the bus.  Without it every path must behave
+          # exactly as before: no session bus, a bus without Mutter, a
+          # real X server (Mutter is never asked), XWayland's own list,
+          # and no Wayland resolution list.  Last, a real headless Mutter
+          # and its XWayland: Mutter names XWayland's outputs after its
+          # connectors (DP-1, Meta-0), so only the XWAYLAND extension
+          # says what the server is.
+          sudo apt-get install -y -qq libdbus-1-dev dbus python3-dbus \
+             python3-gi weston xwayland mutter > /dev/null
+          (cd samples/gfx/mutter_displayconfig \
+             && make clean all SANITIZER=address,undefined \
+             && ASAN_OPTIONS=detect_leaks=1 \
+                UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
+                XORG="sudo Xorg" timeout 300 ./run.sh)
+          echo "[pass] mutter_displayconfig_test"
 
       - name: D3D11 hardware ring under threaded video (mingw + Wine, headless)
         shell: bash
@@ -807,6 +925,73 @@ jobs:
           timeout 60 ./display_servers_kms_test
           echo "[pass] display_servers_kms_test"
 
+      - name: Build and run drm_hdr_test (ASan + UBSan)
+        shell: bash
+        working-directory: samples/gfx/drm_hdr
+        run: |
+          set -eu
+          # gfx/common/drm_hdr.c: which EDIDs take HDR10 and what they
+          # declare, malformed ones refused without an overread, and the
+          # HDR_OUTPUT_METADATA blob, whose layout must be the kernel's.
+          make clean all SANITIZER=address,undefined
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
+             timeout 60 ./drm_hdr_test
+          echo "[pass] drm_hdr_test"
+
+      - name: Build and run wayland_wlr_output_test (ASan + UBSan)
+        shell: bash
+        working-directory: samples/gfx/wayland_wlr_output
+        run: |
+          set -eu
+          # gfx/common/wayland_wlr_output.c, the Wayland display server's
+          # resolution list and mode switch on wlroots compositors, against
+          # an in-process compositor that checks every configuration names
+          # each head exactly once, as the protocol requires.
+          make clean all SANITIZER=address,undefined
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
+             timeout 60 ./wayland_wlr_output_test
+          echo "[pass] wayland_wlr_output_test"
+
+      - name: Build and run video_mode_select_test (ASan + UBSan)
+        shell: bash
+        working-directory: samples/gfx/video_mode_select
+        run: |
+          set -eu
+          # gfx/common/video_mode_select.c: which listed mode a size and
+          # rate name, and the order a resolution list is shown in - the
+          # code every display server's mode switch goes through.
+          make clean all SANITIZER=address,undefined
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
+             timeout 60 ./video_mode_select_test
+          echo "[pass] video_mode_select_test"
+
+      - name: Build and run wayland_kwin_output_test (ASan + UBSan)
+        shell: bash
+        working-directory: samples/gfx/wayland_kwin_output
+        run: |
+          set -eu
+          # gfx/common/wayland_kwin_output.c, the Wayland display server's
+          # resolution list and mode switch on KWin, against an in-process
+          # compositor speaking KWin's output protocols in both the
+          # registry form and the older per-output globals.
+          make clean all SANITIZER=address,undefined
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
+             timeout 60 ./wayland_kwin_output_test
+          echo "[pass] wayland_kwin_output_test"
+
+      - name: Build and run wayland_color_management_test (ASan + UBSan)
+        shell: bash
+        working-directory: samples/gfx/wayland_color_management
+        run: |
+          set -eu
+          # gfx/common/wayland_color.c, which tags an HDR GL surface as
+          # Windows-scRGB, against an in-process compositor that records
+          # every fatal wp_color_manager_v1 rule the client could break.
+          make clean all SANITIZER=address,undefined
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
+             timeout 60 ./wayland_color_management_test
+          echo "[pass] wayland_color_management_test"
+
       - name: Build and run wayland_drm_lease_test (ASan + UBSan)
         shell: bash
         working-directory: samples/gfx/wayland_drm_lease
@@ -848,6 +1033,25 @@ jobs:
           test -x modeline_edid_parse_test
           ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1 \
              timeout 60 ./modeline_edid_parse_test
+
+      - name: Build and run integer_scale_axis_test (ASan + UBSan)
+        shell: bash
+        working-directory: samples/gfx/integer_scale_axis
+        run: |
+          set -eu
+          # video_viewport_get_scaled_integer(), pulled out of
+          # gfx/video_driver.c by extract_integer.awk, swept over
+          # viewport sizes, frame sizes, every axis mode that touches
+          # X and every scaling mode. Y+X has to be integer on both
+          # axes: the X axis was once multiplied from the
+          # aspect-corrected width (256x224 at 64:49 is 293), giving
+          # 1172x896 at 1080p - a 4.58x horizontal scale and uneven
+          # pixel columns - on every video driver.
+          make clean all SANITIZER=address,undefined
+          test -x integer_scale_axis_test
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1 \
+             timeout 60 ./integer_scale_axis_test
+          make clean
 
       - name: Build and run font_lifecycle_test (ASan + UBSan)
         shell: bash
@@ -1134,8 +1338,27 @@ jobs:
              ./preview_blit_bands_test fixtures/vp9_tiles.webm
              ./preview_blit_bands_test fixtures/hevc_wpp.mp4
              ./preview_blit_bands_test fixtures/bframes_hevc.mp4
+             ./preview_blit_bands_test fixtures/hevc_nowpp.mp4 fixtures/mbaff_h264.mp4
              RH265_PUBLISH_DELAY=200 ./preview_blit_bands_test fixtures/hevc_wpp.mp4 fixtures/bframes_hevc.mp4 fixtures/hevc_nowpp.mp4'
           echo "[pass] preview_blit_bands_test (ASan)"
+          # Catching up: behind the clock the stream drops only what
+          # nothing references, and every picture still shown is the
+          # full decode's; the threaded build does the same with four
+          # pictures in flight, the drops taken at submit.
+          test -x preview_catchup_test && test -x preview_catchup_test_threaded
+          ASAN_OPTIONS=detect_leaks=1:allocator_may_return_null=1 \
+          UBSAN_OPTIONS=print_stacktrace=1 timeout 300 bash -c '
+             ./preview_catchup_test fixtures/bframes_h264.mp4 fixtures/bframes_hevc.mp4
+             ./preview_catchup_test_threaded fixtures/bframes_h264.mp4 fixtures/bframes_hevc.mp4'
+          echo "[pass] preview_catchup_test (ASan, one picture at a time and four in flight)"
+          # The audio chain against ffmpeg: the track's rate exact, the
+          # resampled one within a fraction of a percent, from the first
+          # half second.
+          test -x preview_audio_oracle_test
+          ASAN_OPTIONS=detect_leaks=1:allocator_may_return_null=1 \
+          UBSAN_OPTIONS=print_stacktrace=1 timeout 300 \
+             ./preview_audio_oracle_test fixtures/trailing_small.mp4 fixtures/trailing_large.mp4
+          echo "[pass] preview_audio_oracle_test (ASan)"
           # clean keeps fixtures/ by design; regenerate anyway so the
           # step cannot silently run against an empty glob.
           make clean all SANITIZER=thread
@@ -1156,8 +1379,12 @@ jobs:
              ./preview_blit_bands_test fixtures/vp9_tiles.webm
              ./preview_blit_bands_test fixtures/hevc_wpp.mp4
              ./preview_blit_bands_test fixtures/bframes_hevc.mp4
+             ./preview_blit_bands_test fixtures/hevc_nowpp.mp4 fixtures/mbaff_h264.mp4
              RH265_PUBLISH_DELAY=200 ./preview_blit_bands_test fixtures/hevc_wpp.mp4 fixtures/bframes_hevc.mp4 fixtures/hevc_nowpp.mp4'
           echo "[pass] preview_blit_bands_test (TSan)"
+          TSAN_OPTIONS=halt_on_error=1:allocator_may_return_null=1 timeout 300 bash -c '
+             ./preview_catchup_test_threaded fixtures/bframes_h264.mp4 fixtures/bframes_hevc.mp4'
+          echo "[pass] preview_catchup_test_threaded (TSan)"
           TSAN_OPTIONS=halt_on_error=1 timeout 600 bash -c '
              ./preview_audio_decode_test fixtures/trailing_large.mp4 1024 island
              ./preview_audio_decode_test fixtures/trailing_large.mp4 262144 island'

@@ -1245,8 +1245,7 @@ void font_driver_sync_impl(font_data_impl_t *font_data)
 }
 
 void font_flush(
-      unsigned video_width,
-      unsigned video_height,
+      unsigned video_dims,
       font_data_impl_t *font_data)
 {
    const font_renderer_t *renderer = font_data->font ? font_data->font->renderer : NULL;
@@ -1265,7 +1264,7 @@ void font_flush(
          p_disp->stats.v[GFX_DISPLAY_STAT_FONT_DRAWS]++;
    }
    if (renderer && renderer->flush)
-      renderer->flush(video_width, video_height, font_data->font->renderer_data);
+      renderer->flush(video_dims, font_data->font->renderer_data);
    font_data->raster_block.carr.coords.vertices = 0;
 }
 

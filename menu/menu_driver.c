@@ -393,7 +393,14 @@ static menu_file_list_cbs_t *menu_cbs_alloc(void)
       mempool_init(&menu_cbs_pool, sizeof(menu_file_list_cbs_t), 256);
       menu_cbs_pool_ready = true;
    }
-   return (menu_file_list_cbs_t*)mempool_alloc(&menu_cbs_pool);
+   {
+      menu_file_list_cbs_t *cbs =
+            (menu_file_list_cbs_t*)mempool_alloc(&menu_cbs_pool);
+      /* Pool blocks retain their previous contents. */
+      if (cbs)
+         cbs->file_extension_state = MENU_FILE_BROWSER_EXTENSION_STATE_FULL;
+      return cbs;
+   }
 }
 
 static void menu_cbs_pool_deinit(void)
@@ -424,6 +431,52 @@ static bool menu_should_pop_stack(const char *label)
          string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_CHEEVOS_DESCRIPTION)))
       return true;
    return false;
+}
+
+/**
+ * menu_file_browser_stem_length:
+ *
+ * Length of @path up to (not including) the dot that starts its
+ * extension, or strlen(@path) when there is no extension.  A sole
+ * leading dot in the basename (".gitignore") is part of the name.
+ **/
+size_t menu_file_browser_stem_length(const char *path)
+{
+   const char *name = path_basename(path);
+   const char *ext  = path_get_extension(path);
+
+   return (*ext && ext > name + 1)
+         ? (size_t)(ext - path - 1) : strlen(path);
+}
+
+/* Rewrites the drawn label only; the entry path is left alone. */
+static void menu_file_browser_format_display_name(const char *path,
+      uint8_t state, char *s, size_t len)
+{
+   size_t _len;
+   size_t stem_len;
+
+   if (   !path || !*path || !len
+       || state == MENU_FILE_BROWSER_EXTENSION_STATE_FULL)
+      return;
+
+   stem_len = menu_file_browser_stem_length(path);
+   _len     = (stem_len < len) ? stem_len : len - 1;
+   strlcpy(s, path, _len + 1);
+
+   if (state != MENU_FILE_BROWSER_EXTENSION_STATE_HINT)
+      return;
+
+   _len += strlcpy(s + _len, " (", len - _len);
+   if (_len >= len)
+      return;
+   _len += strlcpy(s + _len, path[stem_len]
+         ? path + stem_len + 1
+         : msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NO_EXTENSION),
+         len - _len);
+   if (_len >= len)
+      return;
+   strlcpy(s + _len, ")", len - _len);
 }
 
 void menu_entry_get(menu_entry_t *entry, size_t stack_idx,
@@ -495,6 +548,10 @@ void menu_entry_get(menu_entry_t *entry, size_t stack_idx,
                entry->type, (unsigned)i,
                label, path,
                entry->rich_label,
+               sizeof(entry->rich_label));
+
+         menu_file_browser_format_display_name(path,
+               cbs->file_extension_state, entry->rich_label,
                sizeof(entry->rich_label));
 
          if (!path_enabled && !*entry->rich_label)
@@ -1248,11 +1305,9 @@ static void menu_input_pointer_close_messagebox(struct menu_state *menu_st)
 static float menu_input_get_dpi(
       menu_handle_t *menu,
       gfx_display_t *p_disp,
-      unsigned video_width,
-      unsigned video_height)
+      unsigned video_dims)
 {
-   static unsigned last_video_width  = 0;
-   static unsigned last_video_height = 0;
+   static unsigned last_video_dims   = 0;
    static float dpi                  = 0.0f;
    static bool dpi_cached            = false;
 
@@ -1261,8 +1316,7 @@ static float menu_input_get_dpi(
     * overheads we therefore only call video_context_driver_get_metrics()
     * on first run, or when the current video resolution changes */
    if (   (!dpi_cached)
-       || (video_width  != last_video_width)
-       || (video_height != last_video_height))
+       || (video_dims != last_video_dims))
    {
       gfx_ctx_metrics_t mets;
       /* Note: If video_context_driver_get_metrics() fails,
@@ -1279,8 +1333,7 @@ static float menu_input_get_dpi(
 #endif
 
       dpi_cached        = true;
-      last_video_width  = video_width;
-      last_video_height = video_height;
+      last_video_dims   = video_dims;
    }
 
    /* RGUI uses a framebuffer texture, which means we
@@ -1305,7 +1358,7 @@ static float menu_input_get_dpi(
           *   '1 inch' squares to get number of menu space pixels
           *   per inch
           * This is crude, but should be sufficient... */
-         return ((float)fb_height / (float)video_height) * dpi;
+         return ((float)fb_height / (float)VIDEO_SCALE_H(video_dims)) * dpi;
       }
    }
 
@@ -2104,14 +2157,14 @@ MENU_NOINLINE static void menu_input_get_mouse_hw_state(
       video_driver_get_viewport_info(&vp);
 
       /* Adjust X position */
-      hw_state->x                  = (int16_t)(((float)(hw_state->x - vp.x) / (float)vp.width) * (float)fb_width);
+      hw_state->x                  = (int16_t)(((float)(hw_state->x - VIDEO_POS_X(vp.pos)) / (float)VIDEO_SCALE_W(vp.dims)) * (float)fb_width);
       if (hw_state->x < 0)
          hw_state->x               = 0;
       else if (hw_state->x >= (int)fb_width)
          hw_state->x               = (fb_width -1);
 
       /* Adjust Y position */
-      hw_state->y                  = (int16_t)(((float)(hw_state->y - vp.y) / (float)vp.height) * (float)fb_height);
+      hw_state->y                  = (int16_t)(((float)(hw_state->y - VIDEO_POS_Y(vp.pos)) / (float)VIDEO_SCALE_H(vp.dims)) * (float)fb_height);
       if (hw_state->y <  0)
          hw_state->y               = 0;
       else if (hw_state->y >= (int)fb_height)
@@ -5384,9 +5437,16 @@ unsigned menu_event(
    unsigned menu_scroll_delay                      = settings->uints.menu_scroll_delay;
 #ifdef HAVE_OVERLAY
    bool input_overlay_enable                       = settings->bools.input_overlay_enable;
+   /* An overlay takes the menu's pointer only if it can use it: its
+    * page has a desc that does something when pressed, or its own
+    * pointer (mouse/lightgun) mode is on. A page of "nul" buttons (an
+    * LED or decoration overlay) leaves the mouse to the menu. */
    bool overlay_active                             = input_overlay_enable
          && (input_st->overlay_ptr)
-         && (input_st->overlay_ptr->flags & INPUT_OVERLAY_ALIVE);
+         && (input_st->overlay_ptr->flags & INPUT_OVERLAY_ALIVE)
+         && (input_st->overlay_ptr->active)
+         && (   (input_st->overlay_ptr->active->flags & OVERLAY_TAKES_INPUT)
+             || settings->bools.input_overlay_pointer_enable);
 #else
    bool input_overlay_enable                       = false;
    bool overlay_active                             = false;
@@ -6081,9 +6141,7 @@ MENU_NOINLINE static int menu_input_post_iterate(
    menu_file_list_cbs_t *cbs                       = selection_buf && selection_buf->size
       ? (menu_file_list_cbs_t*)selection_buf->list[selection].actiondata
       : NULL;
-   unsigned output_size                            = VIDEO_DRIVER_OUTPUT_SIZE(video_st);
-   unsigned output_width                           = VIDEO_DRIVER_OUTPUT_WIDTH(output_size);
-   unsigned output_height                          = VIDEO_DRIVER_OUTPUT_HEIGHT(output_size);
+   unsigned output_size                            = VIDEO_DRIVER_OUTPUT_DIMS(video_st);
 
    MENU_ENTRY_INITIALIZE(entry);
    entry.flags |= MENU_ENTRY_FLAG_PATH_ENABLED
@@ -6175,7 +6233,7 @@ MENU_NOINLINE static int menu_input_post_iterate(
             /* Pointer is being held down
              * (i.e. for more than one frame) */
             float dpi = menu ? menu_input_get_dpi(menu, p_disp,
-                  output_width, output_height) : 0.0f;
+                  output_size) : 0.0f;
 
             /* > Update deltas + acceleration & detect press direction
              *   Note: We only do this if the pointer has moved above
@@ -6413,7 +6471,7 @@ MENU_NOINLINE static int menu_input_post_iterate(
                if (     menu_st->driver_ctx
                      && menu_st->driver_ctx->osk_pointer_over_textbox
                      && menu_st->driver_ctx->osk_pointer_over_textbox(
-                        menu_st->userdata, x, y, output_width, output_height))
+                        menu_st->userdata, x, y, output_size))
                   input_st->osk_textbox_focus = true;
                else
                {
@@ -6474,7 +6532,7 @@ MENU_NOINLINE static int menu_input_post_iterate(
             {
                /* Pointer has moved - check if this is a swipe */
                float dpi = menu ? menu_input_get_dpi(menu, p_disp,
-                     output_width, output_height) : 0.0f;
+                     output_size) : 0.0f;
 
                if (     (dpi > 0.0f)
                      && (menu_input->pointer.press_duration <
@@ -7245,10 +7303,8 @@ bool menu_driver_ctl(enum rarch_menu_ctl_state state, void *data)
          break;
       case RARCH_MENU_CTL_OSK_PTR_AT_POS:
          {
-            unsigned output_size      = VIDEO_DRIVER_OUTPUT_SIZE(
+            unsigned output_size      = VIDEO_DRIVER_OUTPUT_DIMS(
                   video_state_get_ptr());
-            unsigned width            = VIDEO_DRIVER_OUTPUT_WIDTH(output_size);
-            unsigned height           = VIDEO_DRIVER_OUTPUT_HEIGHT(output_size);
             menu_ctx_pointer_t *point = (menu_ctx_pointer_t*)data;
             if (!menu_st->driver_ctx || !menu_st->driver_ctx->osk_ptr_at_pos)
             {
@@ -7257,7 +7313,7 @@ bool menu_driver_ctl(enum rarch_menu_ctl_state state, void *data)
             }
             point->retcode = menu_st->driver_ctx->osk_ptr_at_pos(
                   menu_st->userdata,
-                  point->x, point->y, width, height);
+                  point->x, point->y, output_size);
          }
          break;
       case MENU_NAVIGATION_CTL_CLEAR:

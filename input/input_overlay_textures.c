@@ -135,11 +135,15 @@ static bool input_overlay_submit_textures(input_overlay_t *ol)
        * and a surface with a submit in flight refuses every slot, so
        * a second one could never be reached - it would be a frame's
        * worth of memory per animated image, for nothing. */
-      gfx_surface_t *s = animated
-         ? gfx_surface_new(ol->images[i]->width, ol->images[i]->height,
+      gfx_surface_t *s = !VIDEO_SCALE_FITS(ol->images[i]->width,
+               ol->images[i]->height)
+         ? NULL
+         : animated
+         ? gfx_surface_new(VIDEO_SCALE_PACK(ol->images[i]->width,
+               ol->images[i]->height),
                1, TEXTURE_FILTER_LINEAR, NULL, NULL)
-         : gfx_surface_new_static(ol->images[i]->width,
-            ol->images[i]->height, TEXTURE_FILTER_LINEAR);
+         : gfx_surface_new_static(VIDEO_SCALE_PACK(ol->images[i]->width,
+            ol->images[i]->height), TEXTURE_FILTER_LINEAR);
       GFX_INSTR_INC(GFX_INSTR_OVERLAY_UPLOAD);
       GFX_INSTR_ADD(GFX_INSTR_OVERLAY_PIXEL_KIB,
             (int)(((size_t)ol->images[i]->width * ol->images[i]->height
@@ -153,8 +157,7 @@ static bool input_overlay_submit_textures(input_overlay_t *ol)
           * it goes into a slot, and the stream advances from the
           * second on the tick below. */
          memcpy(s->slots[0], ol->images[i]->pixels,
-               (size_t)VIDEO_SCALE_W(s->dims)
-               * VIDEO_SCALE_H(s->dims) * sizeof(uint32_t));
+               VIDEO_SCALE_AREA(s->dims) * sizeof(uint32_t));
          if (gfx_surface_submit(s, 0, ol->images[i]->supports_rgba)
                == GFX_SURFACE_SUBMIT_FAILED)
             return false;
@@ -378,6 +381,8 @@ static void input_overlay_drop_pixels(input_overlay_t *ol)
 
 enum input_overlay_page input_overlay_load_page(input_overlay_t *ol)
 {
+   /* Whatever the driver ends up with, it is not what it held. */
+   input_overlay_alpha_forget(ol);
    if (     ol->iface->load_textures
          && !(ol->flags & INPUT_OVERLAY_TEXTURES_DECLINED)
          && input_overlay_upload_textures(ol))
@@ -421,6 +426,7 @@ bool input_overlay_promote_textures(input_overlay_t *ol)
       return false;
    if (!input_overlay_upload_textures(ol))
       return false;
+   input_overlay_alpha_forget(ol);
    if (ol->iface->load_textures(ol->iface_data,
             ol->active->textures, ol->active->load_images_size))
    {

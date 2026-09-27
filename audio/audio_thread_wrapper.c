@@ -25,6 +25,7 @@
 #include "audio_thread_wrapper.h"
 #include "audio_driver.h"
 #include "../verbosity.h"
+#include "../frontend/thread_elevation.h"
 
 /* How long a handshake between the main thread and the audio thread
  * may run before it is reported. Both are sub-millisecond on a device
@@ -94,15 +95,31 @@ static void audio_thread_loop(void *data)
    bool is_shutdown;
    audio_thread_t *thr = (audio_thread_t*)data;
 
+   if (!thr)
+      return;
+
    sthread_setname("ra-audio");
 
    /* Best effort and never fatal: a refusal leaves the default. */
    if (thr->raise_priority)
    {
-      if (sthread_raise_current_priority())
-         RARCH_LOG("[Audio] Audio thread priority raised.\n");
-      else
-         RARCH_LOG("[Audio] Audio thread priority not raised; the system refused or has no such class.\n");
+      const char *via   = NULL;
+      const char *added = NULL;
+      switch (thread_elevation_raise_current(&via, &added))
+      {
+         case THREAD_ELEVATION_GRANTED:
+            RARCH_LOG("[Audio] Audio thread priority raised.\n");
+            break;
+         case THREAD_ELEVATION_PENDING:
+            /* Finishing on a thread of its own; this one does not wait. */
+            RARCH_LOG("[Audio] Audio thread priority not raised directly; asking %s.\n", via);
+            break;
+         default:
+            RARCH_LOG("[Audio] Audio thread priority not raised; the system refused or has no such class.\n");
+            break;
+      }
+      if (added)
+         RARCH_LOG("[Audio] Audio thread runs on %s.\n", added);
    }
 
    if (thr->prefer_fast_cores)
@@ -110,9 +127,6 @@ static void audio_thread_loop(void *data)
       if (sthread_prefer_fast_cores())
          RARCH_LOG("[Audio] Audio thread placed on the performance cores.\n");
    }
-
-   if (!thr)
-      return;
 
    thr->driver_data   = thr->driver->init(
          thr->device, thr->out_rate, thr->latency,

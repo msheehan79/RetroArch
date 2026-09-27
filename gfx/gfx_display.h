@@ -114,13 +114,14 @@ typedef struct gfx_display gfx_display_t;
 
 typedef struct gfx_display_ctx_driver
 {
-   /* Draw graphics to the screen. */
+   /* Draw graphics to the screen. @video_dims carries both axes of
+    * the output size in one word, VIDEO_SCALE_PACK's layout. */
    void (*draw)(gfx_display_ctx_draw_t *draw,
-         void *data, unsigned video_width, unsigned video_height);
+         void *data, unsigned video_dims);
    /* Draw one of the menu pipeline shaders. */
    void (*draw_pipeline)(gfx_display_ctx_draw_t *draw,
          gfx_display_t *p_disp,
-         void *data, unsigned video_width, unsigned video_height);
+         void *data, unsigned video_dims);
    /* Start blending operation. */
    void (*blend_begin)(void *data);
    /* Finish blending operation. */
@@ -142,11 +143,11 @@ typedef struct gfx_display_ctx_driver
     * at a time. */
    bool handles_vertex_strip;
    /* Enables and disables scissoring */
-   void (*scissor_begin)(void *data, unsigned video_width,
-         unsigned video_height,
-         int x, int y, unsigned width, unsigned height);
-   void (*scissor_end)(void *data, unsigned video_width,
-         unsigned video_height);
+   /* @video_dims and @dims: the output size and the rect's size,
+    * each with both axes in one word, VIDEO_SCALE_PACK's layout. */
+   void (*scissor_begin)(void *data, unsigned video_dims,
+         int x, int y, unsigned dims);
+   void (*scissor_end)(void *data, unsigned video_dims);
 } gfx_display_ctx_driver_t;
 
 struct gfx_display_ctx_draw
@@ -162,9 +163,15 @@ struct gfx_display_ctx_draw
    size_t backend_data_size;
    /* Both axes in one word, VIDEO_SCALE_PACK's layout. */
    unsigned dims;
+   /* The quad's origin, one signed pair in VIDEO_POS_PACK's layout.
+    * It is bottom-up: gfx_display_draw_quad and every caller that
+    * builds its own descriptor pre-flip y, and the drivers flip it
+    * back. Whole pixels, because that is what a display has - a
+    * position that came off a scale factor or a tween rounds on its
+    * way in here, once, rather than being truncated differently by
+    * each driver on its way out. */
+   unsigned pos;
    unsigned pipeline_id;
-   float x;
-   float y;
    float rotation;
    float scale_factor;
 };
@@ -279,15 +286,16 @@ void gfx_display_init(void);
 void gfx_display_draw_cursor(
       gfx_display_t *p_disp,
       void *userdata,
-      unsigned video_width,
-      unsigned video_height,
+      unsigned video_dims,
       bool cursor_visible,
       float *color, float cursor_size, uintptr_t texture,
-      float x, float y, unsigned width, unsigned height);
+      float x, float y);
 
+/* @dims: the area the text is placed in, both axes in one word,
+ * VIDEO_SCALE_PACK's layout. */
 void gfx_display_draw_text(
       const font_data_t *font, const char *text,
-      float x, float y, int width, int height,
+      float x, float y, unsigned dims,
       uint32_t color, enum text_alignment text_align,
       float scale_factor, bool shadows_enable, float shadow_offset,
       bool draw_outside);
@@ -298,7 +306,7 @@ void gfx_display_draw_text(
  * 8-bit 'color', so supply an equivalent packed value there. */
 void gfx_display_draw_text_hp(
       const font_data_t *font, const char *text,
-      float x, float y, int width, int height,
+      float x, float y, unsigned dims,
       uint32_t color, const float *color_rgba,
       enum text_alignment text_align,
       float scale_factor, bool shadows_enable, float shadow_offset,
@@ -307,9 +315,8 @@ void gfx_display_draw_text_hp(
 void gfx_display_scissor_begin(
       gfx_display_t *p_disp,
       void *userdata,
-      unsigned video_width,
-      unsigned video_height,
-      int x, int y, unsigned width, unsigned height);
+      unsigned video_dims,
+      int x, int y, unsigned dims);
 
 bool gfx_display_init_first_driver(gfx_display_t *p_disp,
       bool video_is_threaded);
@@ -319,8 +326,7 @@ gfx_display_t *disp_get_ptr(void);
 void gfx_display_draw_keyboard(
       gfx_display_t *p_disp,
       void *userdata,
-      unsigned video_width,
-      unsigned video_height,
+      unsigned video_dims,
       uintptr_t hover_texture,
       const font_data_t *font,
       char *grid[], unsigned id,
@@ -359,26 +365,27 @@ void gfx_display_blend_end(gfx_display_ctx_driver_t *dispctx,
 
 void gfx_display_draw(gfx_display_ctx_driver_t *dispctx,
       gfx_display_ctx_draw_t *draw, void *userdata,
-      unsigned video_width, unsigned video_height);
+      unsigned video_dims);
 
 void gfx_display_draw_quad(
       gfx_display_t *p_disp,
       void *data,
-      unsigned video_width,
-      unsigned video_height,
-      int x, int y, unsigned w, unsigned h,
-      unsigned width, unsigned height,
+      unsigned video_dims,
+      int x, int y, unsigned dims,
+      unsigned ref_dims,
       float *color,
       uintptr_t *texture);
 
+/* @video_dims, @src_dims, @dst_dims and @dims: the output size, the
+ * texture's size, the size to draw it at and the area it is placed in,
+ * each with both axes in one word, VIDEO_SCALE_PACK's layout. */
 void gfx_display_draw_texture_slice(
       gfx_display_t *p_disp,
       void *userdata,
-      unsigned video_width,
-      unsigned video_height,
-      int x, int y, unsigned w, unsigned h,
-      unsigned new_w, unsigned new_h,
-      unsigned width, unsigned height,
+      unsigned video_dims,
+      int x, int y, unsigned src_dims,
+      unsigned dst_dims,
+      unsigned dims,
       float *color, unsigned offset, float scale_factor, uintptr_t texture,
       math_matrix_4x4 *mymat);
 
@@ -393,8 +400,7 @@ bool gfx_display_reset_textures_list(
       const char *iconpath,
       uintptr_t *item,
       enum texture_filter_type filter_type,
-      unsigned *width,
-      unsigned *height);
+      unsigned *dims);
 
 /* Returns the texture filter type used when uploading menu/UI
  * images (icons, thumbnails, wallpapers).  Mip-mapped filtering
@@ -409,8 +415,7 @@ enum texture_filter_type gfx_display_texture_filter_latched(void);
 
 bool gfx_display_reset_icon_texture(
       const char *texture_path,
-      uintptr_t *item, enum texture_filter_type filter_type,
-      unsigned *width, unsigned *height);
+      uintptr_t *item, enum texture_filter_type filter_type);
 
 /* Platform-adaptive icon/texture loading.
  *
@@ -438,17 +443,17 @@ bool gfx_display_reset_textures_list_buffer(
         void* buffer,
         unsigned buffer_len,
         enum image_type_enum image_type,
-        unsigned *width,
-        unsigned *height);
+        unsigned *dims);
 
 /* Returns the OSK key at a given position */
 int gfx_display_osk_ptr_at_pos(void *data, int x, int y,
-      unsigned width, unsigned height);
+      unsigned dims);
 
+/* @dims: both axes in one word, VIDEO_SCALE_PACK's layout. */
 float gfx_display_get_dpi_scale(
       gfx_display_t *p_disp,
       void *settings_data,
-      unsigned width, unsigned height,
+      unsigned dims,
       bool fullscreen,
       bool is_widget);
 

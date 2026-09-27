@@ -840,6 +840,10 @@ struct config_int_setting
    int def;
    enum rarch_override_setting override;
    uint8_t flags;
+   /* CFG_HALF_*: when set, ptr addresses a packed word and this row
+    * is one half of it. The config file keeps a key per half either
+    * way, so a file written before the pair was packed still loads. */
+   uint8_t half;
 };
 
 struct config_uint_setting
@@ -849,7 +853,55 @@ struct config_uint_setting
    unsigned def;
    enum rarch_override_setting override;
    uint8_t flags;
+   uint8_t half;   /* CFG_HALF_*, as for config_int_setting */
 };
+
+#define CFG_HALF_NONE 0
+#define CFG_HALF_HI   1
+#define CFG_HALF_LO   2
+
+/* A row's value, whole word or half of one. The signed pair rides
+ * VIDEO_POS_PACK's layout and the unsigned pair VIDEO_SCALE_PACK's,
+ * so the halves come back out through the same macros the rest of
+ * the tree reads them with. */
+static INLINE unsigned cfg_uint_get(const struct config_uint_setting *s)
+{
+   if (s->half == CFG_HALF_HI)
+      return VIDEO_SCALE_W(*s->ptr);
+   if (s->half == CFG_HALF_LO)
+      return VIDEO_SCALE_H(*s->ptr);
+   return *s->ptr;
+}
+
+static INLINE void cfg_uint_set(const struct config_uint_setting *s,
+      unsigned v)
+{
+   if (s->half == CFG_HALF_HI)
+      VIDEO_SCALE_PUT_W(*s->ptr, v);
+   else if (s->half == CFG_HALF_LO)
+      VIDEO_SCALE_PUT_H(*s->ptr, v);
+   else
+      *s->ptr = v;
+}
+
+static INLINE int cfg_int_get(const struct config_int_setting *s)
+{
+   if (s->half == CFG_HALF_HI)
+      return VIDEO_POS_X(*s->ptr);
+   if (s->half == CFG_HALF_LO)
+      return VIDEO_POS_Y(*s->ptr);
+   return *s->ptr;
+}
+
+static INLINE void cfg_int_set(const struct config_int_setting *s, int v)
+{
+   if (s->half == CFG_HALF_HI)
+      VIDEO_POS_PUT_X(*s->ptr, v);
+   else if (s->half == CFG_HALF_LO)
+      VIDEO_POS_PUT_Y(*s->ptr, v);
+   else
+      *s->ptr = v;
+}
 
 struct config_size_setting
 {
@@ -911,6 +963,20 @@ struct config_path_setting
 
 #define SETTING_UINT(key, configval, default_enable, default_setting, handle_setting) \
    GENERAL_SETTING(key, configval, default_enable, default_setting, struct config_uint_setting, handle_setting)
+
+/* A row that is one half of a packed word: 'which' is CFG_HALF_HI or
+ * CFG_HALF_LO and configval addresses the whole word. */
+#define SETTING_UINT_HALF(key, configval, which, default_enable, default_setting, handle_setting) \
+{ \
+   GENERAL_SETTING(key, configval, default_enable, default_setting, struct config_uint_setting, handle_setting) \
+   tmp[count - 1].half = (which); \
+}
+
+#define SETTING_INT_HALF(key, configval, which, default_enable, default_setting, handle_setting) \
+{ \
+   GENERAL_SETTING(key, configval, default_enable, default_setting, struct config_int_setting, handle_setting) \
+   tmp[count - 1].half = (which); \
+}
 
 #define SETTING_SIZE(key, configval, default_enable, default_setting, handle_setting) \
    GENERAL_SETTING(key, configval, default_enable, default_setting, struct config_size_setting, handle_setting)
@@ -1693,6 +1759,9 @@ static struct config_array_setting *populate_settings_array(
 
 #ifdef HAVE_MENU
    SETTING_ARRAY("menu_driver",                  settings->arrays.menu_driver, false, NULL, true);
+#ifdef HAVE_OZONE
+   SETTING_ARRAY("ozone_menu_color_theme",       settings->arrays.menu_ozone_color_theme, false, NULL, false);
+#endif
 #endif
 
    SETTING_ARRAY("record_driver",                settings->arrays.record_driver, false, NULL, true);
@@ -1713,6 +1782,7 @@ static struct config_array_setting *populate_settings_array(
 #endif
 
 #ifdef HAVE_NETWORKING
+   SETTING_ARRAY("network_cmd_bind_address",              settings->arrays.network_cmd_bind_address, false, NULL, true);
    SETTING_ARRAY("netplay_mitm_server",                   settings->arrays.netplay_mitm_server, false, NULL, true);
 #ifdef HAVE_CLOUDSYNC
    SETTING_ARRAY("webdav_url",                            settings->arrays.webdav_url, false, NULL, true);
@@ -1729,6 +1799,12 @@ static struct config_array_setting *populate_settings_array(
    SETTING_ARRAY_SENSITIVE("twitch_stream_key",           settings->arrays.twitch_stream_key, true, NULL, true);
    SETTING_ARRAY_SENSITIVE("facebook_stream_key",         settings->arrays.facebook_stream_key, true, NULL, true);
    SETTING_ARRAY_SENSITIVE("kick_stream_key",             settings->arrays.kick_stream_key, true, NULL, true);
+   SETTING_ARRAY("video_gpu_name_vulkan",                 settings->arrays.video_gpu_name_vulkan, false, NULL, true);
+   SETTING_ARRAY("video_gpu_name_gl",                     settings->arrays.video_gpu_name_gl, false, NULL, true);
+   SETTING_ARRAY("video_gpu_name_d3d10",                  settings->arrays.video_gpu_name_d3d10, false, NULL, true);
+   SETTING_ARRAY("video_gpu_name_d3d11",                  settings->arrays.video_gpu_name_d3d11, false, NULL, true);
+   SETTING_ARRAY("video_gpu_name_d3d12",                  settings->arrays.video_gpu_name_d3d12, false, NULL, true);
+   SETTING_ARRAY("video_gpu_name_metal",                  settings->arrays.video_gpu_name_metal, false, NULL, true);
    SETTING_ARRAY("discord_app_id",                        settings->arrays.discord_app_id, true, DEFAULT_DISCORD_APP_ID, true);
    SETTING_ARRAY("ai_service_url",                        settings->arrays.ai_service_url, true, DEFAULT_AI_SERVICE_URL, true);
 #endif
@@ -2045,10 +2121,11 @@ static struct config_bool_setting *populate_settings_bool(
 #endif
 #include "settings/settings_def_services_actions.h"
 #include "settings/settings_def_video_driver_actions.h"
-#include "settings/settings_def_gpu_index_vulkan.h"
-#include "settings/settings_def_gpu_index_gl.h"
+#include "settings/settings_def_gpu_index_metal.h"
 #include "settings/settings_def_gpu_index_d3d12.h"
 #include "settings/settings_def_gpu_index_d3d11.h"
+#include "settings/settings_def_gpu_index_d3d10.h"
+#include "settings/settings_def_gpu_index_egl_gl.h"
 #include "settings/settings_def_aspect_ratio.h"
 #include "settings/settings_def_viewport_size.h"
 #include "settings/settings_def_quit_visibility.h"
@@ -2754,10 +2831,11 @@ static struct config_float_setting *populate_settings_float(
 #endif
 #include "settings/settings_def_services_actions.h"
 #include "settings/settings_def_video_driver_actions.h"
-#include "settings/settings_def_gpu_index_vulkan.h"
-#include "settings/settings_def_gpu_index_gl.h"
+#include "settings/settings_def_gpu_index_metal.h"
 #include "settings/settings_def_gpu_index_d3d12.h"
 #include "settings/settings_def_gpu_index_d3d11.h"
+#include "settings/settings_def_gpu_index_d3d10.h"
+#include "settings/settings_def_gpu_index_egl_gl.h"
 #include "settings/settings_def_aspect_ratio.h"
 #include "settings/settings_def_viewport_size.h"
 #include "settings/settings_def_quit_visibility.h"
@@ -3354,14 +3432,25 @@ static struct config_uint_setting *populate_settings_uint(
    SETTING_UINT("microphone_rate",               &settings->uints.microphone_sample_rate, true, DEFAULT_INPUT_RATE, false);
 #endif
 
-   SETTING_UINT("custom_viewport_width",         &settings->video_vp_custom.width, false, 0 /* TODO */, false);
-   SETTING_UINT("custom_viewport_height",        &settings->video_vp_custom.height, false, 0 /* TODO */, false);
-   SETTING_UINT("custom_viewport_x",             (unsigned*)&settings->video_vp_custom.x, false, 0 /* TODO */, false);
-   SETTING_UINT("custom_viewport_y",             (unsigned*)&settings->video_vp_custom.y, false, 0 /* TODO */, false);
-   SETTING_UINT("video_windowed_position_x",     &settings->uints.window_position_x,    true, 0, false);
-   SETTING_UINT("video_windowed_position_y",     &settings->uints.window_position_y,    true, 0, false);
-   SETTING_UINT("video_windowed_position_width", &settings->uints.window_position_width,    true, DEFAULT_WINDOW_WIDTH, false);
-   SETTING_UINT("video_windowed_position_height",&settings->uints.window_position_height,    true, DEFAULT_WINDOW_HEIGHT, false);
+   SETTING_UINT_HALF("custom_viewport_width",    &settings->video_vp_custom.dims, CFG_HALF_HI, false, 0 /* TODO */, false);
+   SETTING_UINT_HALF("custom_viewport_height",   &settings->video_vp_custom.dims, CFG_HALF_LO, false, 0 /* TODO */, false);
+   SETTING_UINT_HALF("video_windowed_position_width",  &settings->uints.window_position_dims, CFG_HALF_HI, true, DEFAULT_WINDOW_WIDTH, false);
+   SETTING_UINT_HALF("video_windowed_position_height", &settings->uints.window_position_dims, CFG_HALF_LO, true, DEFAULT_WINDOW_HEIGHT, false);
+   /* The auto-resize ceiling was config-bound through the S_UINT pass,
+    * which binds &settings->uints.<field> by name; its pair is one
+    * word now, so these two rows are literal like the pair above. */
+   SETTING_UINT_HALF("video_window_auto_width_max",  &settings->uints.window_auto_dims_max, CFG_HALF_HI, true, DEFAULT_WINDOW_AUTO_WIDTH_MAX, false);
+   SETTING_UINT_HALF("video_window_auto_height_max", &settings->uints.window_auto_dims_max, CFG_HALF_LO, true, DEFAULT_WINDOW_AUTO_HEIGHT_MAX, false);
+#if (defined(HAVE_QT) || defined(HAVE_COCOA) || (defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)))
+   /* The desktop companion's saved geometry, bound through the
+    * S_UINT_EX pass until its two pairs became two words. The four
+    * keys are unchanged -- tools/companion_qt_persist_test.sh reads
+    * them out of the written retroarch.cfg by name. */
+   SETTING_UINT_HALF("desktop_menu_window_x",      &settings->uints.desktop_menu_window_pos,  CFG_HALF_HI, true, 0, false);
+   SETTING_UINT_HALF("desktop_menu_window_y",      &settings->uints.desktop_menu_window_pos,  CFG_HALF_LO, true, 0, false);
+   SETTING_UINT_HALF("desktop_menu_window_width",  &settings->uints.desktop_menu_window_dims, CFG_HALF_HI, true, 0, false);
+   SETTING_UINT_HALF("desktop_menu_window_height", &settings->uints.desktop_menu_window_dims, CFG_HALF_LO, true, 0, false);
+#endif
 #ifdef GEKKO
    SETTING_UINT("video_viwidth",                    &settings->uints.video_viwidth, true, DEFAULT_VIDEO_VI_WIDTH, false);
 #endif
@@ -3420,10 +3509,11 @@ static struct config_uint_setting *populate_settings_uint(
 #endif
 #include "settings/settings_def_services_actions.h"
 #include "settings/settings_def_video_driver_actions.h"
-#include "settings/settings_def_gpu_index_vulkan.h"
-#include "settings/settings_def_gpu_index_gl.h"
+#include "settings/settings_def_gpu_index_metal.h"
 #include "settings/settings_def_gpu_index_d3d12.h"
 #include "settings/settings_def_gpu_index_d3d11.h"
+#include "settings/settings_def_gpu_index_d3d10.h"
+#include "settings/settings_def_gpu_index_egl_gl.h"
 #include "settings/settings_def_aspect_ratio.h"
 #include "settings/settings_def_viewport_size.h"
 #include "settings/settings_def_quit_visibility.h"
@@ -4069,6 +4159,22 @@ static struct config_int_setting *populate_settings_int(
 
 
 
+   /* The custom viewport's origin. Signed, so it rides
+    * VIDEO_POS_PACK's layout in one word with its partner axis and
+    * the half accessors sign-extend it back out; a uint row would
+    * clamp a negative x to zero. */
+   SETTING_INT_HALF("custom_viewport_x", (int*)&settings->video_vp_custom.pos,
+         CFG_HALF_HI, false, 0, false);
+   SETTING_INT_HALF("custom_viewport_y", (int*)&settings->video_vp_custom.pos,
+         CFG_HALF_LO, false, 0, false);
+   /* The window's origin, signed for the same reason: a display
+    * left of or above the primary one puts an axis negative. */
+   SETTING_INT_HALF("video_windowed_position_x",
+         (int*)&settings->uints.window_position_pos,
+         CFG_HALF_HI, true, 0, false);
+   SETTING_INT_HALF("video_windowed_position_y",
+         (int*)&settings->uints.window_position_pos,
+         CFG_HALF_LO, true, 0, false);
    SETTING_INT("crt_switch_center_adjust",       &settings->ints.crt_switch_center_adjust, false, DEFAULT_CRT_SWITCH_CENTER_ADJUST, false);
    SETTING_INT("crt_switch_porch_adjust",        &settings->ints.crt_switch_porch_adjust, false, DEFAULT_CRT_SWITCH_PORCH_ADJUST, false);
    SETTING_INT("crt_switch_vertical_adjust",     &settings->ints.crt_switch_vertical_adjust, false, DEFAULT_CRT_SWITCH_VERTICAL_ADJUST, false);
@@ -4133,10 +4239,11 @@ static struct config_int_setting *populate_settings_int(
 #endif
 #include "settings/settings_def_services_actions.h"
 #include "settings/settings_def_video_driver_actions.h"
-#include "settings/settings_def_gpu_index_vulkan.h"
-#include "settings/settings_def_gpu_index_gl.h"
+#include "settings/settings_def_gpu_index_metal.h"
 #include "settings/settings_def_gpu_index_d3d12.h"
 #include "settings/settings_def_gpu_index_d3d11.h"
+#include "settings/settings_def_gpu_index_d3d10.h"
+#include "settings/settings_def_gpu_index_egl_gl.h"
 #include "settings/settings_def_aspect_ratio.h"
 #include "settings/settings_def_viewport_size.h"
 #include "settings/settings_def_quit_visibility.h"
@@ -4727,10 +4834,11 @@ static struct config_int_setting *populate_settings_int(
 #endif
 #include "settings/settings_def_services_actions.h"
 #include "settings/settings_def_video_driver_actions.h"
-#include "settings/settings_def_gpu_index_vulkan.h"
-#include "settings/settings_def_gpu_index_gl.h"
+#include "settings/settings_def_gpu_index_metal.h"
 #include "settings/settings_def_gpu_index_d3d12.h"
 #include "settings/settings_def_gpu_index_d3d11.h"
+#include "settings/settings_def_gpu_index_d3d10.h"
+#include "settings/settings_def_gpu_index_egl_gl.h"
 #include "settings/settings_def_aspect_ratio.h"
 #include "settings/settings_def_viewport_size.h"
 #include "settings/settings_def_quit_visibility.h"
@@ -5278,6 +5386,9 @@ static struct config_int_setting *populate_settings_int(
 #ifdef HAVE_VULKAN
    SETTING_INT("vulkan_gpu_index",               &settings->ints.vulkan_gpu_index, true, DEFAULT_VULKAN_GPU_INDEX, false);
 #endif
+#ifdef HAVE_EGL
+   SETTING_INT("gl_gpu_index",                   &settings->ints.gl_gpu_index, true, DEFAULT_GL_GPU_INDEX, false);
+#endif
 #ifdef HAVE_METAL
    SETTING_INT("metal_gpu_index",                &settings->ints.metal_gpu_index, true, DEFAULT_METAL_GPU_INDEX, false);
 #endif
@@ -5378,7 +5489,7 @@ void config_set_defaults(void *data, settings_t *target)
    const char *def_ai_service_backend = config_get_default_ai_service_backend();
 #endif
    const char *def_mitm             = DEFAULT_NETPLAY_MITM_SERVER;
-   struct video_viewport *custom_vp = &settings->video_vp_custom;
+   video_viewport_settings_t *custom_vp = &settings->video_vp_custom;
    struct config_float_setting      *float_settings = populate_settings_float (settings, &float_settings_size);
    struct config_bool_setting       *bool_settings  = populate_settings_bool  (settings, &bool_settings_size);
    struct config_int_setting        *int_settings   = populate_settings_int   (settings, &int_settings_size);
@@ -5401,7 +5512,7 @@ void config_set_defaults(void *data, settings_t *target)
       for (i = 0; i < (unsigned)int_settings_size; i++)
       {
          if (int_settings[i].flags & CFG_BOOL_FLG_DEF_ENABLE)
-            *int_settings[i].ptr = int_settings[i].def;
+            cfg_int_set(&int_settings[i], int_settings[i].def);
       }
 
       free(int_settings);
@@ -5412,7 +5523,7 @@ void config_set_defaults(void *data, settings_t *target)
       for (i = 0; i < (unsigned)uint_settings_size; i++)
       {
          if (uint_settings[i].flags & CFG_BOOL_FLG_DEF_ENABLE)
-            *uint_settings[i].ptr = uint_settings[i].def;
+            cfg_uint_set(&uint_settings[i], uint_settings[i].def);
       }
 
       free(uint_settings);
@@ -5516,6 +5627,8 @@ void config_set_defaults(void *data, settings_t *target)
       configuration_set_string(settings,
             settings->arrays.netplay_mitm_server,
             def_mitm);
+   /* Empty: bind on every interface, as before the setting existed. */
+   *settings->arrays.network_cmd_bind_address = '\0';
 #ifdef HAVE_MENU
    if (def_menu)
       configuration_set_string(settings,
@@ -5526,6 +5639,9 @@ void config_set_defaults(void *data, settings_t *target)
 #endif
 #ifdef HAVE_OZONE
    *settings->paths.path_menu_ozone_font          = '\0';
+   configuration_set_string(settings,
+         settings->arrays.menu_ozone_color_theme,
+         DEFAULT_OZONE_COLOR_THEME);
 #endif
 
    configuration_set_string(settings,
@@ -5656,10 +5772,8 @@ void config_set_defaults(void *data, settings_t *target)
       settings->uints.input_mouse_index[i] = (unsigned)i;
    }
 
-   custom_vp->width  = 0;
-   custom_vp->height = 0;
-   custom_vp->x      = 0;
-   custom_vp->y      = 0;
+   custom_vp->dims   = 0;
+   custom_vp->pos    = 0;
 
    /* Make sure settings from other configs carry over into defaults
     * for another config. */
@@ -6616,14 +6730,14 @@ static bool config_load_file(global_t *global,
    {
       int tmp = 0;
       if (config_get_int(conf, int_settings[i].ident, &tmp))
-         *int_settings[i].ptr = tmp;
+         cfg_int_set(&int_settings[i], tmp);
    }
 
    for (i = 0; i < (unsigned)uint_settings_size; i++)
    {
       int tmp = 0;
       if (config_get_int(conf, uint_settings[i].ident, &tmp))
-         *uint_settings[i].ptr = tmp;
+         cfg_uint_set(&uint_settings[i], (unsigned)tmp);
    }
 
    for (i = 0; i < (unsigned)size_settings_size; i++)
@@ -7043,6 +7157,41 @@ static bool config_load_file(global_t *global,
     * and up (with 0 being skipped) */
    if (settings->floats.fastforward_ratio < 0.0f)
       configuration_set_float(settings, settings->floats.fastforward_ratio, 0.0f);
+
+#ifdef HAVE_OZONE
+   /* Convert legacy numeric values of Ozone color themes to string identifiers.
+    * Necessary to avoid breaking existing configs. */
+   {
+      static const char *legacy_ozone_color_themes[] = {
+         "basic_white",
+         "basic_black",
+         "nord",
+         "gruvbox_dark",
+         "boysenberry",
+         "hacking_the_kernel",
+         "twilight_zone",
+         "dracula",
+         "solarized_dark",
+         "solarized_light",
+         "gray_dark",
+         "gray_light",
+         "purple_rain",
+         "selenium",
+         "evergarden"
+      };
+      unsigned color_theme;
+
+      config_get_array(conf, MENU_ENUM_LABEL_OZONE_MENU_COLOR_THEME_STR,
+            settings->arrays.menu_ozone_color_theme,
+            sizeof(settings->arrays.menu_ozone_color_theme));
+
+      if (   config_get_uint(conf, MENU_ENUM_LABEL_OZONE_MENU_COLOR_THEME_STR, &color_theme)
+          && color_theme < ARRAY_SIZE(legacy_ozone_color_themes))
+         configuration_set_string(settings,
+               settings->arrays.menu_ozone_color_theme,
+               legacy_ozone_color_themes[color_theme]);
+   }
+#endif
 
 #ifdef HAVE_CHEEVOS
    if (*settings->arrays.cheevos_leaderboards_enable)
@@ -8962,11 +9111,12 @@ bool config_save_file(const char *path)
          {
             /* In minimal mode, only save if value differs from default */
             if (   !minimal
-                || *int_settings[i].ptr != *int_defaults[i].ptr)
+                || cfg_int_get(&int_settings[i])
+                      != cfg_int_get(&int_defaults[i]))
             {
                config_set_int(conf,
                      int_settings[i].ident,
-                     *int_settings[i].ptr);
+                     cfg_int_get(&int_settings[i]));
             }
             else
             {
@@ -8999,7 +9149,7 @@ bool config_save_file(const char *path)
                }
                else
                {
-                  default_val = *uint_defaults[i].ptr;
+                  default_val = cfg_uint_get(&uint_defaults[i]);
                   has_default = true;
                }
             }
@@ -9007,11 +9157,11 @@ bool config_save_file(const char *path)
             /* In minimal mode, only save if value differs from default */
             if (   !minimal
                 || !has_default
-                || *uint_settings[i].ptr != default_val)
+                || cfg_uint_get(&uint_settings[i]) != default_val)
             {
                config_set_int(conf,
                      uint_settings[i].ident,
-                     *uint_settings[i].ptr);
+                     cfg_uint_get(&uint_settings[i]));
             }
             else
             {
@@ -9519,12 +9669,13 @@ int8_t config_save_overrides(enum override_type type,
          if (string_starts_with(int_settings[i].ident, "state_slot"))
             continue;
 
-         if ((*int_settings[i].ptr) != (*int_overrides[i].ptr))
+         if (cfg_int_get(&int_settings[i])
+               != cfg_int_get(&int_overrides[i]))
          {
             config_set_int(conf, int_overrides[i].ident,
-                  (*int_overrides[i].ptr));
+                  cfg_int_get(&int_overrides[i]));
             RARCH_DBG("[Override] %s = \"%d\"\n",
-                  int_overrides[i].ident, *int_overrides[i].ptr);
+                  int_overrides[i].ident, cfg_int_get(&int_overrides[i]));
          }
       }
       for (i = 0; i < (unsigned)uint_settings_size; i++)
@@ -9532,12 +9683,14 @@ int8_t config_save_overrides(enum override_type type,
          if (string_starts_with(uint_settings[i].ident, "input_turbo"))
             continue;
 
-         if ((*uint_settings[i].ptr) != (*uint_overrides[i].ptr))
+         if (cfg_uint_get(&uint_settings[i])
+               != cfg_uint_get(&uint_overrides[i]))
          {
             config_set_int(conf, uint_overrides[i].ident,
-                  (*uint_overrides[i].ptr));
+                  cfg_uint_get(&uint_overrides[i]));
             RARCH_DBG("[Override] %s = \"%d\"\n",
-                  uint_overrides[i].ident, *uint_overrides[i].ptr);
+                  uint_overrides[i].ident,
+                  cfg_uint_get(&uint_overrides[i]));
          }
       }
       for (i = 0; i < (unsigned)size_settings_size; i++)

@@ -67,8 +67,6 @@ typedef struct cocoa_ctx_data
 #if !TARGET_OS_OSX
    int fast_forward_skips;
 #endif
-   unsigned width;
-   unsigned height;
    uint8_t flags;
 } cocoa_ctx_data_t;
 
@@ -266,7 +264,7 @@ static void cocoa_gl_gfx_ctx_input_driver(void *data,
  * SDK, which left a binary built on an old SDK blurry on every Retina
  * Mac and one built on a new SDK unable to run anywhere older. */
 static void cocoa_gl_gfx_ctx_get_video_size(void *data,
-      unsigned* width, unsigned* height)
+      unsigned *dims)
 {
    static int backing              = -1;
    CocoaView *g_view               = cocoaview_get();
@@ -285,27 +283,26 @@ static void cocoa_gl_gfx_ctx_get_video_size(void *data,
             [g_view convertRectToBacking:bounds]);
    }
 
-   *width                          = CGRectGetWidth(cgrect);
-   *height                         = CGRectGetHeight(cgrect);
+   *dims = VIDEO_SCALE_PACK(CGRectGetWidth(cgrect), CGRectGetHeight(cgrect));
 }
 #else
 /* iOS */
 static void cocoa_gl_gfx_ctx_get_video_size(void *data,
-      unsigned* width, unsigned* height)
+      unsigned *dims)
 {
    CGRect size                     = glk_view.bounds;
    float viewScale                 = [glk_view contentScaleFactor];
-   *width                          = CGRectGetWidth(size)  * viewScale;
-   *height                         = CGRectGetHeight(size) * viewScale;
+   *dims = VIDEO_SCALE_PACK(CGRectGetWidth(size)  * viewScale,
+         CGRectGetHeight(size) * viewScale);
 }
 #endif
 
 /* Live backing-size query.  Touches AppKit/UIKit and MUST run on the
  * main thread.  Selects the same implementation the vtable previously
  * exposed directly. */
-static void cocoa_gl_live_video_size(unsigned *width, unsigned *height)
+static void cocoa_gl_live_video_size(unsigned *dims)
 {
-   cocoa_gl_gfx_ctx_get_video_size(NULL, width, height);
+   cocoa_gl_gfx_ctx_get_video_size(NULL, dims);
 }
 
 /* Publish the current backing size for cross-thread readers.
@@ -313,11 +310,9 @@ static void cocoa_gl_live_video_size(unsigned *width, unsigned *height)
  * non-threaded caller path below). */
 void cocoa_gl_gfx_ctx_publish_size(void)
 {
-   unsigned w = 0;
-   unsigned h = 0;
-   cocoa_gl_live_video_size(&w, &h);
-   retro_atomic_store_release_size(&cocoa_gl_backing_size,
-         (size_t)(((size_t)(w & 0xFFFF) << 16) | (size_t)(h & 0xFFFF)));
+   unsigned dims = 0;
+   cocoa_gl_live_video_size(&dims);
+   retro_atomic_store_release_size(&cocoa_gl_backing_size, (size_t)dims);
 }
 
 /* Thread-safe backing-size getter used by the vtable and check_window.
@@ -325,14 +320,13 @@ void cocoa_gl_gfx_ctx_publish_size(void)
  * (preserving exact non-threaded behaviour); on the worker thread it
  * reads the last value published by the main thread, lock-free. */
 static void cocoa_gl_gfx_ctx_get_video_size_ts(void *data,
-      unsigned *width, unsigned *height)
+      unsigned *dims)
 {
-   size_t packed;
    if (sthread_is_main_thread())
       cocoa_gl_gfx_ctx_publish_size();
-   packed  = retro_atomic_load_acquire_size(&cocoa_gl_backing_size);
-   *width  = (unsigned)((packed >> 16) & 0xFFFF);
-   *height = (unsigned)(packed & 0xFFFF);
+   /* The published word is already width in the high half, height in
+    * the low - VIDEO_SCALE_PACK's layout - so it comes out whole. */
+   *dims = (unsigned)retro_atomic_load_acquire_size(&cocoa_gl_backing_size);
 }
 
 static float cocoa_gl_gfx_ctx_get_refresh_rate(void *data)
@@ -373,18 +367,17 @@ static void cocoa_gl_gfx_ctx_bind_hw_render(void *data, bool enable)
 }
 
 static void cocoa_gl_gfx_ctx_check_window(void *data, bool *quit,
-      bool *resize, unsigned *width, unsigned *height)
+      bool *resize, unsigned *dims)
 {
-   unsigned new_width, new_height;
+   unsigned new_dims;
 
    *quit                       = false;
 
-   cocoa_gl_gfx_ctx_get_video_size_ts(data, &new_width, &new_height);
+   cocoa_gl_gfx_ctx_get_video_size_ts(data, &new_dims);
 
-   if (new_width != *width || new_height != *height)
+   if (new_dims != *dims)
    {
-      *width  = new_width;
-      *height = new_height;
+      *dims   = new_dims;
       *resize = true;
    }
 }
@@ -447,8 +440,7 @@ static void cocoa_gl_gfx_ctx_init_mainthread(void *userdata)
 typedef struct
 {
    void    *data;
-   unsigned width;
-   unsigned height;
+   unsigned dims;
    bool     fullscreen;
 } cocoa_gl_set_video_mode_args_t;
 
@@ -463,14 +455,10 @@ static void cocoa_gl_gfx_ctx_set_video_mode_mainthread(void *userdata)
 {
    cocoa_gl_set_video_mode_args_t *args = (cocoa_gl_set_video_mode_args_t*)userdata;
    void *data                  = args->data;
-   unsigned width              = args->width;
-   unsigned height             = args->height;
    bool fullscreen             = args->fullscreen;
    gfx_ctx_mode_t mode;
    NSView *g_view              = [apple_platform renderView];
    cocoa_ctx_data_t *cocoa_ctx = (cocoa_ctx_data_t*)data;
-   cocoa_ctx->width            = width;
-   cocoa_ctx->height           = height;
 
    /* Render at the backing store's resolution rather than at point
     * size. 10.7, deprecated in 10.14 and still honoured; asked of the
@@ -577,8 +565,7 @@ static void cocoa_gl_gfx_ctx_set_video_mode_mainthread(void *userdata)
    /* Window and full-screen surgery lives with the application
     * delegate, which knows whether the system has native full-screen
     * or needs the borderless-window mode. */
-   mode.width           = width;
-   mode.height          = height;
+   mode.dims            = args->dims;
    mode.fullscreen      = fullscreen;
    [apple_platform setVideoMode:mode];
    cocoa_show_mouse(data, !fullscreen);
@@ -590,13 +577,12 @@ static void cocoa_gl_gfx_ctx_set_video_mode_mainthread(void *userdata)
 }
 
 static bool cocoa_gl_gfx_ctx_set_video_mode(void *data,
-      unsigned width, unsigned height, bool fullscreen)
+      unsigned dims, bool fullscreen)
 {
    cocoa_gl_set_video_mode_args_t args;
 
    args.data       = data;
-   args.width      = width;
-   args.height     = height;
+   args.dims       = dims;
    args.fullscreen = fullscreen;
 
    /* Current-context state is per-thread, so this has to happen here
@@ -682,7 +668,7 @@ static void cocoa_gl_gfx_ctx_set_video_mode_mainthread(void *userdata)
 }
 
 static bool cocoa_gl_gfx_ctx_set_video_mode(void *data,
-      unsigned width, unsigned height, bool fullscreen)
+      unsigned dims, bool fullscreen)
 {
    cocoa_main_thread_sync(cocoa_gl_gfx_ctx_set_video_mode_mainthread, data);
 
@@ -724,19 +710,19 @@ static void *cocoa_gl_gfx_ctx_init(void *video_driver)
 }
 #endif
 
-static bool cocoa_gl_gfx_ctx_set_resize(void *data, unsigned width, unsigned height)
+static bool cocoa_gl_gfx_ctx_set_resize(void *data, unsigned dims)
 {
    return true;
 }
 
 static void cocoa_gl_gfx_ctx_get_video_output_size(void *data,
-      unsigned *width, unsigned *height, char *desc, size_t desc_len)
+      unsigned *dims, char *desc, size_t desc_len)
 {
    /* Body consolidated into cocoa_common.m.  Kept as a named
     * vtable entry because video_thread_wrapper.c's
     * thread_get_video_output_size calls the poke / ctx hook
     * directly, bypassing dispserv_apple. */
-   cocoa_get_video_output_size(width, height, desc, desc_len);
+   cocoa_get_video_output_size(dims, desc, desc_len);
 }
 
 /* A miniaturised window has nothing behind it to present to:

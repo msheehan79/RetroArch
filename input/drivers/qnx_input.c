@@ -421,12 +421,9 @@ static void qnx_process_touch_event(
             {
                struct video_viewport vp;
 
-               vp.x                        = 0;
-               vp.y                        = 0;
-               vp.width                    = 0;
-               vp.height                   = 0;
-               vp.full_width               = 0;
-               vp.full_height              = 0;
+               vp.pos                      = VIDEO_POS_PACK(0, 0);
+               vp.dims                     = 0;
+               vp.full_dims                = 0;
 
                qnx->pointer[i].contact_id  = contact_id;
 
@@ -476,12 +473,9 @@ static void qnx_process_touch_event(
             {
                struct video_viewport vp;
 
-               vp.x                        = 0;
-               vp.y                        = 0;
-               vp.width                    = 0;
-               vp.height                   = 0;
-               vp.full_width               = 0;
-               vp.full_height              = 0;
+               vp.pos                      = VIDEO_POS_PACK(0, 0);
+               vp.dims                     = 0;
+               vp.full_dims                = 0;
 
                video_driver_translate_coord_viewport_wrap(&vp,
                      pos[0], pos[1],

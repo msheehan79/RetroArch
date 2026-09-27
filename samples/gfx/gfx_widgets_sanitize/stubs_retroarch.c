@@ -135,18 +135,25 @@ bool font_driver_matches(const font_data_t *font,
 
 /* --- display: signatures copied from gfx/gfx_display.h --- */
 void gfx_display_draw_quad(gfx_display_t *p_disp, void *data,
-      unsigned video_width, unsigned video_height,
-      int x, int y, unsigned w, unsigned h,
-      unsigned width, unsigned height, float *color, uintptr_t *texture)
-{ (void)p_disp; (void)data; (void)video_width; (void)video_height;
+      unsigned video_dims,
+      int x, int y, unsigned dims,
+      unsigned ref_dims, float *color, uintptr_t *texture)
+{
+   unsigned video_width  = VIDEO_SCALE_W(video_dims);
+   unsigned video_height = VIDEO_SCALE_H(video_dims);
+   unsigned w            = VIDEO_SCALE_W(dims);
+   unsigned h            = VIDEO_SCALE_H(dims);
+   unsigned width        = VIDEO_SCALE_W(ref_dims);
+   unsigned height       = VIDEO_SCALE_H(ref_dims);
+ (void)p_disp; (void)data; (void)video_width; (void)video_height;
   (void)x; (void)y; (void)w; (void)h; (void)width; (void)height;
   (void)color; (void)texture; }
 
 void gfx_display_draw_text(const font_data_t *font, const char *text,
-      float x, float y, int width, int height, uint32_t color,
+      float x, float y, unsigned dims, uint32_t color,
       enum text_alignment text_align, float scale,
       bool shadows_enable, float shadow_offset, bool draw_outside)
-{ (void)font; (void)text; (void)x; (void)y; (void)width; (void)height;
+{ (void)font; (void)text; (void)x; (void)y; (void)dims;
   (void)color; (void)text_align; (void)scale; (void)shadows_enable;
   (void)shadow_offset; (void)draw_outside; }
 
@@ -164,8 +171,10 @@ unsigned stub_draw_count;
 
 void gfx_display_draw(gfx_display_ctx_driver_t *dispctx,
       gfx_display_ctx_draw_t *draw, void *data,
-      unsigned video_width, unsigned video_height)
+      unsigned video_dims)
 {
+   unsigned video_width  = VIDEO_SCALE_W(video_dims);
+   unsigned video_height = VIDEO_SCALE_H(video_dims);
    if (draw)
    {
       stub_draw_dims = draw->dims;
@@ -194,10 +203,9 @@ void gfx_display_rotate_z(gfx_display_t *p_disp, math_matrix_4x4 *matrix,
 { (void)p_disp; (void)matrix; (void)cosine; (void)sine; (void)data; }
 
 void gfx_display_scissor_begin(gfx_display_t *p_disp, void *userdata,
-      unsigned video_width, unsigned video_height,
-      int x, int y, unsigned width, unsigned height)
-{ (void)p_disp; (void)userdata; (void)video_width; (void)video_height;
-  (void)x; (void)y; (void)width; (void)height; }
+      unsigned video_dims, int x, int y, unsigned dims)
+{ (void)p_disp; (void)userdata; (void)video_dims;
+  (void)x; (void)y; (void)dims; }
 
 enum texture_filter_type gfx_display_texture_filter(void)
 { return TEXTURE_FILTER_LINEAR; }
@@ -211,21 +219,19 @@ bool gfx_display_init_first_driver(gfx_display_t *p_disp,
 { (void)p_disp; (void)video_is_threaded; return true; }
 
 float gfx_display_get_dpi_scale(gfx_display_t *p_disp, void *settings_data,
-      unsigned width, unsigned height, bool fullscreen, bool is_widget)
-{ (void)p_disp; (void)settings_data; (void)width; (void)height;
+      unsigned dims, bool fullscreen, bool is_widget)
+{ (void)p_disp; (void)settings_data; (void)dims;
   (void)fullscreen; (void)is_widget; return 1.0f; }
 
 bool gfx_display_reset_textures_list_buffer(uintptr_t *item,
       enum texture_filter_type filter_type, void *buffer,
       unsigned buffer_len, enum image_type_enum image_type,
-      unsigned *width, unsigned *height)
+      unsigned *dims)
 {
    (void)item; (void)filter_type; (void)buffer; (void)buffer_len;
    (void)image_type;
-   if (width)
-      *width = 0;
-   if (height)
-      *height = 0;
+   if (dims)
+      *dims = 0;
    return false;
 }
 
@@ -249,8 +255,8 @@ void gfx_animation_timer_start_widget(float *timer,
 { (void)timer_entry; if (timer) *timer = 0.0f; }
 void gfx_animation_widgets_own(bool worker) { (void)worker; }
 void gfx_animation_update_widgets(retro_time_t current_time,
-      float ticker_speed, unsigned video_width, unsigned video_height)
-{ (void)current_time; (void)ticker_speed; (void)video_width; (void)video_height; }
+      float ticker_speed, unsigned video_dims)
+{ (void)current_time; (void)ticker_speed; (void)video_dims; }
 
 /* --- the threaded video worker's widget step and its text handoff,
  *     which no test here drives --- */

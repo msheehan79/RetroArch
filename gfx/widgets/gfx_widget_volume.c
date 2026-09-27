@@ -104,8 +104,8 @@ static void gfx_widget_volume_frame(void* data, void *user_data)
       gfx_widget_font_data_t *font_regular = &p_dispwidget->gfx_widget_fonts.regular;
 
       void *userdata                       = video_info->userdata;
-      unsigned video_width                 = video_info->width;
-      unsigned video_height                = video_info->height;
+      unsigned video_width                 = VIDEO_SCALE_W(video_info->dims);
+      unsigned video_height                = VIDEO_SCALE_H(video_info->dims);
 
       unsigned padding                     = p_dispwidget->simple_widget_padding;
 
@@ -177,15 +177,12 @@ static void gfx_widget_volume_frame(void* data, void *user_data)
       gfx_display_draw_quad(
             p_disp,
             userdata,
-            video_width,
-            video_height,
+            VIDEO_SCALE_PACK(video_width, video_height),
             0, 0,
-            (state->mute)
-                  ? state->widget_height
-                  : state->widget_width,
-            state->widget_height,
-            video_width,
-            video_height,
+            VIDEO_SCALE_PACK(
+               (state->mute) ? state->widget_height : state->widget_width,
+               state->widget_height),
+            VIDEO_SCALE_PACK(video_width, video_height),
             backdrop_orig,
             NULL
             );
@@ -199,9 +196,8 @@ static void gfx_widget_volume_frame(void* data, void *user_data)
          gfx_widgets_draw_icon(
                userdata,
                p_disp,
-               video_width,
-               video_height,
-               icon_size, icon_size,
+               VIDEO_SCALE_PACK(video_width, video_height),
+               VIDEO_SCALE_PACK(icon_size, icon_size),
                volume_icon,
                0,
                0,
@@ -223,7 +219,7 @@ static void gfx_widget_volume_frame(void* data, void *user_data)
                   state->widget_width / 2,
                   state->widget_height / 2.0f
                   + font_regular->line_centre_offset,
-                  video_width, video_height,
+                  VIDEO_SCALE_PACK(video_width, video_height),
                   text_color, TEXT_ALIGN_CENTER,
                   true);
          }
@@ -237,11 +233,11 @@ static void gfx_widget_volume_frame(void* data, void *user_data)
          gfx_display_draw_quad(
                p_disp,
                userdata,
-               video_width,
-               video_height,
+               VIDEO_SCALE_PACK(video_width, video_height),
                bar_x + bar_percentage * bar_width, bar_y,
-               bar_width - bar_percentage * bar_width, bar_height,
-               video_width, video_height,
+               VIDEO_SCALE_PACK(bar_width - bar_percentage * bar_width,
+                     bar_height),
+               VIDEO_SCALE_PACK(video_width, video_height),
                bar_background,
                NULL
                );
@@ -249,11 +245,10 @@ static void gfx_widget_volume_frame(void* data, void *user_data)
          gfx_display_draw_quad(
                p_disp,
                userdata,
-               video_width,
-               video_height,
+               VIDEO_SCALE_PACK(video_width, video_height),
                bar_x, bar_y,
-               bar_percentage * bar_width, bar_height,
-               video_width, video_height,
+               VIDEO_SCALE_PACK(bar_percentage * bar_width, bar_height),
+               VIDEO_SCALE_PACK(video_width, video_height),
                bar_foreground,
                NULL
                );
@@ -268,7 +263,7 @@ static void gfx_widget_volume_frame(void* data, void *user_data)
          gfx_widgets_draw_text(font_regular,
                msg,
                state->widget_width - padding, volume_text_y,
-               video_width, video_height,
+               VIDEO_SCALE_PACK(video_width, video_height),
                text_color_db,
                TEXT_ALIGN_RIGHT,
                false);
@@ -276,7 +271,7 @@ static void gfx_widget_volume_frame(void* data, void *user_data)
          gfx_widgets_draw_text(font_regular,
             percentage_msg,
             icon_size, volume_text_y,
-            video_width, video_height,
+            VIDEO_SCALE_PACK(video_width, video_height),
             text_color,
             TEXT_ALIGN_LEFT,
             false);
@@ -355,7 +350,7 @@ static void gfx_widget_volume_layout(
 static uint64_t volume_icon_load_gen = 0;
 
 static void gfx_widget_volume_context_reset(bool is_threaded,
-      unsigned width, unsigned height, bool fullscreen,
+      unsigned dims, bool fullscreen,
       const char *dir_assets, char *font_path,
       char* menu_png_path,
       char* widgets_png_path)

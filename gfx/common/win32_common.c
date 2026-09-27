@@ -277,12 +277,10 @@ static void d3dkmt_init(void)
        * loop below, so a missing export was a call through NULL on the
        * first display device. Leave the scanline state zeroed and let
        * d3dkmt_scanline_get() report -1, which
-       * video_driver_scanline_before_frame() already treats as
-       * unsupported. */
+       * video_driver_scanline_after_frame() treats as unsupported. */
       if (!pD3DKMTOpenAdapterFromHdc || !pD3DKMTGetScanLine)
       {
          memset(&d3dkmt_adapter, 0, sizeof(d3dkmt_adapter_t));
-         video_driver_scanline_init();
          return;
       }
 
@@ -325,8 +323,6 @@ static void d3dkmt_init(void)
          d3dkmt_adapter.vb     = vb;
       }
    }
-
-   video_driver_scanline_init();
 }
 
 bool d3dkmt_wait_vblank(void)
@@ -350,14 +346,20 @@ int d3dkmt_scanline_get(void)
 
 typedef struct win32_common_state
 {
-   int pos_x;
-   int pos_y;
-   unsigned pos_width;
-   unsigned pos_height;
+   /* Where the window sits and how big its frame is, in
+    * VIDEO_POS_PACK's and VIDEO_SCALE_PACK's layouts. The origin
+    * goes negative on a display left of or above the primary one,
+    * and only means anything once pos_set is up. */
+   unsigned pos;
+   unsigned pos_dims;
 #ifdef HAVE_TASKBAR
    unsigned taskbar_message;
 #endif
    unsigned monitor_count;
+   /* Up once a position has come from the config or from the window
+    * itself. Until then the window is created wherever Windows
+    * decides to put it. */
+   bool pos_set;
 } win32_common_state_t;
 
 /* Module-level state: resize dimensions, refresh rate, and main window handle.
@@ -374,14 +376,13 @@ static HMONITOR win32_monitor_all[MAX_MONITORS];
 
 static win32_common_state_t win32_st =
 {
-   CW_USEDEFAULT,       /* pos_x */
-   CW_USEDEFAULT,       /* pos_y */
-   0,                   /* pos_width */
-   0,                   /* pos_height */
+   0,                   /* pos */
+   0,                   /* pos_dims */
 #ifdef HAVE_TASKBAR
    0,                   /* taskbar_message */
 #endif
    0,                   /* monitor_count */
+   false,               /* pos_set */
 };
 
 uint8_t win32_get_flags(void)
@@ -489,14 +490,13 @@ void win32_monitor_info(void *data, void *hm_data, unsigned *mon_id)
 }
 
 void win32_get_video_size(void *data,
-      unsigned *width, unsigned *height)
+      unsigned *dims)
 {
    HWND         window     = win32_get_window();
 
    if (window)
    {
-      *width               = g_win32_resize_width;
-      *height              = g_win32_resize_height;
+      *dims = VIDEO_SCALE_PACK(g_win32_resize_width, g_win32_resize_height);
    }
    else
    {
@@ -507,8 +507,8 @@ void win32_get_video_size(void *data,
 
       win32_monitor_info(&current_mon, &hm_to_use, &mon_id);
       mon_rect             = current_mon.rcMonitor;
-      *width               = mon_rect.right - mon_rect.left;
-      *height              = mon_rect.bottom - mon_rect.top;
+      *dims = VIDEO_SCALE_PACK(mon_rect.right - mon_rect.left,
+            mon_rect.bottom - mon_rect.top);
    }
 }
 
@@ -557,14 +557,17 @@ static void win32_save_position(void)
    {
       if (GetWindowPlacement(main_window.hwnd, &placement))
       {
-         g_win32->pos_x      = placement.rcNormalPosition.left;
-         g_win32->pos_y      = placement.rcNormalPosition.top;
+         g_win32->pos        = VIDEO_POS_PACK(
+               placement.rcNormalPosition.left,
+               placement.rcNormalPosition.top);
+         g_win32->pos_set    = true;
       }
 
       if (GetWindowRect(main_window.hwnd, &rect))
       {
-         g_win32->pos_width  = rect.right  - rect.left;
-         g_win32->pos_height = rect.bottom - rect.top;
+         g_win32->pos_dims   = VIDEO_SCALE_PACK(
+               rect.right  - rect.left,
+               rect.bottom - rect.top);
       }
    }
    else
@@ -582,23 +585,29 @@ static void win32_save_position(void)
       {
          bool ui_menubar_enable                     = settings->bools.ui_menubar_enable;
          bool window_show_decor                     = settings->bools.video_window_show_decorations;
-         settings->uints.window_position_x          = g_win32->pos_x;
-         settings->uints.window_position_y          = g_win32->pos_y;
-         settings->uints.window_position_width      = g_win32->pos_width;
-         settings->uints.window_position_height     = g_win32->pos_height;
+         unsigned win_w                             =
+               VIDEO_SCALE_W(g_win32->pos_dims);
+         unsigned win_h                             =
+               VIDEO_SCALE_H(g_win32->pos_dims);
+         settings->uints.window_position_pos        = g_win32->pos;
+         /* The frame the window reports includes whatever chrome it
+          * is wearing; the setting holds the client area, so take the
+          * chrome off both axes before the pair is stored. */
          if (window_show_decor)
          {
             int border_thickness                    = GetSystemMetrics(SM_CXSIZEFRAME);
             int title_bar_height                    = GetSystemMetrics(SM_CYCAPTION);
-            settings->uints.window_position_width  -= border_thickness * 2;
-            settings->uints.window_position_height -= border_thickness * 2;
-            settings->uints.window_position_height -= title_bar_height;
+            win_w                                  -= border_thickness * 2;
+            win_h                                  -= border_thickness * 2;
+            win_h                                  -= title_bar_height;
          }
          if (ui_menubar_enable)
          {
             int menu_bar_height   = GetSystemMetrics(SM_CYMENU);
-            settings->uints.window_position_height -= menu_bar_height;
+            win_h                                  -= menu_bar_height;
          }
+         settings->uints.window_position_dims       =
+               VIDEO_SCALE_PACK(win_w, win_h);
       }
    }
 }
@@ -1670,7 +1679,7 @@ static LRESULT wnd_proc_wm_vk_create(HWND hwnd)
    if (!vulkan_surface_create(&win32_vk,
             VULKAN_WSI_WIN32,
             &instance, &hwnd,
-            width, height, win32_vk_interval))
+            VIDEO_SCALE_PACK(width, height), win32_vk_interval))
       g_win32_flags |= WIN32_CMN_FLAG_QUIT;
    g_win32_flags    |= WIN32_CMN_FLAG_INITED;
    if (DragAcceptFiles_func)
@@ -1723,26 +1732,28 @@ static LRESULT wnd_proc_wm_gdi_create(HWND hwnd)
  * winraw, common).  Presents gdi->bmp scaled into the
  * aspect-ratio-aware viewport rect (gdi->vp), filling the area
  * outside the rect with black to produce letterbox / pillarbox
- * bars.  Reads bmp_width / bmp_height for the source rect (the
- * DDB's actual size); when RGUI is alive bmp holds the menu image
- * at the menu's resolution while gdi->frame_width still tracks
- * the core, so frame_width is only the fallback. */
+ * bars.  Reads bmp_dims for the source rect (the DDB's actual
+ * size); when RGUI is alive bmp holds the menu image at the menu's
+ * resolution while frame_dims still tracks the core, so frame_dims
+ * is only the fallback. */
 static void wnd_proc_gdi_paint(gdi_t *gdi)
 {
-   int       vp_x   = gdi->vp.x;
-   int       vp_y   = gdi->vp.y;
-   unsigned  vp_w   = gdi->vp.width  ? gdi->vp.width  : gdi->screen_width;
-   unsigned  vp_h   = gdi->vp.height ? gdi->vp.height : gdi->screen_height;
-   unsigned  src_w  = gdi->bmp_width  ? gdi->bmp_width  : gdi->frame_width;
-   unsigned  src_h  = gdi->bmp_height ? gdi->bmp_height : gdi->frame_height;
+   int       vp_x   = VIDEO_POS_X(gdi->vp.pos);
+   int       vp_y   = VIDEO_POS_Y(gdi->vp.pos);
+   unsigned  vp_dims  = gdi->vp.dims  ? gdi->vp.dims  : gdi->screen_dims;
+   unsigned  src_dims = gdi->bmp_dims ? gdi->bmp_dims : gdi->frame_dims;
+   unsigned  vp_w   = VIDEO_SCALE_W(vp_dims);
+   unsigned  vp_h   = VIDEO_SCALE_H(vp_dims);
+   unsigned  src_w  = VIDEO_SCALE_W(src_dims);
+   unsigned  src_h  = VIDEO_SCALE_H(src_dims);
 
    /* Letterbox / pillarbox bars: paint the four areas outside the
     * viewport rect black before the StretchBlt.  We do this even
     * when the viewport happens to fill the whole window — extra
     * FillRects on zero-area regions are cheap. */
    if (vp_x > 0 || vp_y > 0
-         || vp_x + (int)vp_w  < (int)gdi->screen_width
-         || vp_y + (int)vp_h  < (int)gdi->screen_height)
+         || vp_x + (int)vp_w  < (int)VIDEO_SCALE_W(gdi->screen_dims)
+         || vp_y + (int)vp_h  < (int)VIDEO_SCALE_H(gdi->screen_dims))
    {
       RECT rect;
       HBRUSH black = (HBRUSH)GetStockObject(BLACK_BRUSH);
@@ -1750,14 +1761,15 @@ static void wnd_proc_gdi_paint(gdi_t *gdi)
       if (vp_y > 0)
       {
          rect.left = 0; rect.top = 0;
-         rect.right = (LONG)gdi->screen_width; rect.bottom = vp_y;
+         rect.right = (LONG)VIDEO_SCALE_W(gdi->screen_dims); rect.bottom = vp_y;
          FillRect(gdi->winDC, &rect, black);
       }
       /* Bottom */
-      if (vp_y + (int)vp_h < (int)gdi->screen_height)
+      if (vp_y + (int)vp_h < (int)VIDEO_SCALE_H(gdi->screen_dims))
       {
          rect.left = 0; rect.top = vp_y + (int)vp_h;
-         rect.right = (LONG)gdi->screen_width; rect.bottom = (LONG)gdi->screen_height;
+         rect.right = (LONG)VIDEO_SCALE_W(gdi->screen_dims);
+         rect.bottom = (LONG)VIDEO_SCALE_H(gdi->screen_dims);
          FillRect(gdi->winDC, &rect, black);
       }
       /* Left */
@@ -1768,10 +1780,11 @@ static void wnd_proc_gdi_paint(gdi_t *gdi)
          FillRect(gdi->winDC, &rect, black);
       }
       /* Right */
-      if (vp_x + (int)vp_w < (int)gdi->screen_width)
+      if (vp_x + (int)vp_w < (int)VIDEO_SCALE_W(gdi->screen_dims))
       {
          rect.left = vp_x + (int)vp_w; rect.top = vp_y;
-         rect.right = (LONG)gdi->screen_width; rect.bottom = vp_y + (int)vp_h;
+         rect.right = (LONG)VIDEO_SCALE_W(gdi->screen_dims);
+         rect.bottom = vp_y + (int)vp_h;
          FillRect(gdi->winDC, &rect, black);
       }
    }
@@ -1859,8 +1872,8 @@ static bool win32_window_create(void *data, unsigned style,
 
    if (window_save_positions && !fullscreen)
    {
-      user_width                 = g_win32->pos_width;
-      user_height                = g_win32->pos_height;
+      user_width                 = VIDEO_SCALE_W(g_win32->pos_dims);
+      user_height                = VIDEO_SCALE_H(g_win32->pos_dims);
    }
 #ifdef LEGACY_WIN32
    main_window.hwnd              = CreateWindowEx(0,
@@ -1870,8 +1883,12 @@ static bool win32_window_create(void *data, unsigned style,
          L"RetroArch", title_local,
 #endif
          style,
-         fullscreen ? mon_rect->left : g_win32->pos_x,
-         fullscreen ? mon_rect->top  : g_win32->pos_y,
+         fullscreen ? mon_rect->left
+            : (g_win32->pos_set ? VIDEO_POS_X(g_win32->pos)
+                                : CW_USEDEFAULT),
+         fullscreen ? mon_rect->top
+            : (g_win32->pos_set ? VIDEO_POS_Y(g_win32->pos)
+                                : CW_USEDEFAULT),
          user_width,
          user_height,
          NULL, NULL, NULL, data);
@@ -1939,7 +1956,7 @@ void win32_show_cursor(void *data, bool state)
 
 void win32_check_window(void *data,
       bool *quit, bool *resize,
-      unsigned *width, unsigned *height)
+      unsigned *dims)
 {
    bool video_is_threaded = video_driver_is_threaded();
    if (video_is_threaded)
@@ -1949,8 +1966,7 @@ void win32_check_window(void *data,
    if (g_win32_flags & WIN32_CMN_FLAG_RESIZED)
    {
       *resize             = true;
-      *width              = g_win32_resize_width;
-      *height             = g_win32_resize_height;
+      *dims              = VIDEO_SCALE_PACK(g_win32_resize_width, g_win32_resize_height);
       g_win32_flags      &= ~WIN32_CMN_FLAG_RESIZED;
    }
 }
@@ -2256,26 +2272,28 @@ void win32_set_style(MONITORINFOEX *current_mon, HMONITOR *hm_to_use,
          /* Set position from config */
          int border_thickness             = window_show_decor ? GetSystemMetrics(SM_CXSIZEFRAME) : 0;
          int title_bar_height             = window_show_decor ? GetSystemMetrics(SM_CYCAPTION) : 0;
-         unsigned window_position_x       = settings->uints.window_position_x;
-         unsigned window_position_y       = settings->uints.window_position_y;
-         unsigned window_position_width   = settings->uints.window_position_width;
-         unsigned window_position_height  = settings->uints.window_position_height;
+         unsigned window_position_width   =
+               VIDEO_SCALE_W(settings->uints.window_position_dims);
+         unsigned window_position_height  =
+               VIDEO_SCALE_H(settings->uints.window_position_dims);
 
-         g_win32->pos_x                   = window_position_x;
-         g_win32->pos_y                   = window_position_y;
-         g_win32->pos_width               = window_position_width
-            + border_thickness * 2;
-         g_win32->pos_height              = window_position_height
-            + border_thickness * 2 + title_bar_height;
+         g_win32->pos                     =
+               settings->uints.window_position_pos;
+         g_win32->pos_set                 = true;
+         g_win32->pos_dims                = VIDEO_SCALE_PACK(
+               window_position_width  + border_thickness * 2,
+               window_position_height + border_thickness * 2
+                  + title_bar_height);
 
-         if (g_win32->pos_width != 0 && g_win32->pos_height != 0)
+         if (     VIDEO_SCALE_W(g_win32->pos_dims) != 0
+               && VIDEO_SCALE_H(g_win32->pos_dims) != 0)
             position_set_from_config = true;
       }
 
       if (position_set_from_config)
       {
-         g_win32_resize_width  = *width   = g_win32->pos_width;
-         g_win32_resize_height = *height  = g_win32->pos_height;
+         g_win32_resize_width  = *width   = VIDEO_SCALE_W(g_win32->pos_dims);
+         g_win32_resize_height = *height  = VIDEO_SCALE_H(g_win32->pos_dims);
       }
       else
       {
@@ -2328,9 +2346,11 @@ void win32_set_window(unsigned *width, unsigned *height,
 }
 
 bool win32_set_video_mode(void *data,
-      unsigned width, unsigned height,
+      unsigned dims,
       bool fullscreen)
 {
+   unsigned width  = VIDEO_SCALE_W(dims);
+   unsigned height = VIDEO_SCALE_H(dims);
    DWORD style;
    MSG msg;
    RECT mon_rect;

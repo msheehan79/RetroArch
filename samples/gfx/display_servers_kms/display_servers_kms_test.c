@@ -194,9 +194,11 @@ video_driver_state_t *video_state_get_ptr(void)
    return &s_video_st;
 }
 
-bool video_driver_set_video_mode(unsigned width, unsigned height,
+bool video_driver_set_video_mode(unsigned dims,
       bool fullscreen)
 {
+   unsigned width  = VIDEO_SCALE_W(dims);
+   unsigned height = VIDEO_SCALE_H(dims);
    s_set_video_mode_calls++;
    s_set_video_mode_w  = width;
    s_set_video_mode_h  = height;
@@ -377,8 +379,8 @@ static int test_all_modes_reported(void)
    {
       int found = 0;
       for (j = 0; j < n; j++)
-         if (     list[j].width  == specs[i].w
-               && list[j].height == specs[i].h)
+         if (     VIDEO_SCALE_W(list[j].dims)  == specs[i].w
+               && VIDEO_SCALE_H(list[j].dims) == specs[i].h)
             found++;
       if (found != 1)
       {
@@ -435,14 +437,14 @@ static int test_list_is_sorted(void)
 
    for (i = 1; i < n; i++)
    {
-      if (list[i - 1].width <= list[i].width)
+      if (VIDEO_SCALE_W(list[i - 1].dims) <= VIDEO_SCALE_W(list[i].dims))
          continue;
       fprintf(stderr,
             "FAIL: entry %d (%ux%u) sorts after entry %d (%ux%u);"
             " the list came back in connector order, so the qsort"
             " ran over the wrong element count\n",
-            i - 1, list[i - 1].width, list[i - 1].height,
-            i,     list[i].width,     list[i].height);
+            i - 1, VIDEO_SCALE_W(list[i - 1].dims), VIDEO_SCALE_H(list[i - 1].dims),
+            i,     VIDEO_SCALE_W(list[i].dims),     VIDEO_SCALE_H(list[i].dims));
       free(list);
       return 1;
    }
@@ -493,10 +495,10 @@ static int test_current_mode_flagged(void)
       if (list[i].current)
       {
          current++;
-         if (list[i].width != specs[1].w || list[i].height != specs[1].h)
+         if (VIDEO_SCALE_W(list[i].dims) != specs[1].w || VIDEO_SCALE_H(list[i].dims) != specs[1].h)
          {
             fprintf(stderr, "FAIL: %ux%u flagged current, want %ux%u\n",
-                  list[i].width, list[i].height, specs[1].w, specs[1].h);
+                  VIDEO_SCALE_W(list[i].dims), VIDEO_SCALE_H(list[i].dims), specs[1].w, specs[1].h);
             free(list);
             free_connector(g_drm_connector);
             g_drm_connector = NULL;
@@ -549,35 +551,80 @@ static int test_modeline_ops(void)
    strcpy(ds.screen, "dummy");
 
    if (dispserv_kms.modeline_list_outputs(data, outputs, 4) != 1
-         || outputs[0].id != 77 || outputs[0].width != 1920 || !outputs[0].primary)
+         || outputs[0].id != 77 || VIDEO_SCALE_W(outputs[0].dims) != 1920 || !outputs[0].primary)
    {
       fprintf(stderr, "FAIL: list_outputs did not report the live connector\n");
-      return 1;
+      goto fail;
    }
    if (!dispserv_kms.modeline_open(data, &ds))
    {
       fprintf(stderr, "FAIL: modeline_open\n");
-      return 1;
+      goto fail;
    }
    if (dispserv_kms.modeline_caps(data) != MODELINE_CAPS_ADD)
    {
       fprintf(stderr, "FAIL: KMS caps must be ADD only\n");
-      return 1;
+      goto fail;
    }
-   if (dispserv_kms.modeline_enum(data, listed, 4) != 0)
+   /* The connector's own modes, whole timing included, so the engine
+    * can score one of them when generation is off (#19619) */
+   if (dispserv_kms.modeline_enum(data, listed, 4) != 1)
    {
-      fprintf(stderr, "FAIL: KMS must list nothing: the engine generates\n");
-      return 1;
+      fprintf(stderr, "FAIL: KMS must list the connector's modes\n");
+      goto fail;
+   }
+   {
+      const drmModeModeInfo *dm = &g_drm_connector->modes[0];
+      if (     VIDEO_SCALE_W(listed[0].dims) != 1920
+            || VIDEO_SCALE_H(listed[0].dims) != 1080
+            || listed[0].pclock  != (uint64_t)dm->clock * 1000
+            || listed[0].hactive != dm->hdisplay
+            || listed[0].hbegin  != dm->hsync_start
+            || listed[0].hend    != dm->hsync_end
+            || listed[0].htotal  != dm->htotal
+            || listed[0].vactive != dm->vdisplay
+            || listed[0].vbegin  != dm->vsync_start
+            || listed[0].vend    != dm->vsync_end
+            || listed[0].vtotal  != dm->vtotal)
+      {
+         fprintf(stderr, "FAIL: the listed mode is not the connector's timing\n");
+         goto fail;
+      }
+      /* It is g_drm_mode, so it is the desktop mode, and its timing
+       * came from DRM */
+      if (     !(listed[0].type & MODELINE_TIMING_DRMKMS)
+            || !(listed[0].type & MODELINE_DESKTOP))
+      {
+         fprintf(stderr, "FAIL: the listed mode is not tagged DRM/KMS desktop (type 0x%x)\n",
+               listed[0].type);
+         goto fail;
+      }
+   }
+
+   /* Between a context teardown and the reinit there is no connector:
+    * an empty list, not a failure, so a generated mode still goes
+    * through */
+   {
+      drmModeConnector *saved = g_drm_connector;
+      g_drm_connector         = NULL;
+      if (dispserv_kms.modeline_enum(data, listed, 4) != 0)
+      {
+         g_drm_connector = saved;
+         fprintf(stderr, "FAIL: no connector must list nothing\n");
+         goto fail;
+      }
+      g_drm_connector = saved;
    }
 
    /* A generated 15 kHz timing */
    memset(&mode, 0, sizeof(mode));
    mode.pclock     = 6514560;
-   mode.width      = mode.hactive = 320;
+   mode.dims       = VIDEO_SCALE_PACK(320, 240);
+   mode.hactive    = 320;
    mode.hbegin     = 333;
    mode.hend       = 364;
    mode.htotal     = 416;
-   mode.height     = mode.vactive = 240;
+   mode.vactive    = 240;
    mode.vbegin     = 242;
    mode.vend       = 245;
    mode.vtotal     = 261;
@@ -595,23 +642,23 @@ static int test_modeline_ops(void)
          || !dispserv_kms.modeline_flush(data))
    {
       fprintf(stderr, "FAIL: KMS add/update/delete/flush must be no-op successes\n");
-      return 1;
+      goto fail;
    }
    if (!(mode.type & MODELINE_TIMING_DRMKMS))
    {
       fprintf(stderr, "FAIL: add did not tag the mode as a DRM timing\n");
-      return 1;
+      goto fail;
    }
    if (s_set_video_mode_calls != 0 || mirror->vdisplay != 0)
    {
       fprintf(stderr, "FAIL: staging touched the mirror or the driver\n");
-      return 1;
+      goto fail;
    }
 
    if (!dispserv_kms.modeline_set(data, &mode))
    {
       fprintf(stderr, "FAIL: modeline_set\n");
-      return 1;
+      goto fail;
    }
    /* The mirror carries the timing the way drmModeModeInfo wants it:
     * clock in kHz, sync counts as given, flags as separate ints */
@@ -628,7 +675,7 @@ static int test_modeline_ops(void)
             mirror->htotal, mirror->vdisplay, mirror->vsync_start, mirror->vsync_end,
             mirror->vtotal, mirror->vrefresh, mirror->interlace, mirror->doublescan,
             mirror->hsync, mirror->vsync);
-      return 1;
+      goto fail;
    }
    if (s_set_video_mode_calls != 1 || s_set_video_mode_w != 320
          || s_set_video_mode_h != 240 || !s_set_video_mode_fs)
@@ -636,12 +683,13 @@ static int test_modeline_ops(void)
       fprintf(stderr, "FAIL: set made %u mode set(s), last %ux%u fs=%d\n",
             s_set_video_mode_calls, s_set_video_mode_w, s_set_video_mode_h,
             s_set_video_mode_fs);
-      return 1;
+      goto fail;
    }
 
    /* A second set: the mirror is rewritten, never REINIT'd around */
    mode.interlace = 1;
-   mode.vactive   = mode.height = 480;
+   mode.vactive   = 480;
+   mode.dims      = VIDEO_SCALE_PACK(VIDEO_SCALE_W(mode.dims), 480);
    mode.vbegin    = 483;
    mode.vend      = 489;
    mode.vtotal    = 523;
@@ -651,7 +699,7 @@ static int test_modeline_ops(void)
          || s_set_video_mode_calls != 2)
    {
       fprintf(stderr, "FAIL: second set did not rewrite the mirror\n");
-      return 1;
+      goto fail;
    }
 
    dispserv_kms.modeline_close(data);
@@ -662,6 +710,14 @@ static int test_modeline_ops(void)
 
    printf("[pass] modeline set mirrors the timing for the DRM context and requests one mode set\n");
    return 0;
+
+fail:
+   /* So a failing check reports itself rather than a leak behind it */
+   dispserv_kms.destroy(data);
+   free_connector(g_drm_connector);
+   g_drm_connector = NULL;
+   g_drm_mode      = NULL;
+   return 1;
 }
 
 /* ------------------------------------------------------------------

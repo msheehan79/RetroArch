@@ -342,8 +342,7 @@ static void gfx_ctx_x_swap_buffers(void *data)
 #endif
 }
 
-static bool gfx_ctx_x_set_resize(void *data,
-      unsigned width, unsigned height)
+static bool gfx_ctx_x_set_resize(void *data, unsigned dims)
 {
    gfx_ctx_x_data_t *x = (gfx_ctx_x_data_t*)data;
 
@@ -357,7 +356,8 @@ static bool gfx_ctx_x_set_resize(void *data,
    if (x->is_fullscreen)
    {
       XMapRaised(g_x11_dpy, g_x11_win);
-      RARCH_LOG("[GLX] Resized fullscreen resolution to %dx%d.\n", width, height);
+      RARCH_LOG("[GLX] Resized fullscreen resolution to %ux%u.\n",
+            VIDEO_SCALE_W(dims), VIDEO_SCALE_H(dims));
    }
 
    return true;
@@ -490,9 +490,11 @@ error:
 }
 
 static bool gfx_ctx_x_set_video_mode(void *data,
-      unsigned width, unsigned height,
+      unsigned dims,
       bool fullscreen)
 {
+   unsigned width  = VIDEO_SCALE_W(dims);
+   unsigned height = VIDEO_SCALE_H(dims);
    XEvent event;
 #ifdef HAVE_XF86VM
    bool true_full            = false;
@@ -550,7 +552,7 @@ static bool gfx_ctx_x_set_video_mode(void *data,
          RootWindow(g_x11_dpy, vi->screen), vi->visual, AllocNone);
    swa.event_mask = StructureNotifyMask | KeyPressMask | KeyReleaseMask |
       LeaveWindowMask | EnterWindowMask |
-      ButtonReleaseMask | ButtonPressMask;
+      ButtonReleaseMask | ButtonPressMask | FocusChangeMask;
    swa.override_redirect = False;
 
    x->is_fullscreen = fullscreen;

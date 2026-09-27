@@ -198,8 +198,7 @@ static int srv_enum(void *data, video_modeline_t *modes, int max)
    modes[0].pclock  = 148500000;
    modes[0].vfreq   = 60.0;
    modes[0].hfreq   = 67500.0;
-   modes[0].width   = 1920;
-   modes[0].height  = 1080;
+   modes[0].dims    = VIDEO_SCALE_PACK(1920, 1080);
    modes[0].refresh = 60;
    modes[0].hactive = 1920;
    modes[0].hbegin  = 2008;
@@ -243,8 +242,7 @@ int video_display_server_list_outputs(video_output_info_t *out, int max)
    {
       memset(&out[i], 0, sizeof(out[i]));
       strlcpy(out[i].name, srv_out_name[i], sizeof(out[i].name));
-      out[i].width   = 640;
-      out[i].height  = 480;
+      out[i].dims = VIDEO_SCALE_PACK(640, 480);
       out[i].primary = (i == 0);
    }
    return i;
@@ -268,8 +266,7 @@ int video_display_server_get_edid(uint8_t *out, size_t max)
    mode.pclock  = 148500000;
    mode.vfreq   = 60.0;
    mode.hfreq   = 67500.0;
-   mode.width   = 1920;
-   mode.height  = 1080;
+   mode.dims    = VIDEO_SCALE_PACK(1920, 1080);
    mode.refresh = 60;
    mode.hactive = 1920;
    mode.hbegin  = 2008;
@@ -316,18 +313,14 @@ unsigned int retroarch_get_rotation(void) { return 0; }
 float video_driver_get_aspect_ratio(void) { return 4.0f / 3.0f; }
 void video_driver_scanline_init(void) { }
 void video_monitor_set_refresh_rate(float hz) { (void)hz; }
-void video_driver_set_output_size(unsigned width, unsigned height)
+void video_driver_set_output_dims(unsigned dims)
 {
-   (void)width;
-   (void)height;
+   (void)dims;
 }
 
-void video_driver_get_output_size(unsigned *width, unsigned *height)
+unsigned video_driver_get_output_dims(void)
 {
-   if (width)
-      *width = 640;
-   if (height)
-      *height = 480;
+   return VIDEO_SCALE_PACK(640, 480);
 }
 
 static const char *ctx_ident = "wl";
@@ -339,10 +332,13 @@ bool video_context_driver_get_ident(gfx_ctx_ident_t *ident)
    return true;
 }
 
+/* Content loaded, when a case needs the core/game override files */
+static char stub_content_path[512];
+
 const char *path_get(enum rarch_path_type type)
 {
    (void)type;
-   return "";
+   return stub_content_path;
 }
 
 bool fill_pathname_application_data(char *s, size_t len)
@@ -354,13 +350,13 @@ bool fill_pathname_application_data(char *s, size_t len)
    return true;
 }
 
+static char stub_config_dir[512];
+
 size_t fill_pathname_application_special(char *s, size_t len,
       enum application_special_type type)
 {
    (void)type;
-   if (len)
-      s[0] = '\0';
-   return 0;
+   return strlcpy(s, stub_config_dir, len);
 }
 
 /* ---- checks ---- */
@@ -386,13 +382,13 @@ static void check_eq(const char *what, int got, int want)
 /* 15 kHz, three geometry changes, as a core that changes mode does */
 static void run_switches(videocrt_switch_t *p_switch, int monitor_index)
 {
-   crt_switch_res_core(p_switch, 320, 320, 240, 59.94f, false,
+   crt_switch_res_core(p_switch, 320, VIDEO_SCALE_PACK(320, 240), 59.94f, false,
          CRT_SWITCH_15KHZ, 0, 0, monitor_index, false, 0, false,
          ASPECT_RATIO_CORE, 0);
-   crt_switch_res_core(p_switch, 256, 256, 224, 60.10f, false,
+   crt_switch_res_core(p_switch, 256, VIDEO_SCALE_PACK(256, 224), 60.10f, false,
          CRT_SWITCH_15KHZ, 0, 0, monitor_index, false, 0, false,
          ASPECT_RATIO_CORE, 0);
-   crt_switch_res_core(p_switch, 384, 384, 224, 59.64f, false,
+   crt_switch_res_core(p_switch, 384, VIDEO_SCALE_PACK(384, 224), 59.64f, false,
          CRT_SWITCH_15KHZ, 0, 0, monitor_index, false, 0, false,
          ASPECT_RATIO_CORE, 0);
 }
@@ -419,6 +415,13 @@ static void test_no_modeline_path(void)
          log_hits("[Modeline] Error switching"), 0);
    check("the mode list is still generated",
          log_hits("[CRT] Setting aspect ratio") >= 1);
+   /* The size published is the size asked for, each switch once. */
+   check_eq("publishes 320x240",
+         log_hits("[CRT] Setting screen size: 320x240."), 1);
+   check_eq("publishes 256x224",
+         log_hits("[CRT] Setting screen size: 256x224."), 1);
+   check_eq("publishes 384x224",
+         log_hits("[CRT] Setting screen size: 384x224."), 1);
 
    crt_destroy_modes(&sw);
 }
@@ -547,7 +550,7 @@ static void test_edid_preset_matches_content_refresh(void)
    srv_sets = 0;
    memset(&srv_last_set, 0, sizeof(srv_last_set));
 
-   crt_switch_res_core(&sw, 640, 640, 400, 70.086f, false,
+   crt_switch_res_core(&sw, 640, VIDEO_SCALE_PACK(640, 400), 70.086f, false,
          CRT_SWITCH_EDID, 0, 0, 0, false, 0, false, ASPECT_RATIO_CORE, 0);
 
    check("the display's own ranges were used",
@@ -581,7 +584,7 @@ static void test_lcd_preset_keeps_native_lines(void)
    srv_sets = 0;
    memset(&srv_last_set, 0, sizeof(srv_last_set));
 
-   crt_switch_res_core(&sw, 640, 640, 400, 70.086f, false,
+   crt_switch_res_core(&sw, 640, VIDEO_SCALE_PACK(640, 400), 70.086f, false,
          CRT_SWITCH_LCD, 0, 0, 0, false, 0, false, ASPECT_RATIO_CORE, 0);
 
    check("the refresh band came off the EDID",
@@ -591,6 +594,8 @@ static void test_lcd_preset_keeps_native_lines(void)
          srv_last_set.vfreq > 69.5 && srv_last_set.vfreq < 70.5);
    check("keeping the panel's line count",
          srv_last_set.vactive == 1080);
+   check_eq("and publishes the panel's size",
+         log_hits("[CRT] Setting screen size: 1920x1080."), 1);
 
    crt_destroy_modes(&sw);
    srv_have_edid    = false;
@@ -662,6 +667,126 @@ static void test_edid_hint_names_the_selected_head(void)
          log_hits("drm.edid_firmware=VGA-1:"), 1);
 }
 
+/* The core/directory/game .switchres.ini files refine the RetroArch
+ * geometry sliders, so a game file's h_shift must reach the mode the
+ * server is handed while the sliders sit at their defaults - and it
+ * must still be there on the game's next mode change, since the
+ * consumer rewrites the geometry on every switch. Moving a slider
+ * takes that one value back; the others the file set stay. Loading
+ * content without a file returns to the sliders. (Issue #19618.)
+ */
+static int hshift_of(const video_modeline_t *m)
+{
+   /* The generator moves hbegin/hend by h_shift, so read it back as
+    * the sync offset relative to the unshifted mode at this size */
+   return (m->hbegin - m->hactive);
+}
+
+static void test_ini_geometry_overrides_survive(void)
+{
+   videocrt_switch_t sw;
+   char dir[1024];
+   char ini[1100];
+   FILE *f;
+   int base_hbegin, base_vbegin;
+
+   printf("\n-- game .switchres.ini geometry over the sliders --\n");
+   memset(&sw, 0, sizeof(sw));
+   srv_has_ops = true;
+   srv_set_ok  = true;
+   srv_ident   = "x11";
+   ctx_ident   = "x11";
+
+   /* config/TestCore/game.switchres.ini with an obvious shift */
+   snprintf(dir, sizeof(dir), "%s/TestCore", getenv("XDG_CONFIG_HOME"));
+   strlcpy(stub_config_dir, getenv("XDG_CONFIG_HOME"), sizeof(stub_config_dir));
+   {
+      char mk[1200];
+      snprintf(mk, sizeof(mk), "mkdir -p '%s'", dir);
+      if (system(mk) != 0)
+         fails++;
+   }
+   snprintf(ini, sizeof(ini), "%s/game.switchres.ini", dir);
+   f = fopen(ini, "w");
+   check("wrote the game override file", f != NULL);
+   if (f)
+   {
+      fputs("h_shift 10\nv_shift 5\n", f);
+      fclose(f);
+   }
+   strlcpy(stub_content_path, "/roms/game", sizeof(stub_content_path));
+
+   /* Reference: the same switch with no core, so no override file */
+   log_reset();
+   srv_sets = 0;
+   stub_runloop_st.system.info.library_name = "";
+   crt_switch_res_core(&sw, 320, VIDEO_SCALE_PACK(320, 240), 59.94f, false,
+         CRT_SWITCH_15KHZ, 0, 0, 0, false, 0, false, ASPECT_RATIO_CORE, 0);
+   check("reference mode applied", srv_sets > 0);
+   base_hbegin = hshift_of(&srv_last_set);
+   base_vbegin = srv_last_set.vbegin - srv_last_set.vactive;
+
+   /* Now the core comes up and the game file is found */
+   stub_runloop_st.system.info.library_name = "TestCore";
+   log_reset();
+   srv_sets = 0;
+   crt_switch_res_core(&sw, 256, VIDEO_SCALE_PACK(256, 224), 60.10f, false,
+         CRT_SWITCH_15KHZ, 0, 0, 0, false, 0, false, ASPECT_RATIO_CORE, 0);
+   check("the game file was loaded",
+         log_hits("game override file") >= 1);
+   check("and its geometry was reported",
+         log_hits("Geometry from switchres.ini overrides: h_size 1.000 h_shift 10 v_shift 5") >= 1);
+   check("a mode was applied", srv_sets > 0);
+   check_eq("h_shift 10 from the file was recorded", sw.ini_h_shift, 10);
+   check_eq("v_shift 5 from the file was recorded", sw.ini_v_shift, 5);
+   /* At 256 wide the generator clamps h_shift to the porch it has,
+    * so only the sign and presence are pinned here; the exact value
+    * is checked at 320x240 below */
+   check("h_shift from the file reached the generator", sw.gen->h_shift > 0);
+   check_eq("v_shift 5 from the file reached the generator",
+         sw.gen->v_shift, 5);
+
+   /* The game changes mode again: the file's geometry must survive
+    * the per-switch rewrite */
+   srv_sets = 0;
+   crt_switch_res_core(&sw, 320, VIDEO_SCALE_PACK(320, 240), 59.94f, false,
+         CRT_SWITCH_15KHZ, 0, 0, 0, false, 0, false, ASPECT_RATIO_CORE, 0);
+   check("a mode was applied on the next change", srv_sets > 0);
+   check_eq("the files are parsed once per content, not per switch",
+         log_hits("game override file"), 1);
+   check_eq("h_shift still 10 on the next mode change", sw.gen->h_shift, 10);
+   check_eq("v_shift still 5 on the next mode change", sw.gen->v_shift, 5);
+   check("and the served mode is actually shifted against the reference",
+         hshift_of(&srv_last_set) != base_hbegin
+         && (srv_last_set.vbegin - srv_last_set.vactive) != base_vbegin);
+
+   /* The user moves the H-Shift slider: that one value is theirs
+    * now, v_shift from the file stays */
+   srv_sets = 0;
+   crt_switch_res_core(&sw, 320, VIDEO_SCALE_PACK(320, 240), 59.94f, false,
+         CRT_SWITCH_15KHZ, 3, 0, 0, false, 0, false, ASPECT_RATIO_CORE, 0);
+   check("a mode was applied after the slider moved", srv_sets > 0);
+   check_eq("the moved slider wins", sw.gen->h_shift, 3);
+   check_eq("the untouched v_shift keeps the file's value", sw.gen->v_shift, 5);
+
+   /* New content with no file of its own, coming up at its own
+    * size: back to the sliders */
+   strlcpy(stub_content_path, "/roms/other", sizeof(stub_content_path));
+   srv_sets = 0;
+   crt_switch_res_core(&sw, 256, VIDEO_SCALE_PACK(256, 224), 60.10f, false,
+         CRT_SWITCH_15KHZ, 3, 0, 0, false, 0, false, ASPECT_RATIO_CORE, 0);
+   check("a mode was applied for the other game", srv_sets > 0);
+   check_eq("h_shift is the slider's", sw.gen->h_shift, 3);
+   check_eq("v_shift is the slider's again", sw.gen->v_shift, 0);
+
+   crt_destroy_modes(&sw);
+   remove(ini);
+   stub_content_path[0] = '\0';
+   stub_config_dir[0]   = '\0';
+   stub_runloop_st.system.info.library_name = "";
+   ctx_ident = "wl";
+}
+
 int main(int argc, char **argv)
 {
    int i;
@@ -689,6 +814,7 @@ int main(int argc, char **argv)
    test_lcd_preset_keeps_native_lines();
    test_failing_set_still_reports();
    test_edid_hint_names_the_selected_head();
+   test_ini_geometry_overrides_survive();
 
    printf("\n%s\n", fails ? "FAILED" : "all checks passed");
    return fails ? 1 : 0;

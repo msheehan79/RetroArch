@@ -1195,6 +1195,10 @@ static const struct
    char s_8d3a8b68[6];
    char s_68d27147[13];
    char s_f02f73fc[42];
+   char s_b5721b90[31];
+   char s_e5b971a0[8];
+   char s_8f27c71e[16];
+   char s_17615fcf[6];
    char s_3a0a3fef[23];
    char s_1b6ed818[24];
    char s_89a75c21[25];
@@ -1450,6 +1454,7 @@ static const struct
    char s_d9d847b8[40];
    char s_7a6a492f[31];
    char s_cf28bcf5[29];
+   char s_d3e7cd81[15];
    char s_821edb57[29];
    char s_5f080876[28];
    char s_9358d8ba[29];
@@ -2313,7 +2318,9 @@ static const struct
    char s_8fc1e4da[11];
    char s_14ed14d0[7];
    char s_5c87e95b[19];
+   char s_fad361a0[36];
    char s_bb929824[23];
+   char s_fe2ec9bd[22];
    char s_5741c1d0[24];
    char s_a1a7717d[31];
    char s_e6ca3876[35];
@@ -2763,6 +2770,7 @@ static const struct
    char s_79b8ce4a[65];
    char s_a1a8257e[119];
    char s_282f7955[98];
+   char s_d5231783[258];
    char s_a68d6d11[64];
    char s_74022c02[118];
    char s_8abad013[83];
@@ -3083,6 +3091,7 @@ static const struct
    char s_6895dfd6[68];
    char s_788364f5[62];
    char s_dd9ff22a[52];
+   char s_ff7d19fe[235];
    char s_db495a9d[47];
    char s_ddc672a7[57];
    char s_ccea261d[158];
@@ -3152,7 +3161,7 @@ static const struct
    char s_5aa622cc[237];
    char s_2b908073[244];
    char s_64bea160[233];
-   char s_2826de99[422];
+   char s_2826de99[453];
    char s_97c62766[162];
    char s_6f458a85[132];
    char s_41702fdc[83];
@@ -3590,7 +3599,6 @@ static const struct
    char s_ffd591e0[50];
    char s_a51ab538[35];
    char s_55d6cc44[47];
-   char s_5a8f7fb9[223];
    char s_f2963d2d[30];
    char s_4c592ae1[123];
    char s_52ac4fb9[116];
@@ -3681,8 +3689,10 @@ static const struct
    char s_cfa51e8c[441];
    char s_b62c2f7e[364];
    char s_456fcbc9[404];
+   char s_ba8ff8ce[373];
    char s_82fab47a[54];
    char s_72e21512[240];
+   char s_9f6de46b[348];
    char s_66f2b57e[62];
    char s_a776daeb[73];
    char s_88095324[73];
@@ -3713,7 +3723,7 @@ static const struct
    char s_eec252b5[109];
    char s_f4e4e921[243];
    char s_7968f59d[43];
-   char s_8cee3615[214];
+   char s_8cee3615[327];
    char s_58c80718[411];
    char s_894ecb9a[425];
    char s_67d549fd[40];
@@ -5783,6 +5793,10 @@ static const struct
    "Men\303\272",
    "Modo quiosco",
    "Limitar velocidad de fotogramas del men\303\272",
+   "Mostrar extensiones de archivo",
+   "Siempre",
+   "Solo duplicados",
+   "Nunca",
    "Explorador de archivos",
    "Color azul de la fuente",
    "Color verde de la fuente",
@@ -6038,6 +6052,7 @@ static const struct
    "No hay opciones del n\303\272cleo disponibles",
    "No se ha seleccionado un disco",
    "No hay elementos disponibles",
+   "sin extensi\303\263n",
    "No hay favoritos disponibles",
    "No hay historial disponible",
    "No hay im\303\241genes disponibles",
@@ -6910,7 +6925,9 @@ static const struct
    "Desactivar",
    "Brillo",
    "L\303\255neas de barrido",
+   "Transmitir luminancia de fotogramas",
    "Disposici\303\263n subp\303\255xel",
+   "Usar tope de pantalla",
    "Disposiciones de v\303\255deo",
    "Latencia m\303\241xima de fotogramas",
    "M\303\241ximo de im\303\241genes en swap chain",
@@ -7545,6 +7562,10 @@ static const struct
    "men\303\272s cuando no se haya cargado un contenido.",
    "Modifica este ajuste para alterar la configuraci\303\263n horizontal y cambiar el tama\303\261o "
    "de la imagen.",
+   "Genera un modo de v\303\255deo que se corresponda con la resoluci\303\263n y frecuencia de actua"
+   "lizaci\303\263n del contenido. 15/31\302\240KHz es para pantallas CRT; Igualar imagen e Igualar "
+   "solo frecuencia de actualizaci\303\263n calculan los l\303\255mites a partir del EDID de la pant"
+   "alla.",
    "Alterna entre las resoluciones nativas y las ultrapanor\303\241micas.",
    "Si es necesario, utiliza una frecuencia de actualizaci\303\263n personalizada especificada en el"
    " archivo de configuraci\303\263n.",
@@ -8061,6 +8082,9 @@ static const struct
    "Selecciona el controlador de men\303\272 a usar (es necesario reiniciar).",
    "Protege la configuraci\303\263n ocultando los ajustes relacionados.",
    "Limita la velocidad de fotogramas dentro del men\303\272.",
+   "Especifica cu\303\241ndo se deben mostrar las extensiones de los archivos al buscar contenidos. "
+   "Los buscadores de archivos de shaders, superposiciones, archivos de configuraci\303\263n y archi"
+   "vos de los ajustes siempre mostrar\303\241n sus extensiones.",
    "Cambia los ajustes del explorador de archivos.",
    "Modifica la opacidad del fondo predeterminado del men\303\272.",
    "Establece el brillo del men\303\272 en cd/m\302\262 (nits) al usar una pantalla compatible con H"
@@ -8178,12 +8202,12 @@ static const struct
    "Reproduce la pista de audio cuando se muestren las miniaturas animadas en formato WebM. Compatib"
    "le con audios en formato Vorbis y Opus. El audio se reproducir\303\241 en bucle junto con la ani"
    "maci\303\263n y se detendr\303\241 al cerrar la miniatura.",
-   "Establece la cantidad de hilos que convertir\303\241n cada fotograma de una miniatura animada en"
-   " formato WebM o MP4 a p\303\255xeles. Un hilo mantiene toda la conversi\303\263n en el hilo de d"
-   "ecodificaci\303\263n. M\303\241s hilos repartir\303\241n el trabajo entre los n\303\272cleos, lo"
-   " que ayudar\303\241 a mostrar miniaturas de gran tama\303\261o en sistemas que tengan n\303\272c"
-   "leos de CPU de sobra, pero saturar\303\241n los n\303\272cleos en funcionamiento si no hay n\303"
-   "\272cleos de sobra.",
+   "Establece el n\303\272mero de hilos que se pueden utilizar para descodificar una miniatura anima"
+   "da. Un hilo mantendr\303\241 toda la decodificaci\303\263n dentro de su propio hilo. M\303\241s "
+   "de un hilo extender\303\241 el proceso a varios n\303\272cleos, lo que permitir\303\241 que una "
+   "previsualizaci\303\263n de gran tama\303\261o se reproduzca a su velocidad normal. Las previsual"
+   "izaciones se limitar\303\241n a un hilo cuando se est\303\251 ejecutando un n\303\272cleo para q"
+   "ue el juego conserve sus n\303\272cleos asignados.",
    "Escala autom\303\241ticamente las miniaturas cuyo ancho/alto sea inferior al valor especificado."
    " Mejora la calidad de la imagen afectando moderadamente al rendimiento.",
    "Muestra los textos de los men\303\272s que sean muy largos desplaz\303\241ndolos con una animaci"
@@ -8875,9 +8899,6 @@ static const struct
    "Muestra informaci\303\263n espec\303\255fica del dispositivo.",
    "Captura una imagen de la pantalla.",
    "Ejecuta otras tareas en un hilo independiente.",
-   "Mantiene los hilos principal y de audio en los n\303\272cleos m\303\241s r\303\241pidos de la CP"
-   "U cuando esta sea un procesador de n\303\272cleos mixtos. No afectar\303\241 a aquellos procesad"
-   "ores cuyos n\303\272cleos sean id\303\251nticos. Es necesario reiniciar.",
    "Tipo de miniaturas a mostrar.",
    "En este directorio se guardar\303\241n las car\303\241tulas, capturas de pantalla de ejemplo y m"
    "iniaturas de las pantallas de t\303\255tulo.",
@@ -9060,11 +9081,21 @@ static const struct
    "\255neas de barrido apagar\303\241 buena parte de la imagen, y el HDR recuperar\303\241 parte de"
    "l brillo perdido. Si necesitas un control m\303\241s preciso de tus l\303\255neas de barrido, de"
    "ber\303\255as recurrir a los shaders personalizados que incluye RetroArch.",
+   "Informa a un compositor de Wayland del rango de brillo que contiene un fotograma para que pueda "
+   "asociar contenidos en HDR a partir de la informaci\303\263n del fotograma en vez de tener que su"
+   "poner lo que son. Al desactivar esta opci\303\263n, el fotograma se describir\303\241 como Windo"
+   "ws-scRGB, como se hac\303\255a antes. Esta opci\303\263n har\303\241 efecto cuando se reinicie e"
+   "l controlador de v\303\255deo.",
    "Cambia los ajustes de v\303\255deo relacionados con el HDR.",
    "Selecciona la disposici\303\263n subp\303\255xel para tu pantalla (solo afecta a las l\303\255ne"
    "as de barrido). Si no sabes cu\303\241l es la disposici\303\263n subp\303\255xel de tu pantalla,"
    " busca la \302\253subpixel layout (disposici\303\263n subpixel)\302\273 de tu pantalla en Rtings"
    ".com.",
+   "Utiliza el brillo m\303\241ximo indicado por la pantalla en lugar del valor de la opci\303\263n "
+   "Tope de brillo en caso de que la pantalla informe del mismo: este valor ser\303\241 transmitido "
+   "a los n\303\272cleos y ser\303\241 el que se incluya entre los metadatos de HDR enviados a la pa"
+   "ntalla. Al desactivar esta opci\303\263n, se utilizar\303\241 el valor establecido en Tope de br"
+   "illo.",
    "En este directorio se guardar\303\241n las disposiciones de v\303\255deo.",
    "Informa al controlador de v\303\255deo que utilice un modo de b\303\272fer concreto.",
    "Informa al controlador de v\303\255deo que utilice un modo de b\303\272fer concreto.",
@@ -9121,9 +9152,11 @@ static const struct
    "te\302\273 reduce la escala cuando la imagen est\303\251 demasiado recortada, y en caso de que l"
    "os m\303\241rgenes sean demasiado grandes, desactiva el escalado por n\303\272meros enteros.",
    "Cambia los ajustes del escalado de v\303\255deo.",
-   "Sincroniza la presentaci\303\263n de la imagen con la posici\303\263n de las l\303\255neas de ba"
-   "rrido. Reduce la latencia a costa de aumentar las fragmentaciones en la imagen. Es necesario des"
-   "activar la sincron\303\255a vertical (Vsync).",
+   "Sincroniza la presentaci\303\263n de la imagen con la predicci\303\263n de la posici\303\263n de"
+   " las l\303\255neas de barrido seg\303\272n los tiempos del n\303\272cleo. Es necesario desactiva"
+   "r la sincron\303\255a vertical y el retraso de fotogramas, as\303\255 como tener una frecuencia "
+   "de imagen cercana al 100\302\240% de los FPS del n\303\272cleo y de la GPU a su velocidad m\303"
+   "\241xima.",
    "ADVERTENCIA: los parpadeos r\303\241pidos pueden provocar persistencia de la imagen (\302\253im"
    "\303\241genes fantasma\302\273) en algunas pantallas. Utiliza esta opci\303\263n bajo tu propia "
    "responsabilidad. // Simula de forma b\303\241sica el escalonamiento de las l\303\255neas de barr"
@@ -9896,7 +9929,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_es_blob_check[
-      (sizeof(msg_hash_es_blob) == (227631u
+      (sizeof(msg_hash_es_blob) == (228900u
 #ifdef ANDROID
        + 329u
 #endif
@@ -11498,6 +11531,10 @@ static const uint32_t msg_hash_es_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_DRIVER,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_ENABLE_KIOSK_MODE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_ENUM_THROTTLE_FRAMERATE,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_EXTENSION_DISPLAY,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_EXTENSION_DISPLAY_ALWAYS,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_EXTENSION_DISPLAY_DUPLICATES_ONLY,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_EXTENSION_DISPLAY_NEVER,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_SETTINGS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FONT_COLOR_BLUE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FONT_COLOR_GREEN,
@@ -11753,6 +11790,7 @@ static const uint32_t msg_hash_es_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_NO_CORE_OPTIONS_AVAILABLE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_NO_DISK,
    (uint32_t)MENU_ENUM_LABEL_VALUE_NO_ENTRIES_TO_DISPLAY,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_NO_EXTENSION,
    (uint32_t)MENU_ENUM_LABEL_VALUE_NO_FAVORITES_AVAILABLE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_NO_HISTORY_AVAILABLE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_NO_IMAGES_AVAILABLE,
@@ -12615,7 +12653,9 @@ static const uint32_t msg_hash_es_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_MODE_OFF,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_PAPER_WHITE_NITS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_SCANLINES,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_SEND_LUMINANCE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_SUBPIXEL_LAYOUT,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_USE_DISPLAY_PEAK,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_LAYOUT_DIRECTORY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_MAX_FRAME_LATENCY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_MAX_SWAPCHAIN_IMAGES,
@@ -13058,6 +13098,7 @@ static const uint32_t msg_hash_es_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_CRT_SWITCHRES_SETTINGS,
    (uint32_t)MENU_ENUM_SUBLABEL_CRT_SWITCH_HIRES_MENU,
    (uint32_t)MENU_ENUM_SUBLABEL_CRT_SWITCH_PORCH_ADJUST,
+   (uint32_t)MENU_ENUM_SUBLABEL_CRT_SWITCH_RESOLUTION,
    (uint32_t)MENU_ENUM_SUBLABEL_CRT_SWITCH_RESOLUTION_SUPER,
    (uint32_t)MENU_ENUM_SUBLABEL_CRT_SWITCH_RESOLUTION_USE_CUSTOM_REFRESH_RATE,
    (uint32_t)MENU_ENUM_SUBLABEL_CRT_SWITCH_VERTICAL_ADJUST,
@@ -13378,6 +13419,7 @@ static const uint32_t msg_hash_es_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_DRIVER,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_ENABLE_KIOSK_MODE,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_ENUM_THROTTLE_FRAMERATE,
+   (uint32_t)MENU_ENUM_SUBLABEL_MENU_FILE_BROWSER_EXTENSION_DISPLAY,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_FILE_BROWSER_SETTINGS,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_FRAMEBUFFER_OPACITY,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_HDR_BRIGHTNESS_NITS,
@@ -13885,7 +13927,6 @@ static const uint32_t msg_hash_es_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_SYSTEM_INFORMATION,
    (uint32_t)MENU_ENUM_SUBLABEL_TAKE_SCREENSHOT,
    (uint32_t)MENU_ENUM_SUBLABEL_THREADED_DATA_RUNLOOP_ENABLE,
-   (uint32_t)MENU_ENUM_SUBLABEL_THREAD_PREFER_FAST_CORES,
    (uint32_t)MENU_ENUM_SUBLABEL_THUMBNAILS,
    (uint32_t)MENU_ENUM_SUBLABEL_THUMBNAILS_DIRECTORY,
    (uint32_t)MENU_ENUM_SUBLABEL_THUMBNAILS_MATERIALUI,
@@ -13975,8 +14016,10 @@ static const uint32_t msg_hash_es_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_MAX_NITS,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_PAPER_WHITE_NITS,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_SCANLINES,
+   (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_SEND_LUMINANCE,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_SETTINGS,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_SUBPIXEL_LAYOUT,
+   (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_USE_DISPLAY_PEAK,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_LAYOUT_DIRECTORY,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_MAX_FRAME_LATENCY,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_MAX_SWAPCHAIN_IMAGES,

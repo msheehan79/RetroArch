@@ -960,8 +960,7 @@ static void *omap_init(const video_info_t *video,
 
    omap_init_font(vid);
 
-   vid->menu.frame = calloc(VIDEO_SCALE_W(vid->dims)
-         * VIDEO_SCALE_H(vid->dims), vid->bytes_per_pixel);
+   vid->menu.frame = calloc(VIDEO_SCALE_AREA(vid->dims), vid->bytes_per_pixel);
    if (!vid->menu.frame)
       goto fail_omapfb;
 
@@ -980,12 +979,13 @@ fail:
    return NULL;
 }
 
-static bool omap_frame(void *data, const void *frame, unsigned width,
-      unsigned height, uint64_t frame_count, unsigned pitch, const char *msg,
+static bool omap_frame(void *data, const void *frame,
+      unsigned dims, uint64_t frame_count, unsigned pitch, const char *msg,
       video_frame_info_t *video_info)
 {
+   unsigned width = VIDEO_SCALE_W(dims);
+   unsigned height = VIDEO_SCALE_H(dims);
    omap_video_t  *vid = (omap_video_t*)data;
-   unsigned      dims = VIDEO_SCALE_PACK(width, height);
 #ifdef HAVE_MENU
    bool menu_is_alive = (video_info->menu_st_flags & MENU_ST_FLAG_ALIVE) ? true : false;
 #endif
@@ -1048,10 +1048,9 @@ static void omap_viewport_info(void *data, struct video_viewport *vp)
    if (!vid)
       return;
 
-   vp->x = vp->y     = 0;
+   vp->pos = VIDEO_POS_PACK(0, 0);
 
-   vp->width         = vp->full_width  = VIDEO_SCALE_W(vid->dims);
-   vp->height        = vp->full_height = VIDEO_SCALE_H(vid->dims);
+   vp->dims          = vp->full_dims   = vid->dims;
 }
 
 static bool omap_suppress_screensaver(void *data, bool enable) { return false; }
@@ -1061,7 +1060,7 @@ static bool omap_set_shader(void *data,
       enum rarch_shader_type type, const char *path) { return false; }
 
 static void omap_set_texture_frame(void *data, const void *frame, bool rgb32,
-      unsigned width, unsigned height, float alpha)
+      unsigned dims, float alpha)
 {
    omap_video_t          *vid = (omap_video_t*)data;
    enum scaler_pix_fmt format = rgb32 ? SCALER_FMT_ARGB8888 : SCALER_FMT_RGBA4444;
@@ -1075,9 +1074,9 @@ static void omap_set_texture_frame(void *data, const void *frame, bool rgb32,
          vid_width,
          VIDEO_SCALE_H(vid->dims),
          vid_width * vid->bytes_per_pixel,
-         width,
-         height,
-         width * (rgb32 ? sizeof(uint32_t) : sizeof(uint16_t)));
+         VIDEO_SCALE_W(dims),
+         VIDEO_SCALE_H(dims),
+         VIDEO_SCALE_W(dims) * (rgb32 ? sizeof(uint32_t) : sizeof(uint16_t)));
 }
 
 static void omap_set_texture_enable(void *data, bool state, bool full_screen)
@@ -1146,7 +1145,6 @@ video_driver_t video_omap = {
    NULL, /* set_rotation */
    omap_viewport_info,
    NULL, /* read_viewport  */
-   NULL, /* read_frame_raw */
 #ifdef HAVE_OVERLAY
    NULL, /* get_overlay_interface */
 #endif

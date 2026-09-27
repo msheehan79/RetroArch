@@ -39,7 +39,9 @@
 
 #include <formats/rmp4.h>
 #include <formats/rh264.h>
+#ifdef HAVE_THREADS
 #include <rthreads/tpool.h>
+#endif
 
 static int fails;
 static char dir[256];
@@ -611,7 +613,9 @@ int main(void)
       const char *te = getenv("RH264_FILE_THREADS");
       if (!ref)
          return 2;
+      #ifdef HAVE_THREADS
       g_pool = tpool_create_with_stack_size(3, 512 * 1024);
+      #endif
       bad = compare(getenv("RH264_FILE"), ref, rlen, ref, 0, &nf);
       printf("one thread: %d frames, %ld differing samples, %d reads short of their rows\n",
             nf, bad, rh264_video_ref_wait_misses());
@@ -663,7 +667,9 @@ int main(void)
     * and in CABAC the contexts still see it.  Intra macroblocks amid
     * inter ones in P / B pictures exercise every neighbour position. */
    printf("constrained_intra_pred, byte-exact vs ffmpeg:\n");
+   #ifdef HAVE_THREADS
    g_pool = tpool_create_with_stack_size(3, 512 * 1024);
+   #endif
    if (!g_pool)
       printf("no thread pool: the concurrent decodes are skipped\n");
    oracle_case("cip_cabac",  "testsrc2=s=176x144:r=15",   8, "yuv420p", "-crf 20",
@@ -708,6 +714,16 @@ int main(void)
     * that eight slices are eight rows of macroblocks. */
    oracle_case("slices8_ipb",    "mandelbrot=s=176x256:r=10", 8, "yuv420p", "-qp 0",
          "-preset medium -x264-params slices=8:bframes=2");
+   /* Interlaced, macroblock-adaptive frame/field (x264's interlaced
+    * coding): pair scanning, field motion compensation and the
+    * per-pair deblocking; and with pictures in flight, the rows of a
+    * MBAFF picture published only at its completion. */
+   oracle_case("mbaff_cavlc",    "mandelbrot=s=176x144:r=10", 8, "yuv420p", "-crf 20",
+         "-preset medium -x264-params tff=1:cabac=0:bframes=2");
+   oracle_case("mbaff_cabac_b",  "mandelbrot=s=176x144:r=10", 8, "yuv420p", "-crf 20",
+         "-preset medium -x264-params tff=1:cabac=1:bframes=2:b-pyramid=normal");
+   oracle_case("mbaff_wp",       "mandelbrot=s=176x144:r=10", 8, "yuv420p", "-crf 20",
+         "-preset medium -x264-params tff=1:cabac=1:bframes=2:weightp=2");
 
    run("rm -rf '%s'", dir);
    /* The row counter every reference read consults: on one thread a

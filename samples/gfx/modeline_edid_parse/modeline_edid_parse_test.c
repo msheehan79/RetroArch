@@ -37,10 +37,13 @@
 #include <string.h>
 
 #define MODELINE_STANDALONE
-#define RARCH_LOG(...)  do { } while (0)
-#define RARCH_DBG(...)  do { } while (0)
-#define RARCH_ERR(...)  do { } while (0)
-#define RARCH_WARN(...) do { } while (0)
+/* The engine's log lines are dropped, their arguments still evaluated
+ * as a real build evaluates them. */
+static void edid_log_drop(const char *fmt, ...) { (void)fmt; }
+#define RARCH_LOG  edid_log_drop
+#define RARCH_DBG  edid_log_drop
+#define RARCH_ERR  edid_log_drop
+#define RARCH_WARN edid_log_drop
 
 #include "../../../gfx/modeline/modeline_core.c"
 #include "../../../gfx/modeline/modeline_monitor.c"
@@ -297,12 +300,13 @@ static void test_modern(void)
    CHECK(info.established == ((1u << 2) | (1u << 7) | (1u << 12) | (1u << 16)),
          "established %x", info.established);
    CHECK(info.n_std == 4, "std %u", info.n_std);
-   CHECK(info.std[0].width == 1920 && info.std[0].height == 1080 && info.std[0].refresh == 60,
-         "std0 %ux%u@%u", info.std[0].width, info.std[0].height, info.std[0].refresh);
-   CHECK(info.std[1].width == 1280 && info.std[1].height == 1024, "std1");
-   CHECK(info.std[2].width == 1600 && info.std[2].height == 1200, "std2");
-   CHECK(info.std[3].width == 1680 && info.std[3].height == 1050, "std3 %ux%u",
-         info.std[3].width, info.std[3].height);
+   CHECK(info.std[0].dims == VIDEO_SCALE_PACK(1920, 1080) && info.std[0].refresh == 60,
+         "std0 %ux%u@%u", VIDEO_SCALE_W(info.std[0].dims),
+         VIDEO_SCALE_H(info.std[0].dims), info.std[0].refresh);
+   CHECK(info.std[1].dims == VIDEO_SCALE_PACK(1280, 1024), "std1");
+   CHECK(info.std[2].dims == VIDEO_SCALE_PACK(1600, 1200), "std2");
+   CHECK(info.std[3].dims == VIDEO_SCALE_PACK(1680, 1050), "std3 %ux%u",
+         VIDEO_SCALE_W(info.std[3].dims), VIDEO_SCALE_H(info.std[3].dims));
    CHECK(info.has_range && info.vfreq_min == 48 && info.vfreq_max == 144
          && info.hfreq_min == 30 && info.hfreq_max == 265
          && info.pclock_max == 330 && info.range_type == 0x04,

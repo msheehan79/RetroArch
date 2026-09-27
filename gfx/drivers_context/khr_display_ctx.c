@@ -30,8 +30,7 @@ typedef struct
 {
    gfx_ctx_vulkan_data_t vk;
    int swap_interval;
-   unsigned width;
-   unsigned height;
+   unsigned dims;                /* VIDEO_SCALE_PACK */
    unsigned refresh_rate_x1000;
 } khr_display_ctx_data_t;
 
@@ -50,11 +49,10 @@ static void gfx_ctx_khr_display_destroy(void *data)
 }
 
 static void gfx_ctx_khr_display_get_video_size(void *data,
-      unsigned *width, unsigned *height)
+      unsigned *dims)
 {
    khr_display_ctx_data_t *khr = (khr_display_ctx_data_t*)data;
-   *width                      = khr->width;
-   *height                     = khr->height;
+   *dims = khr->dims;
 }
 
 static float gfx_ctx_khr_display_get_refresh_rate(void *data)
@@ -92,15 +90,14 @@ error:
 }
 
 static void gfx_ctx_khr_display_check_window(void *data, bool *quit,
-      bool *resize, unsigned *width, unsigned *height)
+      bool *resize, unsigned *dims)
 {
    khr_display_ctx_data_t *khr = (khr_display_ctx_data_t*)data;
    *resize                     = (khr->vk.flags & VK_DATA_FLAG_NEED_NEW_SWAPCHAIN) ? true : false;
 
-   if (khr->width != *width || khr->height != *height)
+   if (khr->dims != *dims)
    {
-      *width                   = khr->width;
-      *height                  = khr->height;
+      *dims                   = khr->dims;
       *resize                  = true;
    }
 
@@ -108,16 +105,13 @@ static void gfx_ctx_khr_display_check_window(void *data, bool *quit,
       *quit                    = true;
 }
 
-static bool gfx_ctx_khr_display_set_resize(void *data,
-      unsigned width, unsigned height)
+static bool gfx_ctx_khr_display_set_resize(void *data, unsigned dims)
 {
    khr_display_ctx_data_t *khr = (khr_display_ctx_data_t*)data;
 
-   khr->width                  = width;
-   khr->height                 = height;
+   khr->dims                   = dims;
 
-   if (!vulkan_create_swapchain(&khr->vk, khr->width, khr->height,
-            khr->swap_interval))
+   if (!vulkan_create_swapchain(&khr->vk, dims, khr->swap_interval))
    {
       RARCH_ERR("[Vulkan] Failed to update swapchain.\n");
       return false;
@@ -133,7 +127,7 @@ static bool gfx_ctx_khr_display_set_resize(void *data,
 }
 
 static bool gfx_ctx_khr_display_set_video_mode(void *data,
-      unsigned width, unsigned height,
+      unsigned dims,
       bool fullscreen)
 {
    struct vulkan_display_surface_info info;
@@ -142,27 +136,20 @@ static bool gfx_ctx_khr_display_set_video_mode(void *data,
    unsigned video_monitor_index   = settings->uints.video_monitor_index;
    unsigned refresh_rate_x1000    = settings->floats.video_refresh_rate * 1000;
 
-   if (!fullscreen)
-   {
-      width                       = 0;
-      height                      = 0;
-   }
-
-   info.width                     = width;
-   info.height                    = height;
+   /* Windowed asks for no particular mode: the largest one. */
+   info.dims                      = fullscreen ? dims : 0;
    info.monitor_index             = video_monitor_index;
    info.refresh_rate_x1000        = refresh_rate_x1000;
 
    if (!vulkan_surface_create(&khr->vk, VULKAN_WSI_DISPLAY, &info, NULL,
-            0, 0, khr->swap_interval))
+            0, khr->swap_interval))
    {
       RARCH_ERR("[Vulkan] Failed to create KHR_display surface.\n");
       gfx_ctx_khr_display_destroy(data);
       return false;
    }
 
-   khr->width                     = khr->vk.context.swapchain_width;
-   khr->height                    = khr->vk.context.swapchain_height;
+   khr->dims                      = khr->vk.context.swapchain_dims;
    khr->refresh_rate_x1000        = info.refresh_rate_x1000;
 
    return true;

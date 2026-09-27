@@ -151,7 +151,8 @@ struct lut_info
 
 struct shader_pass
 {
-   unsigned last_width, last_height;
+   /* The frame size the pass last built vertices for, packed. */
+   unsigned last_dims;
    struct LinkInfo info;
    D3DPOOL pool;
    LPDIRECT3DTEXTURE9 tex;
@@ -193,8 +194,7 @@ typedef struct d3d9_hlsl_renderchain
       LPDIRECT3DTEXTURE9 tex[TEXTURES];
       LPDIRECT3DVERTEXBUFFER9 vertex_buf[TEXTURES];
       unsigned ptr;
-      unsigned last_width[TEXTURES];
-      unsigned last_height[TEXTURES];
+      unsigned last_dims[TEXTURES];
    } prev;
    LPDIRECT3DDEVICE9 dev;
    D3DVIEWPORT9 *out_vp;
@@ -271,18 +271,17 @@ static INLINE bool d3d9_hlsl_renderchain_set_pass_size(
       LPDIRECT3DDEVICE9 dev,
       struct shader_pass *pass,
       struct shader_pass *pass2,
-      unsigned width, unsigned height)
+      unsigned dims)
 {
-   if (width != pass->info.tex_w || height != pass->info.tex_h)
+   if (pass->info.tex_dims != dims)
    {
       IDirect3DTexture9_Release(pass->tex);
 
-      pass->info.tex_w = width;
-      pass->info.tex_h = height;
-      pass->pool       = D3DPOOL_DEFAULT;
-      pass->tex        = NULL;
+      pass->info.tex_dims = dims;
+      pass->pool          = D3DPOOL_DEFAULT;
+      pass->tex           = NULL;
       IDirect3DDevice9_CreateTexture(dev,
-            width, height, 1,
+            VIDEO_SCALE_W(dims), VIDEO_SCALE_H(dims), 1,
             D3DUSAGE_RENDERTARGET,
             (pass2->info.pass->fbo.flags & FBO_SCALE_FLAG_FP_FBO)
             ? D3DFMT_A32B32G32R32F
@@ -317,14 +316,14 @@ static INLINE void d3d9_recompute_pass_sizes(
    unsigned out_height               = 0;
 
    link_info.pass                    = &d3d->shader.pass[0];
-   link_info.tex_w                   = current_width;
-   link_info.tex_h                   = current_height;
+   link_info.tex_dims                = VIDEO_SCALE_PACK(current_width,
+         current_height);
 
    if (!d3d9_hlsl_renderchain_set_pass_size(dev,
             (struct shader_pass*)&chain->passes->data[0],
             (struct shader_pass*)&chain->passes->data[
             chain->passes->count - 1],
-            current_width, current_height))
+            link_info.tex_dims))
    {
       RARCH_ERR("[D3D9] Failed to set pass size.\n");
       return;
@@ -357,14 +356,14 @@ static INLINE void d3d9_recompute_pass_sizes(
             break;
       }
 
-      link_info.tex_w = next_pow2(out_width);
-      link_info.tex_h = next_pow2(out_height);
+      link_info.tex_dims = VIDEO_SCALE_PACK(next_pow2(out_width),
+            next_pow2(out_height));
 
       if (!d3d9_hlsl_renderchain_set_pass_size(dev,
                (struct shader_pass*)&chain->passes->data[i],
                (struct shader_pass*)&chain->passes->data[
                chain->passes->count - 1],
-               link_info.tex_w, link_info.tex_h))
+               link_info.tex_dims))
       {
          RARCH_ERR("[D3D9] Failed to set pass size.\n");
          return;
@@ -756,8 +755,10 @@ static void gfx_display_d3d9_bind_texture(gfx_display_ctx_draw_t *draw,
 }
 
 static void gfx_display_d3d9_hlsl_draw(gfx_display_ctx_draw_t *draw,
-      void *data, unsigned video_width, unsigned video_height)
+      void *data, unsigned video_dims)
 {
+   unsigned video_width  = VIDEO_SCALE_W(video_dims);
+   unsigned video_height = VIDEO_SCALE_H(video_dims);
    unsigned i;
    LPDIRECT3DDEVICE9 dev;
    bool has_vertex_data;
@@ -866,7 +867,7 @@ static void gfx_display_d3d9_hlsl_draw(gfx_display_ctx_draw_t *draw,
    }
 
    /* Determine whether caller provides explicit vertex arrays or
-    * expects us to build the quad from draw->x/y/width/height
+    * expects us to build the quad from draw->pos and draw->dims
     * (the single-sprite path used by Ozone and other modern menus).
     * Mirrors the d3d10 vertex_count==1 vs multi-vertex split. */
    has_vertex_data = draw->coords->vertex
@@ -878,7 +879,7 @@ static void gfx_display_d3d9_hlsl_draw(gfx_display_ctx_draw_t *draw,
    if (!has_vertex_data)
    {
       /* Single-sprite path: no explicit vertex arrays provided.
-       * Build a quad directly from draw->x/y/width/height in
+       * Build a quad directly from draw->pos and draw->dims in
        * normalized [0,1] space, using DrawPrimitiveUP to avoid
        * any vertex buffer offset/locking issues. */
       D3DCOLOR col[4];
@@ -906,12 +907,12 @@ static void gfx_display_d3d9_hlsl_draw(gfx_display_ctx_draw_t *draw,
 
       /* Normalize to [0,1] range.
        * Both ozone_draw_icon and gfx_display_draw_quad pre-flip Y
-       * (draw.y = height - y - h). The Y-flip here undoes that,
+       * (the packed y is height - y - h). The Y-flip here undoes that,
        * then topdown_ortho applies the correct top-down mapping. */
-      x1 = draw->x / (float)video_width;
-      y1 = ((float)video_height - draw->y - VIDEO_SCALE_H(draw->dims)) / (float)video_height;
-      x2 = (draw->x + VIDEO_SCALE_W(draw->dims))  / (float)video_width;
-      y2 = ((float)video_height - draw->y) / (float)video_height;
+      x1 = VIDEO_POS_X(draw->pos) / (float)video_width;
+      y1 = ((float)video_height - VIDEO_POS_Y(draw->pos) - VIDEO_SCALE_H(draw->dims)) / (float)video_height;
+      x2 = (VIDEO_POS_X(draw->pos) + VIDEO_SCALE_W(draw->dims))  / (float)video_width;
+      y2 = ((float)video_height - VIDEO_POS_Y(draw->pos)) / (float)video_height;
 
       /* Apply scale_factor: scale the quad around its center,
        * matching D3D10's geometry shader params.scaling behavior. */
@@ -1104,7 +1105,7 @@ static void gfx_display_d3d9_hlsl_draw(gfx_display_ctx_draw_t *draw,
 static void gfx_display_d3d9_hlsl_draw_pipeline(
       gfx_display_ctx_draw_t *draw,
       gfx_display_t *p_disp,
-      void *data, unsigned video_width, unsigned video_height)
+      void *data, unsigned video_dims)
 {
    static float t                        = 0.0f;
    video_coord_array_t *ca               = NULL;
@@ -1115,8 +1116,7 @@ static void gfx_display_d3d9_hlsl_draw_pipeline(
 
    ca                                    = &p_disp->dispca;
 
-   draw->x                               = 0;
-   draw->y                               = 0;
+   draw->pos                             = VIDEO_POS_PACK(0, 0);
    draw->coords                          = NULL;
    draw->matrix_data                     = NULL;
 
@@ -1333,11 +1333,11 @@ static void gfx_display_d3d9_hlsl_draw_pipeline(
    }
 }
 
-static void gfx_display_d3d9_hlsl_scissor_begin(
-      void *data,
-      unsigned video_width, unsigned video_height,
-      int x, int y, unsigned width, unsigned height)
+static void gfx_display_d3d9_hlsl_scissor_begin(void *data, unsigned video_dims,
+      int x, int y, unsigned dims)
 {
+   unsigned width        = VIDEO_SCALE_W(dims);
+   unsigned height       = VIDEO_SCALE_H(dims);
    RECT rect;
    d3d9_video_t *d3d9 = (d3d9_video_t*)data;
 
@@ -1352,9 +1352,10 @@ static void gfx_display_d3d9_hlsl_scissor_begin(
    IDirect3DDevice9_SetScissorRect(d3d9->dev, &rect);
 }
 
-static void gfx_display_d3d9_hlsl_scissor_end(void *data,
-      unsigned video_width, unsigned video_height)
+static void gfx_display_d3d9_hlsl_scissor_end(void *data, unsigned video_dims)
 {
+   unsigned video_width  = VIDEO_SCALE_W(video_dims);
+   unsigned video_height = VIDEO_SCALE_H(video_dims);
    RECT rect;
    d3d9_video_t   *d3d9 = (d3d9_video_t*)data;
 
@@ -1574,7 +1575,7 @@ static void d3d9_font_render_msg(
    enum text_alignment text_align;
    int drop_x, drop_y;
    unsigned r, g, b, alpha;
-   D3DCOLOR color, color_dark;
+   D3DCOLOR color, color_dark = 0;
    struct font_line_metrics *line_metrics = NULL;
    float line_height;
    d3d9_font_t *font  = (d3d9_font_t*)data;
@@ -1587,8 +1588,8 @@ static void d3d9_font_render_msg(
    if (!d3d)
       return;
 
-   width  = d3d->vp.full_width;
-   height = d3d->vp.full_height;
+   width  = VIDEO_SCALE_W(d3d->vp.full_dims);
+   height = VIDEO_SCALE_H(d3d->vp.full_dims);
    if (!width || !height)
       return;
 
@@ -2202,8 +2203,7 @@ static bool hlsl_d3d9_renderchain_create_first_pass(
       : D3D9_XRGB8888_FORMAT;
 
    pass.info                     = *info;
-   pass.last_width               = 0;
-   pass.last_height              = 0;
+   pass.last_dims                = 0;
    pass.attrib_map               = (struct unsigned_vector_list*)
       unsigned_vector_list_new();
 
@@ -2213,8 +2213,7 @@ static bool hlsl_d3d9_renderchain_create_first_pass(
       int32_t filter             = d3d_translate_filter(info->pass->filter);
       for (i = 0; i < TEXTURES; i++)
       {
-         chain->prev.last_width[i]  = 0;
-         chain->prev.last_height[i] = 0;
+         chain->prev.last_dims[i]   = 0;
          chain->prev.vertex_buf[i]  = NULL;
             if (!SUCCEEDED(IDirect3DDevice9_CreateVertexBuffer(
                         chain->dev,
@@ -2229,7 +2228,8 @@ static bool hlsl_d3d9_renderchain_create_first_pass(
 
          chain->prev.tex[i] = NULL;
          IDirect3DDevice9_CreateTexture(chain->dev,
-               info->tex_w, info->tex_h, 1, 0,
+               VIDEO_SCALE_W(info->tex_dims),
+               VIDEO_SCALE_H(info->tex_dims), 1, 0,
                (D3DFORMAT)fmt,
                D3DPOOL_MANAGED,
                (struct IDirect3DTexture9**)&chain->prev.tex[i], NULL);
@@ -2308,15 +2308,16 @@ static void d3d9_hlsl_renderchain_render_pass(
    }
 
    /* === Set vertices === */
-   if (pass->last_width != width || pass->last_height != height)
+   if (pass->last_dims != VIDEO_SCALE_PACK(width, height))
    {
       struct Vertex vert[4];
       void *verts       = NULL;
-      float _u          = (float)(width)  / pass->info.tex_w;
-      float _v          = (float)(height) / pass->info.tex_h;
+      float _u          = (float)(width)
+         / VIDEO_SCALE_W(pass->info.tex_dims);
+      float _v          = (float)(height)
+         / VIDEO_SCALE_H(pass->info.tex_dims);
 
-      pass->last_width  = width;
-      pass->last_height = height;
+      pass->last_dims   = VIDEO_SCALE_PACK(width, height);
 
       vert[0].x        =  0.0f;
       vert[0].y        =  1.0f;
@@ -2407,10 +2408,10 @@ static void d3d9_hlsl_renderchain_render_pass(
          float output_size[2];
          float frame_cnt;
 
-         video_size[0]   = (float)pass->last_width;
-         video_size[1]   = (float)pass->last_height;
-         texture_size[0] = (float)pass->info.tex_w;
-         texture_size[1] = (float)pass->info.tex_h;
+         video_size[0]   = (float)VIDEO_SCALE_W(pass->last_dims);
+         video_size[1]   = (float)VIDEO_SCALE_H(pass->last_dims);
+         texture_size[0] = (float)VIDEO_SCALE_W(pass->info.tex_dims);
+         texture_size[1] = (float)VIDEO_SCALE_H(pass->info.tex_dims);
          output_size[0]  = (float)vp_width;
          output_size[1]  = (float)vp_height;
 
@@ -2567,12 +2568,12 @@ static void d3d9_hlsl_renderchain_render_pass(
          {
             float vs[4];
             float ts[4];
-            vs[0] = (float)first_pass->last_width;
-            vs[1] = (float)first_pass->last_height;
+            vs[0] = (float)VIDEO_SCALE_W(first_pass->last_dims);
+            vs[1] = (float)VIDEO_SCALE_H(first_pass->last_dims);
             vs[2] = 0.0f;
             vs[3] = 0.0f;
-            ts[0] = (float)first_pass->info.tex_w;
-            ts[1] = (float)first_pass->info.tex_h;
+            ts[0] = (float)VIDEO_SCALE_W(first_pass->info.tex_dims);
+            ts[1] = (float)VIDEO_SCALE_H(first_pass->info.tex_dims);
             ts[2] = 0.0f;
             ts[3] = 0.0f;
             d3d9_hlsl_set_vs_const(chain->chain.dev, pd->vs_map.orig_video_size,   vs, 1);
@@ -2588,8 +2589,10 @@ static void d3d9_hlsl_renderchain_render_pass(
                chain->chain.passes->data[0].info.pass->filter);
          float ts[4];
 
-         ts[0] = (float)chain->chain.passes->data[0].info.tex_w;
-         ts[1] = (float)chain->chain.passes->data[0].info.tex_h;
+         ts[0] = (float)VIDEO_SCALE_W(
+               chain->chain.passes->data[0].info.tex_dims);
+         ts[1] = (float)VIDEO_SCALE_H(
+               chain->chain.passes->data[0].info.tex_dims);
          ts[2] = 0.0f;
          ts[3] = 0.0f;
 
@@ -2615,10 +2618,10 @@ static void d3d9_hlsl_renderchain_render_pass(
 
             {
                float vs[4];
-               vs[0] = (float)chain->chain.prev.last_width[
-                     (chain->chain.prev.ptr - (i + 1)) & TEXTURESMASK];
-               vs[1] = (float)chain->chain.prev.last_height[
-                     (chain->chain.prev.ptr - (i + 1)) & TEXTURESMASK];
+               vs[0] = (float)VIDEO_SCALE_W(chain->chain.prev.last_dims[
+                     (chain->chain.prev.ptr - (i + 1)) & TEXTURESMASK]);
+               vs[1] = (float)VIDEO_SCALE_H(chain->chain.prev.last_dims[
+                     (chain->chain.prev.ptr - (i + 1)) & TEXTURESMASK]);
                vs[2] = 0.0f;
                vs[3] = 0.0f;
                d3d9_hlsl_set_vs_const(chain->chain.dev, pd->vs_map.prev_video_size[i],   vs, 1);
@@ -2675,12 +2678,12 @@ static void d3d9_hlsl_renderchain_render_pass(
             {
                float vs[4];
                float ts[4];
-               vs[0] = (float)cp->last_width;
-               vs[1] = (float)cp->last_height;
+               vs[0] = (float)VIDEO_SCALE_W(cp->last_dims);
+               vs[1] = (float)VIDEO_SCALE_H(cp->last_dims);
                vs[2] = 0.0f;
                vs[3] = 0.0f;
-               ts[0] = (float)cp->info.tex_w;
-               ts[1] = (float)cp->info.tex_h;
+               ts[0] = (float)VIDEO_SCALE_W(cp->info.tex_dims);
+               ts[1] = (float)VIDEO_SCALE_H(cp->info.tex_dims);
                ts[2] = 0.0f;
                ts[3] = 0.0f;
                d3d9_hlsl_set_vs_const(chain->chain.dev, pd->vs_map.pass_video_size[i-1],   vs, 1);
@@ -2904,9 +2907,7 @@ static void hlsl_d3d9_renderchain_render(
       chain->chain.prev.ptr];
    chain->chain.passes->data[0].vertex_buf  = chain->chain.prev.vertex_buf[
       chain->chain.prev.ptr];
-   chain->chain.passes->data[0].last_width  = chain->chain.prev.last_width[
-      chain->chain.prev.ptr];
-   chain->chain.passes->data[0].last_height = chain->chain.prev.last_height[
+   chain->chain.passes->data[0].last_dims   = chain->chain.prev.last_dims[
       chain->chain.prev.ptr];
 
    current_width                  = width;
@@ -2924,8 +2925,9 @@ static void hlsl_d3d9_renderchain_render(
 
       IDirect3DTexture9_LockRect(first_pass->tex, 0, &d3dlr, NULL, 0);
 
-      if (first_pass->last_width != width || first_pass->last_height != height)
-         memset(d3dlr.pBits, 0, first_pass->info.tex_h * d3dlr.Pitch);
+      if (first_pass->last_dims != VIDEO_SCALE_PACK(width, height))
+         memset(d3dlr.pBits, 0,
+               VIDEO_SCALE_H(first_pass->info.tex_dims) * d3dlr.Pitch);
 
       for (y = 0; y < height; y++)
       {
@@ -2983,8 +2985,8 @@ static void hlsl_d3d9_renderchain_render(
       }
 
       /* Clear out whole FBO. */
-      viewport.Width  = to_pass->info.tex_w;
-      viewport.Height = to_pass->info.tex_h;
+      viewport.Width  = VIDEO_SCALE_W(to_pass->info.tex_dims);
+      viewport.Height = VIDEO_SCALE_H(to_pass->info.tex_dims);
       viewport.MinZ   = 0.0f;
       viewport.MaxZ   = 1.0f;
 
@@ -3052,8 +3054,7 @@ static void hlsl_d3d9_renderchain_render(
    if (back_buffer)
       IDirect3DSurface9_Release(back_buffer);
 
-   chain->chain.prev.last_width[chain->chain.prev.ptr]  = chain->chain.passes->data[0].last_width;
-   chain->chain.prev.last_height[chain->chain.prev.ptr] = chain->chain.passes->data[0].last_height;
+   chain->chain.prev.last_dims[chain->chain.prev.ptr]   = chain->chain.passes->data[0].last_dims;
    chain->chain.prev.ptr                                = (chain->chain.prev.ptr + 1) & TEXTURESMASK;
 
    IDirect3DDevice9_SetVertexShader(chain->chain.dev, (LPDIRECT3DVERTEXSHADER9)(&chain->stock_shader)->vprg);
@@ -3073,8 +3074,7 @@ static bool hlsl_d3d9_renderchain_add_pass(
    LPDIRECT3DVERTEXBUFFER9 vertbuf = NULL;
 
    pass.info                   = *info;
-   pass.last_width             = 0;
-   pass.last_height            = 0;
+   pass.last_dims              = 0;
    pass.attrib_map             = (struct unsigned_vector_list*)
       unsigned_vector_list_new();
    pass.pool                   = D3DPOOL_DEFAULT;
@@ -3112,8 +3112,8 @@ static bool hlsl_d3d9_renderchain_add_pass(
 
    tex = NULL;
    IDirect3DDevice9_CreateTexture(chain->chain.dev,
-         info->tex_w,
-         info->tex_h,
+         VIDEO_SCALE_W(info->tex_dims),
+         VIDEO_SCALE_H(info->tex_dims),
          1,
          D3DUSAGE_RENDERTARGET,
          (chain->chain.passes->data[
@@ -6721,8 +6721,8 @@ static bool d3d9_hlsl_init_base(
 static void d3d9_hlsl_log_info(const struct LinkInfo *info)
 {
    RARCH_LOG("[D3D9] Render pass info:\n");
-   RARCH_LOG("\tTexture width: %u\n", info->tex_w);
-   RARCH_LOG("\tTexture height: %u\n", info->tex_h);
+   RARCH_LOG("\tTexture width: %u\n", VIDEO_SCALE_W(info->tex_dims));
+   RARCH_LOG("\tTexture height: %u\n", VIDEO_SCALE_H(info->tex_dims));
 
    RARCH_LOG("\tScale type (X): ");
 
@@ -6849,8 +6849,8 @@ static bool d3d9_hlsl_init_chain(d3d9_video_t *d3d,
    bool video_smooth    = settings->bools.video_smooth;
 
    /* Setup information for first pass. */
-   link_info.tex_w      = input_scale * RARCH_SCALE_BASE;
-   link_info.tex_h      = input_scale * RARCH_SCALE_BASE;
+   link_info.tex_dims   = VIDEO_SCALE_PACK(input_scale * RARCH_SCALE_BASE,
+         input_scale * RARCH_SCALE_BASE);
    link_info.pass       = &d3d->shader.pass[0];
 
    {
@@ -6883,8 +6883,8 @@ static bool d3d9_hlsl_init_chain(d3d9_video_t *d3d,
    d3d9_hlsl_log_info(&link_info);
 
 #ifndef _XBOX
-   current_width  = link_info.tex_w;
-   current_height = link_info.tex_h;
+   current_width  = VIDEO_SCALE_W(link_info.tex_dims);
+   current_height = VIDEO_SCALE_H(link_info.tex_dims);
    out_width      = 0;
    out_height     = 0;
 
@@ -6916,8 +6916,8 @@ static bool d3d9_hlsl_init_chain(d3d9_video_t *d3d,
       }
 
       link_info.pass  = &d3d->shader.pass[i];
-      link_info.tex_w = next_pow2(out_width);
-      link_info.tex_h = next_pow2(out_height);
+      link_info.tex_dims = VIDEO_SCALE_PACK(next_pow2(out_width),
+            next_pow2(out_height));
 
       current_width   = out_width;
       current_height  = out_height;
@@ -6971,10 +6971,10 @@ static void d3d9_set_font_rect(
       font_size                  *= params->scale;
    }
 
-   d3d->font_rect.left            = d3d->video_info.width * pos_x;
-   d3d->font_rect.right           = d3d->video_info.width;
-   d3d->font_rect.top             = (1.0f - pos_y) * d3d->video_info.height - font_size;
-   d3d->font_rect.bottom          = d3d->video_info.height;
+   d3d->font_rect.left            = VIDEO_SCALE_W(d3d->video_info.dims) * pos_x;
+   d3d->font_rect.right           = VIDEO_SCALE_W(d3d->video_info.dims);
+   d3d->font_rect.top             = (1.0f - pos_y) * VIDEO_SCALE_H(d3d->video_info.dims) - font_size;
+   d3d->font_rect.bottom          = VIDEO_SCALE_H(d3d->video_info.dims);
 
    d3d->font_rect_shifted         = d3d->font_rect;
    d3d->font_rect_shifted.left   -= 2;
@@ -6984,7 +6984,7 @@ static void d3d9_set_font_rect(
 }
 
 static void d3d9_hlsl_set_viewport(void *data,
-      unsigned width, unsigned height,
+      unsigned dims,
       bool force_full,
       bool allow_rotate)
 {
@@ -6995,19 +6995,13 @@ static void d3d9_hlsl_set_viewport(void *data,
    int y               = 0;
    struct video_viewport vp;
 
-   /* Width/height parameters are intentionally overwritten here:
-    * the caller's values are not used (pre-existing behaviour). */
-   width  = d3d->vp.full_width;
-   height = d3d->vp.full_height;
-
-   vp.full_width  = width;
-   vp.full_height = height;
+   /* The viewport is fitted to the driver's own full size; the
+    * caller's size word is not used. */
+   vp.full_dims   = d3d->vp.full_dims;
    video_driver_update_viewport(&vp, force_full, d3d->keep_aspect, true);
 
-   x      = vp.x;
-   y      = vp.y;
-   width  = vp.width;
-   height = vp.height;
+   x      = VIDEO_POS_X(vp.pos);
+   y      = VIDEO_POS_Y(vp.pos);
 
    /* D3D doesn't support negative X/Y viewports ... */
    if (x < 0)
@@ -7036,8 +7030,8 @@ static void d3d9_hlsl_set_viewport(void *data,
 
    d3d->out_vp.X      = x;
    d3d->out_vp.Y      = y;
-   d3d->out_vp.Width  = width;
-   d3d->out_vp.Height = height;
+   d3d->out_vp.Width  = VIDEO_SCALE_W(vp.dims);
+   d3d->out_vp.Height = VIDEO_SCALE_H(vp.dims);
    d3d->out_vp.MinZ   = 0.0f;
    d3d->out_vp.MaxZ   = 1.0f;
 
@@ -7097,7 +7091,7 @@ static bool d3d9_hlsl_initialize(
    /* d3d->vp.full_* was written by the caller (d3d9_hlsl_init_internal
     * has already called set_size at this point). */
    d3d9_hlsl_set_viewport(d3d,
-      d3d->vp.full_width, d3d->vp.full_height, false, true);
+      d3d->vp.full_dims, false, true);
 
 
    {
@@ -7275,33 +7269,37 @@ static bool d3d9_hlsl_init_internal(d3d9_video_t *d3d,
    win32_monitor_info(&current_mon, &hm_to_use, &d3d->cur_mon_id);
 
    mon_rect              = current_mon.rcMonitor;
-   g_win32_resize_width  = info->width;
-   g_win32_resize_height = info->height;
+   g_win32_resize_width  = VIDEO_SCALE_W(info->dims);
+   g_win32_resize_height = VIDEO_SCALE_H(info->dims);
 
    windowed_full         = settings->bools.video_windowed_fullscreen;
 
-   full_x                = (windowed_full || info->width  == 0)
+   full_x                = (windowed_full || VIDEO_SCALE_W(info->dims)  == 0)
       ? (unsigned)(mon_rect.right  - mon_rect.left)
-      : info->width;
-   full_y                = (windowed_full || info->height == 0)
+      : VIDEO_SCALE_W(info->dims);
+   full_y                = (windowed_full || VIDEO_SCALE_H(info->dims) == 0)
       ? (unsigned)(mon_rect.bottom - mon_rect.top)
-      : info->height;
+      : VIDEO_SCALE_H(info->dims);
 #else
-   d3d9_get_video_size(d3d, &full_x, &full_y);
+   {
+      unsigned full_dims;
+      d3d9_get_video_size(d3d, &full_dims);
+      full_x             = VIDEO_SCALE_W(full_dims);
+      full_y             = VIDEO_SCALE_H(full_dims);
+   }
 #endif
    {
-      unsigned new_width  = info->fullscreen ? full_x : info->width;
-      unsigned new_height = info->fullscreen ? full_y : info->height;
-      video_driver_set_output_size(new_width, new_height);
-      d3d->vp.full_width  = new_width;
-      d3d->vp.full_height = new_height;
+      unsigned new_width  = info->fullscreen ? full_x : VIDEO_SCALE_W(info->dims);
+      unsigned new_height = info->fullscreen ? full_y : VIDEO_SCALE_H(info->dims);
+      video_driver_set_output_dims(VIDEO_SCALE_PACK(new_width, new_height));
+      d3d->vp.full_dims   = VIDEO_SCALE_PACK(new_width, new_height);
 
 #ifdef HAVE_WINDOW
       /* Use new_width / new_height directly rather than reading
-       * them back via video_driver_get_output_size: nothing in the
+       * them back via video_driver_get_output_dims: nothing in the
        * codebase sets the output size between the
        * set_size above and this call except us. */
-      if (!win32_set_video_mode(d3d, new_width, new_height,
+      if (!win32_set_video_mode(d3d, VIDEO_SCALE_PACK(new_width, new_height),
             info->fullscreen))
       {
          RARCH_ERR("[D3D9 HLSL] win32_set_video_mode failed.\n");
@@ -7382,13 +7380,11 @@ static void d3d9_hlsl_viewport_info(void *data, struct video_viewport *vp)
 {
    d3d9_video_t *d3d   = (d3d9_video_t*)data;
 
-   vp->x               = d3d->out_vp.X;
-   vp->y               = d3d->out_vp.Y;
-   vp->width           = d3d->out_vp.Width;
-   vp->height          = d3d->out_vp.Height;
+   vp->pos             = VIDEO_POS_PACK(d3d->out_vp.X, d3d->out_vp.Y);
+   vp->dims            = VIDEO_SCALE_PACK(d3d->out_vp.Width,
+         d3d->out_vp.Height);
 
-   vp->full_width      = d3d->vp.full_width;
-   vp->full_height     = d3d->vp.full_height;
+   vp->full_dims       = d3d->vp.full_dims;
 }
 
 #ifdef HAVE_OVERLAY
@@ -7499,8 +7495,7 @@ static bool d3d9_hlsl_overlay_load(void *data,
          IDirect3DTexture9_UnlockRect((LPDIRECT3DTEXTURE9)overlay->tex, 0);
       }
 
-      overlay->tex_w         = width;
-      overlay->tex_h         = height;
+      overlay->tex_dims      = VIDEO_SCALE_PACK(width, height);
 
       /* Default. Stretch to whole screen. */
       d3d9_hlsl_overlay_tex_geom(d3d, i, 0, 0, 1, 1);
@@ -7608,12 +7603,13 @@ static void d3d9_hlsl_overlay_render(d3d9_video_t *d3d,
 
      if (!overlay->vert_buf)
         return;
+     overlay->vert_sent_ok = false;
    }
 
    for (i = 0; i < 4; i++)
    {
       vert[i].z       = 0.5f;
-      vert[i].color   = (((uint32_t)(overlay->alpha_mod * 0xFF)) << 24) | 0xFFFFFF;
+      vert[i].color   = (((uint32_t)VIDEO_ALPHA_BYTE(overlay->alpha_mod)) << 24) | 0xFFFFFF;
    }
 
    d3d9_hlsl_viewport_info(d3d, &vp);
@@ -7636,9 +7632,22 @@ static void d3d9_hlsl_overlay_render(d3d9_video_t *d3d,
    vert[2].v      = overlay->tex_coords[1] + overlay->tex_coords[3];
    vert[3].v      = overlay->tex_coords[1] + overlay->tex_coords[3];
 
-   IDirect3DVertexBuffer9_Lock((LPDIRECT3DVERTEXBUFFER9)overlay->vert_buf, 0, 0, &verts, 0);
-   memcpy(verts, vert, sizeof(vert));
-   IDirect3DVertexBuffer9_Unlock((LPDIRECT3DVERTEXBUFFER9)overlay->vert_buf);
+   /* A lock only when the quad changed: the page's quads are the same
+    * from one frame to the next until the layout or an alpha moves. */
+   if (     !overlay->vert_sent_ok
+         || memcmp(overlay->vert_sent, vert, sizeof(vert)))
+   {
+      if (SUCCEEDED(IDirect3DVertexBuffer9_Lock(
+                  (LPDIRECT3DVERTEXBUFFER9)overlay->vert_buf,
+                  0, 0, &verts, 0)) && verts)
+      {
+         memcpy(verts, vert, sizeof(vert));
+         IDirect3DVertexBuffer9_Unlock(
+               (LPDIRECT3DVERTEXBUFFER9)overlay->vert_buf);
+         memcpy(overlay->vert_sent, vert, sizeof(vert));
+         overlay->vert_sent_ok = true;
+      }
+   }
 
    IDirect3DDevice9_SetRenderState(d3d->dev, D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
    IDirect3DDevice9_SetRenderState(d3d->dev, D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
@@ -7742,15 +7751,17 @@ static void d3d9_hlsl_free(void *data)
 }
 
 static bool d3d9_hlsl_frame(void *data, const void *frame,
-      unsigned frame_width, unsigned frame_height,
+      unsigned dims,
       uint64_t frame_count, unsigned pitch,
       const char *msg, video_frame_info_t *video_info)
 {
+   unsigned frame_width = VIDEO_SCALE_W(dims);
+   unsigned frame_height = VIDEO_SCALE_H(dims);
    D3DVIEWPORT9 screen_vp;
    unsigned i                          = 0;
    d3d9_video_t *d3d                   = (d3d9_video_t*)data;
-   unsigned width                      = video_info->width;
-   unsigned height                     = video_info->height;
+   unsigned width                      = VIDEO_SCALE_W(video_info->dims);
+   unsigned height                     = VIDEO_SCALE_H(video_info->dims);
    bool statistics_show                = video_info->statistics_show;
    unsigned black_frame_insertion      = video_info->black_frame_insertion;
    struct font_params *osd_params      = (struct font_params*)
@@ -7791,7 +7802,7 @@ static bool d3d9_hlsl_frame(void *data, const void *frame,
       hlsl_renderchain_t *_chain = (hlsl_renderchain_t*)d3d->renderchain_data;
       d3d9_hlsl_renderchain_t *chain  = (d3d9_hlsl_renderchain_t*)&_chain->chain;
 
-      d3d9_hlsl_set_viewport(d3d, width, height, false, true);
+      d3d9_hlsl_set_viewport(d3d, VIDEO_SCALE_PACK(width, height), false, true);
 
       if (chain)
          chain->out_vp           = (D3DVIEWPORT9*)&d3d->out_vp;
@@ -7991,7 +8002,7 @@ static void d3d9_hlsl_set_menu_texture_enable(void *data,
 }
 
 static void d3d9_hlsl_set_menu_texture_frame(void *data,
-      const void *frame, bool rgb32, unsigned width, unsigned height,
+      const void *frame, bool rgb32, unsigned dims,
       float alpha)
 {
    D3DLOCKED_RECT d3dlr;
@@ -8001,8 +8012,7 @@ static void d3d9_hlsl_set_menu_texture_frame(void *data,
       return;
 
    if (       (!d3d->menu->tex)
-            || (d3d->menu->tex_w != width)
-            || (d3d->menu->tex_h != height)
+            || (d3d->menu->tex_dims != dims)
             || (d3d->menu_tex_rgb32 != rgb32))
    {
       if (d3d->menu->tex)
@@ -8017,7 +8027,7 @@ static void d3d9_hlsl_set_menu_texture_frame(void *data,
        * for callers that hand us 32bpp data; in current practice no
        * such caller exists, but the API contract supports it. */
       IDirect3DDevice9_CreateTexture(d3d->dev,
-            width, height, 1,
+            VIDEO_SCALE_W(dims), VIDEO_SCALE_H(dims), 1,
             0, rgb32 ? D3D9_ARGB8888_FORMAT : D3D9_ARGB4444_FORMAT,
             D3DPOOL_MANAGED,
             (struct IDirect3DTexture9**)&d3d->menu->tex, NULL);
@@ -8028,8 +8038,7 @@ static void d3d9_hlsl_set_menu_texture_frame(void *data,
          return;
       }
 
-      d3d->menu->tex_w          = width;
-      d3d->menu->tex_h          = height;
+      d3d->menu->tex_dims       = dims;
       d3d->menu_tex_rgb32       = rgb32;
    }
 
@@ -8045,11 +8054,11 @@ static void d3d9_hlsl_set_menu_texture_frame(void *data,
          uint8_t        *dst = (uint8_t*)d3dlr.pBits;
          const uint32_t *src = (const uint32_t*)frame;
 
-         for (h = 0; h < height; h++, dst += d3dlr.Pitch, src += width)
+         for (h = 0; h < VIDEO_SCALE_H(dims); h++, dst += d3dlr.Pitch, src += VIDEO_SCALE_W(dims))
          {
-            memcpy(dst, src, width * sizeof(uint32_t));
-            memset(dst + width * sizeof(uint32_t), 0,
-                  d3dlr.Pitch - width * sizeof(uint32_t));
+            memcpy(dst, src, VIDEO_SCALE_W(dims) * sizeof(uint32_t));
+            memset(dst + VIDEO_SCALE_W(dims) * sizeof(uint32_t), 0,
+                  d3dlr.Pitch - VIDEO_SCALE_W(dims) * sizeof(uint32_t));
          }
       }
       else
@@ -8063,10 +8072,10 @@ static void d3d9_hlsl_set_menu_texture_frame(void *data,
           * without a byte swap. */
          uint8_t        *dst = (uint8_t*)d3dlr.pBits;
          const uint8_t  *src = (const uint8_t*)frame;
-         unsigned src_pitch  = width * sizeof(uint16_t);
-         unsigned row_bytes  = width * sizeof(uint16_t);
+         unsigned src_pitch  = VIDEO_SCALE_W(dims) * sizeof(uint16_t);
+         unsigned row_bytes  = VIDEO_SCALE_W(dims) * sizeof(uint16_t);
 
-         for (h = 0; h < height; h++, dst += d3dlr.Pitch, src += src_pitch)
+         for (h = 0; h < VIDEO_SCALE_H(dims); h++, dst += d3dlr.Pitch, src += src_pitch)
          {
             memcpy(dst, src, row_bytes);
             if (d3dlr.Pitch > (int)row_bytes)
@@ -8079,7 +8088,7 @@ static void d3d9_hlsl_set_menu_texture_frame(void *data,
 }
 
 static void d3d9_hlsl_set_video_mode(void *data,
-      unsigned width, unsigned height,
+      unsigned dims,
       bool fullscreen)
 {
 #ifndef _XBOX
@@ -8216,6 +8225,15 @@ static struct video_shader *d3d9_hlsl_get_current_shader(void *data)
    return &d3d->shader;
 }
 
+/* The Direct3D 9 present interval is a presentation parameter whose
+ * largest vsync-locked value is D3DPRESENT_INTERVAL_FOUR, so this
+ * driver holds a frame for at most four display intervals. */
+static unsigned d3d9_hlsl_get_swap_interval_cap(void *data)
+{
+   (void)data;
+   return 4;
+}
+
 static const video_poke_interface_t d3d9_hlsl_poke_interface = {
    d3d9_hlsl_get_flags,
    d3d9_hlsl_load_texture,
@@ -8249,7 +8267,21 @@ static const video_poke_interface_t d3d9_hlsl_poke_interface = {
    NULL, /* set_hdr_scanlines */
    NULL, /* set_hdr_subpixel_layout */
    d3d9_supports_texture_format,
-   d3d9_load_texture_compressed
+   d3d9_load_texture_compressed,
+   NULL, /* present_last */
+   NULL, /* get_last_present_time */
+   NULL, /* hw_ring_install */
+   NULL, /* hw_ring_fence_new */
+   NULL, /* hw_ring_fence_free */
+   NULL, /* hw_ring_fence_signal */
+   NULL, /* hw_ring_fence_wait */
+   NULL, /* hw_ring_capture */
+   NULL, /* hw_ring_present_slot */
+   NULL, /* hw_ring_context_new */
+   NULL, /* hw_ring_context_free */
+   NULL, /* hw_ring_framebuffer */
+   NULL, /* update_texture */
+   d3d9_hlsl_get_swap_interval_cap
 };
 
 static void d3d9_hlsl_get_poke_interface(void *data,
@@ -8267,24 +8299,20 @@ static bool d3d9_hlsl_gfx_widgets_enabled(void *data)
 #endif
 
 static void d3d9_hlsl_set_resize(d3d9_video_t *d3d,
-      unsigned new_width, unsigned new_height)
+      unsigned dims)
 {
    /* No changes? */
-   if (     (new_width  == d3d->video_info.width)
-         && (new_height == d3d->video_info.height))
+   if (d3d->video_info.dims == dims)
       return;
 
-   d3d->video_info.width  = new_width;
-   d3d->video_info.height = new_height;
-   video_driver_set_output_size(new_width, new_height);
-   d3d->vp.full_width     = new_width;
-   d3d->vp.full_height    = new_height;
+   d3d->video_info.dims   = dims;
+   video_driver_set_output_dims(dims);
+   d3d->vp.full_dims      = dims;
 }
 
 static bool d3d9_hlsl_alive(void *data)
 {
-   unsigned temp_width   = 0;
-   unsigned temp_height  = 0;
+   unsigned temp_dims   = 0;
    bool ret              = false;
    bool        quit      = false;
    bool        resize    = false;
@@ -8293,10 +8321,9 @@ static bool d3d9_hlsl_alive(void *data)
    /* Read from local bookkeeping rather than video_st (which would
     * cross threads needlessly).  d3d->vp.full_* is
     * written at every set_size call site in this driver. */
-   temp_width  = d3d->vp.full_width;
-   temp_height = d3d->vp.full_height;
+   temp_dims  = d3d->vp.full_dims;
 
-   win32_check_window(NULL, &quit, &resize, &temp_width, &temp_height);
+   win32_check_window(NULL, &quit, &resize, &temp_dims);
 
    if (quit)
       d3d->quitting      = quit;
@@ -8304,18 +8331,17 @@ static bool d3d9_hlsl_alive(void *data)
    if (resize)
    {
       d3d->should_resize = true;
-      d3d9_hlsl_set_resize(d3d, temp_width, temp_height);
+      d3d9_hlsl_set_resize(d3d, temp_dims);
       d3d9_hlsl_restore(d3d);
    }
 
    ret = !quit;
 
-   if (  temp_width  != 0 &&
-         temp_height != 0)
+   if (  VIDEO_SCALE_W(temp_dims)  != 0 &&
+         VIDEO_SCALE_H(temp_dims) != 0)
    {
-      video_driver_set_output_size(temp_width, temp_height);
-      d3d->vp.full_width  = temp_width;
-      d3d->vp.full_height = temp_height;
+      video_driver_set_output_dims(temp_dims);
+      d3d->vp.full_dims   = temp_dims;
    }
 
    return ret;
@@ -8383,8 +8409,8 @@ static bool d3d9_hlsl_read_viewport(void *data, uint8_t *buffer, bool is_idle)
    bool ret                  = true;
    d3d9_video_t *d3d         = (d3d9_video_t*)data;
    LPDIRECT3DDEVICE9 d3dr    = d3d->dev;
-   unsigned width            = d3d->vp.full_width;
-   unsigned height           = d3d->vp.full_height;
+   unsigned width            = VIDEO_SCALE_W(d3d->vp.full_dims);
+   unsigned height           = VIDEO_SCALE_H(d3d->vp.full_dims);
 
    if (
             !(d3dr &&
@@ -8476,7 +8502,6 @@ video_driver_t video_d3d9_hlsl = {
    d3d9_hlsl_set_rotation,
    d3d9_hlsl_viewport_info,
    d3d9_hlsl_read_viewport,
-   NULL, /* read_frame_raw */
 #ifdef HAVE_OVERLAY
    d3d9_hlsl_get_overlay_interface,
 #endif

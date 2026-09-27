@@ -317,7 +317,7 @@ struct game_ai_think_ctx
 
 static void runloop_game_ai_think_cb(void *userdata,
       const void *data,
-      unsigned width, unsigned height, size_t pitch)
+      unsigned dims, size_t pitch)
 {
    struct game_ai_think_ctx *ctx = (struct game_ai_think_ctx*)userdata;
    if (!ctx)
@@ -327,7 +327,7 @@ static void runloop_game_ai_think_cb(void *userdata,
          ctx->override_p2,
          ctx->show_debug,
          data,
-         width, height, pitch,
+         VIDEO_SCALE_W(dims), VIDEO_SCALE_H(dims), pitch,
          ctx->pix_fmt);
 }
 #endif
@@ -436,19 +436,17 @@ struct runloop_deferred_msg
    bool core_status;
 };
 
+#ifdef HAVE_THREADS
 /* True when the caller is not the thread the message queue belongs
  * to; such a caller hands its message to the deferral stack and the
  * main thread replays it at the top of the next iterate. */
 static bool runloop_msg_queue_off_main(runloop_state_t *runloop_st)
 {
-#ifdef HAVE_THREADS
    return    runloop_st->msg_queue_main_id
           && sthread_get_current_thread_id()
                 != runloop_st->msg_queue_main_id;
-#else
-   return false;
-#endif
 }
+#endif
 
 
 /* GLOBAL POINTER GETTERS */
@@ -3442,6 +3440,7 @@ bool runloop_environment_cb(unsigned cmd, void *data)
 
          if (midi_interface)
          {
+            midi_driver_request();
             midi_interface->input_enabled  = midi_driver_input_enabled;
             midi_interface->output_enabled = midi_driver_output_enabled;
             midi_interface->read           = midi_driver_read;
@@ -4018,12 +4017,9 @@ bool runloop_environment_cb(unsigned cmd, void *data)
          /* How bright the display can go.  Together with paper white this
           * gives a core the headroom it has for highlights; without it a core
           * has to guess, and the guess is too dark on a bright panel and clips
-          * on a dim one.  Not queryable from any platform portably, so this is
-          * the user's setting rather than a measurement. */
-         {
-            settings_t *settings = config_get_ptr();
-            *(float*)data = settings->floats.video_hdr_max_nits;
-         }
+          * on a dim one.  The user's setting, or with Use Display Peak the
+          * display's own where its context learned one. */
+         *(float*)data = video_driver_get_hdr_max_nits();
          break;
 
       case RETRO_ENVIRONMENT_GET_SCREEN_10BPC_CAPABLE:
@@ -5119,7 +5115,7 @@ size_t runloop_pace_string(char *s, size_t len)
     * well above the content's is a source that is not blocking on
     * anything, which is the failure this exists to make visible. */
    if (runloop_st->pace_period_usec > 0 && _len < len)
-      _len += snprintf(s + _len, len - _len, " (%.1f fps)",
+      _len += snprintf(s + _len, len - _len, " %.2f fps",
             1000000.0 / (double)runloop_st->pace_period_usec);
    return _len;
 }
@@ -5165,12 +5161,10 @@ void runloop_set_video_swap_interval(
    float input_fps                = video_st->av_info.timing.fps;
    float timing_fps               = retro_atomic_load_acquire_int(&video_st->crt_switching_active)
          ? input_fps : video_refresh_rate;
-   float swap_ratio               = 1;
-   float timing_skew              = 0;
    unsigned swap_interval_config  = settings->uints.video_swap_interval;
    unsigned black_frame_insertion = settings->uints.video_black_frame_insertion;
    unsigned shader_subframes      = settings->uints.video_shader_subframes;
-   unsigned swap_integer          = 1;
+   unsigned ceiling;
    bool vrr_runloop_enable        = settings->bools.vrr_runloop_enable;
 
    /* If automatic swap interval selection is
@@ -5183,43 +5177,27 @@ void runloop_set_video_swap_interval(
 
    /* > If VRR is enabled, swap interval is irrelevant,
     *   just set to 1
-    * > If core fps is higher than display refresh rate,
-    *   set swap interval to 1
-    * > If core fps or display refresh rate are zero,
-    *   set swap interval to 1
     * > If BFI is active set swap interval to 1
     * > If Shader Subframes active, set swap interval to 1 */
    if (   (vrr_runloop_enable)
        || (black_frame_insertion)
        || (shader_subframes > 1)
-       || (input_fps   > timing_fps)
-       || (input_fps  <= 0.0f)
-       || (timing_fps <= 0.0f)
       )
    {
       runloop_st->video_swap_interval_auto = 1;
       return;
    }
 
-   /* Check whether display refresh rate is an integer
-    * multiple of core fps (within timing skew tolerance) */
-   swap_ratio   = timing_fps / input_fps;
-   swap_integer = (unsigned)(swap_ratio + 0.5f);
-
-   /* > Sanity check: swap interval must be in the
-    *   range [1,4] - if we are outside this, then
-    *   bail... */
-   if ((swap_integer < 1) || (swap_integer > 4))
-   {
-      runloop_st->video_swap_interval_auto = 1;
-      return;
-   }
-
-   timing_skew = fabs(1.0f - input_fps / (timing_fps / (float)swap_integer));
+   /* A driver that cannot hold a frame for the full multiple takes the
+    * ceiling down to what it can present, so the interval derived and
+    * the interval presented are the same number. */
+   ceiling = video_display_server_get_swap_interval_cap();
+   if ((ceiling == 0) || (ceiling > MAXIMUM_SWAP_INTERVAL))
+      ceiling = MAXIMUM_SWAP_INTERVAL;
 
    runloop_st->video_swap_interval_auto =
-         (timing_skew <= audio_max_timing_skew) ?
-               swap_integer : 1;
+         runloop_video_swap_interval_for(timing_fps, input_fps,
+               audio_max_timing_skew, ceiling);
 }
 
 unsigned runloop_get_video_swap_interval(
@@ -6430,12 +6408,10 @@ static enum runloop_state_enum runloop_check_state(
    bool is_alive                       = false;
    uint64_t frame_count                = 0;
    bool focused                        = true;
-#if defined(HAVE_MENU) || defined(HAVE_GFX_WIDGETS)
    /* Snapshot of the output size. The video thread sets it through
-    * video_driver_set_output_size() while this function runs. */
-   unsigned output_width               = 0;
-   unsigned output_height              = 0;
-#endif
+    * video_driver_set_output_dims() while this function runs, so it
+    * is re-read before the menu/widgets pass further down. */
+   unsigned output_dims                = 0;
    bool rarch_is_initialized           = !!runloop_is_inited();
    bool runloop_paused                 = !!(runloop_st->flags & RUNLOOP_FLAG_PAUSED);
    bool pause_nonactive                = settings->bools.pause_nonactive;
@@ -6575,18 +6551,17 @@ static enum runloop_state_enum runloop_check_state(
    else
       runloop_st->flags &= ~RUNLOOP_FLAG_FOCUSED;
 
+   /* One read of the output size, shared by the overlay and
+    * FULL aspect checks below. */
+   output_dims = video_driver_get_output_dims();
+
 #ifdef HAVE_OVERLAY
    if (settings->bools.input_overlay_enable)
    {
-      static unsigned last_width                     = 0;
-      static unsigned last_height                    = 0;
-      unsigned video_driver_width                    = 0;
-      unsigned video_driver_height                   = 0;
+      static unsigned last_dims                      = 0;
       bool check_next_rotation                       = true;
       bool input_overlay_hide_when_gamepad_connected = settings->bools.input_overlay_hide_when_gamepad_connected;
       bool input_overlay_auto_rotate                 = settings->bools.input_overlay_auto_rotate;
-
-      video_driver_get_output_size(&video_driver_width, &video_driver_height);
 
       /* Check whether overlay should be hidden
        * when a gamepad is connected */
@@ -6621,22 +6596,18 @@ static enum runloop_state_enum runloop_check_state(
       HOTKEY_CHECK(RARCH_OVERLAY_NEXT, CMD_EVENT_OVERLAY_NEXT, true, &check_next_rotation);
 
       /* Check whether video aspect has changed */
-      if (   (video_driver_width  != last_width)
-          || (video_driver_height != last_height))
+      if (output_dims != last_dims)
       {
          /* Update scaling/offset factors */
          command_event(CMD_EVENT_OVERLAY_SET_SCALE_FACTOR, NULL);
 
          /* Check overlay rotation, if required */
          if (input_overlay_auto_rotate)
-            input_overlay_auto_rotate_(
-                  video_driver_width,
-                  video_driver_height,
+            input_overlay_auto_rotate_(output_dims,
                   settings->bools.input_overlay_enable,
                   input_st->overlay_ptr);
 
-         last_width  = video_driver_width;
-         last_height = video_driver_height;
+         last_dims = output_dims;
       }
 
       /* Check OSK hotkey */
@@ -6645,32 +6616,30 @@ static enum runloop_state_enum runloop_check_state(
 #endif
 
    /*
-   * If the Aspect Ratio is FULL then update the aspect ratio to the
-   * current video driver aspect ratio (The full window)
-   *
-   * TODO/FIXME
-   *      Should possibly be refactored to have last width & driver width & height
-   *      only be done once when we are using an overlay OR using aspect ratio
-   *      full
-   */
+    * If the Aspect Ratio is FULL then update the aspect ratio to the
+    * current output size (the full window).
+    *
+    * This keeps its own last_dims rather than sharing the overlay
+    * block's: the two checks are gated independently, so a shared
+    * value updated by one would hide a size change from the other.
+    *
+    * It is polled here rather than driven from
+    * video_driver_set_output_dims() because that is called from the
+    * video thread under threaded video, while
+    * video_driver_set_aspect_ratio() issues blocking driver pokes
+    * through the thread wrapper.
+    */
    if (settings->uints.video_aspect_ratio_idx == ASPECT_RATIO_FULL)
    {
-      static unsigned last_width                     = 0;
-      static unsigned last_height                    = 0;
-      unsigned video_driver_width                    = 0;
-      unsigned video_driver_height                   = 0;
-
-      video_driver_get_output_size(&video_driver_width, &video_driver_height);
+      static unsigned last_dims                      = 0;
 
       /* Check whether video aspect has changed */
-      if (   (video_driver_width  != last_width)
-          || (video_driver_height != last_height))
+      if (output_dims != last_dims)
       {
          /* Update set aspect ratio so the full matches the current video width & height */
          command_event(CMD_EVENT_VIDEO_SET_ASPECT_RATIO, NULL);
 
-         last_width  = video_driver_width;
-         last_height = video_driver_height;
+         last_dims = output_dims;
       }
    }
 
@@ -6899,14 +6868,13 @@ static enum runloop_state_enum runloop_check_state(
 #endif
 
 #if defined(HAVE_MENU) || defined(HAVE_GFX_WIDGETS)
-   video_driver_get_output_size(&output_width, &output_height);
+   output_dims = video_driver_get_output_dims();
 
    gfx_animation_update(
          current_time,
          settings->bools.menu_timedate_enable,
          settings->floats.menu_ticker_speed,
-         output_width,
-         output_height);
+         output_dims);
 
 #if defined(HAVE_GFX_WIDGETS)
    if (widgets_active)
@@ -6929,8 +6897,7 @@ static enum runloop_state_enum runloop_check_state(
          gfx_widgets_iterate_layout(
                p_disp,
                settings,
-               output_width,
-               output_height,
+               output_dims,
                video_is_fullscreen,
                settings->paths.directory_assets,
                settings->paths.path_font,
@@ -6941,8 +6908,7 @@ static enum runloop_state_enum runloop_check_state(
          gfx_widgets_iterate(
                p_disp,
                settings,
-               output_width,
-               output_height,
+               output_dims,
                video_is_fullscreen,
                settings->paths.directory_assets,
                settings->paths.path_font,
@@ -7354,8 +7320,7 @@ static enum runloop_state_enum runloop_check_state(
                if (menu->driver_ctx->render)
                   menu->driver_ctx->render(
                         menu->userdata,
-                        output_width,
-                        output_height,
+                        output_dims,
                         (runloop_st->flags & RUNLOOP_FLAG_IDLE) ? true : false);
             }
 
@@ -8273,6 +8238,70 @@ end:
  * button input in order to wake up the loop,
  * -1 if we forcibly quit out of the RetroArch iteration loop.
  **/
+/* Recovery from a lost GPU device, with a bound on how hard it is
+ * tried. A device lost once - a TDR, a driver update, a GPU reset -
+ * comes back on the first rebuild, and that rebuild happens at once.
+ * A device that is lost again straight after being rebuilt is a
+ * driver or hardware that is failing, and rebuilding every frame on
+ * it is a busy loop of full driver reinitialisations, each of which
+ * fails: the retries back off instead, doubling from one second, and
+ * after a run of them the rebuild is abandoned with a message rather
+ * than attempted forever. A loss well clear of the previous one (a
+ * minute or more) is a fresh incident and starts the count again. */
+#define GPU_LOST_RETRY_BASE_USEC   1000000
+#define GPU_LOST_RETRY_MAX_USEC   16000000
+#define GPU_LOST_GIVE_UP_AFTER     6
+#define GPU_LOST_FRESH_AFTER_USEC 60000000
+
+static void runloop_gpu_device_lost(runloop_state_t *runloop_st)
+{
+   retro_time_t now = cpu_features_get_time_usec();
+   int reinit_flags = DRIVER_VIDEO_MASK | DRIVER_INPUT_MASK
+      | DRIVER_MENU_MASK;
+
+   /* Not yet due: leave the flag set and try again on a later frame */
+   if (now < runloop_st->gpu_lost_retry_at)
+      return;
+
+   video_driver_modify_disp_flags(0, VIDEO_FLAG_GPU_DEVICE_LOST);
+
+   if (     runloop_st->gpu_lost_count
+         && now - runloop_st->gpu_lost_last > GPU_LOST_FRESH_AFTER_USEC)
+      runloop_st->gpu_lost_count = 0;
+   runloop_st->gpu_lost_last = now;
+   runloop_st->gpu_lost_count++;
+
+   if (runloop_st->gpu_lost_count > GPU_LOST_GIVE_UP_AFTER)
+   {
+      const char *msg = "The GPU device keeps being lost; giving up on recovering the video driver.";
+      RARCH_ERR("[Video] %s\n", msg);
+      runloop_msg_queue_push(msg, strlen(msg), 1, 240, true, NULL,
+            MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_ERROR);
+      /* Look again only after a fresh incident's worth of time */
+      runloop_st->gpu_lost_retry_at = now + GPU_LOST_FRESH_AFTER_USEC;
+      return;
+   }
+
+   if (runloop_st->gpu_lost_count > 1)
+   {
+      retro_time_t delay = (retro_time_t)GPU_LOST_RETRY_BASE_USEC
+         << (runloop_st->gpu_lost_count - 2);
+      if (delay > GPU_LOST_RETRY_MAX_USEC)
+         delay = GPU_LOST_RETRY_MAX_USEC;
+      runloop_st->gpu_lost_retry_at = now + delay;
+      RARCH_ERR("[Video] The GPU device was lost again (%u in a row); "
+            "next rebuild in %u ms.\n",
+            runloop_st->gpu_lost_count, (unsigned)(delay / 1000));
+   }
+   else
+   {
+      runloop_st->gpu_lost_retry_at = 0;
+      RARCH_ERR("[Video] The GPU device was lost; reinitialising the video driver.\n");
+   }
+
+   command_event(CMD_EVENT_REINIT, &reinit_flags);
+}
+
 int runloop_iterate(void)
 {
    retro_time_t pace_limit_min;
@@ -8328,13 +8357,7 @@ int runloop_iterate(void)
     * recovered device, and a hardware core gets context_reset. */
    if ((uint32_t)retro_atomic_load_relaxed_int(&video_st->flags)
          & VIDEO_FLAG_GPU_DEVICE_LOST)
-   {
-      int reinit_flags = DRIVER_VIDEO_MASK | DRIVER_INPUT_MASK
-         | DRIVER_MENU_MASK;
-      video_driver_modify_disp_flags(0, VIDEO_FLAG_GPU_DEVICE_LOST);
-      RARCH_ERR("[Video] The GPU device was lost; reinitialising the video driver.\n");
-      command_event(CMD_EVENT_REINIT, &reinit_flags);
-   }
+      runloop_gpu_device_lost(runloop_st);
 
 #ifdef HAVE_DISCORD
    if (discord_st->inited)

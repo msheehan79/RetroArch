@@ -175,7 +175,7 @@ typedef struct gfx_ctx_cgl_data
 } gfx_ctx_wgl_data_t;
 
 /* FORWARD DECLARATIONS */
-void win32_get_video_size(void *data, unsigned *width, unsigned *height);
+void win32_get_video_size(void *data, unsigned *dims);
 
 static gfx_ctx_proc_t gfx_ctx_wgl_get_proc_address(const char *symbol)
 {
@@ -547,8 +547,7 @@ static void gfx_ctx_wgl_swap_buffers(void *data)
    }
 }
 
-static bool gfx_ctx_wgl_set_resize(void *data,
-      unsigned width, unsigned height) { return false; }
+static bool gfx_ctx_wgl_set_resize(void *data, unsigned dims) { return false; }
 
 static void gfx_ctx_wgl_destroy(void *data)
 {
@@ -692,10 +691,10 @@ static void *gfx_ctx_wgl_init(void *video_driver)
 }
 
 static bool gfx_ctx_wgl_set_video_mode(void *data,
-      unsigned width, unsigned height,
+      unsigned dims,
       bool fullscreen)
 {
-   if (!win32_set_video_mode(NULL, width, height, fullscreen))
+   if (!win32_set_video_mode(NULL, dims, fullscreen))
    {
       RARCH_ERR("[WGL] win32_set_video_mode failed.\n");
       gfx_ctx_wgl_destroy(data);
@@ -927,13 +926,14 @@ static bool gfx_ctx_wgl_destroy_surface(void *data)
 /* TODO: maybe create an uwp_mesa_common.c? */
 #ifdef __WINRT__
 static void win32_get_video_size(void* data,
-   unsigned* width, unsigned* height)
+   unsigned *dims)
 {
-   bool quit = false;
-   bool resize = false;
-   win32_check_window(NULL, &quit, &resize, width, height);
-   width = uwp_get_width();
-   height = uwp_get_height();
+   bool quit         = false;
+   bool resize       = false;
+   unsigned win_dims = 0;
+   win32_check_window(NULL, &quit, &resize, &win_dims);
+   /* Match the output res to the display resolution. */
+   *dims             = VIDEO_SCALE_PACK(uwp_get_width(), uwp_get_height());
 }
 
 bool win32_suspend_screensaver(void* data, bool enable)

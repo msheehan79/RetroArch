@@ -329,8 +329,8 @@ static void gfx_widget_leaderboard_display_frame(void* data, void* userdata)
       dispgfx_widget_t         *p_dispwidget = (dispgfx_widget_t*)userdata;
       const video_frame_info_t *video_info   = (const video_frame_info_t*)data;
       gfx_display_t *p_disp                  = (gfx_display_t*)video_info->disp_userdata;
-      const unsigned video_width             = video_info->width;
-      const unsigned video_height            = video_info->height;
+      const unsigned video_width             = VIDEO_SCALE_W(video_info->dims);
+      const unsigned video_height            = VIDEO_SCALE_H(video_info->dims);
       const unsigned spacing                 = MIN(video_width, video_height) / 64;
       const unsigned widget_height           = p_dispwidget->gfx_widget_fonts.regular.line_height + (CHEEVO_LBOARD_DISPLAY_PADDING - 1) * 2;
       unsigned y                             = video_height;
@@ -351,9 +351,9 @@ static void gfx_widget_leaderboard_display_frame(void* data, void* userdata)
          gfx_display_draw_quad(
                p_disp,
                video_info->userdata,
-               video_width, video_height,
-               (int)x, (int)y, widget_width, widget_height,
-               video_width, video_height,
+               VIDEO_SCALE_PACK(video_width, video_height),
+               (int)x, (int)y, VIDEO_SCALE_PACK(widget_width, widget_height),
+               VIDEO_SCALE_PACK(video_width, video_height),
                p_dispwidget->backdrop_orig,
                NULL);
 
@@ -382,7 +382,7 @@ static void gfx_widget_leaderboard_display_frame(void* data, void* userdata)
             buffer[0] = c;
             gfx_widgets_draw_text(&p_dispwidget->gfx_widget_fonts.regular,
                   buffer, char_x, char_y,
-                  video_width, video_height,
+                  VIDEO_SCALE_PACK(video_width, video_height),
                   TEXT_COLOR_INFO, TEXT_ALIGN_LEFT, true);
 
             char_x = next_char_x;
@@ -423,10 +423,8 @@ static void gfx_widget_leaderboard_display_frame(void* data, void* userdata)
                   gfx_widgets_draw_icon(
                         video_info->userdata,
                         p_disp,
-                        video_width,
-                        video_height,
-                        widget_size,
-                        widget_size,
+                        VIDEO_SCALE_PACK(video_width, video_height),
+                        VIDEO_SCALE_PACK(widget_size, widget_size),
                         p_dispwidget->gfx_widgets_icons_textures[
                               MENU_WIDGETS_ICON_ACHIEVEMENT],
                         x,
@@ -448,10 +446,8 @@ static void gfx_widget_leaderboard_display_frame(void* data, void* userdata)
                gfx_widgets_draw_icon(
                      video_info->userdata,
                      p_disp,
-                     video_width,
-                     video_height,
-                     widget_size,
-                     widget_size,
+                     VIDEO_SCALE_PACK(video_width, video_height),
+                     VIDEO_SCALE_PACK(widget_size, widget_size),
                      state->challenge_info[i].image,
                      x,
                      y,
@@ -494,9 +490,10 @@ static void gfx_widget_leaderboard_display_frame(void* data, void* userdata)
             gfx_display_draw_quad(
                   p_disp,
                   video_info->userdata,
-                  video_width, video_height,
-                  (int)x, (int)y, tracker_width, tracker_height,
-                  video_width, video_height,
+                  VIDEO_SCALE_PACK(video_width, video_height),
+                  (int)x, (int)y, VIDEO_SCALE_PACK(tracker_width,
+                        tracker_height),
+                  VIDEO_SCALE_PACK(video_width, video_height),
                   p_dispwidget->backdrop_orig,
                   NULL);
 
@@ -515,10 +512,8 @@ static void gfx_widget_leaderboard_display_frame(void* data, void* userdata)
                   gfx_widgets_draw_icon(
                         video_info->userdata,
                         p_disp,
-                        video_width,
-                        video_height,
-                        image_size,
-                        image_size,
+                        VIDEO_SCALE_PACK(video_width, video_height),
+                        VIDEO_SCALE_PACK(image_size, image_size),
                         p_dispwidget->gfx_widgets_icons_textures[
                               MENU_WIDGETS_ICON_ACHIEVEMENT],
                         x,
@@ -540,10 +535,8 @@ static void gfx_widget_leaderboard_display_frame(void* data, void* userdata)
                gfx_widgets_draw_icon(
                      video_info->userdata,
                      p_disp,
-                     video_width,
-                     video_height,
-                     image_size,
-                     image_size,
+                     VIDEO_SCALE_PACK(video_width, video_height),
+                     VIDEO_SCALE_PACK(image_size, image_size),
                      state->progress_tracker.image,
                      x,
                      y,
@@ -559,7 +552,7 @@ static void gfx_widget_leaderboard_display_frame(void* data, void* userdata)
             y = (float)y + image_size / 2 + p_dispwidget->gfx_widget_fonts.regular.line_height / 2 - p_dispwidget->gfx_widget_fonts.regular.line_descender;
             gfx_widgets_draw_text(&p_dispwidget->gfx_widget_fonts.regular,
                   state->progress_tracker.display, x, y,
-                  video_width, video_height,
+                  VIDEO_SCALE_PACK(video_width, video_height),
                   TEXT_COLOR_INFO, TEXT_ALIGN_LEFT, true);
          }
       }
@@ -588,9 +581,10 @@ static void gfx_widget_leaderboard_display_frame(void* data, void* userdata)
          gfx_display_draw_quad(
             p_disp,
             video_info->userdata,
-            video_width, video_height,
-            (int)x, (int)y, disconnect_widget_width, disconnect_widget_height,
-            video_width, video_height,
+            VIDEO_SCALE_PACK(video_width, video_height),
+            (int)x, (int)y, VIDEO_SCALE_PACK(disconnect_widget_width,
+                  disconnect_widget_height),
+            VIDEO_SCALE_PACK(video_width, video_height),
             p_dispwidget->backdrop_orig,
             NULL);
 
@@ -601,7 +595,7 @@ static void gfx_widget_leaderboard_display_frame(void* data, void* userdata)
 
          gfx_widgets_draw_text(&p_dispwidget->gfx_widget_fonts.msg_queue,
             disconnected_text, char_x, char_y,
-            video_width, video_height,
+            VIDEO_SCALE_PACK(video_width, video_height),
             TEXT_COLOR_INFO, TEXT_ALIGN_LEFT, true);
       }
    }
@@ -880,7 +874,7 @@ void gfx_widget_set_cheevos_set_loading(bool value)
 
 
 static void gfx_widget_leaderboard_display_iterate(void *user_data,
-      unsigned width, unsigned height, bool fullscreen,
+      unsigned dims, bool fullscreen,
       const char *dir_assets, char *font_path, bool is_threaded)
 {
    mpsc_stack_node_t *link =

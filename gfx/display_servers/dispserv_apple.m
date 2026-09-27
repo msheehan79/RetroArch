@@ -193,7 +193,7 @@ static bool apple_display_server_set_window_decorations(void *data, bool on)
 
 #if TARGET_OS_OSX && __MAC_OS_X_VERSION_MAX_ALLOWED >= 140000
 static bool apple_display_server_set_resolution(void *data,
-      unsigned width, unsigned height, int int_hz, float hz,
+      unsigned dims, int int_hz, float hz,
       int center, int monitor_index, int xoffset, int padjust)
 {
    CocoaView *view = [CocoaView get];
@@ -212,7 +212,7 @@ static bool apple_display_server_set_resolution(void *data,
    }
 
    /* macOS: Support resolution changes in addition to refresh rate */
-   if (width > 0 && height > 0)
+   if (VIDEO_SCALE_W(dims) > 0 && VIDEO_SCALE_H(dims) > 0)
    {
       CGDirectDisplayID mainDisplayID = CGMainDisplayID();
       CFArrayRef displayModes = CGDisplayCopyAllDisplayModes(mainDisplayID, NULL);
@@ -227,7 +227,7 @@ static bool apple_display_server_set_resolution(void *data,
          return false;
       }
 
-      RARCH_LOG("[Video] Looking for display mode: %ux%u @ %.3f Hz\n", width, height, hz);
+      RARCH_LOG("[Video] Looking for display mode: %ux%u @ %.3f Hz\n", VIDEO_SCALE_W(dims), VIDEO_SCALE_H(dims), hz);
 
       /* Find the best matching display mode */
       for (CFIndex i = 0; i < CFArrayGetCount(displayModes); i++)
@@ -238,13 +238,13 @@ static bool apple_display_server_set_resolution(void *data,
          double refreshRate = CGDisplayModeGetRefreshRate(mode);
 
          /* Exact match preferred */
-         if (modeWidth == width && modeHeight == height && fabs(refreshRate - hz) < 0.1)
+         if (modeWidth == VIDEO_SCALE_W(dims) && modeHeight == VIDEO_SCALE_H(dims) && fabs(refreshRate - hz) < 0.1)
          {
             bestMode = mode;
             break;
          }
          /* Fallback: match resolution, any refresh rate */
-         else if (modeWidth == width && modeHeight == height && !bestMode)
+         else if (modeWidth == VIDEO_SCALE_W(dims) && modeHeight == VIDEO_SCALE_H(dims) && !bestMode)
             bestMode = mode;
       }
 
@@ -254,7 +254,7 @@ static bool apple_display_server_set_resolution(void *data,
          if (result == kCGErrorSuccess)
          {
             RARCH_LOG("[Video] Successfully changed display mode to %ux%u @ %.3f Hz\n",
-                     width, height, hz);
+                     VIDEO_SCALE_W(dims), VIDEO_SCALE_H(dims), hz);
 
             /* Notify the window and video context about the resolution change */
             NSWindow *window = ((RetroArch_OSX*)[[NSApplication sharedApplication] delegate]).window;
@@ -289,7 +289,7 @@ static bool apple_display_server_set_resolution(void *data,
       else
       {
          RARCH_WARN("[Video] No matching display mode found for %ux%u @ %.3f Hz\n",
-                    width, height, hz);
+                    VIDEO_SCALE_W(dims), VIDEO_SCALE_H(dims), hz);
          CFRelease(displayModes);
          return false;
       }
@@ -306,7 +306,7 @@ static bool apple_display_server_set_resolution(void *data,
 }
 #elif TARGET_OS_IPHONE
 static bool apple_display_server_set_resolution(void *data,
-      unsigned width, unsigned height, int int_hz, float hz,
+      unsigned dims, int int_hz, float hz,
       int center, int monitor_index, int xoffset, int padjust)
 {
    CocoaView *view = [CocoaView get];
@@ -418,8 +418,8 @@ static void *apple_display_server_get_resolution_list(
       if (refreshRate > 0)
       {
          struct video_display_config config;
-         config.width = (unsigned)modeWidth;
-         config.height = (unsigned)modeHeight;
+         config.dims = VIDEO_SCALE_PACK((unsigned)modeWidth,
+               (unsigned)modeHeight);
          config.bpp = 32;
          config.refreshrate = (unsigned)refreshRate;
          config.refreshrate_float = (float)refreshRate;
@@ -472,8 +472,8 @@ static void *apple_display_server_get_resolution_list(
    *len = 1;
    if (!(conf = (struct video_display_config*)calloc(1, sizeof(*conf))))
       return NULL;
-   conf[0].width            = (unsigned)currentWidth;
-   conf[0].height           = (unsigned)currentHeight;
+   conf[0].dims             = VIDEO_SCALE_PACK((unsigned)currentWidth,
+         (unsigned)currentHeight);
    conf[0].bpp              = 32;
    conf[0].refreshrate      = 60;
    conf[0].refreshrate_float = 60.0f;
@@ -483,20 +483,20 @@ static void *apple_display_server_get_resolution_list(
    conf[0].current          = true;
    (void)currentRate;
    RARCH_LOG("[Video] Legacy macOS: reporting current mode %ux%u only\n",
-         conf[0].width, conf[0].height);
+         VIDEO_SCALE_W(conf[0].dims), VIDEO_SCALE_H(conf[0].dims));
    return conf;
 #endif /* RARCH_HAS_CGDISPLAYMODE_API */
 #else
    /* iOS/tvOS: Only enumerate refresh rates for current resolution */
-   unsigned width, height;
+   unsigned dims;
    NSMutableSet *rates = [NSMutableSet set];
 
    /* Use nativeBounds to get physical screen resolution
     * (works correctly in multitasking/Split View modes) */
    UIScreen *mainScreen = [UIScreen mainScreen];
    CGRect nativeBounds = mainScreen.nativeBounds;
-   width = (unsigned)nativeBounds.size.width;
-   height = (unsigned)nativeBounds.size.height;
+   dims = VIDEO_SCALE_PACK((unsigned)nativeBounds.size.width,
+         (unsigned)nativeBounds.size.height);
 #if (TARGET_OS_IOS && __IPHONE_OS_VERSION_MAX_ALLOWED >= 150000) || (TARGET_OS_TV && __TV_OS_VERSION_MAX_ALLOWED >= 150000)
    if (apple_runtime_available(0, APPLE_RUNTIME_VER(15, 0, 0), APPLE_RUNTIME_VER(15, 0, 0)))
       currentRate = [CocoaView get].displayLink.preferredFrameRateRange.preferred;
@@ -543,8 +543,7 @@ static void *apple_display_server_get_resolution_list(
    for (j = 0; j < *len; j++)
    {
       NSNumber *rate = sorted[j];
-      conf[j].width       = width;
-      conf[j].height      = height;
+      conf[j].dims        = dims;
       conf[j].bpp         = 32;
       conf[j].refreshrate = [rate unsignedIntValue];
       conf[j].refreshrate_float = [rate floatValue];
@@ -708,9 +707,9 @@ static float apple_display_server_get_refresh_rate(void *data)
 }
 
 static void apple_display_server_get_video_output_size(void *data,
-      unsigned *width, unsigned *height, char *desc, size_t desc_len)
+      unsigned *dims, char *desc, size_t desc_len)
 {
-   cocoa_get_video_output_size(width, height, desc, desc_len);
+   cocoa_get_video_output_size(dims, desc, desc_len);
 }
 
 #if TARGET_OS_OSX

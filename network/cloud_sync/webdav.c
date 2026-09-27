@@ -168,6 +168,9 @@ static char *webdav_create_ha1_hash(char *user, char *realm, char *pass)
    unsigned char digest[16];
    char *hash = (char*)malloc(33);
 
+   if (!hash)
+      return NULL;
+
    MD5_Init(&md5);
    MD5_Update(&md5, user, (unsigned long)strlen(user));
    MD5_Update(&md5, ":", 1);
@@ -322,6 +325,9 @@ static char *webdav_create_ha1(void)
 
    hash = (char*)malloc(33);
 
+   if (!hash)
+      return NULL;
+
    MD5_Init(&md5);
    MD5_Update(&md5, webdav_st->ha1hash, 32);
    MD5_Update(&md5, ":", 1);
@@ -345,6 +351,9 @@ static char *webdav_create_ha2(const char *method, const char *path)
    /* no attempt at supporting auth-int, everything else uses this */
    char           *hash      = (char*)malloc(33);
 
+   if (!hash)
+      return NULL;
+
    MD5_Init(&md5);
    MD5_Update(&md5, method, (unsigned long)strlen(method));
    MD5_Update(&md5, ":", 1);
@@ -367,6 +376,14 @@ static char *webdav_create_digest_response(const char *method, const char *path)
    char           *ha1       = webdav_create_ha1();
    char           *ha2       = webdav_create_ha2(method, path);
    char           *hash      = (char*)malloc(33);
+
+   if (!ha1 || !ha2 || !hash)
+   {
+      free(ha1);
+      free(ha2);
+      free(hash);
+      return NULL;
+   }
 
    MD5_Init(&md5);
    MD5_Update(&md5, ha1, 32);
@@ -421,6 +438,8 @@ static char *webdav_create_digest_auth_header(const char *method, const char *ur
    } while (count < 3);
 
    response = webdav_create_digest_response(method, path);
+   if (!response)
+      return NULL;
    __len    = snprintf(nonceCount, sizeof(nonceCount),
          "%08x", webdav_st->nc++);
 
@@ -441,6 +460,11 @@ static char *webdav_create_digest_auth_header(const char *method, const char *ur
    total  = _len;
    _len   = 0;
    header = (char*)malloc(total);
+   if (!header)
+   {
+      free(response);
+      return NULL;
+   }
    _len   = strlcpy_lit(header, "Authorization: Digest username=\"", total - _len);
    _len  += strlcpy(header + _len, webdav_st->username, total - _len);
    _len  += strlcpy_lit(header + _len, "\", realm=\"", total - _len);
@@ -823,6 +847,16 @@ static void webdav_read_cb(retro_task_t *task, void *task_data, void *user_data,
       return;
    }
 
+   /* A body delimited only by the connection closing may have been
+    * cut off; do not let it replace the local file. */
+   if (found && !net_http_body_is_framed(data->headers))
+   {
+      RARCH_WARN("[webdav] %s: response body has no Content-Length or "
+            "chunked framing; treating as failure.\n", webdav_cb_st->path);
+      found   = false;
+      success = false;
+   }
+
    /* A found file always comes back as an open RFILE, even an empty
     * one, and a file that cannot be written locally is a failure.
     * That leaves success with no file meaning only one thing: the
@@ -1066,10 +1100,21 @@ static void webdav_update_cb(retro_task_t *task, void *task_data,
    free(webdav_cb_st);
 }
 
+/* The upload body, pulled from the open save file by net_http on the
+ * task thread as the socket takes it. */
+static int64_t webdav_upload_source(void *userdata, void *buf, size_t len)
+{
+   return filestream_read((RFILE*)userdata, buf, (int64_t)len);
+}
+
+static bool webdav_upload_rewind(void *userdata)
+{
+   return filestream_seek((RFILE*)userdata, 0, SEEK_SET) == 0;
+}
+
 static void webdav_do_update(bool success, webdav_cb_state_t *webdav_cb_st)
 {
    char            url_encoded[PATH_MAX_LENGTH];
-   void           *buf;
    int64_t         len;
    char           *auth_header;
 
@@ -1091,20 +1136,15 @@ static void webdav_do_update(bool success, webdav_cb_state_t *webdav_cb_st)
       return;
    }
 
-   /* TODO: would be better to read file as it's being written to wire, this is very inefficient */
-   /* Rewind first: a retry after a Digest challenge comes back here
-    * with the file already read to its end, and without the seek it
-    * read nothing and uploaded a buffer of uninitialised memory in
-    * place of the save.  A short read fails the upload for the same
-    * reason. */
+   /* The file is streamed onto the wire from rfile as the socket takes
+    * it, one send buffer at a time, rather than read whole into memory
+    * first. Rewind first: a retry after a Digest challenge comes back
+    * here with the file already read to its end, and without the seek
+    * the upload would carry nothing. A short read fails the upload. */
    len = filestream_get_size(webdav_cb_st->rfile);
-   buf = (len >= 0) ? malloc((size_t)(len + 1)) : NULL;
-   if (   !buf
-       || filestream_seek(webdav_cb_st->rfile, 0, SEEK_SET) < 0
-       || filestream_read(webdav_cb_st->rfile, buf, len) != len)
+   if (len < 0 || filestream_seek(webdav_cb_st->rfile, 0, SEEK_SET) < 0)
    {
       RARCH_ERR("[webdav] Could not read %s for upload.\n", webdav_cb_st->path);
-      free(buf);
       webdav_cb_st->cb(webdav_cb_st->user_data, webdav_cb_st->path, false, webdav_cb_st->rfile);
       free(webdav_cb_st);
       return;
@@ -1112,10 +1152,10 @@ static void webdav_do_update(bool success, webdav_cb_state_t *webdav_cb_st)
 
    RARCH_DBG("[webdav] PUT %s\n", url_encoded);
    auth_header = webdav_get_auth_header("PUT", url_encoded);
-   task_push_webdav_put(url_encoded, buf, len, true, auth_header, webdav_update_cb, webdav_cb_st);
+   task_push_webdav_put_stream(url_encoded,
+         webdav_upload_source, webdav_upload_rewind, webdav_cb_st->rfile,
+         (size_t)len, true, auth_header, webdav_update_cb, webdav_cb_st);
    free(auth_header);
-
-   free(buf);
 }
 
 /* Where the backup of @path goes: deleted/<path>-<yymmdd-hhmmss>, the
@@ -1360,6 +1400,9 @@ static bool webdav_delete(const char *path, cloud_sync_complete_handler_t cb, vo
 {
    webdav_cb_state_t *webdav_cb_st = (webdav_cb_state_t*)calloc(1, sizeof(webdav_cb_state_t));
    settings_t        *settings     = config_get_ptr();
+
+   if (!webdav_cb_st)
+      return false;
 
    webdav_cb_st->cb        = cb;
    webdav_cb_st->user_data = user_data;

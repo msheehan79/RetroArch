@@ -191,7 +191,7 @@ static const struct
    char s_ad397cb2[80];
    char s_7354d146[181];
    char s_e18c0fd3[50];
-   char s_2d9d0a50[315];
+   char s_2d9d0a50[305];
    char s_0e7699a6[296];
    char s_16721de3[254];
    char s_abab74fb[187];
@@ -608,6 +608,7 @@ static const struct
    char s_beaf53f1[20];
    char s_c3fd1e84[19];
    char s_0f2da3af[20];
+   char s_a89a965a[18];
    char s_f4875576[37];
    char s_6a07da9c[38];
    char s_df3def90[35];
@@ -1184,6 +1185,10 @@ static const struct
    char s_8d3a8b68[6];
    char s_68d27147[13];
    char s_f02f73fc[34];
+   char s_b5721b90[36];
+   char s_e5b971a0[9];
+   char s_8f27c71e[20];
+   char s_17615fcf[7];
    char s_3a0a3fef[23];
    char s_1b6ed818[28];
    char s_89a75c21[28];
@@ -1436,6 +1441,7 @@ static const struct
    char s_d9d847b8[35];
    char s_7a6a492f[27];
    char s_cf28bcf5[28];
+   char s_d3e7cd81[10];
    char s_821edb57[25];
    char s_5f080876[29];
    char s_9358d8ba[25];
@@ -2177,6 +2183,10 @@ static const struct
    char s_db01e988[4];
    char s_e1c715da[3];
    char s_9a981aa0[9];
+   char s_b4d6cb93[32];
+   char s_ee1c318a[30];
+   char s_32b51618[33];
+   char s_a2906bd3[22];
    char s_e2f93e68[5];
    char s_47d26662[14];
    char s_0ca3b319[10];
@@ -2268,6 +2278,7 @@ static const struct
    char s_cf6bc52a[22];
    char s_05c5a263[26];
    char s_ed22c5f1[25];
+   char s_32c41d0e[37];
    char s_49f9815b[26];
    char s_ddc4f021[26];
    char s_ddc6b80f[26];
@@ -2301,10 +2312,12 @@ static const struct
    char s_88157cb0[6];
    char s_14ed14d0[12];
    char s_5c87e95b[19];
+   char s_fad361a0[32];
    char s_bb929824[23];
    char s_f5df445e[4];
    char s_f5df87be[4];
    char s_f5df885e[4];
+   char s_fe2ec9bd[45];
    char s_5741c1d0[26];
    char s_a1a7717d[28];
    char s_e6ca3876[40];
@@ -2752,6 +2765,7 @@ static const struct
    char s_79b8ce4a[113];
    char s_a1a8257e[123];
    char s_282f7955[100];
+   char s_d5231783[314];
    char s_a68d6d11[75];
    char s_74022c02[121];
    char s_8abad013[78];
@@ -3074,6 +3088,7 @@ static const struct
    char s_6895dfd6[50];
    char s_788364f5[84];
    char s_dd9ff22a[72];
+   char s_ff7d19fe[239];
    char s_db495a9d[50];
    char s_ddc672a7[59];
    char s_ccea261d[152];
@@ -3143,7 +3158,7 @@ static const struct
    char s_5aa622cc[284];
    char s_2b908073[283];
    char s_64bea160[220];
-   char s_2826de99[481];
+   char s_2826de99[489];
    char s_97c62766[178];
    char s_6f458a85[120];
    char s_41702fdc[73];
@@ -3582,7 +3597,6 @@ static const struct
    char s_ffd591e0[50];
    char s_a51ab538[32];
    char s_55d6cc44[55];
-   char s_5a8f7fb9[241];
    char s_f2963d2d[32];
    char s_4c592ae1[114];
    char s_52ac4fb9[135];
@@ -3594,6 +3608,7 @@ static const struct
    char s_f77f7a41[89];
 #endif
    char s_e7cb5685[52];
+   char s_bd82a701[473];
    char s_8bb367a2[117];
    char s_2beab583[44];
    char s_a1c071eb[102];
@@ -3675,8 +3690,10 @@ static const struct
    char s_cfa51e8c_1[4];
    char s_b62c2f7e[396];
    char s_456fcbc9[401];
+   char s_ba8ff8ce[363];
    char s_82fab47a[45];
    char s_72e21512[248];
+   char s_9f6de46b[377];
    char s_66f2b57e[63];
    char s_a776daeb[97];
    char s_88095324[97];
@@ -3707,7 +3724,7 @@ static const struct
    char s_eec252b5[155];
    char s_f4e4e921[212];
    char s_7968f59d[53];
-   char s_8cee3615[211];
+   char s_8cee3615[310];
    char s_58c80718[347];
    char s_894ecb9a[400];
    char s_67d549fd[41];
@@ -4735,11 +4752,10 @@ static const struct
    "urs \303\240 rendu logiciel. Version minimale requise : Vulkan 1.0. Supporte les shaders HDR et "
    "Slang.",
    "Pilote Wii U. Prends en charge les shaders Slang.",
-   "Applique un filtre vid\303\251o produit par le processeur graphique. Peut avoir un co\303\273t "
-   "\303\251lev\303\251 en performances. Certains filtres vid\303\251o ne peuvent fonctionner qu'ave"
-   "c les c\305\223urs utilisant les modes de couleurs 32-bits ou 16-bits. Des biblioth\303\250ques "
-   "de filtres vid\303\251o li\303\251es dynamiquement peuvent \303\252tre s\303\251lectionn\303\251"
-   "es.",
+   "Applique un filtre vid\303\251o produit par le processeur. Peut avoir un co\303\273t \303\251lev"
+   "\303\251 en performances. Certains filtres vid\303\251o ne peuvent fonctionner qu'avec les c\305"
+   "\223urs utilisant les modes de couleurs 32-bits ou 16-bits. Des biblioth\303\250ques de filtres "
+   "vid\303\251o li\303\251es dynamiquement peuvent \303\252tre s\303\251lectionn\303\251es.",
    "Applique un filtre vid\303\251o produit par le processeur. Peut avoir un co\303\273t \303\251lev"
    "\303\251 en performances. Certains filtres vid\303\251o ne peuvent fonctionner qu'avec les c\305"
    "\223urs utilisant les modes de couleurs 32-bits ou 16-bits. Des biblioth\303\250ques de filtres "
@@ -5216,6 +5232,7 @@ static const struct
    "Fr\303\251quence maximale",
    "Gouverneur du menu",
    "Fr\303\251quence minimale",
+   "fils d'ex\303\251cution",
    "Cr\303\251er une nouvelle liste de lecture",
    "R\303\251solution adapt\303\251e aux \303\251crans CRT ",
    "Utiliser le menu haute r\303\251solution",
@@ -5797,6 +5814,10 @@ static const struct
    "Menu ",
    "Mode kiosque",
    "Limiter les images/s dans le menu",
+   "Affichage des extensions de fichier",
+   "Toujours",
+   "Doublons uniquement",
+   "Jamais",
    "Navigateur de fichiers",
    "Couleur de la police : Bleu",
    "Couleur de la police : Vert",
@@ -6052,6 +6073,7 @@ static const struct
    "Aucune option de c\305\223ur disponible.",
    "Aucun disque s\303\251lectionn\303\251",
    "Aucune entr\303\251e \303\240 afficher.",
+   "pas d'ext",
    "Aucun favori disponible.",
    "Aucun historique disponible.",
    "Aucune image disponible.",
@@ -6803,6 +6825,10 @@ static const struct
    "ans",
    "an",
    "Minutage",
+   "V\303\251rification du certificat TLS",
+   "D\303\251sactiv\303\251e (non s\303\251curis\303\251)",
+   "Optionnelle (avertir uniquement)",
+   "Requise (recommand\303\251)",
    "Vrai",
    "Demi-p\303\251riode",
    "Classique",
@@ -6896,6 +6922,7 @@ static const struct
    "Filtre vid\303\251o activ\303\251",
    "Filtre anti-scintillement",
    "Retirer le filtre vid\303\251o",
+   "Fils d'ex\303\251cution des filtres vid\303\251o",
    "Notifications \303\240 l'\303\251cran",
    "Police des notifications ",
    "Taille des notifications ",
@@ -6929,10 +6956,12 @@ static const struct
    "scRVB",
    "Luminosit\303\251",
    "Lignes de balayage",
+   "Envoyer la luminance de l'image",
    "Disposition sous-pixel",
    "BVR",
    "RBV",
    "RVB",
+   "Utiliser la luminosit\303\251 maximale de l'\303\251cran",
    "Dispositions d'affichage ",
    "Latence maximale des images",
    "Nombre d'images max en m\303\251moire tampon ",
@@ -7594,6 +7623,11 @@ static const struct
    "\251solution quand aucun contenu n'est charg\303\251.",
    "Parcourez ces options pour ajuster les r\303\251glages horizontaux afin de modifier la taille de"
    " l'image.",
+   "G\303\251n\303\251rer un mode vid\303\251o correspondant \303\240 la r\303\251solution et \303"
+   "\240 la fr\303\251quence de rafra\303\256chissement du contenu. Les modes 15/31 kHz sont destin"
+   "\303\251s aux \303\251crans CRT ; Correspondre \303\240 l'\303\251cran et Correspondre \303\240 "
+   "la fr\303\251quence de rafra\303\256chissement uniquement se basent sur les limites d\303\251fin"
+   "ies dans l'EDID de l'\303\251cran.",
    "Basculer entre les super r\303\251solutions natives et ultra-larges (UltraWide).",
    "Utiliser une fr\303\251quence de rafra\303\256chissement personnalis\303\251e sp\303\251cifi\303"
    "\251e dans le fichier de configuration si n\303\251cessaire.",
@@ -8135,6 +8169,9 @@ static const struct
    "Prot\303\250ge la configuration en masquant tous les r\303\251glages li\303\251s \303\240 la con"
    "figuration.",
    "S'assure que le nombre d'images par seconde est plafonn\303\251 dans le menu.",
+   "D\303\251finir quand afficher les extensions de fichier lors de la navigation dans le contenu. L"
+   "es s\303\251lecteurs de fichiers pour les shaders, les surimpressions, les configurations et aut"
+   "res fichiers de r\303\251glages les affichent syst\303\251matiquement.",
    "Modifier les r\303\251glages du navigateur de fichiers.",
    "Modifie l'opacit\303\251 de l'arri\303\250re-plan du menu par d\303\251faut.",
    "Luminosit\303\251 du menu en cd/m2 (nits) lors de l'utilisation d'un affichage HDR. Uniquement v"
@@ -8260,13 +8297,13 @@ static const struct
    "Lit la piste audio des miniatures WebM anim\303\251es pendant leur affichage. Compatible avec le"
    "s formats audio Vorbis et Opus. La lecture audio est synchronis\303\251e avec l'animation et s'a"
    "rr\303\252te \303\240 la fermeture de la miniature.",
-   "Combien de fils d'ex\303\251cution sont utilis\303\251s pour convertir en pixels chaque image d'"
-   "une miniature anim\303\251e au format WebM ou MP4. Une valeur de 1 maintient l'int\303\251gralit"
-   "\303\251 de la conversion sur le fil d'ex\303\251cution de d\303\251codage. Une valeur plus \303"
-   "\251lev\303\251e r\303\251partit la t\303\242che entre plusieurs c\305\223urs, ce qui acc\303"
-   "\251l\303\250re la g\303\251n\303\251ration de grandes pr\303\251visualisations sur les machines"
-   " disposant de c\305\223urs inutilis\303\251s, mais monopolise ces fils d'ex\303\251cution sur le"
-   "s machines qui en manquent.",
+   "D\303\251termine sur combien de fils d'ex\303\251cution une miniature anim\303\251e peut effectu"
+   "er son d\303\251codage. Un fil d'ex\303\251cution confie l'int\303\251gralit\303\251 du d\303"
+   "\251codage \303\240 un seul fil d'ex\303\251cution. Plusieurs fils d'ex\303\251cution le r\303"
+   "\251partissent sur plusieurs c\305\223urs, ce qui permet \303\240 une grande pr\303\251visualisa"
+   "tion d'\303\252tre lue \303\240 vitesse normale. Lorsqu'un c\305\223ur traite la pr\303\251visua"
+   "lisation, celle-ci se limite \303\240 un seul fil d'ex\303\251cution, permettant ainsi au jeu de"
+   " conserver la disponibilit\303\251 de ses c\305\223urs.",
    "Agrandit automatiquement les miniatures \303\240 une largeur/hauteur inf\303\251rieure \303\240 "
    "la valeur sp\303\251cifi\303\251e. Am\303\251liore la qualit\303\251 de l'image. A un impact mod"
    "\303\251r\303\251 sur les performances.",
@@ -8992,9 +9029,6 @@ static const struct
    "Voir les informations sp\303\251cifiques \303\240 l'appareil.",
    "Capturer une image de l'\303\251cran.",
    "Effectue des t\303\242ches sur un fil d'ex\303\251cution distinct.",
-   "Maintenir les fils d'ex\303\251cution principal et audio sur les c\305\223urs de processeur les "
-   "plus rapides d'un processeur \303\240 architecture hybride. N'a aucun effet sur les processeurs "
-   "dont tous les c\305\223urs sont identiques. Prend effet au red\303\251marrage.",
    "Type de miniatures \303\240 afficher.",
    "Les images de pochettes, de capture d'\303\251cran et de miniatures d'\303\251cran de titre sont"
    " conserv\303\251es dans ce dossier.",
@@ -9011,6 +9045,12 @@ static const struct
    "ent.",
 #endif
    "Affiche l'heure courante dans le format pr\303\251f\303\251r\303\251.",
+   "Contr\303\264le la fa\303\247on dont les certificats de serveur sont v\303\251rifi\303\251s sur "
+   "les connexions s\303\251curis\303\251es (HTTPS) utilis\303\251es par la synchronisation avec le "
+   "Cloud, les RetroSucc\303\250s (RetroAchievements) et la mise \303\240 jour en ligne. 'Requise' r"
+   "ejette les certificats non fiables et prot\303\250ge contre les attaques de l'homme du milieu (m"
+   "an-in-the-middle). R\303\251duisez ceci uniquement si vous vous connectez via un proxy d'entrepr"
+   "ise ou \303\240 un h\303\264te auto-sign\303\251 en qui vous avez confiance.",
    "Pilote d'interface compagnon de bureau \303\240 utiliser lorsque l'interface de bureau est activ"
    "\303\251e. (Red\303\251marrage requis)",
    "Afficher la barre des menus de la fen\303\252tre.",
@@ -9185,10 +9225,21 @@ static const struct
    " \303\251teint la plupart de l'\303\251cran et HDR r\303\251cup\303\250re une partie de cette pe"
    "rte de luminosit\303\251. Si vous avez besoin de plus de contr\303\264le sur vos lignes de balay"
    "age, consultez les shaders personnalis\303\251s fournis par RetroArch.",
+   "Indiquer \303\240 un compositeur Wayland la plage de luminosit\303\251 de l'image, afin qu'il ma"
+   "ppe le contenu HDR en fonction des donn\303\251es r\303\251elles de l'image plut\303\264t que su"
+   "r la base d'une hypoth\303\250se. Si cette option est d\303\251sactiv\303\251e, l'image est d"
+   "\303\251crite comme \303\251tant au format Windows-scRGB, comme auparavant. La modification pren"
+   "d effet au red\303\251marrage du pilote vid\303\251o.",
    "Modifier les r\303\251glages de sortie vid\303\251o HDR.",
    "S\303\251lectionner les dispositions sous-pixel de vos affichages, cela n'affecte que les lignes"
    " de balayage. Si vous n'avez aucune id\303\251e de votre disposition sous-pixel, elle est affich"
    "\303\251e sur Rtings.com pour la 'Disposition sous-pixel' de votre \303\251cran",
+   "Utiliser la luminosit\303\251 maximale signal\303\251e par l'\303\251cran plut\303\264t que le r"
+   "\303\251glage 'Luminosit\303\251 maximale', lorsque l'\303\251cran fournit cette information : c"
+   "'est la valeur transmise au syst\303\250me et celle contenue dans les m\303\251tadonn\303\251es "
+   "HDR envoy\303\251es \303\240 l'\303\251cran. Si cette option est d\303\251sactiv\303\251e, c'est"
+   " la valeur de 'Luminosit\303\251 maximale' d\303\251finie par l'utilisateur qui est utilis\303"
+   "\251e.",
    "Les dispositions d'affichage sont conserv\303\251es dans ce dossier.",
    "Indique au pilote vid\303\251o d'utiliser explicitement le mode de mise en m\303\251moire tampon"
    " sp\303\251cifi\303\251.",
@@ -9250,9 +9301,10 @@ static const struct
    "rsque l'image est trop recadr\303\251e, et revient finalement \303\240 l'\303\251chelle non enti"
    "\303\250re si les marges de sous-dimension sont trop grandes.",
    "Modifier les r\303\251glages de mise \303\240 l'\303\251chelle vid\303\251o.",
-   "Synchronisation de la pr\303\251sentation vid\303\251o \303\240 la position de la ligne de balay"
-   "age. R\303\251duit la latence au prix d'un risque plus \303\251lev\303\251 de saccades. La synch"
-   "ronisation verticale (V-Sync) doit \303\252tre d\303\251sactiv\303\251e.",
+   "Synchroniser l'affichage vid\303\251o avec la pr\303\251diction de la position de la ligne de ba"
+   "layage bas\303\251e sur le temps du c\305\223ur. Pr\303\251requis : V-Sync d\303\251sactiv\303"
+   "\251, Retard d'images d\303\251sactiv\303\251, fr\303\251quence d'affichage proche de 1x le nomb"
+   "re d'images par seconde du c\305\223ur et processeur graphique aux fr\303\251quences maximales.",
    "AVERTISSEMENT : Un scintillement rapide peut causer une persistance de l'image sur certains \303"
    "\251crans. \303\200 utiliser \303\240 vos risques et p\303\251rils // Simule une ligne de balaya"
    "ge roulante basique au cours de plusieurs sous-images en divisant l'\303\251cran verticalement e"
@@ -10052,7 +10104,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_fr_blob_check[
-      (sizeof(msg_hash_fr_blob) == (235901u
+      (sizeof(msg_hash_fr_blob) == (237854u
 #ifdef ANDROID
        + 373u
 #endif
@@ -11060,6 +11112,7 @@ static const uint32_t msg_hash_fr_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_CPU_POLICY_MAX_FREQ,
    (uint32_t)MENU_ENUM_LABEL_VALUE_CPU_POLICY_MENU_GOVERNOR,
    (uint32_t)MENU_ENUM_LABEL_VALUE_CPU_POLICY_MIN_FREQ,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_CPU_THREADS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_CREATE_NEW_PLAYLIST,
    (uint32_t)MENU_ENUM_LABEL_VALUE_CRT_SWITCHRES_SETTINGS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_CRT_SWITCH_HIRES_MENU,
@@ -11636,6 +11689,10 @@ static const uint32_t msg_hash_fr_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_DRIVER,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_ENABLE_KIOSK_MODE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_ENUM_THROTTLE_FRAMERATE,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_EXTENSION_DISPLAY,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_EXTENSION_DISPLAY_ALWAYS,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_EXTENSION_DISPLAY_DUPLICATES_ONLY,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_EXTENSION_DISPLAY_NEVER,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_SETTINGS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FONT_COLOR_BLUE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FONT_COLOR_GREEN,
@@ -11888,6 +11945,7 @@ static const uint32_t msg_hash_fr_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_NO_CORE_OPTIONS_AVAILABLE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_NO_DISK,
    (uint32_t)MENU_ENUM_LABEL_VALUE_NO_ENTRIES_TO_DISPLAY,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_NO_EXTENSION,
    (uint32_t)MENU_ENUM_LABEL_VALUE_NO_FAVORITES_AVAILABLE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_NO_HISTORY_AVAILABLE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_NO_IMAGES_AVAILABLE,
@@ -12628,6 +12686,10 @@ static const uint32_t msg_hash_fr_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_TIME_UNIT_YEARS_PLURAL,
    (uint32_t)MENU_ENUM_LABEL_VALUE_TIME_UNIT_YEARS_SINGLE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_TIMING_SETTINGS,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_TLS_VERIFY_MODE,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_TLS_VERIFY_MODE_DISABLED,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_TLS_VERIFY_MODE_OPTIONAL,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_TLS_VERIFY_MODE_REQUIRED,
    (uint32_t)MENU_ENUM_LABEL_VALUE_TRUE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_TURBO_DUTY_CYCLE_HALF,
    (uint32_t)MENU_ENUM_LABEL_VALUE_TURBO_MODE_CLASSIC,
@@ -12719,6 +12781,7 @@ static const uint32_t msg_hash_fr_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_FILTER_ENABLE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_FILTER_FLICKER,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_FILTER_REMOVE,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_FILTER_THREADS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_FONT_ENABLE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_FONT_PATH,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_FONT_SIZE,
@@ -12752,10 +12815,12 @@ static const uint32_t msg_hash_fr_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_MODE_SCRGB,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_PAPER_WHITE_NITS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_SCANLINES,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_SEND_LUMINANCE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_SUBPIXEL_LAYOUT,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_SUBPIXEL_LAYOUT_BGR,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_SUBPIXEL_LAYOUT_RBG,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_SUBPIXEL_LAYOUT_RGB,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_USE_DISPLAY_PEAK,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_LAYOUT_DIRECTORY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_MAX_FRAME_LATENCY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_MAX_SWAPCHAIN_IMAGES,
@@ -13193,6 +13258,7 @@ static const uint32_t msg_hash_fr_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_CRT_SWITCHRES_SETTINGS,
    (uint32_t)MENU_ENUM_SUBLABEL_CRT_SWITCH_HIRES_MENU,
    (uint32_t)MENU_ENUM_SUBLABEL_CRT_SWITCH_PORCH_ADJUST,
+   (uint32_t)MENU_ENUM_SUBLABEL_CRT_SWITCH_RESOLUTION,
    (uint32_t)MENU_ENUM_SUBLABEL_CRT_SWITCH_RESOLUTION_SUPER,
    (uint32_t)MENU_ENUM_SUBLABEL_CRT_SWITCH_RESOLUTION_USE_CUSTOM_REFRESH_RATE,
    (uint32_t)MENU_ENUM_SUBLABEL_CRT_SWITCH_VERTICAL_ADJUST,
@@ -13513,6 +13579,7 @@ static const uint32_t msg_hash_fr_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_DRIVER,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_ENABLE_KIOSK_MODE,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_ENUM_THROTTLE_FRAMERATE,
+   (uint32_t)MENU_ENUM_SUBLABEL_MENU_FILE_BROWSER_EXTENSION_DISPLAY,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_FILE_BROWSER_SETTINGS,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_FRAMEBUFFER_OPACITY,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_HDR_BRIGHTNESS_NITS,
@@ -14020,7 +14087,6 @@ static const uint32_t msg_hash_fr_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_SYSTEM_INFORMATION,
    (uint32_t)MENU_ENUM_SUBLABEL_TAKE_SCREENSHOT,
    (uint32_t)MENU_ENUM_SUBLABEL_THREADED_DATA_RUNLOOP_ENABLE,
-   (uint32_t)MENU_ENUM_SUBLABEL_THREAD_PREFER_FAST_CORES,
    (uint32_t)MENU_ENUM_SUBLABEL_THUMBNAILS,
    (uint32_t)MENU_ENUM_SUBLABEL_THUMBNAILS_DIRECTORY,
    (uint32_t)MENU_ENUM_SUBLABEL_THUMBNAILS_MATERIALUI,
@@ -14032,6 +14098,7 @@ static const uint32_t msg_hash_fr_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_TIMEZONE,
 #endif
    (uint32_t)MENU_ENUM_SUBLABEL_TIME_SHOW,
+   (uint32_t)MENU_ENUM_SUBLABEL_TLS_VERIFY_MODE,
    (uint32_t)MENU_ENUM_SUBLABEL_UI_COMPANION_DRIVER,
    (uint32_t)MENU_ENUM_SUBLABEL_UI_MENUBAR_ENABLE,
    (uint32_t)MENU_ENUM_SUBLABEL_UNDO_LOAD_STATE,
@@ -14110,8 +14177,10 @@ static const uint32_t msg_hash_fr_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_MAX_NITS,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_PAPER_WHITE_NITS,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_SCANLINES,
+   (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_SEND_LUMINANCE,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_SETTINGS,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_SUBPIXEL_LAYOUT,
+   (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_USE_DISPLAY_PEAK,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_LAYOUT_DIRECTORY,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_MAX_FRAME_LATENCY,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_MAX_SWAPCHAIN_IMAGES,

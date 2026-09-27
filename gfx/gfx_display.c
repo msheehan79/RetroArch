@@ -117,21 +117,19 @@ static gfx_display_ctx_driver_t *gfx_display_ctx_drivers[] = {
    NULL,
 };
 
-static float gfx_display_get_dpi_scale_internal(
-      unsigned width, unsigned height)
+static float gfx_display_get_dpi_scale_internal(unsigned dims)
 {
    float dpi;
    float diagonal_pixels;
    float pixel_scale;
-   static unsigned last_width  = 0;
-   static unsigned last_height = 0;
+   unsigned width              = VIDEO_SCALE_W(dims);
+   unsigned height             = VIDEO_SCALE_H(dims);
+   static unsigned last_dims   = 0;
    static float scale          = 0.0f;
    static bool scale_cached    = false;
    gfx_ctx_metrics_t metrics;
 
-   if (    scale_cached
-       && (width  == last_width)
-       && (height == last_height))
+   if (scale_cached && dims == last_dims)
       return scale;
 
    /* Determine the diagonal 'size' of the display
@@ -237,8 +235,7 @@ static float gfx_display_get_dpi_scale_internal(
       scale             = pixel_scale;
 
    scale_cached         = true;
-   last_width           = width;
-   last_height          = height;
+   last_dims            = dims;
 
    return scale;
 }
@@ -246,13 +243,12 @@ static float gfx_display_get_dpi_scale_internal(
 float gfx_display_get_dpi_scale(
       gfx_display_t *p_disp,
       void *settings_data,
-      unsigned width, unsigned height,
+      unsigned dims,
       bool fullscreen,
       bool is_widget
 )
 {
-   static unsigned last_width                          = 0;
-   static unsigned last_height                         = 0;
+   static unsigned last_dims                           = 0;
    static float scale                                  = 0.0f;
    static bool scale_cached                            = false;
    bool scale_updated                                  = false;
@@ -300,15 +296,12 @@ float gfx_display_get_dpi_scale(
     * hardware property. To minimise performance overheads
     * we therefore only call video_context_driver_get_metrics()
     * on first run, or when the current video resolution changes */
-   if (   !scale_cached
-       || (width  != last_width)
-       || (height != last_height))
+   if (!scale_cached || dims != last_dims)
    {
-      scale         = gfx_display_get_dpi_scale_internal(width, height);
+      scale         = gfx_display_get_dpi_scale_internal(dims);
       scale_cached  = true;
       scale_updated = true;
-      last_width    = width;
-      last_height   = height;
+      last_dims     = dims;
    }
 
    /* Adjusted scale calculation may also be slow, so
@@ -321,11 +314,12 @@ float gfx_display_get_dpi_scale(
 #ifdef HAVE_OZONE
       if (p_disp->menu_driver_id == MENU_DRIVER_ID_OZONE)
       {
-         /* Ozone has a capped scale factor */
-         float new_width        = (float)width * 0.3333333f;
+         /* Ozone's sidebar may take a third of the screen and no
+          * more, so the scale is capped at whatever puts it there. */
+         float sidebar_max      = (float)VIDEO_SCALE_W(dims) / 3.0f;
          if (((float)OZONE_SIDEBAR_WIDTH * adjusted_scale)
-               > new_width)
-            adjusted_scale      = (new_width / (float)OZONE_SIDEBAR_WIDTH);
+               > sidebar_max)
+            adjusted_scale      = (sidebar_max / (float)OZONE_SIDEBAR_WIDTH);
       }
 #endif
       adjusted_scale            = (adjusted_scale > 0.0001f) ? adjusted_scale : 1.0f;
@@ -351,10 +345,13 @@ static void gfx_display_flush_as(gfx_display_t *p_disp,
 void gfx_display_scissor_begin(
       gfx_display_t *p_disp,
       void *userdata,
-      unsigned video_width,
-      unsigned video_height,
-      int x, int y, unsigned width, unsigned height)
+      unsigned video_dims,
+      int x, int y, unsigned dims)
 {
+   unsigned video_width              = VIDEO_SCALE_W(video_dims);
+   unsigned video_height             = VIDEO_SCALE_H(video_dims);
+   unsigned width                    = VIDEO_SCALE_W(dims);
+   unsigned height                   = VIDEO_SCALE_H(dims);
    gfx_display_ctx_driver_t *dispctx = p_disp->dispctx;
    /* What is gathered goes out before this draws */
    gfx_display_flush_as(disp_get_ptr(), GFX_DISPLAY_FLUSH_SCISSOR);
@@ -391,9 +388,8 @@ void gfx_display_scissor_begin(
       if ((x + width) > video_width)
          width      = video_width - x;
 
-      dispctx->scissor_begin(userdata,
-            video_width, video_height,
-            x, y, width, height);
+      dispctx->scissor_begin(userdata, video_dims,
+            x, y, dims);
    }
 }
 
@@ -423,7 +419,7 @@ font_data_t *gfx_display_font_file(
 /* Draw text on top of the screen */
 static void gfx_display_draw_text_internal(
       const font_data_t *font, const char *text,
-      float x, float y, int width, int height,
+      float x, float y, unsigned dims,
       uint32_t color, const float *color_hp,
       enum text_alignment text_align,
       float scale, bool shadows_enable, float shadow_offset,
@@ -431,6 +427,8 @@ static void gfx_display_draw_text_internal(
 {
    size_t _len;
    struct font_params params;
+   int width                      = (int)VIDEO_SCALE_W(dims);
+   int height                     = (int)VIDEO_SCALE_H(dims);
    gfx_display_t *p_disp          = disp_get_ptr();
    video_driver_state_t *video_st = video_state_get_ptr();
    /* What is gathered goes out before this draws */
@@ -484,12 +482,12 @@ static void gfx_display_draw_text_internal(
 
 void gfx_display_draw_text(
       const font_data_t *font, const char *text,
-      float x, float y, int width, int height,
+      float x, float y, unsigned dims,
       uint32_t color, enum text_alignment text_align,
       float scale, bool shadows_enable, float shadow_offset,
       bool draw_outside)
 {
-   gfx_display_draw_text_internal(font, text, x, y, width, height,
+   gfx_display_draw_text_internal(font, text, x, y, dims,
          color, NULL, text_align, scale, shadows_enable, shadow_offset,
          draw_outside);
 }
@@ -502,13 +500,13 @@ void gfx_display_draw_text(
  * do not opt in behave exactly as the 8-bit entry point. */
 void gfx_display_draw_text_hp(
       const font_data_t *font, const char *text,
-      float x, float y, int width, int height,
+      float x, float y, unsigned dims,
       uint32_t color, const float *color_rgba,
       enum text_alignment text_align,
       float scale, bool shadows_enable, float shadow_offset,
       bool draw_outside)
 {
-   gfx_display_draw_text_internal(font, text, x, y, width, height,
+   gfx_display_draw_text_internal(font, text, x, y, dims,
          color, color_rgba, text_align, scale, shadows_enable,
          shadow_offset, draw_outside);
 }
@@ -575,10 +573,12 @@ void gfx_display_draw_bg(
  * join, and the caller draws it itself. */
 static bool gfx_display_batch_add(gfx_display_t *p_disp,
       uintptr_t texture, const float *color, void *userdata,
-      unsigned video_width, unsigned video_height,
+      unsigned video_dims,
       float x0, float x1, float y0, float y1,
-      int px, int py, unsigned pw, unsigned ph)
+      int px, int py, unsigned dims)
 {
+   unsigned video_width  = VIDEO_SCALE_W(video_dims);
+   unsigned video_height = VIDEO_SCALE_H(video_dims);
    unsigned v, i;
    float *vert, *tex, *col;
 
@@ -647,13 +647,13 @@ static bool gfx_display_batch_add(gfx_display_t *p_disp,
    {
       p_disp->batch_first_x   = px;
       p_disp->batch_first_y   = py;
-      p_disp->batch_first_dims = VIDEO_SCALE_PACK(pw, ph);
+      p_disp->batch_first_dims = dims;
    }
    p_disp->batch_quads++;
    p_disp->stats.v[GFX_DISPLAY_STAT_QUADS]++;
    p_disp->batch_texture      = texture;
    p_disp->batch_userdata     = userdata;
-   p_disp->batch_video_dims   = VIDEO_SCALE_PACK(video_width, video_height);
+   p_disp->batch_video_dims   = video_dims;
    return true;
 }
 
@@ -681,9 +681,9 @@ static void gfx_display_flush_impl(gfx_display_t *p_disp)
       coords.vertex        = NULL;
       coords.tex_coord     = NULL;
       coords.color         = p_disp->batch_color;
-      draw.x               = p_disp->batch_first_x;
-      draw.y               = p_disp->batch_first_y;
-      draw.dims            = VIDEO_SCALE_PACK(VIDEO_SCALE_W(p_disp->batch_first_dims), VIDEO_SCALE_H(p_disp->batch_first_dims));
+      draw.pos             = VIDEO_POS_PACK(p_disp->batch_first_x,
+            p_disp->batch_first_y);
+      draw.dims            = p_disp->batch_first_dims;
    }
    else
    {
@@ -691,9 +691,8 @@ static void gfx_display_flush_impl(gfx_display_t *p_disp)
       coords.vertex        = p_disp->batch_vertex;
       coords.tex_coord     = p_disp->batch_tex;
       coords.color         = p_disp->batch_color;
-      draw.x               = 0;
-      draw.y               = 0;
-      draw.dims            = VIDEO_SCALE_PACK(VIDEO_SCALE_W(p_disp->batch_video_dims), VIDEO_SCALE_H(p_disp->batch_video_dims));
+      draw.pos             = VIDEO_POS_PACK(0, 0);
+      draw.dims            = p_disp->batch_video_dims;
    }
    draw.coords             = &coords;
    draw.matrix_data        = NULL;
@@ -711,7 +710,7 @@ static void gfx_display_flush_impl(gfx_display_t *p_disp)
          dispctx->blend_begin(p_disp->batch_userdata);
       if (dispctx->draw)
          dispctx->draw(&draw, p_disp->batch_userdata,
-               VIDEO_SCALE_W(p_disp->batch_video_dims), VIDEO_SCALE_H(p_disp->batch_video_dims));
+               p_disp->batch_video_dims);
       if (own_blend && dispctx->blend_end)
          dispctx->blend_end(p_disp->batch_userdata);
    }
@@ -780,23 +779,26 @@ void gfx_display_blend_end(gfx_display_ctx_driver_t *dispctx,
  * than drawn one at a time, where the gathered ones have to go out. */
 void gfx_display_draw(gfx_display_ctx_driver_t *dispctx,
       gfx_display_ctx_draw_t *draw, void *userdata,
-      unsigned video_width, unsigned video_height)
+      unsigned video_dims)
 {
    gfx_display_flush_as(disp_get_ptr(), GFX_DISPLAY_FLUSH_DRAW);
    if (dispctx && dispctx->draw && draw)
-      dispctx->draw(draw, userdata, video_width, video_height);
+      dispctx->draw(draw, userdata, video_dims);
 }
 
 void gfx_display_draw_quad(
       gfx_display_t *p_disp,
       void *data,
-      unsigned video_width,
-      unsigned video_height,
-      int x, int y, unsigned w, unsigned h,
-      unsigned width, unsigned height,
+      unsigned video_dims,
+      int x, int y, unsigned dims,
+      unsigned ref_dims,
       float *color,
       uintptr_t *texture)
 {
+   unsigned w            = VIDEO_SCALE_W(dims);
+   unsigned h            = VIDEO_SCALE_H(dims);
+   unsigned width        = VIDEO_SCALE_W(ref_dims);
+   unsigned height       = VIDEO_SCALE_H(ref_dims);
    gfx_display_ctx_draw_t draw;
    struct video_coords coords;
    gfx_display_ctx_driver_t
@@ -813,9 +815,8 @@ void gfx_display_draw_quad(
    coords.lut_tex_coord = NULL;
    coords.color         = color;
 
-   draw.x               = x;
-   draw.y               = (int)height - y - (int)h;
-   draw.dims            = VIDEO_SCALE_PACK(w, h);
+   draw.pos             = VIDEO_POS_PACK(x, (int)height - y - (int)h);
+   draw.dims            = dims;
    draw.coords          = &coords;
    draw.matrix_data     = NULL;
    draw.texture         = (texture && *texture)
@@ -830,19 +831,20 @@ void gfx_display_draw_quad(
     * out before anything else draws, so the order is unchanged. */
    if (     dispctx->handles_vertex_strip
          && gfx_display_batch_add(p_disp, draw.texture, color, data,
-            video_width, video_height,
+            video_dims,
             (float)x / (float)width,
             (float)(x + (int)w) / (float)width,
-            (float)draw.y / (float)height,
-            (float)(draw.y + (int)h) / (float)height,
-            draw.x, draw.y, VIDEO_SCALE_W(draw.dims), VIDEO_SCALE_H(draw.dims)))
+            (float)VIDEO_POS_Y(draw.pos) / (float)height,
+            (float)(VIDEO_POS_Y(draw.pos) + (int)h) / (float)height,
+            VIDEO_POS_X(draw.pos), VIDEO_POS_Y(draw.pos),
+            draw.dims))
       return;
 
    gfx_display_flush_as(p_disp, GFX_DISPLAY_FLUSH_DRAW);
    if (dispctx->blend_begin)
       dispctx->blend_begin(data);
    if (dispctx->draw)
-      dispctx->draw(&draw, data, video_width, video_height);
+      dispctx->draw(&draw, data, video_dims);
    if (dispctx->blend_end)
       dispctx->blend_end(data);
 }
@@ -853,15 +855,20 @@ void gfx_display_draw_quad(
 void gfx_display_draw_texture_slice(
       gfx_display_t *p_disp,
       void *userdata,
-      unsigned video_width,
-      unsigned video_height,
-      int x, int y, unsigned w, unsigned h,
-      unsigned new_w, unsigned new_h,
-      unsigned width, unsigned height,
+      unsigned video_dims,
+      int x, int y, unsigned src_dims,
+      unsigned dst_dims,
+      unsigned dims,
       float *color, unsigned offset, float scale_factor, uintptr_t texture,
       math_matrix_4x4 *mymat
 )
 {
+   unsigned w                        = VIDEO_SCALE_W(src_dims);
+   unsigned h                        = VIDEO_SCALE_H(src_dims);
+   unsigned new_w                    = VIDEO_SCALE_W(dst_dims);
+   unsigned new_h                    = VIDEO_SCALE_H(dst_dims);
+   unsigned width                    = VIDEO_SCALE_W(dims);
+   unsigned height                   = VIDEO_SCALE_H(dims);
    gfx_display_ctx_draw_t draw;
    struct video_coords coords;
    gfx_display_ctx_driver_t *dispctx = p_disp->dispctx;
@@ -957,15 +964,14 @@ void gfx_display_draw_texture_slice(
    coords.vertex            = vert_coord;
    coords.tex_coord         = tex_coord;
    coords.lut_tex_coord     = NULL;
-   draw.dims                = VIDEO_SCALE_PACK(width, height);
+   draw.dims                = dims;
    draw.coords              = &coords;
    draw.matrix_data         = mymat;
    draw.pipeline_id         = 0;
    coords.color             = (const float*)(color == NULL ? colors : color);
 
    draw.texture             = texture;
-   draw.x                   = 0;
-   draw.y                   = 0;
+   draw.pos                 = VIDEO_POS_PACK(0, 0);
    draw.scale_factor        = 1.0f;
    draw.rotation            = 0.0f;
 
@@ -1037,7 +1043,8 @@ void gfx_display_draw_texture_slice(
                 * geometry it cannot walk. */
                coords.vertices = v;
                coords.color    = vert_color;
-               dispctx->draw(&draw, userdata, video_width, video_height);
+               dispctx->draw(&draw, userdata,
+                     video_dims);
                v = 0;
             }
             if (v)
@@ -1076,7 +1083,8 @@ void gfx_display_draw_texture_slice(
 
       coords.vertices = v;
       coords.color    = vert_color;
-      dispctx->draw(&draw, userdata, video_width, video_height);
+      dispctx->draw(&draw, userdata,
+            video_dims);
    }
 }
 
@@ -1109,11 +1117,10 @@ void gfx_display_rotate_z(gfx_display_t *p_disp,
 void gfx_display_draw_cursor(
       gfx_display_t *p_disp,
       void *userdata,
-      unsigned video_width,
-      unsigned video_height,
+      unsigned video_dims,
       bool cursor_visible,
       float *color, float cursor_size, uintptr_t texture,
-      float x, float y, unsigned width, unsigned height)
+      float x, float y)
 {
    gfx_display_ctx_draw_t draw;
    struct video_coords coords;
@@ -1134,8 +1141,8 @@ void gfx_display_draw_cursor(
    coords.lut_tex_coord = NULL;
    coords.color         = (const float*)color;
 
-   draw.x               = x - (cursor_size / 2);
-   draw.y               = (int)height - y - (cursor_size / 2);
+   draw.pos             = VIDEO_POS_PACK(VIDEO_PX(x - (cursor_size / 2)),
+         VIDEO_PX((int)VIDEO_SCALE_H(video_dims) - y - (cursor_size / 2)));
    draw.dims            = VIDEO_SCALE_PACK((unsigned)cursor_size,
          (unsigned)cursor_size);
    draw.coords          = &coords;
@@ -1148,27 +1155,28 @@ void gfx_display_draw_cursor(
    if (dispctx->blend_begin)
       dispctx->blend_begin(userdata);
    if (dispctx->draw)
-      dispctx->draw(&draw, userdata, video_width, video_height);
+      dispctx->draw(&draw, userdata,
+            video_dims);
    if (dispctx->blend_end)
       dispctx->blend_end(userdata);
 }
 
 /* Returns the OSK key at a given position */
 int gfx_display_osk_ptr_at_pos(void *data, int x, int y,
-      unsigned width, unsigned height)
+      unsigned dims)
 {
    unsigned i;
-   int ptr_width  = width / 11;
-   int ptr_height = height / 10;
+   int ptr_width  = VIDEO_SCALE_W(dims) / 11;
+   int ptr_height = VIDEO_SCALE_H(dims) / 10;
 
    if (ptr_width > ptr_height)
       ptr_width = ptr_height;
 
    for (i = 0; i < 44; i++)
    {
-      int line_y    = (int)((i / 11) * height / 10);
-      int ptr_x     = (int)(width / 2 - (11 * ptr_width) / 2 + (i % 11) * ptr_width);
-      int ptr_y     = (int)(height / 2 + ptr_height * 3 / 2 + line_y - ptr_height);
+      int line_y    = (int)((i / 11) * VIDEO_SCALE_H(dims) / 10);
+      int ptr_x     = (int)(VIDEO_SCALE_W(dims) / 2 - (11 * ptr_width) / 2 + (i % 11) * ptr_width);
+      int ptr_y     = (int)(VIDEO_SCALE_H(dims) / 2 + ptr_height * 3 / 2 + line_y - ptr_height);
 
       if (x > ptr_x && x < ptr_x + ptr_width
        && y > ptr_y && y < ptr_y + ptr_height)
@@ -1181,13 +1189,14 @@ int gfx_display_osk_ptr_at_pos(void *data, int x, int y,
 void gfx_display_draw_keyboard(
       gfx_display_t *p_disp,
       void *userdata,
-      unsigned video_width,
-      unsigned video_height,
+      unsigned video_dims,
       uintptr_t hover_texture,
       const font_data_t *font,
       char *grid[], unsigned id,
       unsigned text_color)
 {
+   unsigned video_width  = VIDEO_SCALE_W(video_dims);
+   unsigned video_height = VIDEO_SCALE_H(video_dims);
    unsigned i;
    int ptr_width, ptr_height;
    gfx_display_ctx_driver_t *dispctx = p_disp->dispctx;
@@ -1213,14 +1222,11 @@ void gfx_display_draw_keyboard(
    gfx_display_draw_quad(
          p_disp,
          userdata,
-         video_width,
-         video_height,
+         video_dims,
          0,
          (int)(video_height / 2),
-         video_width,
-         video_height / 2,
-         video_width,
-         video_height,
+         VIDEO_SCALE_PACK(video_width, video_height / 2),
+         video_dims,
          (float*)osk_dark,
          NULL);
 
@@ -1243,13 +1249,11 @@ void gfx_display_draw_keyboard(
          gfx_display_draw_quad(
            p_disp,
            userdata,
-           video_width,
-           video_height,
+           video_dims,
            (int)(video_width / 2 - (11 * ptr_width) / 2 + (i % 11) * ptr_width),
            (int)(video_height / 2 + ptr_height * 3 / 2 + line_y - ptr_height),
-           ptr_width, ptr_height,
-           video_width,
-           video_height,
+           VIDEO_SCALE_PACK(ptr_width, ptr_height),
+           video_dims,
            (float*)white,
            &hover_texture);
 
@@ -1264,8 +1268,7 @@ void gfx_display_draw_keyboard(
                + (i % 11) * ptr_width + ptr_width / 2),
             (float)(video_height / 2 + ptr_height + line_y)
                + font->size / 3.0f,
-            video_width,
-            video_height,
+            video_dims,
             color,
             TEXT_ALIGN_CENTER,
             1.0f,
@@ -1277,7 +1280,7 @@ void gfx_display_draw_keyboard(
 bool gfx_display_reset_textures_list_buffer(
         uintptr_t *item, enum texture_filter_type filter_type,
         void* buffer, unsigned buffer_len, enum image_type_enum image_type,
-        unsigned *width, unsigned *height)
+        unsigned *dims)
 {
    struct texture_image ti;
 
@@ -1289,11 +1292,8 @@ bool gfx_display_reset_textures_list_buffer(
 
    if (image_texture_load_buffer(&ti, image_type, buffer, buffer_len))
    {
-      if (width)
-         *width     = ti.width;
-
-      if (height)
-         *height    = ti.height;
+      if (dims)
+         *dims      = VIDEO_SCALE_PACK(ti.width, ti.height);
 
       /* If the poke interface doesn't support 
          texture load then free and return false */
@@ -1313,7 +1313,7 @@ bool gfx_display_reset_textures_list_buffer(
 bool gfx_display_reset_textures_list(
       const char *texture_path, const char *iconpath,
       uintptr_t *item, enum texture_filter_type filter_type,
-      unsigned *width, unsigned *height)
+      unsigned *dims)
 {
    char texpath[PATH_MAX_LENGTH];
    struct texture_image ti;
@@ -1333,11 +1333,8 @@ bool gfx_display_reset_textures_list(
    if (!image_texture_load(&ti, texpath))
       return false;
 
-   if (width)
-      *width = ti.width;
-
-   if (height)
-      *height = ti.height;
+   if (dims)
+      *dims = VIDEO_SCALE_PACK(ti.width, ti.height);
 
    if (!video_driver_texture_load(&ti,
          filter_type, item))
@@ -1353,8 +1350,7 @@ bool gfx_display_reset_textures_list(
 
 bool gfx_display_reset_icon_texture(
       const char *texture_path,
-      uintptr_t *item, enum texture_filter_type filter_type,
-      unsigned *width, unsigned *height)
+      uintptr_t *item, enum texture_filter_type filter_type)
 {
    struct texture_image ti;
 
@@ -1368,11 +1364,6 @@ bool gfx_display_reset_icon_texture(
       return false;
    if (!image_texture_load(&ti, texture_path))
       return false;
-
-   if (width)
-      *width = ti.width;
-   if (height)
-      *height = ti.height;
 
    if (!video_driver_texture_load(&ti, filter_type, item))
    {
@@ -1446,7 +1437,7 @@ bool gfx_display_load_icon(
    (void)generation_ptr;
    return gfx_display_reset_icon_texture(
          fullpath, target_texture,
-         gfx_display_texture_filter(), NULL, NULL);
+         gfx_display_texture_filter());
 #else
    return task_push_icon_load(
          fullpath, supports_rgba,
@@ -1495,7 +1486,7 @@ void gfx_display_free(void)
 
    p_disp->flags               = 0;
    p_disp->header_height       = 0;
-   p_disp->framebuf_dims       = VIDEO_SCALE_PACK(0, 0);
+   p_disp->framebuf_dims       = 0;
    p_disp->framebuf_pitch      = 0;
    p_disp->menu_driver_id      = MENU_DRIVER_ID_UNKNOWN;
    p_disp->dispctx             = NULL;

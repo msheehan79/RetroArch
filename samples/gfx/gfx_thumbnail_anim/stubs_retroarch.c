@@ -13,6 +13,8 @@
 #include <stdlib.h>
 #include <stdbool.h>
 
+#include "../../../gfx/video_defines.h"
+
 extern int      gt_uploads;
 extern unsigned gt_last_crc;
 
@@ -163,8 +165,8 @@ void gt_async_flush(void)
    }
 }
 unsigned video_driver_get_disp_flags(void) { return 0; }
-void video_driver_get_video_output_size(unsigned *w, unsigned *h,
-      char *n, size_t l) { *w = 1920; *h = 1080; (void)n; (void)l; }
+void video_driver_get_video_output_size(unsigned *dims,
+      char *n, size_t l) { *dims = VIDEO_SCALE_PACK(1920, 1080); (void)n; (void)l; }
 void video_driver_get_viewport_info(void *vp) { (void)vp; }
 
 /* --- inert frontend surface --- */
@@ -215,8 +217,11 @@ bool task_push_image_load(const char *a, bool b, unsigned c, unsigned d,
  * with those declarations; C linkage does not carry parameter types,
  * so the symbol matches what gfx_thumbnail.c calls either way. */
 void gfx_display_draw(void *dispctx, void *draw, void *data,
-      unsigned video_width, unsigned video_height)
-{ (void)dispctx; (void)draw; (void)data;
+      unsigned video_dims)
+{
+   unsigned video_width  = VIDEO_SCALE_W(video_dims);
+   unsigned video_height = VIDEO_SCALE_H(video_dims);
+ (void)dispctx; (void)draw; (void)data;
   (void)video_width; (void)video_height; }
 
 /* Blending goes through gfx_display now, on the same terms as the

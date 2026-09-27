@@ -353,6 +353,226 @@ static runloop_pace_facts_t menu_facts(bool vsync, bool audio,
    return f;
 }
 
+/* --- the derived swap interval ----------------------------------- */
+
+/* The default audio_max_timing_skew, which is what the runloop hands
+ * runloop_video_swap_interval_for(). */
+#define PACING_TEST_MAX_SKEW 0.05f
+
+/* The ceiling a driver with no limit of its own gets: config.def.h's
+ * MAXIMUM_SWAP_INTERVAL, restated here because this test links against
+ * nothing and the value is part of what is being asserted. A driver
+ * that caps lower - the D3D family reports four - passes its own. */
+#define PACING_TEST_CEILING 16
+
+static void check_interval(float timing_fps, float input_fps,
+      unsigned ceiling, unsigned want, const char *what)
+{
+   char     msg[160];
+   unsigned got = runloop_video_swap_interval_for(timing_fps, input_fps,
+         PACING_TEST_MAX_SKEW, ceiling);
+
+   snprintf(msg, sizeof(msg), "%.2f Hz / %.2f fps, ceiling %u -> %u, "
+         "wanted %u (%s)", timing_fps, input_fps, ceiling, got, want, what);
+   check(got == want, msg);
+}
+
+static void test_swap_interval(void)
+{
+   static const float rates[] =
+   {
+      0.0f, 1.0f, 23.976f, 24.0f, 25.0f, 29.97f, 30.0f, 50.0f,
+      59.94f, 60.0f, 72.0f, 75.0f, 90.0f, 100.0f, 119.88f, 120.0f,
+      144.0f, 165.0f, 200.0f, 240.0f, 280.0f, 360.0f, 480.0f, 500.0f
+   };
+   unsigned i;
+   unsigned j;
+
+   /* A panel is a whole multiple of the content rate: one content
+    * frame is held for that many display frames. */
+   check_interval(60.0f,  59.94f, PACING_TEST_CEILING, 1,
+         "60 Hz panel, 60 fps content");
+   check_interval(120.0f, 59.94f, PACING_TEST_CEILING, 2,
+         "120 Hz panel, 60 fps content");
+   check_interval(240.0f, 59.94f, PACING_TEST_CEILING, 4,
+         "240 Hz panel, 60 fps content");
+   check_interval(480.0f, 59.94f, PACING_TEST_CEILING, 8,
+         "480 Hz panel, 60 fps content");
+   check_interval(480.0f, 30.0f,  PACING_TEST_CEILING, 16,
+         "480 Hz panel, 30 fps content: the ceiling itself");
+   check_interval(360.0f, 24.0f,  PACING_TEST_CEILING, 15,
+         "360 Hz panel, 24 fps content");
+   check_interval(60.0f,  30.0f,  PACING_TEST_CEILING, 2,
+         "60 Hz panel, 30 fps content");
+
+   /* A driver that cannot hold a frame for the full multiple takes
+    * the ceiling down, and the multiple it cannot reach falls back
+    * rather than clamping short: a short multiple paces the loop
+    * fast, which is worse than leaving it to vsync. */
+   check_interval(480.0f, 59.94f, 4, 1,
+         "480 Hz on a driver capped at four: falls back, does not clamp to 4");
+   check_interval(240.0f, 59.94f, 4, 4,
+         "240 Hz on a driver capped at four: still exactly four");
+   check_interval(120.0f, 59.94f, 4, 2,
+         "120 Hz on a driver capped at four: unaffected");
+
+   /* Not a whole multiple within the skew tolerance: vsync paces at
+    * the display rate and rate control absorbs the difference. */
+   check_interval(100.0f, 60.0f,  PACING_TEST_CEILING, 1,
+         "100 Hz panel, 60 fps content: no whole multiple");
+   check_interval(75.0f,  59.94f, PACING_TEST_CEILING, 1,
+         "75 Hz panel, 60 fps content: no whole multiple");
+   check_interval(144.0f, 59.94f, PACING_TEST_CEILING, 1,
+         "144 Hz panel, 60 fps content: no whole multiple");
+
+   /* Degenerate inputs. A core is free to report nonsense, and a
+    * panel slower than the content has no multiple to hold. */
+   check_interval(0.0f,   59.94f, PACING_TEST_CEILING, 1, "no display rate");
+   check_interval(480.0f, 0.0f,   PACING_TEST_CEILING, 1, "no content rate");
+   check_interval(-60.0f, 59.94f, PACING_TEST_CEILING, 1, "negative display rate");
+   check_interval(480.0f, -60.0f, PACING_TEST_CEILING, 1, "negative content rate");
+   check_interval(60.0f,  119.88f, PACING_TEST_CEILING, 1,
+         "content faster than the panel");
+   check_interval(480.0f, 59.94f, 0, 1, "a ceiling of zero admits nothing");
+
+   /* Whatever the pair, the answer is a usable interval: never zero,
+    * which would mean no sync at all, and never past what the driver
+    * said it can present. */
+   for (i = 0; i < ARRAY_SIZE(rates); i++)
+      for (j = 0; j < ARRAY_SIZE(rates); j++)
+      {
+         unsigned c;
+
+         for (c = 1; c <= PACING_TEST_CEILING; c++)
+         {
+            unsigned got = runloop_video_swap_interval_for(rates[i],
+                  rates[j], PACING_TEST_MAX_SKEW, c);
+            char     msg[160];
+
+            snprintf(msg, sizeof(msg),
+                  "%.2f Hz / %.2f fps, ceiling %u -> %u, out of range",
+                  rates[i], rates[j], c, got);
+            check(got >= 1 && got <= c, msg);
+         }
+      }
+
+   printf("   swap interval: multiples up to %d derived, %u pairs bounded "
+          "by the driver's cap\n", PACING_TEST_CEILING,
+          (unsigned)(ARRAY_SIZE(rates) * ARRAY_SIZE(rates)
+                * PACING_TEST_CEILING));
+}
+
+/* --- how a display/content pair is synced ------------------------ */
+
+#define SP_V RUNLOOP_SYNC_VSYNC_HOLDS
+#define SP_E RUNLOOP_SYNC_EXACT_RATE
+#define SP_W RUNLOOP_SYNC_WITHIN_SKEW
+
+static void check_plan(float display_hz, float input_fps, float multiple,
+      bool vrr, unsigned want, const char *what)
+{
+   char     msg[192];
+   unsigned got = runloop_sync_plan_for(display_hz, input_fps, multiple,
+         PACING_TEST_MAX_SKEW, vrr);
+
+   snprintf(msg, sizeof(msg), "%.4f Hz / %.4f fps x%.0f%s -> %s%s%s, "
+         "wanted %s%s%s (%s)", display_hz, input_fps, multiple,
+         vrr ? " VRR" : "",
+         (got  & SP_V) ? "V" : "-", (got  & SP_E) ? "E" : "-",
+         (got  & SP_W) ? "W" : "-",
+         (want & SP_V) ? "V" : "-", (want & SP_E) ? "E" : "-",
+         (want & SP_W) ? "W" : "-", what);
+   check(got == want, msg);
+}
+
+static void test_sync_plan(void)
+{
+   static const float displays[] =
+   {
+      0.0f, 50.0f, 59.94f, 60.0f, 75.0f, 100.0f, 119.88f, 120.0f,
+      144.0f, 165.0f, 240.0f, 360.0f
+   };
+   static const float contents[] =
+   {
+      0.0f, 24.0f, 30.0f, 49.7f, 50.0f, 53.7f, 57.5f, 59.8261f,
+      59.94f, 60.0f, 60.0988f, 61.0f, 75.0f, 120.0f
+   };
+   static const float multiples[] = { 1.0f, 2.0f, 3.0f, 4.0f };
+   unsigned i, j, k;
+
+   /* Issue 19600: a 60.0988 Hz core at swap interval 2 on a 120 Hz
+    * panel is 0.16% past what the panel presents. VSync paces it,
+    * audio is skewed; the loop is never forced nonblocking over it. */
+   check_plan(120.0f, 60.0988f, 2.0f, true,  SP_V | SP_W,
+         "SNES, interval 2, 120 Hz, VRR: vsync holds, rate skewed");
+   check_plan(120.0f, 59.8261f, 2.0f, true,  SP_V | SP_E | SP_W,
+         "TG16, interval 2, 120 Hz, VRR: exact rate");
+   check_plan(120.0f, 60.0988f, 2.0f, false, SP_V | SP_W,
+         "SNES, interval 2, 120 Hz: vsync holds, rate skewed");
+   check_plan(60.0f,  60.0988f, 1.0f, true,  SP_V | SP_W,
+         "SNES on a 60 Hz VRR ceiling: vsync holds, rate skewed");
+   check_plan(120.0f, 60.0988f, 2.0f * 1.0f, true, SP_V | SP_W,
+         "SNES, one black frame, 120 Hz, VRR");
+
+   /* Past the tolerance the content keeps its own rate under VRR,
+    * with vsync off; without VRR vsync is simply not relied on. */
+   check_plan(120.0f, 75.0f, 2.0f, true,  SP_E,
+         "75 Hz content, interval 2, 120 Hz, VRR: own rate, no vsync");
+   check_plan(60.0f,  75.0f, 1.0f, true,  SP_E,
+         "75 Hz content on 60 Hz, VRR: own rate, no vsync");
+   check_plan(60.0f,  75.0f, 1.0f, false, 0,
+         "75 Hz content on 60 Hz: no vsync");
+
+   /* Under the panel's rate: vsync holds either way, VRR keeps the
+    * exact rate however far the skew. */
+   check_plan(144.0f, 60.0988f, 1.0f, true,  SP_V | SP_E,
+         "60 Hz content on 144 Hz, VRR");
+   check_plan(75.0f,  60.0f,    1.0f, false, SP_V,
+         "60 Hz content on 75 Hz: vsync, rate not skewed");
+
+   /* Degenerate rates change nothing. */
+   check_plan(120.0f, 0.0f,  2.0f, true,  SP_V | SP_E, "no content rate, VRR");
+   check_plan(120.0f, 0.0f,  2.0f, false, SP_V,        "no content rate");
+   check_plan(0.0f,   60.0f, 2.0f, true,  SP_V | SP_E, "no display rate, VRR");
+   check_plan(120.0f, 60.0f, 0.0f, false, SP_V,        "no multiple");
+
+   /* Over every pair: VRR never decides whether vsync holds, only
+    * whether the content keeps its own rate - and it does so exactly
+    * when vsync can present it or the skew is too far to follow. */
+   for (i = 0; i < ARRAY_SIZE(displays); i++)
+      for (j = 0; j < ARRAY_SIZE(contents); j++)
+         for (k = 0; k < ARRAY_SIZE(multiples); k++)
+         {
+            char     msg[160];
+            unsigned off = runloop_sync_plan_for(displays[i], contents[j],
+                  multiples[k], PACING_TEST_MAX_SKEW, false);
+            unsigned on  = runloop_sync_plan_for(displays[i], contents[j],
+                  multiples[k], PACING_TEST_MAX_SKEW, true);
+
+            snprintf(msg, sizeof(msg), "%.4f Hz / %.4f fps x%.0f: "
+                  "VRR moved vsync or the skew (%u vs %u)",
+                  displays[i], contents[j], multiples[k], on, off);
+            check((on & (SP_V | SP_W)) == (off & (SP_V | SP_W)), msg);
+
+            snprintf(msg, sizeof(msg), "%.4f Hz / %.4f fps x%.0f: "
+                  "VRR plan %u holds neither vsync nor the rate",
+                  displays[i], contents[j], multiples[k], on);
+            check((on & (SP_V | SP_E)) != 0, msg);
+
+            snprintf(msg, sizeof(msg), "%.4f Hz / %.4f fps x%.0f: "
+                  "within skew but vsync dropped (%u)",
+                  displays[i], contents[j], multiples[k], on);
+            check(!(on & SP_W) || (on & SP_V), msg);
+
+            check(!(off & SP_E), "exact rate without VRR");
+         }
+
+   printf("   sync plan: %u display/content/multiple triples, VRR "
+          "drops vsync only past the skew tolerance\n",
+          (unsigned)(ARRAY_SIZE(displays) * ARRAY_SIZE(contents)
+                * ARRAY_SIZE(multiples)));
+}
+
 static void test_menu_table(void)
 {
    {
@@ -397,6 +617,8 @@ int main(void)
    test_sample_filter();
    test_schedule();
    test_margin();
+   test_swap_interval();
+   test_sync_plan();
    test_menu_table();
 
    if (failures)
@@ -408,6 +630,9 @@ int main(void)
    printf("ok: the gap limiter engages only when nothing else paces and "
           "fast-forward is off, the period is always a sane frame, a "
           "stall never moves the measured rate, an overshooting sleep "
-          "never slows the loop, and the margin follows the overshoot\n");
+          "never slows the loop, the margin follows the overshoot, and "
+          "the swap interval is the multiple the display actually is of "
+          "the content, within what the driver can present, and VRR drops "
+          "vsync only for a content rate past the skew tolerance\n");
    return 0;
 }

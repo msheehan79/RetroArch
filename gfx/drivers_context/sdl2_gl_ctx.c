@@ -161,9 +161,11 @@ static void sdl2_ctx_swap_interval(void *data, int interval)
 }
 
 static bool sdl2_ctx_set_video_mode(void *data,
-      unsigned width, unsigned height,
+      unsigned dims,
       bool fullscreen)
 {
+   unsigned width  = VIDEO_SCALE_W(dims);
+   unsigned height = VIDEO_SCALE_H(dims);
    unsigned fsflag              = 0;
    gfx_ctx_sdl2_data_t *sdl     = (gfx_ctx_sdl2_data_t*)data;
    settings_t *settings         = config_get_ptr();
@@ -232,7 +234,7 @@ error:
 }
 
 static void sdl2_ctx_get_video_size(void *data,
-      unsigned *width, unsigned *height)
+      unsigned *dims)
 {
    settings_t    *settings  = config_get_ptr();
    gfx_ctx_sdl2_data_t *sdl = (gfx_ctx_sdl2_data_t*)data;
@@ -240,8 +242,7 @@ static void sdl2_ctx_get_video_size(void *data,
    if (!sdl)
       return;
 
-   *width                   = sdl->width;
-   *height                  = sdl->height;
+   *dims = VIDEO_SCALE_PACK(sdl->width, sdl->height);
 
    if (!sdl->win)
    {
@@ -251,8 +252,7 @@ static void sdl2_ctx_get_video_size(void *data,
          RARCH_WARN("[SDL GL] Failed to get display #%i mode: %s.\n", i,
                     SDL_GetError());
 
-      *width               = mode.w;
-      *height              = mode.h;
+      *dims = VIDEO_SCALE_PACK(mode.w, mode.h);
    }
 }
 
@@ -269,8 +269,7 @@ static void sdl2_ctx_update_title(void *data)
 }
 
 static void sdl2_ctx_check_window(void *data, bool *quit,
-      bool *resize,unsigned *width,
-      unsigned *height)
+      bool *resize,unsigned *dims)
 {
    SDL_Event event;
    gfx_ctx_sdl2_data_t *sdl = (gfx_ctx_sdl2_data_t*)data;
@@ -301,8 +300,7 @@ static void sdl2_ctx_check_window(void *data, bool *quit,
 
    if (sdl->resized)
    {
-      *width         = sdl->new_width;
-      *height        = sdl->new_height;
+      *dims         = VIDEO_SCALE_PACK(sdl->new_width, sdl->new_height);
       *resize        = true;
       sdl->resized   = false;
    }

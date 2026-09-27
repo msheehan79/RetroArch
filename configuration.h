@@ -228,6 +228,7 @@ typedef struct settings
       unsigned netplay_input_latency_frames_range;
       unsigned netplay_share_digital;
       unsigned netplay_share_analog;
+      unsigned tls_verify_mode;
       unsigned bundle_assets_extract_version_current;
       unsigned bundle_assets_extract_last_version;
       unsigned content_history_size;
@@ -257,6 +258,7 @@ typedef struct settings
       unsigned video_scale_integer_axis;
       unsigned video_scale_integer_scaling;
       unsigned video_max_swapchain_images;
+      unsigned video_filter_threads;
       unsigned video_swap_interval;
       unsigned video_hard_sync_frames;
       unsigned video_frame_delay;
@@ -317,7 +319,6 @@ typedef struct settings
       unsigned menu_materialui_thumbnail_view_portrait;
       unsigned menu_materialui_thumbnail_view_landscape;
       unsigned menu_materialui_landscape_layout_optimization;
-      unsigned menu_ozone_color_theme;
       unsigned menu_ozone_header_icon;
       unsigned menu_ozone_header_separator;
       unsigned menu_ozone_font_scale;
@@ -340,11 +341,12 @@ typedef struct settings
       unsigned desktop_menu_all_playlists_list_max_count;
       unsigned desktop_menu_all_playlists_grid_max_count;
       unsigned desktop_menu_theme;
-      /* Window geometry, plain ints (was a Qt QByteArray blob). 0 = unset. */
-      unsigned desktop_menu_window_x;
-      unsigned desktop_menu_window_y;
-      unsigned desktop_menu_window_width;
-      unsigned desktop_menu_window_height;
+      /* Window geometry, two packed words (was a Qt QByteArray blob).
+       * 0 = unset. Both writers clamp the origin at zero, so it fits
+       * VIDEO_POS_PACK's range without ever going negative, and the
+       * setting rows bound every axis to 32767. */
+      unsigned desktop_menu_window_pos;
+      unsigned desktop_menu_window_dims;
       unsigned menu_content_show_add_entry;
       unsigned menu_content_show_contentless_cores;
       unsigned menu_content_show_netplay;
@@ -352,6 +354,7 @@ typedef struct settings
       unsigned menu_screensaver_animation;
       unsigned menu_remember_selection;
       unsigned menu_startup_page;
+      unsigned menu_file_browser_extension_display;
 
       unsigned playlist_entry_remove_enable;
       unsigned playlist_show_inline_core_name;
@@ -359,8 +362,9 @@ typedef struct settings
       unsigned playlist_sublabel_runtime_type;
       unsigned playlist_sublabel_last_played_style;
 
-      unsigned camera_width;
-      unsigned camera_height;
+      /* In VIDEO_SCALE_PACK's layout. Runtime only: no config key and
+       * no menu row binds either axis. */
+      unsigned camera_dims;
 
 #ifdef HAVE_OVERLAY
       unsigned input_overlay_show_inputs;
@@ -382,12 +386,16 @@ typedef struct settings
       unsigned midi_volume;
       unsigned streaming_mode;
 
-      unsigned window_position_x;
-      unsigned window_position_y;
-      unsigned window_position_width;
-      unsigned window_position_height;
-      unsigned window_auto_width_max;
-      unsigned window_auto_height_max;
+      /* Where the window sits, in VIDEO_POS_PACK's layout: a
+       * display left of or above the primary one puts an axis
+       * negative, so both halves sign-extend on the way back out. */
+      unsigned window_position_pos;
+      /* The windowed-mode size, and the ceiling auto-resize honours,
+       * each a pair in VIDEO_SCALE_PACK's layout. The config file
+       * keeps a key per axis and the menu a row per axis; both carry
+       * which half they are. */
+      unsigned window_position_dims;
+      unsigned window_auto_dims_max;
 
       unsigned video_record_threads;
 
@@ -435,7 +443,7 @@ typedef struct settings
       size_t rewind_buffer_size;
    } sizes;
 
-   video_viewport_t video_vp_custom; /* int alignment */
+   video_viewport_settings_t video_vp_custom; /* int alignment */
 
    struct
    {
@@ -451,6 +459,9 @@ typedef struct settings
       int video_max_frame_latency;
 #ifdef HAVE_VULKAN
       int vulkan_gpu_index;
+#endif
+#ifdef HAVE_EGL
+      int gl_gpu_index;
 #endif
 #ifdef HAVE_D3D10
       int d3d10_gpu_index;
@@ -629,6 +640,8 @@ typedef struct settings
       bool video_wiiu_prefer_drc;
       bool video_notch_write_over_enable;
       bool video_hdr_scanlines;
+      bool video_hdr_use_display_peak;
+      bool video_hdr_send_luminance;
       bool video_use_metal_arg_buffers;
 
       /* Accessibility */
@@ -1155,6 +1168,7 @@ typedef struct settings
       char location_driver[32];
       char cloud_sync_driver[32];
       char menu_driver[32];
+      char menu_ozone_color_theme[32];
       char cheevos_username[32];
       char cheevos_token[32];
       char cheevos_leaderboards_enable[32];
@@ -1210,6 +1224,10 @@ typedef struct settings
        * desktop_menu_save_geometry is on. */
       char desktop_menu_options_window[48];
       char camera_device[NAME_MAX_LENGTH];
+      /* Address the network command interface binds to. Empty means
+       * every interface (the historical behaviour); 127.0.0.1 limits
+       * it to this machine. */
+      char network_cmd_bind_address[NAME_MAX_LENGTH];
       char netplay_mitm_server[NAME_MAX_LENGTH];
 #ifdef HAVE_NETWORKING
 #ifdef HAVE_CLOUDSYNC
@@ -1232,6 +1250,15 @@ typedef struct settings
       char twitch_stream_key[PATH_MAX_LENGTH];
       char facebook_stream_key[PATH_MAX_LENGTH];
       char kick_stream_key[PATH_MAX_LENGTH];
+      /* The device each GPU index named when it was chosen, so a list
+       * that has changed order since is noticed rather than silently
+       * selecting another GPU. */
+      char video_gpu_name_vulkan[NAME_MAX_LENGTH];
+      char video_gpu_name_gl[NAME_MAX_LENGTH];
+      char video_gpu_name_d3d10[NAME_MAX_LENGTH];
+      char video_gpu_name_d3d11[NAME_MAX_LENGTH];
+      char video_gpu_name_d3d12[NAME_MAX_LENGTH];
+      char video_gpu_name_metal[NAME_MAX_LENGTH];
       char discord_app_id[PATH_MAX_LENGTH];
       char ai_service_url[PATH_MAX_LENGTH];
 

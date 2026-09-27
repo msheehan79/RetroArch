@@ -1070,9 +1070,11 @@ static void sdl_rs90_blit_frame32(sdl_rs90_video_t *vid,
 }
 
 static bool sdl_rs90_gfx_frame(void *data, const void *frame,
-      unsigned width, unsigned height, uint64_t frame_count,
+      unsigned dims, uint64_t frame_count,
       unsigned pitch, const char *msg, video_frame_info_t *video_info)
 {
+   unsigned width = VIDEO_SCALE_W(dims);
+   unsigned height = VIDEO_SCALE_H(dims);
    sdl_rs90_video_t* vid = (sdl_rs90_video_t*)data;
 #ifdef HAVE_MENU
    bool menu_is_alive    = (video_info->menu_st_flags & MENU_ST_FLAG_ALIVE) ? true : false;
@@ -1208,18 +1210,18 @@ static void sdl_rs90_set_texture_enable(void *data, bool state, bool full_screen
 }
 
 static void sdl_rs90_set_texture_frame(void *data, const void *frame, bool rgb32,
-      unsigned width, unsigned height, float alpha)
+      unsigned dims, float alpha)
 {
    sdl_rs90_video_t *vid = (sdl_rs90_video_t*)data;
 
    if (unlikely(
          !vid ||
          rgb32 ||
-         (width > SDL_RS90_WIDTH) ||
-         (height > SDL_RS90_HEIGHT)))
+         (VIDEO_SCALE_W(dims) > SDL_RS90_WIDTH) ||
+         (VIDEO_SCALE_H(dims) > SDL_RS90_HEIGHT)))
       return;
 
-   memcpy(vid->menu_texture, frame, width * height * sizeof(uint16_t));
+   memcpy(vid->menu_texture, frame, VIDEO_SCALE_AREA(dims) * sizeof(uint16_t));
 }
 
 static void sdl_rs90_gfx_set_nonblock_state(void *data, bool toggle,
@@ -1320,10 +1322,9 @@ static void sdl_rs90_gfx_viewport_info(void *data, struct video_viewport *vp)
    if (unlikely(!vid))
       return;
 
-   vp->x      = 0;
-   vp->y      = 0;
-   vp->width  = vp->full_width  = vid->frame_width;
-   vp->height = vp->full_height = vid->frame_height;
+   vp->pos    = VIDEO_POS_PACK(0, 0);
+   vp->dims   = vp->full_dims   = VIDEO_SCALE_PACK(vid->frame_width,
+         vid->frame_height);
 }
 
 static float sdl_rs90_get_refresh_rate(void *data)
@@ -1457,7 +1458,6 @@ video_driver_t video_sdl_rs90 = {
    NULL, /* set_rotation */
    sdl_rs90_gfx_viewport_info,
    NULL, /* read_viewport  */
-   NULL, /* read_frame_raw */
 #ifdef HAVE_OVERLAY
    NULL, /* get_overlay_interface */
 #endif

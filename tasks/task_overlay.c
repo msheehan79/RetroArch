@@ -38,6 +38,7 @@
 #include "../input/input_driver.h"
 #include "../input/input_overlay.h"
 #include "../input/input_remapping.h"
+#include "../led/led_defines.h"
 #include "../verbosity.h"
 #include <string/rstrtod.h>
 
@@ -571,7 +572,7 @@ static bool task_overlay_load_desc(
       struct overlay_desc *desc,
       struct overlay *input_overlay,
       unsigned ol_idx, unsigned desc_idx,
-      unsigned width, unsigned height,
+      unsigned image_dims,
       bool normalized, float alpha_mod, float range_mod)
 {
    size_t _len;
@@ -585,6 +586,9 @@ static bool task_overlay_load_desc(
    float tmp_float             = 0.0f;
    bool tmp_bool               = false;
    bool by_pixel               = false;
+   /* Every type but a button acts on a press; a button acts only
+    * if it binds something other than "nul". */
+   bool takes_input            = true;
    const char *box             = NULL;
    config_file_t *conf         = loader->conf;
 
@@ -603,7 +607,7 @@ static bool task_overlay_load_desc(
 
    by_pixel = !normalized;
 
-   if (by_pixel && (width == 0 || height == 0))
+   if (by_pixel && (!VIDEO_SCALE_W(image_dims) || !VIDEO_SCALE_H(image_dims)))
    {
       RARCH_ERR("[Overlay] Base overlay is not set and not using normalized coordinates.\n");
       return false;
@@ -669,7 +673,8 @@ static bool task_overlay_load_desc(
       const char *tmp;
       char *p = elems[0];
 
-      desc->type = OVERLAY_TYPE_BUTTONS;
+      desc->type  = OVERLAY_TYPE_BUTTONS;
+      takes_input = false;
 
       while (p)
       {
@@ -694,6 +699,7 @@ static bool task_overlay_load_desc(
                }
             }
             BIT256_SET(desc->button_mask, bind_id);
+            takes_input = true;
          }
       }
 
@@ -709,14 +715,16 @@ static bool task_overlay_load_desc(
    }
 
    BIT16_SET(loader->overlay_types, desc->type);
+   if (takes_input)
+      input_overlay->flags |= OVERLAY_TAKES_INPUT;
 
    width_mod  = 1.0f;
    height_mod = 1.0f;
 
    if (by_pixel)
    {
-      width_mod  /= width;
-      height_mod /= height;
+      width_mod  /= VIDEO_SCALE_W(image_dims);
+      height_mod /= VIDEO_SCALE_H(image_dims);
    }
 
    desc->x       = (float)rstrtod(elems[1], NULL) * width_mod;
@@ -791,6 +799,19 @@ static bool task_overlay_load_desc(
    if (config_get_bool(conf, conf_key, &tmp_bool)
          && tmp_bool)
       desc->flags |= OVERLAY_DESC_MOVABLE;
+
+   /* The LED this desc's image shows, counted as ledN_map counts. */
+   strlcpy_lit(conf_key + _len, "_led", sizeof(conf_key) - _len);
+   desc->led = 0;
+   {
+      unsigned led = 0;
+      if (     config_get_uint(conf, conf_key, &led)
+            && led >= 1 && led <= MAX_LEDS)
+      {
+         desc->led      = (uint8_t)led;
+         loader->flags |= OVERLAY_LOADER_HAS_LEDS;
+      }
+   }
 
    strlcpy_lit(conf_key + _len, "_reach_up", sizeof(conf_key) - _len);
    if (config_get_float(conf, conf_key, &tmp_float))
@@ -965,7 +986,8 @@ static void task_overlay_deferred_loading(retro_task_t *task, void *budget)
                if (!task_overlay_load_desc(loader,
                         &overlay->descs[overlay->pos], overlay,
                         loader->pos, (unsigned)overlay->pos,
-                        overlay->image.width, overlay->image.height,
+                        VIDEO_SCALE_PACK(overlay->image.width,
+                           overlay->image.height),
                         overlay->config.normalized,
                         overlay->config.alpha_mod, overlay->config.range_mod))
                {

@@ -1594,8 +1594,7 @@ typedef struct
    sthread_t          *rt_thread;
    retro_atomic_int_t  rt_run;
    retro_atomic_64_t   rt_frames_pub;  /* absolute frames played */
-   retro_atomic_int_t  clk_ppm_pub;
-   retro_atomic_int_t  clk_valid_pub;
+   retro_atomic_int_t  clk_ppm_pub;   /* AUDIO_CLOCK_PPM_NONE until known */
 #endif
    volatile ULONG *rt_pos;      /* byte offset, updated by the device */
    bool            rt_presentation;
@@ -1607,17 +1606,47 @@ typedef struct
     * and the play offset is read on every write, every write_avail
     * and every lap of the wait, which is far more often than once a
     * frame. It is still a poll, and a process the scheduler has
-    * stopped favouring can outrun it; that is the same shortcoming as
-    * the write path's, and the same answer - a thread of this
-    * driver's own - which is not here yet. */
+    * stopped favouring can outrun it; where threads are built the
+    * refill thread reads it at the device's pace instead, and
+    * wdmks_rt_advance() treats a gap longer than a lap as laps lost
+    * rather than as one step. */
    uint64_t        rt_played;
    /* The count is kept in bytes and converted on demand: a position
     * that lands mid-frame would otherwise lose its remainder to the
     * division on every read, and every read of free room takes one. */
    uint64_t        rt_played_bytes;
+   /* What has been placed in the loop, in the same units and against
+    * the same count: while it is ahead of rt_played_bytes the
+    * difference is what the hardware has still to play, and the
+    * moment it falls behind the hardware has run past the write
+    * cursor. That is the one condition the two positions cannot tell
+    * apart by themselves - a cursor a frame behind the write cursor
+    * is what a full loop looks like, and also what a loop the
+    * hardware has just overrun looks like. */
+   uint64_t        rt_written_bytes;
    ULONG           rt_last_pos;
    bool            rt_have_last;
+   /* The next sample of the register is the first after the hardware
+    * (re)started, so it says where the hardware is and nothing about
+    * what it played: the model starts over from it. Set when the
+    * buffer is mapped and on every start(), which takes the pin
+    * through ACQUIRE and so back to the start of the loop. */
+   bool            rt_origin;
    bool            rt_barrier;  /* writes need a barrier to be seen */
+   /* The hardware FIFO in bytes, from the pin's own latency report:
+    * how far ahead of the register the DMA has already fetched. Zero
+    * where the pin reports none. */
+   size_t          rt_fifo_bytes;
+   /* Whether audio has been placed in the loop since the last resync:
+    * the hardware running past the write cursor is a dropout only
+    * when there was audio to run out of. Once it has, every further
+    * sample of a pause finds it out again, and that is one gap in the
+    * audio, not one per sample. */
+   bool            rt_fed;
+   /* Gaps in the audio: times the hardware ran past the write cursor,
+    * or laps went by unobserved, while audio had been queued. One
+    * atomic add where it happens; read by the statistics each frame. */
+   retro_atomic_size_t rt_underruns;
 
    /* AC-3 over IEC 61937, where the device takes it and the frontend
     * asked for it: the frontend's float frames are gathered a block
@@ -1648,8 +1677,7 @@ typedef struct
    uint64_t        clk_anchor_ticks;
    bool            clk_have_anchor;
    double          clk_sx, clk_sy, clk_sxx, clk_sxy, clk_n;
-   int             clk_ppm;
-   bool            clk_valid;
+   int             clk_ppm;     /* AUDIO_CLOCK_PPM_NONE until known */
 } wdmks_t;
 
 /* ---- WaveRT: the mapped buffer and the position register ---------- */
@@ -1727,8 +1755,12 @@ static bool wdmks_rt_get_buffer(wdmks_t *w, size_t wanted)
    memset(w->rt_buf, 0, w->rt_size);
    w->rt_write    = 0;
    w->rt_played   = 0;
-   w->rt_played_bytes = 0;
+   w->rt_played_bytes  = 0;
+   w->rt_written_bytes = 0;
    w->rt_have_last = false;
+   w->rt_origin    = true;
+   w->rt_fed       = false;
+   retro_atomic_size_init(&w->rt_underruns, 0);
 #ifdef HAVE_THREADS
    /* One device loop's worth of frontend ring: the only frontend
     * buffer, per the notes - packets or the mapped loop stay the
@@ -1743,8 +1775,7 @@ static bool wdmks_rt_get_buffer(wdmks_t *w, size_t wanted)
    }
    retro_atomic_int_init(&w->rt_run, 0);
    retro_atomic_64_init(&w->rt_frames_pub, 0);
-   retro_atomic_int_init(&w->clk_ppm_pub, 0);
-   retro_atomic_int_init(&w->clk_valid_pub, 0);
+   retro_atomic_int_init(&w->clk_ppm_pub, AUDIO_CLOCK_PPM_NONE);
 #endif
    return true;
 }
@@ -1866,8 +1897,11 @@ static void wdmks_rt_report_latency(wdmks_t *w)
          (unsigned)out.ChipsetDelay, (unsigned)out.CodecDelay);
 
    if (w->frame_bytes && out.FifoSize)
+   {
+      w->rt_fifo_bytes = (size_t)out.FifoSize;
       audio_driver_set_device_latency(
             (size_t)(out.FifoSize / w->frame_bytes));
+   }
 }
 
 /* Waits for the device to free room, for as long as one period is
@@ -1885,6 +1919,7 @@ static void wdmks_rt_report_latency(wdmks_t *w)
  * core.
  */
 static size_t wdmks_rt_free(wdmks_t *w);
+static size_t wdmks_rt_room(const wdmks_t *w);
 static bool   wdmks_rt_play_offset(wdmks_t *w, ULONG *offset);
 static DWORD  wdmks_watchdog_ms(const wdmks_t *w, size_t bytes);
 static void   wdmks_clock_sample_qpc(wdmks_t *w, uint64_t frames,
@@ -1931,11 +1966,7 @@ static void wdmks_rt_wait_room(wdmks_t *w, size_t want)
       size_t have = 0;
 
       if (wdmks_rt_play_offset(w, &play))
-      {
-         size_t gap = (size_t)((play + w->rt_size - w->rt_write)
-               % w->rt_size);
-         have = (gap > w->frame_bytes) ? gap - w->frame_bytes : 0;
-      }
+         have = wdmks_rt_room(w);
       if (want > have)
       {
          size_t short_by = want - have;
@@ -2063,6 +2094,88 @@ static void wdmks_rt_unregister_event(wdmks_t *w)
    w->rt_event = NULL;
 }
 
+/* Silence in the loop from one offset forward to another, wrapping
+ * where the loop wraps. What the hardware has played is spent, and
+ * the loop is a loop: a byte that is not overwritten before the
+ * cursor comes round again is played again. The frontend stops
+ * writing on every pause, every menu the core is silent behind and
+ * every stall, and it does so on the understanding that a device with
+ * nothing to play plays nothing - which is what a packet pin does and
+ * what a mapped loop does not. So every byte is cleared as soon as it
+ * has been played: from then until it is written again it holds
+ * silence, and whatever the hardware reads past the end of the audio
+ * is silence rather than the last loop of it, over and over. */
+static void wdmks_rt_scrub(wdmks_t *w, ULONG from, ULONG to)
+{
+   size_t n;
+
+   if (from == to)
+      return;
+   n = (size_t)((to + w->rt_size - from) % w->rt_size);
+   if (from + n <= w->rt_size)
+      memset(w->rt_buf + from, 0, n);
+   else
+   {
+      memset(w->rt_buf + from, 0, w->rt_size - from);
+      memset(w->rt_buf, 0, n - (w->rt_size - from));
+   }
+   if (w->rt_barrier)
+      MemoryBarrier();
+}
+
+/* How far ahead of the cursor a write lands after the hardware has
+ * run past the write cursor: enough that the bytes are in place before
+ * the hardware fetches them. The register says where the DMA is
+ * reading; the FIFO the pin reports is how far past that it has
+ * already fetched, so a write inside it is a write into bytes that
+ * are gone. The margin is that FIFO and half a millisecond for the
+ * write itself. Where the pin reports no FIFO it is two milliseconds,
+ * a guess that covers what the reports seen so far say - and this is
+ * also the floor the reported latency can reach on the loop, so a
+ * guess is only as good as the hardware it stays above. Kept under a
+ * quarter of the loop so a very short loop still has most of itself
+ * to fill, and whole frames. */
+static size_t wdmks_rt_margin(const wdmks_t *w)
+{
+   size_t bytes;
+
+   if (w->rt_fifo_bytes)
+      bytes = w->rt_fifo_bytes + (size_t)w->rate / 2000 * w->frame_bytes;
+   else
+      bytes = (size_t)w->rate * 2 / 1000 * w->frame_bytes;
+   if (bytes > w->rt_size / 4)
+      bytes = w->rt_size / 4;
+   bytes -= bytes % w->frame_bytes;
+   if (bytes < w->frame_bytes)
+      bytes = w->frame_bytes;
+   return bytes;
+}
+
+/* The hardware has run past the write cursor. Writing on at the
+ * cursor where it was would put the next audio behind the hardware,
+ * to be played when it comes round again - a whole loop late, and
+ * for good, because nothing after that closes the gap. The cursor is
+ * moved to a little ahead of the hardware instead, and the count is
+ * taken up with it. The bytes between are silence: on an overrun the
+ * scrub has already cleared everything played, and on lost laps -
+ * where the cursor could not be watched round - the whole loop is
+ * cleared, because what played in the meantime was never seen. */
+static void wdmks_rt_resync(wdmks_t *w, ULONG v, bool whole)
+{
+   size_t margin = wdmks_rt_margin(w);
+
+   if (whole)
+   {
+      memset(w->rt_buf, 0, w->rt_size);
+      if (w->rt_barrier)
+         MemoryBarrier();
+   }
+   w->rt_write         = (size_t)((v + margin) % w->rt_size);
+   w->rt_written_bytes = w->rt_played_bytes + margin;
+   /* The margin is silence, not audio: it does not count as fed. */
+   w->rt_fed           = false;
+}
+
 /* Where the hardware is, as a byte offset into the buffer. The
  * register if there is one, the pin's own position otherwise - which
  * is an ioctl, but correct. */
@@ -2077,6 +2190,20 @@ static void wdmks_rt_unregister_event(wdmks_t *w)
  * by up to a frame per read, which the sink estimate reads as drift. */
 static void wdmks_rt_advance(wdmks_t *w, ULONG v)
 {
+   bool lost = false;
+
+   if (w->rt_origin)
+   {
+      /* Nothing before this sample counts: the hardware started, or
+       * started again from the top of the loop, and whatever the loop
+       * held was for the cursor as it was. A start is not a gap in
+       * the audio, so it is not counted as one below. */
+      w->rt_origin    = false;
+      w->rt_have_last = false;
+      w->rt_fed       = false;
+      lost            = true;
+   }
+
    /* How long since the last read, against how long the ring takes to
     * go round. Past that, the step between two cursor readings is
     * ambiguous - the hardware may have gone round once or five times
@@ -2100,6 +2227,7 @@ static void wdmks_rt_advance(wdmks_t *w, ULONG v)
          w->rt_have_last    = false;
          w->clk_have_anchor = false;
          w->clk_n           = 0.0;
+         lost               = true;
       }
       w->rt_last_usec = now_usec;
    }
@@ -2114,8 +2242,21 @@ static void wdmks_rt_advance(wdmks_t *w, ULONG v)
    else
       w->rt_played_bytes += (uint64_t)(v + w->rt_size - w->rt_last_pos);
 
+   /* What was just played is cleared behind the cursor, before any
+    * write this sample leads to lands on top of it. */
+   wdmks_rt_scrub(w, w->rt_last_pos, v);
+
    w->rt_last_pos = v;
    w->rt_played   = w->rt_played_bytes / w->frame_bytes;
+
+   /* Round more than once unobserved is an overrun whatever the loop
+    * held, since it held less than one lap; the count says the rest. */
+   if (lost || w->rt_written_bytes < w->rt_played_bytes)
+   {
+      if (w->rt_fed)
+         retro_atomic_fetch_add_size(&w->rt_underruns, 1);
+      wdmks_rt_resync(w, v, lost);
+   }
 }
 
 static bool wdmks_rt_play_offset(wdmks_t *w, ULONG *offset)
@@ -2145,20 +2286,30 @@ static bool wdmks_rt_play_offset(wdmks_t *w, ULONG *offset)
    }
 }
 
-/* Free space: from where this side will write, forward to where the
- * hardware is reading. One frame is kept back so a full buffer is
- * never mistaken for an empty one. */
+/* Free space, from the count rather than from the two positions: the
+ * loop less what has been placed in it and not yet played, with one
+ * frame kept back so the write cursor never comes round onto the
+ * hardware's. The positions alone could not say which of full and
+ * empty a loop with the two cursors together was - which is how the
+ * loop started life full in the model's eyes, so the first audio was
+ * only ever placed behind the hardware as it moved off, one loop late.
+ * As read here it is what the last sample of the register left; the
+ * sample itself is taken by wdmks_rt_free(). */
+static size_t wdmks_rt_room(const wdmks_t *w)
+{
+   uint64_t queued = w->rt_written_bytes - w->rt_played_bytes;
+   if (queued + w->frame_bytes >= w->rt_size)
+      return 0;
+   return (size_t)(w->rt_size - w->frame_bytes - queued);
+}
+
 static size_t wdmks_rt_free(wdmks_t *w)
 {
-   ULONG  play = 0;
-   size_t gap;
+   ULONG play = 0;
 
    if (!w->rt_buf || !wdmks_rt_play_offset(w, &play))
       return 0;
-   gap = (size_t)((play + w->rt_size - w->rt_write) % w->rt_size);
-   if (gap < w->frame_bytes)
-      return 0;
-   return gap - w->frame_bytes;
+   return wdmks_rt_room(w);
 }
 
 static ssize_t wdmks_rt_write(wdmks_t *w, const unsigned char *src,
@@ -2263,9 +2414,11 @@ static ssize_t wdmks_rt_write(wdmks_t *w, const unsigned char *src,
       if (w->rt_barrier)
          MemoryBarrier();
 
-      w->rt_write = (w->rt_write + chunk) % w->rt_size;
-      done       += chunk;
-      room       -= chunk;
+      w->rt_write          = (w->rt_write + chunk) % w->rt_size;
+      w->rt_written_bytes += chunk;
+      w->rt_fed            = true;
+      done                += chunk;
+      room                -= chunk;
    }
    return (ssize_t)done;
    }
@@ -2301,11 +2454,7 @@ static size_t wdmks_rt_pump_once(wdmks_t *w)
                (int64_t)w->rt_played);
       }
    }
-   if (w->clk_valid)
-   {
-      retro_atomic_store_relaxed_int(&w->clk_ppm_pub, w->clk_ppm);
-      retro_atomic_store_release_int(&w->clk_valid_pub, 1);
-   }
+   retro_atomic_store_release_int(&w->clk_ppm_pub, w->clk_ppm);
 
    room = wdmks_rt_free(w);
    have = retro_spsc_read_avail(&w->rt_ring);
@@ -2321,9 +2470,11 @@ static size_t wdmks_rt_pump_once(wdmks_t *w)
       retro_spsc_read(&w->rt_ring, w->rt_buf + w->rt_write, first);
       if (w->rt_barrier)
          MemoryBarrier();
-      w->rt_write = (w->rt_write + first) % w->rt_size;
-      moved      += first;
-      have       -= first;
+      w->rt_write          = (w->rt_write + first) % w->rt_size;
+      w->rt_written_bytes += first;
+      w->rt_fed            = true;
+      moved               += first;
+      have                -= first;
    }
    if (moved)
       retro_eventcount_notify(&w->rt_park);
@@ -2710,8 +2861,7 @@ static void wdmks_clock_sample_qpc(wdmks_t *w, uint64_t frames,
       double ppm   = (slope / (double)w->rate - 1.0) * 1000000.0;
       if (ppm > -100000.0 && ppm < 100000.0)
       {
-         w->clk_ppm   = (int)ppm;
-         w->clk_valid = true;
+         w->clk_ppm = (int)ppm;
       }
    }
 }
@@ -2793,23 +2943,32 @@ static size_t wdmks_frames_consumed(void *data)
    return 0;
 }
 
+/* Gaps in the audio on the loop. The packet path has nothing to say:
+ * a packet the device found nothing behind is the port driver's to
+ * fill, and it does not report doing so. */
+static size_t wdmks_underruns(void *data)
+{
+   wdmks_t *w = (wdmks_t*)data;
+   if (!w || !w->stream.looped)
+      return 0;
+   return retro_atomic_load_acquire_size(&w->rt_underruns);
+}
+
 static bool wdmks_device_clock_ppm(void *data, double *ppm)
 {
    wdmks_t *w = (wdmks_t*)data;
+   int v;
    if (!w)
       return false;
 #ifdef HAVE_THREADS
    if (w->rt_thread)
-   {
-      if (!retro_atomic_load_acquire_int(&w->clk_valid_pub))
-         return false;
-      *ppm = (double)retro_atomic_load_relaxed_int(&w->clk_ppm_pub);
-      return true;
-   }
+      v = retro_atomic_load_acquire_int(&w->clk_ppm_pub);
+   else
 #endif
-   if (!w->clk_valid)
+      v = w->clk_ppm;
+   if (v == AUDIO_CLOCK_PPM_NONE)
       return false;
-   *ppm = (double)w->clk_ppm;
+   *ppm = (double)v;
    return true;
 }
 
@@ -2960,6 +3119,12 @@ static bool wdmks_start(void *data, bool is_shutdown)
          || !wdmks_pin_set_state(&w->stream, RA_KSSTATE_PAUSE)
          || !wdmks_pin_set_state(&w->stream, RA_KSSTATE_RUN))
       return false;
+   /* Through ACQUIRE the pin is back at the top of its loop, so
+    * where the hardware is now has nothing to do with where the
+    * write cursor was left: the model starts over from the first
+    * sample after this. */
+   if (w->stream.looped)
+      w->rt_origin = true;
 #ifdef HAVE_THREADS
    if (w->stream.looped && !w->rt_thread)
    {
@@ -3048,7 +3213,7 @@ static void wdmks_free(void *data)
    }
 #endif
 
-   if (w->clk_valid)
+   if (w->clk_ppm != AUDIO_CLOCK_PPM_NONE)
       RARCH_LOG("[WDM-KS] Device clock, fitted from the pin's position:"
             " %+d ppm against %u Hz.\n", w->clk_ppm, w->rate);
 
@@ -3196,6 +3361,7 @@ static void *wdmks_init(const char *device, unsigned rate,
    }
    w->stream.handle = INVALID_HANDLE_VALUE;
    w->filter        = INVALID_HANDLE_VALUE;
+   w->clk_ppm       = AUDIO_CLOCK_PPM_NONE;
 
    for (i = chosen; i < count && !opened; i++)
    {
@@ -3383,8 +3549,17 @@ static void *wdmks_init(const char *device, unsigned rate,
       if (wanted < w->frame_bytes * 64)
          wanted = w->frame_bytes * 64;
 
-      if (     !wdmks_rt_get_buffer(w, wanted)
-            || !wdmks_start(w, false))
+      if (!wdmks_rt_get_buffer(w, wanted))
+      {
+         RARCH_ERR("[WDM-KS] The WaveRT pin would not start.\n");
+         wdmks_free(w);
+         return NULL;
+      }
+      /* Before the pin runs: the first sample after a start resyncs
+       * the write cursor a margin ahead of the hardware, and the
+       * margin is sized from the FIFO this reports. */
+      wdmks_rt_report_latency(w);
+      if (!wdmks_start(w, false))
       {
          RARCH_ERR("[WDM-KS] The WaveRT pin would not start.\n");
          wdmks_free(w);
@@ -3393,7 +3568,6 @@ static void *wdmks_init(const char *device, unsigned rate,
       wdmks_rt_probe_presentation(w);
       wdmks_rt_get_position_register(w);
       wdmks_rt_register_event(w);
-      wdmks_rt_report_latency(w);
 
       {
          uint64_t probe = 0;
@@ -3451,7 +3625,7 @@ audio_driver_t audio_wdmks = {
    NULL, /* write_raw */
    wdmks_wait_writable,
    wdmks_frames_consumed,
-   NULL, /* underruns */
+   wdmks_underruns,
    wdmks_layout,
    NULL, /* frames_consumed_fallback */
    wdmks_device_clock_ppm

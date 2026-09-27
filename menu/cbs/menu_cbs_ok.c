@@ -7572,7 +7572,7 @@ static int action_ok_push_dropdown_setting_uint_item_special(const char *path,
          value = path_value;
    }
 
-   *setting->value.target.unsigned_integer = value;
+   setting_uint_set(setting, value);
 
    if (setting->actions->change)
       setting->actions->change(setting);
@@ -7592,12 +7592,13 @@ static int generic_action_ok_dropdown_setting(const char *path, const char *labe
    switch (setting->type)
    {
       case ST_INT:
-         *setting->value.target.integer = (int32_t)((idx * setting->step) + setting->offset_by);
+         setting_int_set(setting,
+               (int)((idx * setting->step) + setting->offset_by));
          break;
       case ST_UINT:
          {
             unsigned value = (unsigned)((idx * setting->step) + setting->offset_by);
-            *setting->value.target.unsigned_integer = value;
+            setting_uint_set(setting, value);
          }
          break;
       case ST_FLOAT:
@@ -7673,6 +7674,7 @@ int action_cb_push_dropdown_item_resolution(const char *path,
       const char *label, unsigned type, size_t idx, size_t entry_idx)
 {
    char *end            = NULL;
+   unsigned dims        = 0;
    unsigned width       = 0;
    unsigned height      = 0;
    float refreshrate    = 0.0f;
@@ -7680,12 +7682,17 @@ int action_cb_push_dropdown_item_resolution(const char *path,
    if (!path)
       return -1;
 
-   width = (unsigned)strtoul(path, &end, 0);
+   /* Each axis is parsed into a local first: VIDEO_SCALE_PACK reads
+    * its arguments twice, so a strtoul() written inside it runs twice,
+    * and the second call for the height parsed on from where the first
+    * had left 'end' - every mode picked from the list went out as Wx0 */
+   width  = (unsigned)strtoul(path, &end, 0);
    if (end == path || *end != 'x')
       return -1;
 
    ++end;
    height = (unsigned)strtoul(end, &end, 0);
+   dims   = VIDEO_SCALE_PACK(width, height);
    /* Skip whitespace and opening parenthesis: "2160 (120 Hz)" → "120 Hz)" */
    while (*end == ' ' || *end == '(')
       ++end;
@@ -7693,7 +7700,7 @@ int action_cb_push_dropdown_item_resolution(const char *path,
    refreshrate = (float)rstrtod(end, NULL);
 
 
-   if (video_display_server_set_resolution(width, height,
+   if (video_display_server_set_resolution(dims,
          floor(refreshrate), refreshrate, 0, 0, 0, 0))
    {
       settings_t *settings = config_get_ptr();
@@ -7724,8 +7731,8 @@ int action_cb_push_dropdown_item_resolution(const char *path,
        * applies changes this way. */
       driver_ctl(RARCH_DRIVER_CTL_SET_REFRESH_RATE, &refresh_exact);
 
-      settings->uints.video_fullscreen_x = width;
-      settings->uints.video_fullscreen_y = height;
+      settings->uints.video_fullscreen_x = VIDEO_SCALE_W(dims);
+      settings->uints.video_fullscreen_y = VIDEO_SCALE_H(dims);
 
       action_cancel_pop_default(NULL, NULL, 0, 0);
    }
@@ -8596,36 +8603,26 @@ static int generic_dropdown_box_list(size_t idx, unsigned lbl)
 static int action_ok_video_resolution(const char *path,
       const char *label, unsigned type, size_t idx, size_t entry_idx)
 {
-#if defined(GEKKO) || defined(PS2) || defined(__PS3__)
-   unsigned width   = 0;
-   unsigned  height = 0;
+#if defined(PS2)
+   unsigned dims    = 0;
    char desc[64]    = {0};
 
-   if (video_driver_get_video_output_size(&width, &height, desc, sizeof(desc)))
+   if (video_driver_get_video_output_size(&dims, desc, sizeof(desc)))
    {
       size_t _len;
       char msg[128];
       msg[0] = '\0';
 
-#if defined(_WIN32) || defined(__PS3__)
-      generic_action_ok_command(CMD_EVENT_REINIT);
-#endif
-      video_driver_set_video_mode(width, height, true);
-#ifdef GEKKO
-      if (width == 0 || height == 0)
-         _len = snprintf(msg, sizeof(msg),
-               msg_hash_to_str(MSG_SCREEN_RESOLUTION_APPLYING_DEFAULT));
-      else
-#endif
+      video_driver_set_video_mode(dims, true);
       {
          if (*desc)
             _len = snprintf(msg, sizeof(msg),
                   msg_hash_to_str(MSG_SCREEN_RESOLUTION_APPLYING_DESC),
-                  width, height, desc);
+                  VIDEO_SCALE_W(dims), VIDEO_SCALE_H(dims), desc);
          else
             _len = snprintf(msg, sizeof(msg),
                   msg_hash_to_str(MSG_SCREEN_RESOLUTION_APPLYING_NO_DESC),
-                  width, height);
+                  VIDEO_SCALE_W(dims), VIDEO_SCALE_H(dims));
       }
       runloop_msg_queue_push(msg, _len, 1, 100, true, NULL,
             MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);

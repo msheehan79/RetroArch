@@ -1172,6 +1172,10 @@ static const struct
    char s_8d3a8b68[6];
    char s_68d27147[12];
    char s_f02f73fc[43];
+   char s_b5721b90[32];
+   char s_e5b971a0[7];
+   char s_8f27c71e[21];
+   char s_17615fcf[4];
    char s_3a0a3fef[21];
    char s_1b6ed818[22];
    char s_89a75c21[22];
@@ -2284,7 +2288,9 @@ static const struct
    char s_8fc1e4da[7];
    char s_14ed14d0[11];
    char s_5c87e95b[19];
+   char s_fad361a0[39];
    char s_bb929824[26];
+   char s_fe2ec9bd[30];
    char s_5741c1d0[23];
    char s_a1a7717d[31];
    char s_e6ca3876[50];
@@ -2731,6 +2737,7 @@ static const struct
    char s_79b8ce4a[99];
    char s_a1a8257e[106];
    char s_282f7955[104];
+   char s_d5231783[220];
    char s_a68d6d11[58];
    char s_74022c02[111];
    char s_8abad013[82];
@@ -3051,6 +3058,7 @@ static const struct
    char s_6895dfd6[58];
    char s_788364f5[65];
    char s_dd9ff22a[75];
+   char s_ff7d19fe[168];
    char s_db495a9d[50];
    char s_ddc672a7[39];
    char s_ccea261d[168];
@@ -3120,7 +3128,7 @@ static const struct
    char s_5aa622cc[217];
    char s_2b908073[217];
    char s_64bea160[173];
-   char s_2826de99[392];
+   char s_2826de99[324];
    char s_97c62766[170];
    char s_6f458a85[125];
    char s_41702fdc[61];
@@ -3558,7 +3566,6 @@ static const struct
    char s_ffd591e0[50];
    char s_a51ab538[35];
    char s_55d6cc44[34];
-   char s_5a8f7fb9[171];
    char s_f2963d2d[38];
    char s_4c592ae1[101];
    char s_52ac4fb9[120];
@@ -3649,8 +3656,10 @@ static const struct
    char s_cfa51e8c[302];
    char s_b62c2f7e[323];
    char s_456fcbc9[376];
+   char s_ba8ff8ce[354];
    char s_82fab47a[39];
    char s_72e21512[204];
+   char s_9f6de46b[322];
    char s_66f2b57e[57];
    char s_a776daeb[74];
    char s_88095324[74];
@@ -3681,7 +3690,7 @@ static const struct
    char s_eec252b5[106];
    char s_f4e4e921[176];
    char s_7968f59d[44];
-   char s_8cee3615[163];
+   char s_8cee3615[249];
    char s_58c80718[313];
    char s_894ecb9a[416];
    char s_67d549fd[41];
@@ -5715,6 +5724,10 @@ static const struct
    "Men\303\272",
    "Mode Quiosc",
    "Limita la velocitat de fotogrames al men\303\272",
+   "Mostra les extensions de fitxer",
+   "Sempre",
+   "Nom\303\251s els duplicats",
+   "Mai",
    "Navegador de fitxers",
    "Color blau de la font",
    "Color verd de la font",
@@ -6841,7 +6854,9 @@ static const struct
    "Apagat",
    "Brillantor",
    "L\303\255nies d'escaneig",
+   "Enviar la lluminositat dels fotogrames",
    "Disposici\303\263 del subp\303\255xel",
+   "Fes servir el pic del monitor",
    "Disposicions de v\303\255deo",
    "Lat\303\250ncia de fotograma m\303\240xima",
    "Nombre m\303\240xim d'imatges en la cadena d'intercanvi",
@@ -7464,6 +7479,9 @@ static const struct
    "quan no hi ha contingut carregat.",
    "Roteu entre aquestes opcions per ajustar la configuraci\303\263 horitzontal per canviar la mida "
    "de la imatge.",
+   "Genera un mode de v\303\255deo que coincideixi amb la resoluci\303\263 i la freq\303\274\303\250"
+   "ncia d'actualitzaci\303\263 del contingut. 15/31 KHz s\303\263n per a CRT; Match Display i Match"
+   " Refresh Only prenen els seus l\303\255mits de l'EDID de la pantalla.",
    "Canvia entre s\303\272per-resolucions nativa i ultra-allargada.",
    "Utilitza, si cal, una freq\303\274\303\250ncia d'actualitzaci\303\263 personalitzada especificad"
    "a en el fitxer de configuraci\303\263.",
@@ -7954,6 +7972,8 @@ static const struct
    "Controlador de men\303\272 que es far\303\240 servir (cal reiniciar).",
    "Protegeix la configuraci\303\263 amagant la configuraci\303\263 relacionada.",
    "S\342\200\231assegura que la velocitat de fotogrames dins del men\303\272 est\303\240 limitada.",
+   "Especifica si es mostren les extensions de fitxer quan es mostra el contingut. Les extensions de"
+   " fitxer per shaders, superposicions i configuraci\303\263, sempre es mostren.",
    "Canvia la configuraci\303\263 del navegador de fitxers.",
    "Modifica l'opacitat de fons del men\303\272.",
    "Brillantor del men\303\272 en cd/m2 (nits) quan es fa servir una pantalla HDR. Nom\303\251s est"
@@ -8079,11 +8099,10 @@ static const struct
    "res de continguts i mides diferents.",
    "Reprodueix un so de les miniatures animades WebM quan es mostrin. Els formats Vorbis i Opus func"
    "ionen correctament. El so i l'animaci\303\263 s'aturen quan es tanca la miniatura.",
-   "Determina quants fils s'utilitzen per convertir a p\303\255xels cada fotograma d'una miniatura a"
-   "nimada en format WebM o MP4. Una opci\303\263 mant\303\251 tota la conversi\303\263 al fil de de"
-   "scodificaci\303\263; l'altra la distribueix entre diversos nuclis, fet que agilitza les previsua"
-   "litzacions grans en equips amb nuclis de sobres, per\303\262 que consumeix recursos del nucli en"
-   " execuci\303\263 en equips que no en tenen tants.",
+   "Quants fils pot descodificar una miniatura animada. Un mant\303\251 tota la descodificaci\303"
+   "\263 al seu propi fil. M\303\251s la reparteixen entre nuclis, cosa que permet que una vista pr"
+   "\303\250via gran es reprodueixi a gran velocitat. Mentre un nucli s'executa, la vista pr\303\250"
+   "via es mant\303\251 en un fil, de manera que el joc mant\303\251 els seus nuclis.",
    "Escala autom\303\240ticament les imatges amb una amplada/al\303\247ada m\303\251s petita que el "
    "valor especificat. Millora la qualitat de la imatge. T\303\251 un efecte moderat en el rendiment"
    ".",
@@ -8760,9 +8779,6 @@ static const struct
    "Mostra la informaci\303\263 espec\303\255fica del dispositiu.",
    "Captura una imatge de la pantalla.",
    "Executa tasques en un fil a part.",
-   "Mant\303\251 els fils d'\303\240udio en els nuclis r\303\240pids del processador. No t\303\251 e"
-   "fecte en els processadors que tinguin tots els nuclis iguals. Cal reiniciar perqu\303\250 tingui"
-   " efecte.",
    "Tipus de miniatures que es mostrar\303\240.",
    "Les miniatures de l\342\200\231art de les capses, captures i pantalla de t\303\255tol es desen e"
    "n aquest directori.",
@@ -8941,10 +8957,18 @@ static const struct
    "\255nies d'escombrat apagar\303\240 gran  part de la imatge i el HDR recuperar\303\240 la brilla"
    "ntor perduda. Si et cal un control m\303\251s prec\303\255s de les l\303\255nies d'escombrat, ha"
    "s de fer servir shaders personalitzats que inclou RetroArch.",
+   "Indica a un compositor Wayland el rang de brillantor que cont\303\251 el fotograma, de manera qu"
+   "e mapegi el contingut HDR a partir del que hi ha realment al fotograma en lloc de basar-se en un"
+   "a suposici\303\263. Si est\303\240 desactivat, el fotograma es descriu com a Windows-scRGB, tal "
+   "com es feia abans. Els canvis s'apliquen quan es reinicia el controlador de v\303\255deo.",
    "Canvia les opcions de v\303\255deo de l'HDR.",
    "Selecciona la disposici\303\263 dels subp\303\255xels de la teva pantalla (nom\303\251s afecta l"
    "es l\303\255nies d'escombrat). Si no saps quina \303\251s la disposici\303\263 dels subp\303\255"
    "xels de la teva pantalla, ho pots cercar a Rtings.com",
+   "Fes servir la brillantor m\303\240xima que indica el monitor en comptes del valor que s'indica a"
+   " configuraci\303\263 si el monitor envia el valor: aquest valor es transmet als nuclis i ser\303"
+   "\240 el s'inclogui en les metadades HDR enviades per la pantalla. Si es desactiva aquesta opci"
+   "\303\263, es far\303\240 servir el valor indicat a configuraci\303\263.",
    "Les disposicions de v\303\255deo es desen en aquest directori.",
    "Avisa al controlador de v\303\255deo que faci servir un mode de b\303\272fer concret.",
    "Avisa al controlador de v\303\255deo que faci servir un mode de b\303\272fer concret.",
@@ -8997,8 +9021,10 @@ static const struct
    "Arrodoneix al seg\303\274ent nombre enter. 'Smart' redeueix l'escala quan la imatge est\303\240 "
    "massa retallada, i acaba en un escalat no enter si els marges de reescalat son massa grans.",
    "Canvia les opcions de l'escalat del v\303\255deo.",
-   "Sincronitza el v\303\255deo per la posici\303\263 Scanline. Redueix la lat\303\250ncia a costa d"
-   "'augmentar el risc d'estrebades. La sincronitzaci\303\263 vertical ha d'estar desactivada.",
+   "Sincronitza la presentaci\303\263 de v\303\255deo amb la predicci\303\263 de posici\303\263 de l"
+   "a l\303\255nia d'escaneig basada en el temps del nucli. Requisits: VSync desactivat, Frame Delay"
+   " desactivat, Hz de visualitzaci\303\263 propers a 1x FPS del nucli i GPU al rellotge m\303\240xi"
+   "m.",
    "AV\303\215S: El parpelleig r\303\240pid pot causar errors gr\303\240fics en algunes pantalles. F"
    "es servir aquesta opci\303\263 sota la teva responsabilitat // Simula una l\303\255nia d'escanei"
    "g en moviment b\303\240sica sobre m\303\272ltiples subfotogrames dividint la pantalla en vertica"
@@ -9772,7 +9798,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_ca_blob_check[
-      (sizeof(msg_hash_ca_blob) == (218068u
+      (sizeof(msg_hash_ca_blob) == (219112u
 #ifdef ANDROID
        + 281u
 #endif
@@ -11351,6 +11377,10 @@ static const uint32_t msg_hash_ca_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_DRIVER,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_ENABLE_KIOSK_MODE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_ENUM_THROTTLE_FRAMERATE,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_EXTENSION_DISPLAY,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_EXTENSION_DISPLAY_ALWAYS,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_EXTENSION_DISPLAY_DUPLICATES_ONLY,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_EXTENSION_DISPLAY_NEVER,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_SETTINGS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FONT_COLOR_BLUE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_FONT_COLOR_GREEN,
@@ -12462,7 +12492,9 @@ static const uint32_t msg_hash_ca_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_MODE_OFF,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_PAPER_WHITE_NITS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_SCANLINES,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_SEND_LUMINANCE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_SUBPIXEL_LAYOUT,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_USE_DISPLAY_PEAK,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_LAYOUT_DIRECTORY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_MAX_FRAME_LATENCY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_MAX_SWAPCHAIN_IMAGES,
@@ -12903,6 +12935,7 @@ static const uint32_t msg_hash_ca_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_CRT_SWITCHRES_SETTINGS,
    (uint32_t)MENU_ENUM_SUBLABEL_CRT_SWITCH_HIRES_MENU,
    (uint32_t)MENU_ENUM_SUBLABEL_CRT_SWITCH_PORCH_ADJUST,
+   (uint32_t)MENU_ENUM_SUBLABEL_CRT_SWITCH_RESOLUTION,
    (uint32_t)MENU_ENUM_SUBLABEL_CRT_SWITCH_RESOLUTION_SUPER,
    (uint32_t)MENU_ENUM_SUBLABEL_CRT_SWITCH_RESOLUTION_USE_CUSTOM_REFRESH_RATE,
    (uint32_t)MENU_ENUM_SUBLABEL_CRT_SWITCH_VERTICAL_ADJUST,
@@ -13223,6 +13256,7 @@ static const uint32_t msg_hash_ca_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_DRIVER,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_ENABLE_KIOSK_MODE,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_ENUM_THROTTLE_FRAMERATE,
+   (uint32_t)MENU_ENUM_SUBLABEL_MENU_FILE_BROWSER_EXTENSION_DISPLAY,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_FILE_BROWSER_SETTINGS,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_FRAMEBUFFER_OPACITY,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_HDR_BRIGHTNESS_NITS,
@@ -13730,7 +13764,6 @@ static const uint32_t msg_hash_ca_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_SYSTEM_INFORMATION,
    (uint32_t)MENU_ENUM_SUBLABEL_TAKE_SCREENSHOT,
    (uint32_t)MENU_ENUM_SUBLABEL_THREADED_DATA_RUNLOOP_ENABLE,
-   (uint32_t)MENU_ENUM_SUBLABEL_THREAD_PREFER_FAST_CORES,
    (uint32_t)MENU_ENUM_SUBLABEL_THUMBNAILS,
    (uint32_t)MENU_ENUM_SUBLABEL_THUMBNAILS_DIRECTORY,
    (uint32_t)MENU_ENUM_SUBLABEL_THUMBNAILS_MATERIALUI,
@@ -13820,8 +13853,10 @@ static const uint32_t msg_hash_ca_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_MAX_NITS,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_PAPER_WHITE_NITS,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_SCANLINES,
+   (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_SEND_LUMINANCE,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_SETTINGS,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_SUBPIXEL_LAYOUT,
+   (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_USE_DISPLAY_PEAK,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_LAYOUT_DIRECTORY,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_MAX_FRAME_LATENCY,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_MAX_SWAPCHAIN_IMAGES,

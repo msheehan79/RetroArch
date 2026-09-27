@@ -471,7 +471,7 @@ static void gfx_widget_generic_message_layout(
 /* Widget iterate() */
 
 static void gfx_widget_generic_message_iterate(void *user_data,
-      unsigned width, unsigned height, bool fullscreen,
+      unsigned dims, bool fullscreen,
       const char *dir_assets, char *font_path,
       bool is_threaded)
 {
@@ -572,8 +572,8 @@ static void gfx_widget_generic_message_frame(void *data, void *user_data)
       video_frame_info_t *video_info         = (video_frame_info_t*)data;
       dispgfx_widget_t *p_dispwidget         = (dispgfx_widget_t*)user_data;
 
-      unsigned video_width                   = video_info->width;
-      unsigned video_height                  = video_info->height;
+      unsigned video_width                   = VIDEO_SCALE_W(video_info->dims);
+      unsigned video_height                  = VIDEO_SCALE_H(video_info->dims);
       void *userdata                         = video_info->userdata;
       gfx_display_t *p_disp                  = (gfx_display_t*)video_info->disp_userdata;
       gfx_widget_font_data_t *font_msg_queue = &p_dispwidget->gfx_widget_fonts.msg_queue;
@@ -623,14 +623,11 @@ static void gfx_widget_generic_message_frame(void *data, void *user_data)
          gfx_display_draw_quad(
                p_disp,
                userdata,
-               video_width,
-               video_height,
+               VIDEO_SCALE_PACK(video_width, video_height),
                state->bg_x,
                bg_y,
-               state->bg_width,
-               state->bg_height,
-               video_width,
-               video_height,
+               VIDEO_SCALE_PACK(state->bg_width, state->bg_height),
+               VIDEO_SCALE_PACK(video_width, video_height),
                state->bg_color,
                NULL);
 
@@ -640,14 +637,12 @@ static void gfx_widget_generic_message_frame(void *data, void *user_data)
          gfx_display_draw_quad(
                p_disp,
                userdata,
-               video_width,
-               video_height,
+               VIDEO_SCALE_PACK(video_width, video_height),
                state->bg_x - (float)state->frame_width,
                bg_y - (float)state->frame_width,
-               state->bg_width + (state->frame_width * 2),
-               state->frame_width,
-               video_width,
-               video_height,
+               VIDEO_SCALE_PACK(state->bg_width + (state->frame_width * 2),
+                     state->frame_width),
+               VIDEO_SCALE_PACK(video_width, video_height),
                state->frame_color,
                NULL);
 
@@ -655,14 +650,11 @@ static void gfx_widget_generic_message_frame(void *data, void *user_data)
          gfx_display_draw_quad(
                p_disp,
                userdata,
-               video_width,
-               video_height,
+               VIDEO_SCALE_PACK(video_width, video_height),
                state->bg_x - (float)state->frame_width,
                bg_y,
-               state->frame_width,
-               state->bg_height,
-               video_width,
-               video_height,
+               VIDEO_SCALE_PACK(state->frame_width, state->bg_height),
+               VIDEO_SCALE_PACK(video_width, video_height),
                state->frame_color,
                NULL);
 
@@ -670,14 +662,11 @@ static void gfx_widget_generic_message_frame(void *data, void *user_data)
          gfx_display_draw_quad(
                p_disp,
                userdata,
-               video_width,
-               video_height,
+               VIDEO_SCALE_PACK(video_width, video_height),
                state->bg_x + (float)state->bg_width,
                bg_y,
-               state->frame_width,
-               state->bg_height,
-               video_width,
-               video_height,
+               VIDEO_SCALE_PACK(state->frame_width, state->bg_height),
+               VIDEO_SCALE_PACK(video_width, video_height),
                state->frame_color,
                NULL);
 
@@ -687,8 +676,7 @@ static void gfx_widget_generic_message_frame(void *data, void *user_data)
                state->message,
                state->text_x,
                text_y,
-               video_width,
-               video_height,
+               VIDEO_SCALE_PACK(video_width, video_height),
                text_color,
                TEXT_ALIGN_LEFT,
                true);
@@ -700,8 +688,7 @@ static void gfx_widget_generic_message_frame(void *data, void *user_data)
                   state->bg_x + (float)state->bg_width
                         - (float)state->text_padding,
                   text_y,
-                  video_width,
-                  video_height,
+                  VIDEO_SCALE_PACK(video_width, video_height),
                   COLOR_TEXT_ALPHA(state->text_color,
                         (unsigned)(widget_alpha * 128.0f)),
                   TEXT_ALIGN_RIGHT,
@@ -710,7 +697,7 @@ static void gfx_widget_generic_message_frame(void *data, void *user_data)
          /* If the message queue is active, must flush the
           * text here to avoid overlaps */
          if (msg_queue_size > 0)
-            gfx_widgets_flush_text(video_width, video_height,
+            gfx_widgets_flush_text(VIDEO_SCALE_PACK(video_width, video_height),
                   font_msg_queue);
       }
    }
