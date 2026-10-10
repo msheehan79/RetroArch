@@ -300,6 +300,9 @@ bool recording_init(void)
    params.video_stream_scale_factor = settings->uints.video_stream_scale_factor;
    params.video_record_threads      = settings->uints.video_record_threads;
    params.streaming_mode            = settings->uints.streaming_mode;
+   params.allow_frame_drop          = settings->bools.video_record_allow_frame_drop;
+   params.video_fifo_frames         = settings->uints.video_record_fifo_frames;
+   params.hw_encoder                = settings->bools.video_record_hw_encoder;
 
    params.out_dims                  = VIDEO_SCALE_PACK(
          av_info->geometry.base_width, av_info->geometry.base_height);
@@ -357,7 +360,7 @@ bool recording_init(void)
    if (  video_gpu_record
       && video_st->current_video->read_viewport)
    {
-      unsigned gpu_size;
+      size_t gpu_size;
       struct video_viewport vp;
 
       vp.pos                      = VIDEO_POS_PACK(0, 0);
@@ -374,9 +377,9 @@ bool recording_init(void)
       }
 
       params.out_dims                     = vp.dims;
-      params.fb_dims                      = VIDEO_SCALE_PACK(
-            next_pow2(VIDEO_SCALE_W(vp.dims)),
-            next_pow2(VIDEO_SCALE_H(vp.dims)));
+      /* Every frame is exactly the viewport (a resize ends the
+       * recording), so size the encoder's queue to it. */
+      params.fb_dims                      = vp.dims;
 
       if (video_force_aspect &&
             (VIDEO_DRIVER_ASPECT_RATIO(video_st) > 0.0f))
@@ -384,27 +387,55 @@ bool recording_init(void)
       else
          params.aspect_ratio              = (float)VIDEO_SCALE_W(vp.dims) / VIDEO_SCALE_H(vp.dims);
 
-      params.pix_fmt                      = FFEMU_PIX_BGR24;
+      /* The driver's 32-bit readback skips a per-frame BGR24
+       * conversion; FFEMU_PIX_ARGB8888 is a native-endian word, so B,G,R,X
+       * bytes only on little-endian hosts. The threaded wrapper reads back
+       * on its own thread and hands over BGR24. */
+#ifdef MSB_FIRST
+      recording_st->gpu_bgrx              = false;
+#else
+      recording_st->gpu_bgrx              =
+            !video_driver_thread_wrapper_active()
+         && video_st->current_video->read_viewport_bgrx;
+#endif
+      params.pix_fmt                      = recording_st->gpu_bgrx
+         ? FFEMU_PIX_ARGB8888 : FFEMU_PIX_BGR24;
+
+      /* Said once, as the recording starts: this driver reads back the
+       * screen as shown, with the menu and messages in it. */
+      if (     settings->bools.video_record_game_only
+            && !video_driver_test_all_flags(GFX_CTX_FLAGS_RECORD_GAME_ONLY))
+      {
+         const char *_msg = msg_hash_to_str(
+               MSG_RECORDING_GAME_ONLY_UNSUPPORTED);
+         RARCH_WARN("[Recording] %s\n", _msg);
+         runloop_msg_queue_push(_msg, strlen(_msg), 1, 240, false, NULL,
+               MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_WARNING);
+      }
       recording_st->gpu_dims              = vp.dims;
 
-      RARCH_LOG("[Recording] %s %ux%u.\n", msg_hash_to_str(MSG_DETECTED_VIEWPORT_OF),
-            VIDEO_SCALE_W(vp.dims), VIDEO_SCALE_H(vp.dims));
+      RARCH_LOG("[Recording] %s %ux%u (%s readback).\n",
+            msg_hash_to_str(MSG_DETECTED_VIEWPORT_OF),
+            VIDEO_SCALE_W(vp.dims), VIDEO_SCALE_H(vp.dims),
+            recording_st->gpu_bgrx ? "BGRX" : "BGR24");
 
-      gpu_size = VIDEO_SCALE_AREA(vp.dims) * 3;
+      gpu_size = VIDEO_SCALE_AREA(vp.dims) * (recording_st->gpu_bgrx ? 4 : 3);
       if (!(video_st->record_gpu_buffer = (uint8_t*)malloc(gpu_size)))
          return false;
    }
    else
    {
+      recording_st->gpu_bgrx = false;
       if (recording_state.out_dims)
          params.out_dims   = recording_state.out_dims;
 
-      if (video_force_aspect &&
-            (VIDEO_DRIVER_ASPECT_RATIO(video_st) > 0.0f))
-         params.aspect_ratio = VIDEO_DRIVER_ASPECT_RATIO(video_st);
-      else
-         params.aspect_ratio = (float)VIDEO_SCALE_W(params.out_dims)
-               / VIDEO_SCALE_H(params.out_dims);
+      /* Raw core frames are unrotated; the GPU path reads back the
+       * already-rotated screen. Rotate them like the display does. */
+      params.rotation = retroarch_get_rotation() % 4;
+      record_raw_geometry(&params.out_dims, &params.aspect_ratio,
+            params.rotation,
+            video_force_aspect ? VIDEO_DRIVER_ASPECT_RATIO(video_st) : 0.0f,
+            recording_state.out_dims != 0);
 
 #ifdef HAVE_VIDEO_FILTER
       if (settings->bools.video_post_filter_record

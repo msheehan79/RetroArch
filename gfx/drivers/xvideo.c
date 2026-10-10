@@ -38,6 +38,8 @@
 #include "../../menu/menu_driver.h"
 #endif
 
+#include <encodings/utf.h>
+
 #include "../font_driver.h"
 
 #include "../../configuration.h"
@@ -196,6 +198,13 @@ static void xv_init_font(xv_t *xv, const char *font_path, unsigned font_size)
 
       xv_calculate_yuv(&xv->font_y, &xv->font_u, &xv->font_v,
             r, g, b);
+      /* The atlas may grow when a message needs more glyphs than it holds;
+       * the glyphs are blitted from it in memory, so there is no texture
+       * to make again */
+      {
+         struct font_atlas *grow = xv->font_driver->get_atlas(xv->font);
+         grow->max_dims = VIDEO_SCALE_PACK(2048, 2048);
+      }
    }
    else
       RARCH_LOG("[XVideo] Could not initialize fonts.\n");
@@ -334,12 +343,18 @@ static void render16_yuv12(xv_t *xv, const void *input_,
    }
 }
 
+/* Two glyph texels at a time, one chroma sample for the pair; a pair
+ * with no coverage changes nothing and is passed over. Past an odd
+ * width the second texel is clear. */
 static INLINE void render_glyph_yuv12(xv_t *xv, int base_x, int base_y,
-				      const uint8_t *glyph, int atlas_width,
-				      int glyph_width, int glyph_height)
+      const uint8_t *glyph, int atlas_width,
+      int glyph_width, int glyph_height)
 {
    uint8_t *out_luma, *out_u, *out_v;
-   int x, y, i;
+   int x, y;
+   unsigned font_y = xv->font_y;
+   unsigned font_u = xv->font_u;
+   unsigned font_v = xv->font_v;
 
    out_luma = (uint8_t*)xv->image->data + base_y * xv->width + (base_x);
    out_u = (uint8_t*)xv->image->data + xv->width * xv->height + (base_y / 2) * xv->width / 2 + (base_x / 2);
@@ -347,63 +362,51 @@ static INLINE void render_glyph_yuv12(xv_t *xv, int base_x, int base_y,
 
    for (y = 0; y < glyph_height; y++, glyph += atlas_width, out_luma += xv->width)
    {
-      /* 2 input pixels => 4 bytes (2Y, 1U, 1V). */
-
+      int chroma = y & 1;
       for (x = 0; x < glyph_width; x += 2)
       {
-	 unsigned alpha[2], alpha_sub, blended;
+         unsigned a0 = glyph[x];
+         unsigned a1 = (x + 1 < glyph_width) ? glyph[x + 1] : 0;
+         unsigned as;
 
-	 alpha[0] = glyph[x + 0];
-	 alpha[1] = 0;
+         if (!(a0 | a1))
+            continue;
 
-	 if (x + 1 < glyph_width)
-	    alpha[1] = glyph[x + 1];
+         out_luma[x] = (font_y * a0 + (256 - a0) * out_luma[x]) >> 8;
+         if (a1)
+            out_luma[x + 1] = (font_y * a1
+                  + (256 - a1) * out_luma[x + 1]) >> 8;
 
-	 /* Blended alpha for the sub-sampled U/V channels. */
-	 alpha_sub = (alpha[0] + alpha[1]) >> 1;
-
-	 for (i = 0; i < 2; i++)
-	 {
-	    unsigned blended = (xv->font_y * alpha[i]
-				+ ((256 - alpha[i]) * out_luma[x+i])) >> 8;
-	    out_luma[x+i] = blended;
-	 }
-
-	 /* Blend chroma channels */
-	 if (y & 1)
-	 {
-	    blended = (xv->font_u * alpha_sub
-		       + ((256 - alpha_sub) * out_u[x/2])) >> 8;
-	    out_u[x / 2] = blended;
-
-	    blended = (xv->font_v * alpha_sub
-		       + ((256 - alpha_sub) * out_v[x/2])) >> 8;
-	    out_v[x/2] = blended;
-	 }
+         if (chroma)
+         {
+            as         = (a0 + a1) >> 1;
+            out_u[x/2] = (font_u * as + (256 - as) * out_u[x/2]) >> 8;
+            out_v[x/2] = (font_v * as + (256 - as) * out_v[x/2]) >> 8;
+         }
       }
 
-      if (y & 1)
+      if (chroma)
       {
-	 out_u += xv->width / 2;
-	 out_v += xv->width / 2;
+         out_u += xv->width / 2;
+         out_v += xv->width / 2;
       }
    }
 }
 
 static INLINE void render_glyph_yuv_packed(xv_t *xv, int base_x, int base_y,
-					   const uint8_t *glyph, int atlas_width,
-					   int glyph_width, int glyph_height)
+      const uint8_t *glyph, int atlas_width,
+      int glyph_width, int glyph_height)
 {
-   uint8_t *out                   = NULL;
-   int x, y, i;
-   unsigned luma_index[2], pitch;
-   unsigned chroma_u_index, chroma_v_index;
-
-   luma_index[0]  = xv->luma_index[0];
-   luma_index[1]  = xv->luma_index[1];
-
-   chroma_u_index = xv->chroma_u_index;
-   chroma_v_index = xv->chroma_v_index;
+   uint8_t *out;
+   int x, y;
+   unsigned pitch;
+   unsigned luma0    = xv->luma_index[0];
+   unsigned luma1    = xv->luma_index[1];
+   unsigned chroma_u = xv->chroma_u_index;
+   unsigned chroma_v = xv->chroma_v_index;
+   unsigned font_y   = xv->font_y;
+   unsigned font_u   = xv->font_u;
+   unsigned font_v   = xv->font_v;
 
    pitch          = xv->width << 1; /* YUV formats used are 16 bpp. */
    out = (uint8_t*)xv->image->data + base_y * pitch + (base_x << 1);
@@ -411,36 +414,21 @@ static INLINE void render_glyph_yuv_packed(xv_t *xv, int base_x, int base_y,
    for (y = 0; y < glyph_height; y++, glyph += atlas_width, out += pitch)
    {
       /* 2 input pixels => 4 bytes (2Y, 1U, 1V). */
-
       for (x = 0; x < glyph_width; x += 2)
       {
-	 unsigned alpha[2], alpha_sub, blended;
-	 int out_x = x << 1;
+         uint8_t *o  = out + (x << 1);
+         unsigned a0 = glyph[x];
+         unsigned a1 = (x + 1 < glyph_width) ? glyph[x + 1] : 0;
+         unsigned as;
 
-	 alpha[0] = glyph[x + 0];
-	 alpha[1] = 0;
+         if (!(a0 | a1))
+            continue;
 
-	 if (x + 1 < glyph_width)
-	    alpha[1] = glyph[x + 1];
-
-	 /* Blended alpha for the sub-sampled U/V channels. */
-	 alpha_sub = (alpha[0] + alpha[1]) >> 1;
-
-	 for (i = 0; i < 2; i++)
-	 {
-	    unsigned blended = (xv->font_y * alpha[i]
-				+ ((256 - alpha[i]) * out[out_x + luma_index[i]])) >> 8;
-	    out[out_x + luma_index[i]] = blended;
-	 }
-
-	 /* Blend chroma channels */
-	 blended = (xv->font_u * alpha_sub
-		    + ((256 - alpha_sub) * out[out_x + chroma_u_index])) >> 8;
-	 out[out_x + chroma_u_index] = blended;
-
-	 blended = (xv->font_v * alpha_sub
-		    + ((256 - alpha_sub) * out[out_x + chroma_v_index])) >> 8;
-	 out[out_x + chroma_v_index] = blended;
+         as          = (a0 + a1) >> 1;
+         o[luma0]    = (font_y * a0 + (256 - a0) * o[luma0]) >> 8;
+         o[luma1]    = (font_y * a1 + (256 - a1) * o[luma1]) >> 8;
+         o[chroma_u] = (font_u * as + (256 - as) * o[chroma_u]) >> 8;
+         o[chroma_v] = (font_v * as + (256 - as) * o[chroma_v]) >> 8;
       }
    }
 }
@@ -552,8 +540,7 @@ static void xv_calc_out_rect(bool keep_aspect,
    video_driver_update_viewport(vp, false, keep_aspect, true);
 }
 
-static void *xv_init(const video_info_t *video,
-      input_driver_t **input, void **input_data)
+static void *xv_init(const video_info_t *video)
 {
    unsigned i;
    int ret;
@@ -567,7 +554,6 @@ static void *xv_init(const video_info_t *video,
    unsigned adaptor_count                 = 0;
    int visualmatches                      = 0;
    Atom atom                              = 0;
-   void *xinput                           = NULL;
    XVisualInfo *visualinfo                = NULL;
    XvAdaptorInfo *adaptor_info            = NULL;
    const struct retro_game_geometry *geom = NULL;
@@ -782,18 +768,9 @@ static void *xv_init(const video_info_t *video,
    if (!x11_input_ctx_new(true))
       goto error;
 
-   if (input && input_data)
-   {
-      xinput = input_driver_init_wrap(&input_x,
-            settings->arrays.input_joypad_driver);
-      if (xinput)
-      {
-         *input = &input_x;
-         *input_data = xinput;
-      }
-      else
-         *input = NULL;
-   }
+   /* no input driver of this driver's own: the frontend starts the
+    * one that goes with an X11 window */
+   input_driver_video_window(INPUT_WINDOW_X11, NULL);
 
    XGetWindowAttributes(g_x11_dpy, g_x11_win, &target);
    xv_calc_out_rect(xv->keep_aspect, &xv->vp, target.width, target.height);
@@ -879,56 +856,68 @@ static void xv_render_msg(xv_t *xv, const char *msg,
    msg_base_x     = video_msg_pos_x * width;
    msg_base_y     = height * (1.0f - video_msg_pos_y);
 
-   for (; *msg; msg++)
    {
-      int base_x, base_y, glyph_width, glyph_height, max_width, max_height;
-      const uint8_t *src             = NULL;
-      const struct font_glyph *glyph =
-         xv->font_driver->get_glyph(xv->font, (uint8_t)*msg);
+      const struct font_glyph* (*get_glyph)(void*, uint32_t)
+                                             = xv->font_driver->get_glyph;
+      void *font_data                        = xv->font;
+      const struct font_glyph *glyph_q       = get_glyph(font_data, '?');
+      struct font_line_metrics *line_metrics = NULL;
+      size_t msg_len                         = strlen(msg);
+      int line_h                             = 0;
+      int line_x                             = msg_base_x;
+      int line_y                             = msg_base_y;
 
-      if (!glyph)
-         continue;
+      xv->font_driver->get_line_metrics(font_data, &line_metrics);
+      if (line_metrics)
+         line_h = (int)line_metrics->height;
 
-      /* Make sure we always start on the correct boundary
-       * so the indices are correct. */
-      base_x          = (msg_base_x + glyph->draw_offset_x + 1) & ~1;
-      base_y          = msg_base_y + glyph->draw_offset_y;
-
-      glyph_width     = glyph->width;
-      glyph_height    = glyph->height;
-
-      src             = atlas->buffer + glyph->atlas_offset_x +
-                        glyph->atlas_offset_y * atlas->width;
-
-      if (base_x < 0)
-      {
-         src          -= base_x;
-         glyph_width  += base_x;
-         base_x = 0;
-      }
-
-      if (base_y < 0)
-      {
-         src          -= base_y * (int)atlas->width;
-         glyph_height += base_y;
-         base_y = 0;
-      }
-
-      max_width        = width - base_x;
-      max_height       = height - base_y;
-
-      if (max_width <= 0 || max_height <= 0)
-         continue;
-
-      if (glyph_width > max_width)
-         glyph_width   = max_width;
-      if (glyph_height > max_height)
-         glyph_height  = max_height;
-
-      xv->render_glyph(xv, base_x, base_y, src, atlas->width, glyph_width, glyph_height);
-
-      msg_base_x += glyph->advance_x;
-      msg_base_y += glyph->advance_y;
+      /* UTF-8, each line one line height below the last */
+#define FONT_LAYOUT_ALIGNED 0
+#define FONT_LAYOUT_LINE(line, line_width, count, bytes) \
+      do \
+      { \
+         (void)(line_width); \
+         (void)(count); \
+         (void)(bytes); \
+         line_x = msg_base_x; \
+         line_y = msg_base_y + (line) * line_h; \
+      } while (0)
+#define FONT_LAYOUT_GLYPH(glyph, pen_x, pen_y) \
+      do \
+      { \
+         int base_x, base_y, glyph_width, glyph_height, max_width, max_height; \
+         const uint8_t *src             = NULL; \
+         /* Make sure we always start on the correct boundary \
+          * so the indices are correct. */ \
+         base_x          = ((line_x + (pen_x)) + glyph->draw_offset_x + 1) & ~1; \
+         base_y          = (line_y + (pen_y)) + glyph->draw_offset_y; \
+         glyph_width     = VIDEO_SCALE_W(glyph->dims); \
+         glyph_height    = VIDEO_SCALE_H(glyph->dims); \
+         src             = atlas->buffer + VIDEO_SCALE_W(glyph->atlas_pos) + \
+                           VIDEO_SCALE_H(glyph->atlas_pos) * atlas->width; \
+         if (base_x < 0) \
+         { \
+            src          -= base_x; \
+            glyph_width  += base_x; \
+            base_x = 0; \
+         } \
+         if (base_y < 0) \
+         { \
+            src          -= base_y * (int)atlas->width; \
+            glyph_height += base_y; \
+            base_y = 0; \
+         } \
+         max_width        = width - base_x; \
+         max_height       = height - base_y; \
+         if (max_width <= 0 || max_height <= 0) \
+            break; \
+         if (glyph_width > max_width) \
+            glyph_width   = max_width; \
+         if (glyph_height > max_height) \
+            glyph_height  = max_height; \
+         xv->render_glyph(xv, base_x, base_y, src, atlas->width, glyph_width, glyph_height); \
+      } while (0)
+#include "../font_layout.h"
    }
 }
 

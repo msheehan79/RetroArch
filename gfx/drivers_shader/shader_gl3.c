@@ -103,7 +103,6 @@ RETRO_BEGIN_DECLS
          GLuint image,
          float rx, float ry);
 
-   GLuint gl3_compile_shader(GLenum stage, const char *source);
    uint32_t gl3_get_cross_compiler_target_version(void);
 
    static GLenum address_to_gl(glslang_filter_chain_address type)
@@ -187,6 +186,41 @@ static void gl3_spvc_rename_by_location(spvc_compiler compiler,
       spvc_compiler_unset_decoration(compiler, list[i].id,
             SpvDecorationLocation);
    }
+}
+
+/* A failed compile fails whether or not the driver wrote a log. */
+static GLuint gl3_compile_shader(GLenum stage, const char *source)
+{
+   GLint status    = 0;
+   GLint length    = 0;
+   GLuint shader   = glCreateShader(stage);
+   const char *ptr = source;
+
+   if (!shader)
+      return 0;
+
+   glShaderSource(shader, 1, &ptr, NULL);
+   glCompileShader(shader);
+
+   glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
+   if (status)
+      return shader;
+
+   glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &length);
+   if (length > 1)
+   {
+      char *info_log = (char*)malloc(length);
+      if (info_log)
+      {
+         glGetShaderInfoLog(shader, length, &length, info_log);
+         RARCH_ERR("[GLCore] Failed to compile shader: %s\n", info_log);
+         free(info_log);
+      }
+   }
+   else
+      RARCH_ERR("[GLCore] Failed to compile shader.\n");
+   glDeleteShader(shader);
+   return 0;
 }
 
 GLuint gl3_cross_compile_program(
@@ -428,11 +462,14 @@ GLuint gl3_cross_compile_program(
             glGetProgramInfoLog(program, length, &length, info_log);
             RARCH_ERR("[GLCore] Failed to link program: %s\n", info_log);
             free(info_log);
-            glDeleteProgram(program);
-            program = 0;
-            goto error;
          }
       }
+      else
+         RARCH_ERR("[GLCore] Failed to link program.\n");
+      /* A failed link fails whether or not the driver wrote a log */
+      glDeleteProgram(program);
+      program = 0;
+      goto error;
    }
 
    glUseProgram(program);
@@ -1081,6 +1118,9 @@ struct gl3_pass
    unsigned pass_number;
    uint32_t total_subframes;
    uint32_t current_subframe;
+   /* What the final pass is cut to, when scissor_set. */
+   struct gl3_viewport scissor;
+   bool scissor_set;
 #ifdef GL3_ROLLING_SCANLINE_SIMULATION
    bool simulate_scanline;
 #endif /* GL3_ROLLING_SCANLINE_SIMULATION */
@@ -2424,6 +2464,25 @@ static void gl3_pass_build_commands(struct gl3_pass *pass,
                      VIDEO_SCALE_W(pass->curr_vp.dims), VIDEO_SCALE_H(pass->curr_vp.dims));
       }
 #endif /* GL3_ROLLING_SCANLINE_SIMULATION */
+      if (pass->scissor_set)
+      {
+         int x0 = VIDEO_POS_X(pass->scissor.pos);
+         int y0 = VIDEO_POS_Y(pass->scissor.pos);
+         int x1 = x0 + (int)VIDEO_SCALE_W(pass->scissor.dims);
+         int y1 = y0 + (int)VIDEO_SCALE_H(pass->scissor.dims);
+#ifdef GL3_ROLLING_SCANLINE_SIMULATION
+         if (pass->simulate_scanline)
+         {
+            float rows = (float)(VIDEO_SCALE_H(pass->curr_vp.dims))
+               / (float)(pass->total_subframes);
+            int top    = (int)(rows * (float)(pass->current_subframe - 1));
+            y0         = MAX(y0, top);
+            y1         = MIN(y1, top + (int)rows);
+         }
+#endif /* GL3_ROLLING_SCANLINE_SIMULATION */
+         glEnable(GL_SCISSOR_TEST);
+         glScissor(x0, y0, MAX(x1 - x0, 0), MAX(y1 - y0, 0));
+      }
    }
    else
    {
@@ -2476,6 +2535,8 @@ static void gl3_pass_build_commands(struct gl3_pass *pass,
       glDisable(GL_SCISSOR_TEST);
    }
 #endif /* GL3_ROLLING_SCANLINE_SIMULATION */
+   if (pass->scissor_set)
+      glDisable(GL_SCISSOR_TEST);
 
 #if !defined(HAVE_OPENGLES)
    glDisable(GL_FRAMEBUFFER_SRGB);
@@ -2512,12 +2573,13 @@ static void gl3_chain_update_history_info(struct gl3_filter_chain *chain);
 static void gl3_chain_update_feedback_info(struct gl3_filter_chain *chain);
 static void gl3_chain_build_offscreen_passes(struct gl3_filter_chain *chain, const gl3_viewport vp);
 static void gl3_chain_end_frame(struct gl3_filter_chain *chain);
-static void gl3_chain_build_viewport_pass(struct gl3_filter_chain *chain, const gl3_viewport vp, const float *mvp);
+static void gl3_chain_build_viewport_pass(struct gl3_filter_chain *chain, const gl3_viewport vp, const float *mvp,
+      bool again);
 static bool gl3_chain_init_history(struct gl3_filter_chain *chain);
 static bool gl3_chain_init_feedback(struct gl3_filter_chain *chain);
 static bool gl3_chain_init_alias(struct gl3_filter_chain *chain);
 static void gl3_chain_set_pass_info(struct gl3_filter_chain *chain, unsigned pass, const gl3_filter_chain_pass_info info);
-static void gl3_chain_set_num_passes(struct gl3_filter_chain *chain, unsigned num_passes_);
+static bool gl3_chain_set_num_passes(struct gl3_filter_chain *chain, unsigned num_passes_);
 static void gl3_chain_set_shader(struct gl3_filter_chain *chain, unsigned pass, GLenum stage, const uint32_t *spirv, size_t spirv_words);
 static void gl3_chain_add_parameter(struct gl3_filter_chain *chain, unsigned pass,
       unsigned index, const char *id);
@@ -2559,7 +2621,11 @@ static struct gl3_filter_chain *gl3_chain_new(unsigned num_passes)
    /* ran as the member constructor until gl3_common_resources flattened */
    gl3_common_resources_init(&chain->common);
 
-   gl3_chain_set_num_passes(chain, num_passes);
+   if (!gl3_chain_set_num_passes(chain, num_passes))
+   {
+      gl3_chain_free(chain);
+      return NULL;
+   }
    return chain;
 }
 
@@ -2721,7 +2787,8 @@ static void gl3_chain_end_frame(struct gl3_filter_chain *chain)
    }
 }
 
-static void gl3_chain_build_viewport_pass(struct gl3_filter_chain *chain, const gl3_viewport vp, const float *mvp)
+static void gl3_chain_build_viewport_pass(struct gl3_filter_chain *chain, const gl3_viewport vp, const float *mvp,
+      bool again)
 {
    unsigned i;
    /* First frame, make sure our history and
@@ -2748,6 +2815,10 @@ static void gl3_chain_build_viewport_pass(struct gl3_filter_chain *chain, const 
       source.address    =
          gl3_pass_get_address_mode(chain->passes[chain->num_passes - 1]);
    }
+   else if (again)
+      /* The first draw's feedback swap moved this pass's framebuffer:
+       * read what the first draw read. */
+      source = chain->common.pass_outputs[chain->num_passes - 2];
    else
    {
       const struct gl3_framebuffer *fb =
@@ -2763,12 +2834,13 @@ static void gl3_chain_build_viewport_pass(struct gl3_filter_chain *chain, const 
          &original, &source, &vp, mvp);
 
    /* For feedback FBOs, swap current and previous. */
-   for (i = 0; i < chain->num_passes; i++)
-   {
-      struct gl3_framebuffer *fb = gl3_pass_get_feedback_framebuffer(chain->passes[i]);
-      if (fb)
-         gl3_pass_end_frame(chain->passes[i]);
-   }
+   if (!again)
+      for (i = 0; i < chain->num_passes; i++)
+      {
+         struct gl3_framebuffer *fb = gl3_pass_get_feedback_framebuffer(chain->passes[i]);
+         if (fb)
+            gl3_pass_end_frame(chain->passes[i]);
+      }
 }
 
 static bool gl3_chain_init_history(struct gl3_filter_chain *chain)
@@ -2953,7 +3025,7 @@ static void gl3_chain_set_pass_info(struct gl3_filter_chain *chain, unsigned pas
    chain->pass_info[pass] = info;
 }
 
-static void gl3_chain_set_num_passes(struct gl3_filter_chain *chain, unsigned num_passes_)
+static bool gl3_chain_set_num_passes(struct gl3_filter_chain *chain, unsigned num_passes_)
 {
    unsigned i;
 
@@ -2969,25 +3041,26 @@ static void gl3_chain_set_num_passes(struct gl3_filter_chain *chain, unsigned nu
    chain->num_pass_info  = 0;
 
    if (!num_passes_)
-      return;
+      return true;
 
    if (!(chain->pass_info = (gl3_filter_chain_pass_info*)
             calloc(num_passes_, sizeof(*chain->pass_info))))
-      return;
+      return false;
    chain->num_pass_info  = num_passes_;
 
    if (!(chain->passes = (struct gl3_pass**)
             calloc(num_passes_, sizeof(*chain->passes))))
-      return;
+      return false;
 
    for (i = 0; i < num_passes_; i++)
    {
       if (!(chain->passes[i] = gl3_pass_new(i + 1 == num_passes_)))
-         return;
+         return false;
       gl3_pass_set_common_resources(chain->passes[i], &chain->common);
       gl3_pass_set_pass_number(chain->passes[i], i);
       chain->num_passes++;
    }
+   return true;
 }
 
 static void gl3_chain_set_shader(struct gl3_filter_chain *chain, unsigned pass, GLenum stage, const uint32_t *spirv, size_t spirv_words)
@@ -3497,9 +3570,7 @@ static bool gl3_filter_chain_load_lut(
    unsigned levels;
    GLuint tex                      = 0;
 
-   image.width                     = 0;
-   image.height                    = 0;
-   image.pixels                    = NULL;
+   memset(&image, 0, sizeof(image));
    image.supports_rgba             = true;
 
    if (!image_texture_load(&image, shader->path))
@@ -3600,7 +3671,6 @@ gl3_filter_chain_t *gl3_filter_chain_create_from_preset(
 {
    size_t j;
    unsigned i;
-   unsigned total_passes;
    bool last_pass_is_fbo;
    bool explicit_format;
    struct video_shader_parameter *itr;
@@ -3938,8 +4008,6 @@ gl3_filter_chain_t *gl3_filter_chain_create_deferred(
    unsigned i;
    unsigned total_passes;
    bool last_pass_is_fbo;
-   bool explicit_format;
-   struct video_shader_parameter *itr;
    struct gl3_filter_chain *chain;
    struct video_shader *shader = (struct video_shader*)calloc(1, sizeof(*shader));
    if (!shader)
@@ -4165,6 +4233,16 @@ void gl3_filter_chain_set_simulate_scanline(
 }
 #endif /* GL3_ROLLING_SCANLINE_SIMULATION */
 
+void gl3_filter_chain_set_scissor(
+      gl3_filter_chain_t *chain,
+      const struct gl3_viewport *scissor)
+{
+   struct gl3_pass *pass = chain->passes[chain->num_passes - 1];
+   pass->scissor_set     = scissor != NULL;
+   if (scissor)
+      pass->scissor      = *scissor;
+}
+
 void gl3_filter_chain_set_frame_count_period(
       gl3_filter_chain_t *chain,
       unsigned pass,
@@ -4192,7 +4270,14 @@ void gl3_filter_chain_build_viewport_pass(
       gl3_filter_chain_t *chain,
       const gl3_viewport *vp, const float *mvp)
 {
-   gl3_chain_build_viewport_pass(chain, *vp, mvp);
+   gl3_chain_build_viewport_pass(chain, *vp, mvp, false);
+}
+
+void gl3_filter_chain_build_viewport_pass_again(
+      gl3_filter_chain_t *chain,
+      const gl3_viewport *vp, const float *mvp)
+{
+   gl3_chain_build_viewport_pass(chain, *vp, mvp, true);
 }
 
 void gl3_filter_chain_end_frame(gl3_filter_chain_t *chain)

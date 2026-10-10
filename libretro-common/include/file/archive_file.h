@@ -93,6 +93,12 @@ typedef struct file_archive_transfer
     * pending_active is what makes this visible to the iterate loop;
     * everything else is the state that call needs to resume. */
    file_archive_file_handle_t pending_handle;
+   /* The member's output, opened beside pending_path and renamed over
+    * it when the member completes (filestream_open_atomic()).  A
+    * backend that can produce output a piece at a time writes it here
+    * as it goes and leaves pending_handle.data NULL; any other fills
+    * pending_handle.data, which is written here at the end. */
+   struct RFILE *pending_sink;
    char     pending_path[PATH_MAX_LENGTH];
    uint32_t pending_size;
    bool     pending_active;
@@ -254,6 +260,7 @@ int file_archive_compressed_read(
 const struct file_archive_file_backend* file_archive_get_zlib_file_backend(void);
 const struct file_archive_file_backend* file_archive_get_7z_file_backend(void);
 const struct file_archive_file_backend* file_archive_get_zstd_file_backend(void);
+const struct file_archive_file_backend* file_archive_get_rar_file_backend(void);
 
 const struct file_archive_file_backend* file_archive_get_file_backend(const char *path);
 
@@ -281,6 +288,7 @@ uint32_t file_archive_get_file_crc32_and_size(const char *path, uint64_t *size);
 extern const struct file_archive_file_backend zlib_backend;
 extern const struct file_archive_file_backend sevenzip_backend;
 extern const struct file_archive_file_backend zstd_backend;
+extern const struct file_archive_file_backend rar_backend;
 
 /* ---- incremental archive entry source ----
  *

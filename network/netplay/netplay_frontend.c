@@ -64,6 +64,11 @@
 #include "../../tasks/tasks_internal.h"
 #include "../../input/input_driver.h"
 
+#ifdef HAVE_CRYPTO
+#include <crypto/crypto.h>
+#include <crypto/kdf.h>
+#endif
+
 #ifdef HAVE_MENU
 #include "../../menu/menu_input.h"
 #include "../../menu/menu_driver.h"
@@ -221,7 +226,7 @@ const mitm_server_t netplay_mitm_server_list[NETPLAY_MITM_SERVERS] = {
  * would close descriptor 0 - stdin.  Fixed up in
  * netplay_discovery_state_init() below, which runs before either
  * descriptor can be reached. */
-static net_driver_state_t networking_driver_st = {0};
+static net_driver_state_t networking_driver_st;
 
 net_driver_state_t *networking_state_get_ptr(void)
 {
@@ -924,6 +929,45 @@ static uint32_t simple_rand_uint32(unsigned long *simple_rand_next)
    return ((part0 << 30) + (part1 << 15) + part2);
 }
 
+/* A password challenge salt. From the platform entropy source where the
+ * crypto library has one: the LCG it replaced, seeded from time(NULL),
+ * let anyone who saw one salt predict every later one. Where there is
+ * no source, the LCG still serves, seeded from the microsecond clock and
+ * the connection's address rather than the wall-clock second. */
+static uint32_t netplay_password_salt(netplay_t *netplay,
+      const void *connection)
+{
+   uint32_t salt = 0;
+#ifdef HAVE_CRYPTO
+   if (crypto_random_bytes((uint8_t*)&salt, sizeof(salt)) != 0)
+#endif
+   {
+      if (netplay->simple_rand_next == 1)
+         netplay->simple_rand_next =
+              (unsigned long)cpu_features_get_time_usec()
+            ^ (unsigned long)(size_t)connection;
+      salt = simple_rand_uint32(&netplay->simple_rand_next);
+   }
+   return salt ? salt : 1;
+}
+
+/* The client's password hash against ours, in time that does not depend
+ * on where they first differ. */
+static bool netplay_password_hash_eq(const void *a, const void *b, size_t len)
+{
+#ifdef HAVE_CRYPTO
+   return crypto_memeq_ct(a, b, len) != 0;
+#else
+   const uint8_t *pa   = (const uint8_t*)a;
+   const uint8_t *pb   = (const uint8_t*)b;
+   uint8_t        diff = 0;
+   size_t         i;
+   for (i = 0; i < len; i++)
+      diff |= pa[i] ^ pb[i];
+   return diff == 0;
+#endif
+}
+
 static void netplay_send_cmd_netpacket(netplay_t *netplay, size_t conn_i,
       const void* buf, size_t len, uint16_t client_id);
 static void RETRO_CALLCONV netplay_netpacket_send_cb(int flags,
@@ -979,11 +1023,7 @@ static bool netplay_handshake_init_send(netplay_t *netplay,
             || *settings->paths.netplay_spectate_password)
       {
          /* Demand a password */
-         if (netplay->simple_rand_next == 1)
-            netplay->simple_rand_next = (unsigned long) time(NULL);
-         connection->salt = simple_rand_uint32(&netplay->simple_rand_next);
-         if (!connection->salt)
-            connection->salt = 1;
+         connection->salt = netplay_password_salt(netplay, connection);
          header[3] = htonl(connection->salt);
       }
       else
@@ -1059,7 +1099,7 @@ static void handshake_password(void *userdata, const char *line)
 static bool netplay_handshake_nick(netplay_t *netplay,
       struct netplay_connection *connection)
 {
-   struct nick_buf_s nick_buf = {0};
+   struct nick_buf_s nick_buf = {{0}};
 
    /* Send our nick */
    nick_buf.cmd[0] = htonl(NETPLAY_CMD_NICK);
@@ -1399,7 +1439,7 @@ static void netplay_handshake_ready(netplay_t *netplay,
 static bool netplay_handshake_info(netplay_t *netplay,
       struct netplay_connection *connection)
 {
-   struct info_buf_s info_buf       = {0};
+   struct info_buf_s info_buf       = {{0}};
    struct retro_system_info *system = &runloop_state_get_ptr()->system.info;
 
    info_buf.cmd[0] = htonl(NETPLAY_CMD_INFO);
@@ -1735,7 +1775,7 @@ static bool netplay_handshake_pre_password(netplay_t *netplay,
          sizeof(password) - 8);
       sha256_hash(hash, (uint8_t *) password, strlen(password));
 
-      if (!memcmp(password_buf.password, hash, NETPLAY_PASS_HASH_LEN))
+      if (netplay_password_hash_eq(password_buf.password, hash, NETPLAY_PASS_HASH_LEN))
       {
          correct              = true;
          connection->flags   |= NETPLAY_CONN_FLAG_CAN_PLAY;
@@ -1748,7 +1788,7 @@ static bool netplay_handshake_pre_password(netplay_t *netplay,
          sizeof(password) - 8);
       sha256_hash(hash, (uint8_t *) password, strlen(password));
 
-      if (!memcmp(password_buf.password, hash, NETPLAY_PASS_HASH_LEN))
+      if (netplay_password_hash_eq(password_buf.password, hash, NETPLAY_PASS_HASH_LEN))
          correct = true;
    }
 
@@ -1963,6 +2003,7 @@ static bool netplay_handshake_pre_sync(netplay_t *netplay,
    uint32_t local_sram_size = 0, remote_sram_size;
    size_t i, j;
    ssize_t recvd;
+   bool paused;
    char new_nick[NETPLAY_NICK_LEN];
    retro_ctx_memory_info_t mem_info;
    settings_t *settings = config_get_ptr();
@@ -2003,11 +2044,15 @@ static bool netplay_handshake_pre_sync(netplay_t *netplay,
    RECV(&client_num, sizeof(client_num))
       return false;
    client_num = ntohl(client_num);
-   if (client_num & NETPLAY_CMD_SYNC_BIT_PAUSED)
+   paused     = (client_num & NETPLAY_CMD_SYNC_BIT_PAUSED) != 0;
+   client_num &= ~NETPLAY_CMD_SYNC_BIT_PAUSED;
+   if (client_num == 0 || client_num >= MAX_CLIENTS)
    {
-      netplay->flags |= NETPLAY_FLAG_REMOTE_PAUSED;
-      client_num ^= NETPLAY_CMD_SYNC_BIT_PAUSED;
+      RARCH_ERR("[Netplay] Received invalid client number in NETPLAY_CMD_SYNC.\n");
+      return false;
    }
+   if (paused)
+      netplay->flags |= NETPLAY_FLAG_REMOTE_PAUSED;
    netplay->self_client_num = client_num;
 
    /* Set our frame counters as requested */
@@ -3976,7 +4021,7 @@ static bool netplay_sync_pre_frame(netplay_t *netplay)
    if ((netplay->flags & NETPLAY_FLAG_IS_SERVER))
    {
       int               new_fd   = -1;
-      netplay_address_t new_addr = {0};
+      netplay_address_t new_addr = {{0}};
       bool server_err            = false;
 
       if (netplay->mitm_handler)
@@ -4085,7 +4130,7 @@ static void netplay_sync_input_post_frame(netplay_t *netplay, bool stalled)
       if ((netplay->flags & NETPLAY_FLAG_CATCH_UP))
       {
          netplay->flags &= ~NETPLAY_FLAG_CATCH_UP;
-         input_state_get_ptr()->flags &= ~INP_FLAG_NONBLOCKING;
+         input_driver_set_nonblocking(false);
          driver_set_nonblock_state();
       }
       return;
@@ -4278,7 +4323,7 @@ static void netplay_sync_input_post_frame(netplay_t *netplay, bool stalled)
       if (netplay->self_frame_count + 1 >= lo_frame_count)
       {
          netplay->flags &= ~NETPLAY_FLAG_CATCH_UP;
-         input_state_get_ptr()->flags &= ~INP_FLAG_NONBLOCKING;
+         input_driver_set_nonblocking(false);
          driver_set_nonblock_state();
       }
 
@@ -4307,7 +4352,7 @@ static void netplay_sync_input_post_frame(netplay_t *netplay, bool stalled)
                /* We're definitely falling behind! */
                netplay->flags |= NETPLAY_FLAG_CATCH_UP;
                netplay->catch_up_time        = 0;
-               input_state_get_ptr()->flags |= INP_FLAG_NONBLOCKING;
+               input_driver_set_nonblocking(true);
                driver_set_nonblock_state();
             }
             else
@@ -5944,6 +5989,13 @@ static bool netplay_get_cmd(netplay_t *netplay,
             return netplay_cmd_nak(netplay, connection);
          }
 
+         if ((mode & NETPLAY_CMD_MODE_BIT_YOU)
+               && client_num != netplay->self_client_num)
+         {
+            RARCH_ERR("[Netplay] Received NETPLAY_CMD_MODE for an unexpected client number.\n");
+            return netplay_cmd_nak(netplay, connection);
+         }
+
          frame   = ntohl(payload.frame);
          devices = ntohl(payload.devices);
          memcpy(netplay->device_share_modes, payload.share_modes,
@@ -6685,6 +6737,19 @@ static bool netplay_get_cmd(netplay_t *netplay,
             pkt_client_id = ntohl(pkt_client_id);
             RECV(buf, cmd_size)
                return false;
+
+            /* Only playing clients may talk to the core. A packet from
+             * anyone else is read off the stream and dropped rather than
+             * NAKed: a NAK hangs the connection up, and a client that is
+             * still waiting for its promotion to player, or an older
+             * client whose core sends from start(), is not misbehaving. */
+            if (     (netplay->flags & NETPLAY_FLAG_IS_SERVER)
+                  && connection->mode != NETPLAY_CONNECTION_PLAYING)
+            {
+               /* debug level: a spectator core may send every frame */
+               RARCH_DBG("[Netplay] Dropped a netpacket from a non-playing client.\n");
+               break;
+            }
 
             if (!(netplay->flags & NETPLAY_FLAG_IS_SERVER))
             {
@@ -8020,7 +8085,12 @@ static bool netplay_process_savestate1(retro_ctx_serialize_info_t* serial_info)
 #ifdef HAVE_CHEEVOS
       else if (memcmp(marker, NETPLAYSTATE_CHEEVOS_BLOCK, 4) == 0 && settings->bools.cheevos_enable)
       {
-         const bool hardcore_state = (input[0] != 0);
+         bool hardcore_state;
+
+         if (block_size < 8)
+            return false;
+
+         hardcore_state = (input[0] != 0);
          if (hardcore_state != rcheevos_hardcore_active() && !netplay_is_spectating())
          {
             const char *msg = msg_hash_to_str(MSG_CHEEVOS_HARDCORE_MODE_CHANGED_BY_HOST);
@@ -8046,7 +8116,7 @@ static bool netplay_process_savestate1(retro_ctx_serialize_info_t* serial_info)
           * block, and stepping 'input' here as well used to land the
           * walk 8 bytes past the next header. */
          if (block_size > 8)
-            rcheevos_set_serialized_data((void*)(input + 8));
+            rcheevos_set_serialized_data(input + 8, block_size - 8);
       }
 #endif
 
@@ -8791,11 +8861,7 @@ bool init_netplay_deferred(const char *server, unsigned port, const char *mitm_s
 void input_poll_net(netplay_t *netplay)
 {
    if (!netplay_should_skip(netplay))
-   {
-      input_driver_state_t *input_st = input_state_get_ptr();
-
-      netplay_poll(netplay, input_st->flags & INP_FLAG_BLOCK_LIBRETRO_INPUT);
-   }
+      netplay_poll(netplay, input_driver_libretro_input_blocked());
 }
 
 /* Netplay polling callbacks */
@@ -9128,7 +9194,7 @@ static void netplay_announce(netplay_t *netplay)
 }
 
 /* Cleared by netplay_mitm_query_cb on every path it can take, so
- * the wait below ends as soon as THIS query is answered.  The task
+ * deferred host setup proceeds as soon as THIS query is answered.  The task
  * queue runs the callback of every task it retires, successful or
  * not, so there is no completion that leaves this set. */
 static bool netplay_mitm_query_pending = false;
@@ -9141,8 +9207,8 @@ static bool netplay_mitm_query_pending = false;
  * callback - which writes host_room->mitm_address and mitm_port
  * unconditionally - would land after the caller had already fallen
  * back to direct mode, publishing a tunnel address for a session
- * that is not tunnelled.  Bounding the wait without this guard would
- * trade a hang for silent corruption. */
+ * that is not tunnelled.  Giving up on a query without this guard
+ * would trade a delay for silent corruption. */
 static unsigned netplay_mitm_query_generation = 0;
 
 /* The handle the outstanding query was issued for.
@@ -9153,11 +9219,6 @@ static unsigned netplay_mitm_query_generation = 0;
  * from "asked for something else", so a user who changes the relay
  * setting between the two points still gets the server they picked. */
 static char netplay_mitm_query_handle[NAME_MAX_LENGTH] = {0};
-
-static bool netplay_mitm_query_is_pending(void *data)
-{
-   return netplay_mitm_query_pending;
-}
 
 static void netplay_mitm_query_cb(retro_task_t *task, void *task_data,
       void *user_data, const char *err)
@@ -9305,37 +9366,10 @@ static bool netplay_mitm_query_ready(void)
    return !netplay_mitm_query_pending;
 }
 
-/* Blocks until the answer arrives or the bound expires.
- *
- * The bound matters because this is a round trip to a machine we do
- * not control.  A lobby server that is down, blackholed or simply
- * slow left the frontend hung with no way out but killing it.  On
- * timeout this reports failure like any other query and the caller
- * falls back to direct mode with a warning - an outcome the user can
- * see and act on, which an indefinite hang is not.
- *
- * Generous on purpose: a false timeout breaks hosting that would have
- * worked, which is worse than the wait it prevents. */
-static bool netplay_mitm_query_await(void)
-{
-   if (netplay_mitm_query_ready())
-      return true;
-
-   if (!task_queue_wait_timeout(netplay_mitm_query_is_pending, NULL,
-         NETPLAY_MITM_QUERY_TIMEOUT))
-   {
-      RARCH_WARN("[Netplay] Timed out waiting for tunnel information"
-            " from the lobby server.\n");
-      /* Bump the generation so the in-flight callback, which may
-       * still arrive, does not write an address for a session that
-       * has already fallen back to direct mode. */
-      ++netplay_mitm_query_generation;
-      netplay_mitm_query_pending = false;
-      return false;
-    }
-
-   return true;
-}
+/* Set when host setup stopped waiting for the query (the deferral's
+ * bound ran out): the next host setup goes direct instead of asking
+ * again, and the in-flight answer, if it comes, is not ours any more. */
+static bool netplay_mitm_query_gave_up = false;
 
 /* What the query produced: an address and port, or nothing. */
 static bool netplay_mitm_query_result(void)
@@ -9363,16 +9397,148 @@ static bool netplay_mitm_query_have(const char *handle)
    return !netplay_mitm_query_ready() || netplay_mitm_query_result();
 }
 
+/* The tunnel address for host setup.  Never waits: host setup is
+ * deferred until the query is answered (netplay_host_setup_defer), so
+ * an answer that is not in hand here means the deferral gave up, or a
+ * caller did not defer - both go direct. */
 static bool netplay_mitm_query(const char *handle)
 {
+   if (netplay_mitm_query_gave_up)
+   {
+      netplay_mitm_query_gave_up = false;
+      return false;
+   }
    if (!netplay_mitm_query_have(handle))
       if (!netplay_mitm_query_begin(handle))
          return false;
+   if (!netplay_mitm_query_ready())
+   {
+      RARCH_WARN("[Netplay] Tunnel information not in yet;"
+            " hosting in direct mode.\n");
+      ++netplay_mitm_query_generation;
+      netplay_mitm_query_pending = false;
+      return false;
+   }
+   return netplay_mitm_query_result();
+}
 
-   if (!netplay_mitm_query_await())
+/* ---- host setup deferred until the tunnel query is answered ----
+ *
+ * Hosting through a relay needs the relay's address, which the lobby
+ * server hands out.  The query is started when the user commits to
+ * hosting; if it is still out when host setup is reached, host setup
+ * is put off to a main-thread task that checks each frame and runs it
+ * - CMD_EVENT_NETPLAY_INIT again - once the answer is in, or goes
+ * direct once NETPLAY_MITM_QUERY_TIMEOUT has passed.  The frame loop
+ * keeps running meanwhile. */
+
+typedef struct
+{
+   retro_time_t deadline;
+} netplay_host_setup_t;
+
+static void netplay_host_setup_handler(retro_task_t *task)
+{
+   netplay_host_setup_t *hs   = (netplay_host_setup_t*)task->state;
+   net_driver_state_t *net_st = &networking_driver_st;
+
+   /* Hosting was called off meanwhile: nothing to set up. */
+   if (   !(net_st->flags & NET_DRIVER_ST_FLAG_NETPLAY_ENABLED)
+       ||  (net_st->flags & NET_DRIVER_ST_FLAG_NETPLAY_IS_CLIENT)
+       ||  (task_get_flags(task) & RETRO_TASK_FLG_CANCELLED))
+   {
+      task_set_flags(task, RETRO_TASK_FLG_FINISHED, true);
+      return;
+   }
+
+   if (!netplay_mitm_query_ready())
+   {
+      if (cpu_features_get_time_usec() < hs->deadline)
+         return;
+      RARCH_WARN("[Netplay] Timed out waiting for tunnel information"
+            " from the lobby server.\n");
+      /* Bump the generation so the in-flight callback, which may
+       * still arrive, does not write an address for a session that
+       * has already fallen back to direct mode. */
+      ++netplay_mitm_query_generation;
+      netplay_mitm_query_pending = false;
+      netplay_mitm_query_gave_up = true;
+   }
+
+   task_set_flags(task, RETRO_TASK_FLG_FINISHED, true);
+   command_event(CMD_EVENT_NETPLAY_INIT, NULL);
+}
+
+static void netplay_host_setup_cleanup(retro_task_t *task)
+{
+   free(task->state);
+   task->state = NULL;
+}
+
+static bool netplay_host_setup_finder(retro_task_t *task, void *user_data)
+{
+   (void)user_data;
+   return task && task->handler == netplay_host_setup_handler;
+}
+
+bool netplay_host_setup_pending(void)
+{
+   task_finder_data_t find;
+   find.func     = netplay_host_setup_finder;
+   find.userdata = NULL;
+   return task_queue_find(&find);
+}
+
+bool netplay_host_setup_defer(void)
+{
+   settings_t *settings       = config_get_ptr();
+   net_driver_state_t *net_st = &networking_driver_st;
+   task_finder_data_t find;
+   retro_task_t *task;
+   netplay_host_setup_t *hs;
+   const char *handle;
+
+   if (   !(net_st->flags & NET_DRIVER_ST_FLAG_NETPLAY_ENABLED)
+       ||  (net_st->flags & NET_DRIVER_ST_FLAG_NETPLAY_IS_CLIENT)
+       ||  net_st->data
+       || !settings->bools.netplay_use_mitm_server)
       return false;
 
-   return netplay_mitm_query_result();
+   handle = settings->arrays.netplay_mitm_server;
+   if (!handle || !*handle)
+      return false;
+   if (!netplay_mitm_query_have(handle))
+      if (!netplay_mitm_query_begin(handle))
+         return false;
+   if (netplay_mitm_query_ready())
+      return false;           /* in hand: set up now */
+
+   /* One deferral at a time; a second request joins the first. */
+   find.func     = netplay_host_setup_finder;
+   find.userdata = NULL;
+   if (task_queue_find(&find))
+      return true;
+
+   if (!(task = task_init()))
+      return false;
+   if (!(hs = (netplay_host_setup_t*)calloc(1, sizeof(*hs))))
+   {
+      free(task);
+      return false;
+   }
+   hs->deadline    = cpu_features_get_time_usec() + NETPLAY_MITM_QUERY_TIMEOUT;
+   task->handler   = netplay_host_setup_handler;
+   task->cleanup   = netplay_host_setup_cleanup;
+   task->state     = hs;
+   task->flags    |= RETRO_TASK_FLG_MAIN_THREAD | RETRO_TASK_FLG_MUTE;
+   if (!task_queue_push(task))
+   {
+      free(hs);
+      free(task);
+      return false;
+   }
+   RARCH_LOG("[Netplay] Waiting for tunnel information before hosting.\n");
+   return true;
 }
 
 /* Start the tunnel query early.
@@ -9680,8 +9846,26 @@ bool init_netplay(const char *server, unsigned port, const char *mitm_session)
 
    if (!(net_st->flags & NET_DRIVER_ST_FLAG_NETPLAY_IS_CLIENT))
    {
+      /* A tunnel address already answered for this relay lives in the
+       * room, which is reset here: carry it across, or the query would
+       * be asked again - and waited for - with the answer in hand. */
+      char mitm_address[sizeof(host_room->mitm_address)];
+      int  mitm_port = 0;
+      mitm_address[0] = '\0';
+      if (   netplay_mitm_query_ready()
+          && settings->bools.netplay_use_mitm_server
+          && string_is_equal(settings->arrays.netplay_mitm_server,
+                netplay_mitm_query_handle))
+      {
+         strlcpy(mitm_address, host_room->mitm_address, sizeof(mitm_address));
+         mitm_port = host_room->mitm_port;
+      }
+
       memset(host_room, 0, sizeof(*host_room));
       host_room->connectable = true;
+      strlcpy(host_room->mitm_address, mitm_address,
+            sizeof(host_room->mitm_address));
+      host_room->mitm_port = mitm_port;
 
       server = NULL;
 
@@ -10503,8 +10687,9 @@ static void RETRO_CALLCONV netplay_netpacket_send_cb(int flags,
    {
       if (!(netplay->flags & NETPLAY_FLAG_IS_SERVER))
       {
-         /* client always sends packet to host, host will relay it if needed */
-         netplay_send_cmd_netpacket(netplay, 0, buf, len, client_id);
+         /* Playing clients send packets to the host for relaying. */
+         if (netplay->self_mode == NETPLAY_CONNECTION_PLAYING)
+            netplay_send_cmd_netpacket(netplay, 0, buf, len, client_id);
       }
       else if (client_id == RETRO_NETPACKET_BROADCAST)
       {

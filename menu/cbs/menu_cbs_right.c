@@ -76,7 +76,6 @@ static int generic_shader_action_parameter_right_internal(unsigned type, const c
    video_shader_ctx_t shader_info;
    struct video_shader *shader          = menu_shader_get();
    struct video_shader_parameter *param_menu = NULL;
-   struct video_shader_parameter *param_prev = NULL;
 
    int ret = 0;
 
@@ -154,6 +153,9 @@ static int action_right_input_desc(unsigned type, const char *label,
       unsigned mapped_port = settings->uints.input_remap_ports[user_idx];
       unsigned remap_idx   = settings->uints.input_remap_ids[user_idx][btn_idx];
 
+      if (mapped_port >= MAX_USERS)
+         return 0;
+
       for (bind_idx = 0; bind_idx < RARCH_ANALOG_BIND_LIST_END; bind_idx++)
       {
          if (input_config_bind_order[bind_idx] == remap_idx)
@@ -176,16 +178,16 @@ static int action_right_input_desc(unsigned type, const char *label,
       {
          bind_idx++;
          bind_idx = input_config_bind_order[bind_idx];
-         settings->uints.input_remap_ids[user_idx][btn_idx] = bind_idx;
+         input_config_set_remap_id(user_idx, btn_idx, bind_idx);
 
          /* Skip empty descs */
          if (!sys_info->input_desc_btn[mapped_port][bind_idx] || !*sys_info->input_desc_btn[mapped_port][bind_idx])
             return action_right_input_desc(type, NULL, wraparound);
       }
       else if (bind_idx == RARCH_ANALOG_BIND_LIST_END - 1)
-         settings->uints.input_remap_ids[user_idx][btn_idx] = RARCH_UNMAPPED;
+         input_config_set_remap_id(user_idx, btn_idx, RARCH_UNMAPPED);
       else
-         settings->uints.input_remap_ids[user_idx][btn_idx] = input_config_bind_order[0];
+         input_config_set_remap_id(user_idx, btn_idx, input_config_bind_order[0]);
    }
 
    return 0;

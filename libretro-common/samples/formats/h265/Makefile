@@ -2,6 +2,11 @@ TARGET := rh265_lossless_test
 # The same oracle built without threads: a decoder path that is right
 # only with HAVE_THREADS - or wrong only without it - shows here.
 TARGET_TEST := rh265_lossless_test_nothreads
+# And built threaded on the volatile atomic backend, which has no
+# pointer atomics: the decoder takes no pool there and decodes alone.
+TARGET_VOLATILE := rh265_lossless_test_volatile
+# Parameter sets with ue(v) codes past what any field holds
+TARGET_MALFORMED := rh265_malformed_test
 
 LIBRETRO_COMM_DIR := ../../..
 
@@ -16,6 +21,7 @@ SOURCES := \
 OBJS := $(SOURCES:.c=.o)
 NOTHREADS_SOURCES := $(filter-out %/rthreads.c %/retro_eventcount.c %/tpool.c,$(SOURCES))
 NOTHREADS_OBJS    := $(NOTHREADS_SOURCES:.c=.nt.o)
+VOLATILE_OBJS     := $(SOURCES:.c=.vo.o)
 
 # HAVE_THREADS: the oracle decodes every case on a pool as well, and
 # the threaded output has to be the single-thread output to the byte.
@@ -31,7 +37,7 @@ endif
 
 LDLIBS += -lm -lpthread
 
-all: $(TARGET) $(TARGET_TEST)
+all: $(TARGET) $(TARGET_TEST) $(TARGET_VOLATILE) $(TARGET_MALFORMED)
 
 %.o: %.c
 	$(CC) -c -o $@ $< $(CFLAGS)
@@ -45,7 +51,20 @@ $(TARGET): $(OBJS)
 $(TARGET_TEST): $(NOTHREADS_OBJS)
 	$(CC) -o $@ $^ $(LDFLAGS) $(filter-out -lpthread,$(LDLIBS))
 
+%.vo.o: %.c
+	$(CC) -c -o $@ $< $(CFLAGS) -DRETRO_ATOMIC_FORCE_VOLATILE \
+	   -DRETRO_ATOMIC_SUPPRESS_WARNING
+
+$(TARGET_VOLATILE): $(VOLATILE_OBJS)
+	$(CC) -o $@ $^ $(LDFLAGS) $(LDLIBS)
+
+MALFORMED_OBJS := rh265_malformed_test.o $(filter-out rh265_lossless_test.o,$(OBJS))
+$(TARGET_MALFORMED): $(MALFORMED_OBJS)
+	$(CC) -o $@ $^ $(LDFLAGS) $(LDLIBS)
+
 clean:
-	rm -f $(TARGET) $(OBJS) $(TARGET_TEST) $(NOTHREADS_OBJS)
+	rm -f $(TARGET) $(OBJS) $(TARGET_TEST) $(NOTHREADS_OBJS) \
+	   $(TARGET_VOLATILE) $(VOLATILE_OBJS) \
+	   $(TARGET_MALFORMED) rh265_malformed_test.o
 
 .PHONY: clean

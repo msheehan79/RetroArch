@@ -132,7 +132,9 @@ enum gl1_flags
    /* GL_UNSIGNED_SHORT_5_6_5 is GL 1.2 core only; GL_EXT_packed_pixels
     * does not have it.  Without it RGB565 core frames are expanded to
     * BGRA8888 on the CPU. */
-   GL1_FLAG_SUPPORTS_RGB565         = (1 << 14)
+   GL1_FLAG_SUPPORTS_RGB565         = (1 << 14),
+   /* overlay_tex holds the overlay pack's names (load_textures) */
+   GL1_FLAG_OVERLAY_BORROWED        = (1 << 15)
 };
 
 /* Layout of the pixels handed to gl1_draw_tex. */
@@ -327,6 +329,8 @@ typedef struct gl1
     * thread_update_driver_state(), and reading the setting there races
     * the menu writing it. */
    bool frame_menu_linear_filter;
+   /* The pending readback is a GPU recording's (read_viewport_bgrx) */
+   bool readback_record;
 } gl1_t;
 
 #ifdef VITA
@@ -391,6 +395,7 @@ typedef struct
    gl1_t *gl;
    GLuint tex;
    unsigned tex_dims;            /* VIDEO_SCALE_PACK, the atlas texture */
+   bool respecify;               /* The atlas grew: remake the texture */
 
    const font_renderer_driver_t *font_driver;
    void *font_data;
@@ -516,14 +521,17 @@ static void gfx_display_gl1_draw(gfx_display_ctx_draw_t *draw,
       coords.tex_coord             = &gl1_menu_tex_coords[0];
    if (!coords.lut_tex_coord)
       coords.lut_tex_coord         = &gl1_menu_tex_coords[0];
-   if (!draw->texture)
-      return;
 
    glViewport(VIDEO_POS_X(draw->pos), VIDEO_POS_Y(draw->pos), VIDEO_SCALE_W(draw->dims), VIDEO_SCALE_H(draw->dims));
 
-   glEnable(GL_TEXTURE_2D);
-
-   glBindTexture(GL_TEXTURE_2D, (GLuint)draw->texture);
+   /* No texture: the fixed function draws the vertex colours */
+   if (draw->texture)
+   {
+      glEnable(GL_TEXTURE_2D);
+      glBindTexture(GL_TEXTURE_2D, (GLuint)draw->texture);
+   }
+   else
+      glDisable(GL_TEXTURE_2D);
 
    mvp_matrix = draw->matrix_data ? (const GLfloat*)draw->matrix_data
       : (const GLfloat*)&gl1->mvp_no_rot;
@@ -556,6 +564,9 @@ static void gfx_display_gl1_draw(gfx_display_ctx_draw_t *draw,
    glDisableClientState(GL_COLOR_ARRAY);
    glDisableClientState(GL_TEXTURE_COORD_ARRAY);
    glDisableClientState(GL_VERTEX_ARRAY);
+
+   if (!draw->texture)
+      glEnable(GL_TEXTURE_2D);
 
    glMatrixMode(GL_MODELVIEW);
    glPopMatrix();
@@ -609,67 +620,71 @@ static void gl1_raster_font_free(void *data,
    free(font);
 }
 
-/* Convert the atlas rows [y0, y1) to LUMINANCE_ALPHA and upload them.
- * Full-width row bands are used (rather than an x/y sub-rectangle)
- * because GL_UNPACK_ROW_LENGTH is unavailable on some gl1 targets.
- * When 'respecify' is set the texture is (re)created at full size,
- * otherwise the band is updated in place with glTexSubImage2D. */
+/* Converts atlas texels to LUMINANCE_ALPHA, opaque white with the
+ * coverage as alpha inside the atlas and clear past it, and uploads
+ * them: the whole texture, its storage made anew, when @respecify is
+ * set, otherwise the atlas region @xy0..@xy1 in place. The region is
+ * widened to whole groups of four texels, so each row is a multiple of
+ * eight bytes and reads the same under any GL_UNPACK_ALIGNMENT, and is
+ * packed tightly, which OpenGL ES 2 needs for want of
+ * GL_UNPACK_ROW_LENGTH. */
 static void gl1_raster_font_upload_atlas(gl1_raster_t *font,
-      unsigned y0, unsigned y1, bool respecify)
+      unsigned xy0, unsigned xy1, bool respecify)
 {
-   unsigned i, j;
-   unsigned tex_w              = VIDEO_SCALE_W(font->tex_dims);
-   unsigned tex_h              = VIDEO_SCALE_H(font->tex_dims);
+   unsigned x, y, x0, y0, x1, y1, xe;
+   unsigned tex_w     = VIDEO_SCALE_W(font->tex_dims);
+   unsigned tex_h     = VIDEO_SCALE_H(font->tex_dims);
+   unsigned aw        = font->atlas->width;
+   unsigned ah        = font->atlas->height;
    GLint  gl_internal = GL_LUMINANCE_ALPHA;
    GLenum gl_format   = GL_LUMINANCE_ALPHA;
-   size_t ncomponents = 2;
-   unsigned band      = respecify ? tex_h : (y1 - y0);
-   uint8_t *tmp;
-
-   if (!respecify && (y1 <= y0 || y1 > (unsigned)font->atlas->height))
-      return;
-
-   tmp = (uint8_t*)calloc(band, tex_w * ncomponents);
-   if (!tmp)
-      return;
+   uint8_t *tmp, *dst;
 
    if (respecify)
    {
+      x0 = 0;
       y0 = 0;
-      y1 = font->atlas->height;
+      x1 = tex_w;
+      y1 = tex_h;
    }
-
-   switch (ncomponents)
+   else
    {
-      case 1:
-         for (i = y0; i < y1; ++i)
-         {
-            const uint8_t *src = &font->atlas->buffer[i * font->atlas->width];
-            uint8_t       *dst = &tmp[(i - y0) * tex_w * ncomponents];
-
-            memcpy(dst, src, font->atlas->width);
-         }
-         break;
-      case 2:
-         for (i = y0; i < y1; ++i)
-         {
-            const uint8_t *src = &font->atlas->buffer[i * font->atlas->width];
-            uint8_t       *dst = &tmp[(i - y0) * tex_w * ncomponents];
-
-            for (j = 0; j < font->atlas->width; ++j)
-            {
-               *dst++ = 0xff;
-               *dst++ = *src++;
-            }
-         }
-         break;
+      x0 = VIDEO_SCALE_W(xy0);
+      y0 = VIDEO_SCALE_H(xy0);
+      x1 = VIDEO_SCALE_W(xy1);
+      y1 = VIDEO_SCALE_H(xy1);
+      if (x1 <= x0 || y1 <= y0 || x1 > aw || y1 > ah)
+         return;
+      x0 &= ~3u;
+      x1  = (x1 + 3) & ~3u;
+      if (x1 > tex_w)
+         x1 = tex_w;
    }
 
-   /* The temp buffer is a tightly packed POT-sized GL_LUMINANCE_ALPHA
-    * image: each row is exactly tex_w * 2 bytes with no
-    * padding. Force the pixel-unpack state to match that before
-    * uploading. Without this, the upload inherits whatever state the
-    * GL context happens to be in at the time of the first font init.
+   if (!(tmp = (uint8_t*)malloc((size_t)(x1 - x0) * (y1 - y0) * 2)))
+      return;
+
+   dst = tmp;
+   for (y = y0; y < y1; y++)
+   {
+      xe = (y < ah) ? (x1 < aw ? x1 : aw) : x0;
+      if (xe > x0)
+      {
+         const uint8_t *src = font->atlas->buffer + (size_t)y * aw + x0;
+         for (x = x0; x < xe; x++)
+         {
+            *dst++ = 0xff;
+            *dst++ = *src++;
+         }
+      }
+      memset(dst, 0, (size_t)(x1 - xe) * 2);
+      dst += (size_t)(x1 - xe) * 2;
+   }
+
+   /* The temp buffer is a tightly packed GL_LUMINANCE_ALPHA image.
+    * Force the pixel-unpack state to match that before uploading.
+    * Without this, the upload inherits whatever state the GL context
+    * happens to be in at the time of the first font init.
     * In practice on Windows/NVIDIA, GL_UNPACK_ROW_LENGTH can come up
     * non-zero from the WGL/driver setup, which makes glTexImage2D
     * read source rows at the wrong stride. The texture ends up with
@@ -689,8 +704,8 @@ static void gl1_raster_font_upload_atlas(gl1_raster_t *font,
             tex_w, tex_h,
             0, gl_format, GL_UNSIGNED_BYTE, tmp);
    else
-      glTexSubImage2D(GL_TEXTURE_2D, 0, 0, (GLint)y0,
-            tex_w, band,
+      glTexSubImage2D(GL_TEXTURE_2D, 0, (GLint)x0, (GLint)y0,
+            (GLsizei)(x1 - x0), (GLsizei)(y1 - y0),
             gl_format, GL_UNSIGNED_BYTE, tmp);
 
    free(tmp);
@@ -732,6 +747,14 @@ static void *gl1_raster_font_init(void *data,
    font->atlas      = font->font_driver->get_atlas(font->font_data);
    font->tex_dims   = VIDEO_SCALE_PACK(next_pow2(font->atlas->width),
          next_pow2(font->atlas->height));
+   /* The atlas may grow, up to the largest texture there is */
+   {
+      GLint max_tex = 0;
+      glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_tex);
+      if (max_tex > 0)
+         font->atlas->max_dims = VIDEO_SCALE_PACK(
+               (unsigned)max_tex, (unsigned)max_tex);
+   }
 
    gl1_raster_font_upload_atlas(font, 0, 0, true);
 
@@ -746,36 +769,11 @@ static void *gl1_raster_font_init(void *data,
 static int gl1_raster_font_get_message_width(void *data, const char *msg,
       size_t msg_len, float scale)
 {
-   void *font_data;
-   const struct font_glyph* (*get_glyph)(void*, uint32_t);
-   const struct font_glyph* glyph_q = NULL;
-   gl1_raster_t *font  = (gl1_raster_t*)data;
-   const char* msg_end = msg + msg_len;
-   int delta_x         = 0;
-
-   if (     !font
-         || !font->font_driver
-         || !font->font_data )
+   gl1_raster_t *font = (gl1_raster_t*)data;
+   if (!font)
       return 0;
-
-   get_glyph = font->font_driver->get_glyph;
-   font_data = font->font_data;
-   glyph_q   = get_glyph(font_data, '?');
-
-   while (msg < msg_end)
-   {
-      const struct font_glyph *glyph;
-      unsigned code = utf8_walk(&msg);
-
-      /* Do something smarter here ... */
-      if (!(glyph = get_glyph(font_data, code)))
-         if (!(glyph = glyph_q))
-            continue;
-
-      delta_x += glyph->advance_x;
-   }
-
-   return delta_x * scale;
+   return font_renderer_get_message_width(font->font_driver,
+         font->font_data, msg, msg_len, scale);
 }
 
 static void gl1_raster_font_draw_vertices(
@@ -783,10 +781,20 @@ static void gl1_raster_font_draw_vertices(
       gl1_raster_t *font,
       const video_coords_t *coords)
 {
-   if (font->atlas->dirty)
+   if (font->respecify)
    {
-      gl1_raster_font_upload_atlas(font,
-            font->atlas->dirty_y0, font->atlas->dirty_y1, false);
+      gl1_raster_font_upload_atlas(font, 0, 0, true);
+      font->respecify      = false;
+      font->atlas->dirty   = false;
+   }
+   else if (font->atlas->dirty)
+   {
+      unsigned r, xy0, xy1;
+      for (r = 0; r < font_atlas_dirty_rects(font->atlas); r++)
+      {
+         font_atlas_dirty_rect(font->atlas, r, &xy0, &xy1);
+         gl1_raster_font_upload_atlas(font, xy0, xy1, false);
+      }
       font->atlas->dirty   = false;
    }
 
@@ -824,61 +832,51 @@ static void gl1_raster_font_draw_vertices(
    glPopMatrix();
 }
 
-static void gl1_raster_font_render_line(gl1_t *gl,
-      gl1_raster_t *font,
-      const struct font_glyph* glyph_q,
-      const char *msg,
-      size_t msg_len,
-      GLfloat scale,
-      const GLfloat color[4],
-      GLfloat pos_x,
-      GLfloat pos_y,
-      int pre_x,
+#define GL1_RASTER_FONT_FLUSH() \
+   do \
+   { \
+      coords.tex_coord     = font_tex_coords; \
+      coords.vertex        = font_vertex; \
+      coords.color         = font_color; \
+      coords.vertices      = i * 6; \
+      coords.lut_tex_coord = NULL; \
+      if (font->block) \
+         video_coord_array_append(&font->block->carr, &coords, coords.vertices); \
+      else \
+         gl1_raster_font_draw_vertices(gl, font, &coords); \
+      i = 0; \
+   } while (0)
+
+static void gl1_raster_font_render_message(gl1_t *gl,
+      gl1_raster_t *font, const char *msg, size_t msg_len,
+      GLfloat scale, const GLfloat color[4], GLfloat pos_x, GLfloat pos_y,
       float inv_tex_size_x,
       float inv_tex_size_y,
       float inv_win_width,
       float inv_win_height,
       unsigned text_align)
 {
-   int i;
    struct video_coords coords;
-   GLfloat *font_tex_coords = font->font_tex_coords;
-   GLfloat *font_vertex     = font->font_vertex;
-   GLfloat *font_color      = font->font_color;
    GLfloat color_block[4 * 6];
    int n;
-   const char* msg_end  = msg + msg_len;
-   int x                = pre_x;
-   int y                = roundf(pos_y * VIDEO_SCALE_H(gl->vp.dims));
-   int delta_x          = 0;
-   int delta_y          = 0;
-   const struct font_glyph* (*get_glyph)(void*, uint32_t) = font->font_driver->get_glyph;
-   void *font_data      = font->font_data;
+   float line_height;
+   struct font_line_metrics *line_metrics = NULL;
+   int i                                  = 0;
+   int x                                  = 0;
+   int y                                  = 0;
+   GLfloat *font_tex_coords               = font->font_tex_coords;
+   GLfloat *font_vertex                   = font->font_vertex;
+   GLfloat *font_color                    = font->font_color;
+   int pre_x                              = roundf(pos_x * VIDEO_SCALE_W(gl->vp.dims));
+   const struct font_glyph* (*get_glyph)(void*, uint32_t)
+                                          = font->font_driver->get_glyph;
+   void *font_data                        = font->font_data;
+   const struct font_glyph *glyph_q       = get_glyph(font_data, '?');
+   bool aligned                           = (text_align == TEXT_ALIGN_RIGHT
+                                         || text_align == TEXT_ALIGN_CENTER);
 
-   /* For right/center alignment, compute width with a lightweight pass
-    * that only accumulates advance_x — avoids the redundant glyph lookups
-    * and atlas dirty checks that gl1_raster_font_get_message_width 
-    * would repeat. */
-   if (text_align == TEXT_ALIGN_RIGHT || text_align == TEXT_ALIGN_CENTER)
-   {
-      int width_accum      = 0;
-      const char *scan     = msg;
-      const char *scan_end = msg_end;
-      while (scan < scan_end)
-      {
-         const struct font_glyph *glyph;
-         uint32_t code       = utf8_walk(&scan);
-         if (!(glyph = get_glyph(font_data, code)))
-            if (!(glyph = glyph_q))
-               continue;
-         width_accum += glyph->advance_x;
-      }
-
-      if (text_align == TEXT_ALIGN_RIGHT)
-         x -= (int)(width_accum * scale);
-      else
-         x -= (int)(width_accum * scale) / 2;
-   }
+   font->font_driver->get_line_metrics(font->font_data, &line_metrics);
+   line_height = line_metrics->height * scale / VIDEO_SCALE_H(gl->vp.dims);
 
    for (n = 0; n < 6; n++)
    {
@@ -888,96 +886,50 @@ static void gl1_raster_font_render_line(gl1_t *gl,
       color_block[4 * n + 3] = color[3];
    }
 
-   while (msg < msg_end)
-   {
-      i = 0;
-      while ((i < MAX_MSG_LEN_CHUNK) && (msg < msg_end))
-      {
-         const struct font_glyph *glyph;
-         int off_x, off_y, tex_x, tex_y, width, height;
-         unsigned                  code = utf8_walk(&msg);
-
-         /* Do something smarter here ... */
-         if (!(glyph = get_glyph(font_data, code)))
-            if (!(glyph = glyph_q))
-               continue;
-
-         off_x  = glyph->draw_offset_x;
-         off_y  = glyph->draw_offset_y;
-         tex_x  = glyph->atlas_offset_x;
-         tex_y  = glyph->atlas_offset_y;
-         width  = glyph->width;
-         height = glyph->height;
-
-         GL1_RASTER_FONT_EMIT(0, 0, 1); /* Bottom-left */
-         GL1_RASTER_FONT_EMIT(1, 1, 1); /* Bottom-right */
-         GL1_RASTER_FONT_EMIT(2, 0, 0); /* Top-left */
-
-         GL1_RASTER_FONT_EMIT(3, 1, 0); /* Top-right */
-         GL1_RASTER_FONT_EMIT(4, 0, 0); /* Top-left */
-         GL1_RASTER_FONT_EMIT(5, 1, 1); /* Bottom-right */
-
-         memcpy(&font_color[4 * 6 * i], color_block,
-               sizeof(color_block));
-
-         i++;
-
-         delta_x += glyph->advance_x;
-         delta_y -= glyph->advance_y;
-      }
-
-      coords.tex_coord     = font_tex_coords;
-      coords.vertex        = font_vertex;
-      coords.color         = font_color;
-      coords.vertices      = i * 6;
-      coords.lut_tex_coord = NULL;
-
-      if (font->block)
-         video_coord_array_append(&font->block->carr, &coords, coords.vertices);
-      else
-         gl1_raster_font_draw_vertices(gl, font, &coords);
-   }
+#define FONT_LAYOUT_ALIGNED aligned
+#define FONT_LAYOUT_LINE(line, line_width, count, bytes) \
+   do \
+   { \
+      (void)(count); \
+      x = pre_x; \
+      y = roundf((pos_y - (float)(line) * line_height) \
+            * VIDEO_SCALE_H(gl->vp.dims)); \
+      if (text_align == TEXT_ALIGN_RIGHT) \
+         x -= (int)((line_width) * scale); \
+      else if (text_align == TEXT_ALIGN_CENTER) \
+         x -= (int)((line_width) * scale) / 2; \
+   } while (0)
+#define FONT_LAYOUT_GLYPH(glyph, pen_x, pen_y) \
+   do \
+   { \
+      int off_x   = (glyph)->draw_offset_x; \
+      int off_y   = (glyph)->draw_offset_y; \
+      int tex_x   = VIDEO_SCALE_W((glyph)->atlas_pos); \
+      int tex_y   = VIDEO_SCALE_H((glyph)->atlas_pos); \
+      int width   = VIDEO_SCALE_W((glyph)->dims); \
+      int height  = VIDEO_SCALE_H((glyph)->dims); \
+      int delta_x = (pen_x); \
+      int delta_y = -(pen_y); \
+      GL1_RASTER_FONT_EMIT(0, 0, 1); /* Bottom-left */ \
+      GL1_RASTER_FONT_EMIT(1, 1, 1); /* Bottom-right */ \
+      GL1_RASTER_FONT_EMIT(2, 0, 0); /* Top-left */ \
+      GL1_RASTER_FONT_EMIT(3, 1, 0); /* Top-right */ \
+      GL1_RASTER_FONT_EMIT(4, 0, 0); /* Top-left */ \
+      GL1_RASTER_FONT_EMIT(5, 1, 1); /* Bottom-right */ \
+      memcpy(&font_color[4 * 6 * i], color_block, sizeof(color_block)); \
+      if (++i == MAX_MSG_LEN_CHUNK) \
+         GL1_RASTER_FONT_FLUSH(); \
+   } while (0)
+#define FONT_LAYOUT_LINE_END() \
+   do \
+   { \
+      if (i) \
+         GL1_RASTER_FONT_FLUSH(); \
+   } while (0)
+#include "../font_layout.h"
 }
 
-static void gl1_raster_font_render_message(gl1_t *gl,
-      gl1_raster_t *font, const char *msg, GLfloat scale,
-      const GLfloat color[4], GLfloat pos_x, GLfloat pos_y,
-      float inv_tex_size_x,
-      float inv_tex_size_y,
-      float inv_win_width,
-      float inv_win_height,
-      unsigned text_align)
-{
-   float line_height;
-   struct font_line_metrics *line_metrics = NULL;
-   int lines                              = 0;
-   const struct font_glyph* glyph_q       = font->font_driver->get_glyph(font->font_data, '?');
-   int x                                  = roundf(pos_x * VIDEO_SCALE_W(gl->vp.dims));
-   font->font_driver->get_line_metrics(font->font_data, &line_metrics);
-   line_height = line_metrics->height * scale / VIDEO_SCALE_H(gl->vp.dims);
-   for (;;)
-   {
-      size_t msg_len;
-      const char *p = msg;
-      while (*p && *p != '\n')
-         p++;
-      msg_len = p - msg;
-      /* Draw the line */
-      gl1_raster_font_render_line(gl, font, glyph_q,
-            msg, msg_len, scale, color, pos_x,
-            pos_y - (float)lines*line_height,
-            x,
-            inv_tex_size_x,
-            inv_tex_size_y,
-            inv_win_width,
-            inv_win_height,
-            text_align);
-      if (!*p)
-         break;
-      msg = p + 1;
-      lines++;
-   }
-}
+#undef GL1_RASTER_FONT_FLUSH
 
 static void gl1_raster_font_setup_viewport(
       gl1_t *gl,
@@ -997,6 +949,7 @@ static void gl1_raster_font_render_msg(
       const char *msg, size_t msg_len,
       const struct font_params *params)
 {
+   font_params_resolved_t rp;
    GLfloat color[4];
    int drop_x, drop_y;
    GLfloat x, y, scale, drop_mod, drop_alpha;
@@ -1008,51 +961,37 @@ static void gl1_raster_font_render_msg(
    if (!font || !msg || !*msg || !gl)
       return;
 
-   if (params)
+   /* Asked for before anything is laid out: it may have grown, and the
+    * texture coordinates are taken from the texture's size */
+   font->atlas = font->font_driver->get_atlas(font->font_data);
    {
-      x           = params->x;
-      y           = params->y;
-      scale       = params->scale;
-      full_screen = params->full_screen;
-      text_align  = params->text_align;
-      drop_x      = params->drop_x;
-      drop_y      = params->drop_y;
-      drop_mod    = params->drop_mod;
-      drop_alpha  = params->drop_alpha;
-
-      color[0]    = FONT_COLOR_GET_RED(params->color)   / 255.0f;
-      color[1]    = FONT_COLOR_GET_GREEN(params->color) / 255.0f;
-      color[2]    = FONT_COLOR_GET_BLUE(params->color)  / 255.0f;
-      color[3]    = FONT_COLOR_GET_ALPHA(params->color) / 255.0f;
-
-      /* If alpha is 0.0f, turn it into default 1.0f */
-      if (color[3] <= 0.0f)
-         color[3] = 1.0f;
+      unsigned tex_dims = VIDEO_SCALE_PACK(next_pow2(font->atlas->width),
+            next_pow2(font->atlas->height));
+      if (tex_dims != font->tex_dims)
+      {
+         font->tex_dims  = tex_dims;
+         font->respecify = true;
+      }
    }
-   else
-   {
-      settings_t *settings    = config_get_ptr();
-      float video_msg_pos_x   = settings->floats.video_msg_pos_x;
-      float video_msg_pos_y   = settings->floats.video_msg_pos_y;
-      float video_msg_color_r = settings->floats.video_msg_color_r;
-      float video_msg_color_g = settings->floats.video_msg_color_g;
-      float video_msg_color_b = settings->floats.video_msg_color_b;
-      x                       = video_msg_pos_x;
-      y                       = video_msg_pos_y;
-      scale                   = 1.0f;
-      full_screen             = true;
-      text_align              = TEXT_ALIGN_LEFT;
 
-      color[0]                = video_msg_color_r;
-      color[1]                = video_msg_color_g;
-      color[2]                = video_msg_color_b;
-      color[3]                = 1.0f;
+   font_driver_resolve_params(params, &rp);
+   x           = rp.x;
+   y           = rp.y;
+   scale       = rp.scale;
+   full_screen = rp.full_screen;
+   text_align  = rp.text_align;
+   drop_x      = rp.drop_x;
+   drop_y      = rp.drop_y;
+   drop_mod    = rp.drop_mod;
+   drop_alpha  = rp.drop_alpha;
+   color[0]    = rp.color[0];
+   color[1]    = rp.color[1];
+   color[2]    = rp.color[2];
+   color[3]    = rp.color[3];
+   /* If alpha is 0.0f, turn it into default 1.0f */
+   if (color[3] <= 0.0f)
+      color[3] = 1.0f;
 
-      drop_x                  = -2;
-      drop_y                  = -2;
-      drop_mod                = 0.3f;
-      drop_alpha              = 1.0f;
-   }
 
    if (font->block)
       font->block->fullscreen = full_screen;
@@ -1090,7 +1029,8 @@ static void gl1_raster_font_render_msg(
             color_dark[2] = color[2] * drop_mod;
             color_dark[3] = color[3] * drop_alpha;
 
-            gl1_raster_font_render_message(gl, font, msg, scale, color_dark,
+            gl1_raster_font_render_message(gl, font, msg, msg_len, scale,
+                  color_dark,
                   x + scale * drop_x / VIDEO_SCALE_W(gl->vp.dims),
                   y + scale * drop_y / VIDEO_SCALE_H(gl->vp.dims),
                   inv_tex_size_x,
@@ -1100,7 +1040,8 @@ static void gl1_raster_font_render_msg(
                   text_align);
          }
 
-         gl1_raster_font_render_message(gl, font, msg, scale, color,
+         gl1_raster_font_render_message(gl, font, msg, msg_len, scale,
+               color,
                x, y,
                inv_tex_size_x,
                inv_tex_size_y,
@@ -1251,7 +1192,9 @@ static void gl1_render_overlay(gl1_t *gl,
 
 static void gl1_free_overlay(gl1_t *gl)
 {
-   glDeleteTextures(gl->overlays, gl->overlay_tex);
+   if (gl->overlay_tex && !(gl->flags & GL1_FLAG_OVERLAY_BORROWED))
+      glDeleteTextures(gl->overlays, gl->overlay_tex);
+   gl->flags &= ~GL1_FLAG_OVERLAY_BORROWED;
 
    /* The three coordinate arrays are views into the overlay_tex block. */
    free(gl->overlay_tex);
@@ -1322,8 +1265,7 @@ static void gl1_overlay_tex_geom(void *data,
 }
 #endif
 
-static void *gl1_init(const video_info_t *video,
-      input_driver_t **input, void **input_data)
+static void *gl1_init(const video_info_t *video)
 {
    unsigned full_x, full_y;
 #ifdef VITA
@@ -1348,8 +1290,6 @@ static void *gl1_init(const video_info_t *video,
    if (!gl1)
       return NULL;
 
-   *input                               = NULL;
-   *input_data                          = NULL;
 
    gl1->frame_dims                      = video->dims;
 
@@ -1514,8 +1454,7 @@ static void *gl1_init(const video_info_t *video,
    {
       const char *joypad_name = settings->arrays.input_joypad_driver;
       gl1->ctx_driver->input_driver(
-            gl1->ctx_data, joypad_name,
-            input, input_data);
+            gl1->ctx_data, joypad_name);
    }
 
 
@@ -1993,6 +1932,22 @@ static void gl1_readback(gl1_t *gl1,
 #endif
 }
 
+/* The pending screenshot or recording readback, as RGBA */
+static void gl1_screenshot_readback(gl1_t *gl1,
+      unsigned video_width, unsigned video_height)
+{
+   gl1_readback(gl1,
+         4,
+         GL_RGBA,
+#ifdef MSB_FIRST
+         GL_UNSIGNED_INT_8_8_8_8_REV,
+#else
+         GL_UNSIGNED_BYTE,
+#endif
+         video_width, video_height,
+         gl1->readback_buffer_screenshot);
+}
+
 #ifndef VITA
 /* Same GLSL 1.20 encode as the gl driver, but using the built-in
  * compatibility attributes (gl_Vertex / gl_MultiTexCoord0) so the
@@ -2280,6 +2235,7 @@ static bool gl1_frame(void *data, const void *frame,
    unsigned height                  = VIDEO_SCALE_H(video_info->dims);
    bool draw                        = true;
    bool do_swap                     = false;
+   bool read_early                  = false;
    gl1_t *gl1                       = (gl1_t*)data;
    unsigned bits                    = gl1->frame_bits;
    unsigned pot_width               = 0;
@@ -2445,6 +2401,21 @@ static bool gl1_frame(void *data, const void *frame,
       if (frame_to_copy)
          gl1_draw_tex(gl1, pot_width, pot_height,
                width, height, gl1->tex, frame_to_copy, src_row, src_fmt);
+   }
+
+   /* Record Game Only: a recording's readback takes the core's image
+    * before anything is drawn over it. Under scRGB the image only
+    * lands at the final composite. */
+   if (     gl1->readback_buffer_screenshot
+         && gl1->readback_record
+         && video_info->record_game_only
+#ifndef VITA
+         && !gl1->scrgb.active
+#endif
+      )
+   {
+      gl1_screenshot_readback(gl1, video_width, video_height);
+      read_early = true;
    }
 
 #ifndef VITA
@@ -2678,17 +2649,8 @@ static bool gl1_frame(void *data, const void *frame,
    }
 #endif
 
-   if (gl1->readback_buffer_screenshot)
-      gl1_readback(gl1,
-            4,
-            GL_RGBA,
-#ifdef MSB_FIRST
-            GL_UNSIGNED_INT_8_8_8_8_REV,
-#else
-            GL_UNSIGNED_BYTE,
-#endif
-            video_width, video_height,
-            gl1->readback_buffer_screenshot);
+   if (gl1->readback_buffer_screenshot && !read_early)
+      gl1_screenshot_readback(gl1, video_width, video_height);
 
 
    if (do_swap && gl1->ctx_driver->swap_buffers)
@@ -2930,13 +2892,12 @@ static void gl1_viewport_info(void *data, struct video_viewport *vp)
    VIDEO_POS_PUT_Y(vp->pos, top_dist);
 }
 
-static bool gl1_read_viewport(void *data, uint8_t *buffer, bool is_idle)
+/* bgrx: write bottom-up 32-bit BGRX (read_viewport_bgrx) instead of
+ * bottom-up BGR24. */
+static bool gl1_read_viewport_internal(gl1_t *gl1, uint8_t *buffer,
+      bool is_idle, bool bgrx)
 {
    unsigned num_pixels = 0;
-   gl1_t *gl1          = (gl1_t*)data;
-
-   if (!gl1)
-      return false;
 
    num_pixels                      = VIDEO_SCALE_AREA(gl1->vp.dims);
    gl1->readback_buffer_screenshot = malloc(num_pixels * sizeof(uint32_t));
@@ -2944,8 +2905,10 @@ static bool gl1_read_viewport(void *data, uint8_t *buffer, bool is_idle)
    if (!gl1->readback_buffer_screenshot)
       return false;
 
+   gl1->readback_record = bgrx;
    if (!is_idle)
       video_driver_cached_frame();
+   gl1->readback_record = false;
 
    {
       /* Clamp to the region glReadPixels actually wrote.
@@ -2958,19 +2921,44 @@ static bool gl1_read_viewport(void *data, uint8_t *buffer, bool is_idle)
       unsigned vd_h = VIDEO_SCALE_H(gl1->vp.full_dims);
       unsigned rb_w = (VIDEO_SCALE_W(gl1->vp.dims)  > vd_w) ? vd_w : VIDEO_SCALE_W(gl1->vp.dims);
       unsigned rb_h = (VIDEO_SCALE_H(gl1->vp.dims) > vd_h) ? vd_h : VIDEO_SCALE_H(gl1->vp.dims);
-      video_frame_convert_rgba_to_bgr(
-            (const void*)gl1->readback_buffer_screenshot,
-            buffer,
-            rb_w * sizeof(uint32_t),
-            rb_w * 3,
-            rb_w,
-            rb_h);
+      if (bgrx)
+         video_frame_copy_to_bgrx(buffer, VIDEO_SCALE_W(gl1->vp.dims),
+               VIDEO_SCALE_H(gl1->vp.dims),
+               (const uint8_t*)gl1->readback_buffer_screenshot,
+               rb_w * 4, rb_w, rb_h, true);
+      else
+         video_frame_convert_rgba_to_bgr(
+               (const void*)gl1->readback_buffer_screenshot,
+               buffer,
+               rb_w * sizeof(uint32_t),
+               rb_w * 3,
+               rb_w,
+               rb_h);
    }
 
    free(gl1->readback_buffer_screenshot);
    gl1->readback_buffer_screenshot = NULL;
 
    return true;
+}
+
+static bool gl1_read_viewport(void *data, uint8_t *buffer, bool is_idle)
+{
+   gl1_t *gl1 = (gl1_t*)data;
+   if (!gl1)
+      return false;
+   return gl1_read_viewport_internal(gl1, buffer, is_idle, false);
+}
+
+static bool gl1_read_viewport_bgrx(void *data, uint8_t *buffer,
+      bool is_idle, bool *bottom_up)
+{
+   gl1_t *gl1 = (gl1_t*)data;
+   if (!gl1)
+      return false;
+   /* glReadPixels returns the bottom row first. */
+   *bottom_up = true;
+   return gl1_read_viewport_internal(gl1, buffer, is_idle, true);
 }
 
 static void gl1_set_texture_frame(void *data,
@@ -3193,6 +3181,72 @@ static uintptr_t gl1_load_texture(void *video_data, void *data,
    return id;
 }
 
+/* Same-size, same-order contents into a texture video_texture_load_gl1
+ * made: the storage stays, glTexSubImage2D rewrites it in the format
+ * the load chose from the driver's RGBA flag. */
+static void gl1_update_texture_internal(uintptr_t id,
+      const struct texture_image *ti)
+{
+   bool use_rgba = (video_driver_get_disp_flags() & VIDEO_FLAG_USE_RGBA);
+   glBindTexture(GL_TEXTURE_2D, (GLuint)id);
+#ifndef VITA
+   glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+   glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+#endif
+   glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, ti->width, ti->height,
+         use_rgba ? GL_RGBA : RARCH_GL1_TEXTURE_TYPE32,
+#ifdef MSB_FIRST
+         GL_UNSIGNED_INT_8_8_8_8_REV,
+#else
+         RARCH_GL1_FORMAT32,
+#endif
+         ti->pixels);
+}
+
+#ifdef HAVE_THREADS
+typedef struct
+{
+   gl1_t *gl;
+   const struct texture_image *ti;
+   uintptr_t id;
+} gl1_update_cmd_t;
+
+static uintptr_t video_texture_update_wrap_gl1(void *data)
+{
+   gl1_update_cmd_t *cmd = (gl1_update_cmd_t*)data;
+   gl1_t            *gl1 = cmd->gl;
+
+   if (gl1 && gl1->ctx_driver->make_current)
+      gl1->ctx_driver->make_current(false);
+
+   gl1_update_texture_internal(cmd->id, cmd->ti);
+   return 1;
+}
+#endif
+
+static enum video_texture_update gl1_update_texture(void *video_data,
+      uintptr_t id, const struct texture_image *ti, bool threaded)
+{
+   /* The textures hold 8 bits a channel and nothing wider */
+   if (!id || !ti || !ti->pixels || ti->pix10 || ti->fp16)
+      return VIDEO_TEXTURE_UPDATE_REFUSED;
+
+#ifdef HAVE_THREADS
+   if (threaded)
+   {
+      gl1_update_cmd_t cmd;
+      cmd.gl = (gl1_t*)video_data;
+      cmd.ti = ti;
+      cmd.id = id;
+      video_thread_texture_handle(&cmd, video_texture_update_wrap_gl1);
+      return VIDEO_TEXTURE_UPDATE_DONE;
+   }
+#endif
+
+   gl1_update_texture_internal(id, ti);
+   return VIDEO_TEXTURE_UPDATE_DONE;
+}
+
 static void gl1_set_aspect_ratio(void *data, unsigned aspect_ratio_idx)
 {
    gl1_t *gl1     = (gl1_t*)data;
@@ -3264,6 +3318,13 @@ static uint32_t gl1_get_flags(void *data)
    BIT32_SET(flags, GFX_CTX_FLAGS_BLACK_FRAME_INSERTION);
    BIT32_SET(flags, GFX_CTX_FLAGS_MENU_FRAME_FILTERING);
    BIT32_SET(flags, GFX_CTX_FLAGS_OVERLAY_BEHIND_MENU_SUPPORTED);
+#ifdef VITA
+   BIT32_SET(flags, GFX_CTX_FLAGS_RECORD_GAME_ONLY);
+#else
+   /* Under scRGB the image only lands at the final composite */
+   if (gl1 && !gl1->scrgb.active)
+      BIT32_SET(flags, GFX_CTX_FLAGS_RECORD_GAME_ONLY);
+#endif
 
    return flags;
 }
@@ -3294,7 +3355,22 @@ static const video_poke_interface_t gl1_poke_interface = {
    NULL, /* set_hdr_paper_white_nits */
    NULL, /* set_hdr_expand_gamut */
    NULL, /* set_hdr_scanlines */
-   NULL  /* set_hdr_subpixel_layout */
+   NULL, /* set_hdr_subpixel_layout */
+   NULL, /* supports_texture_format */
+   NULL, /* load_texture_compressed */
+   NULL, /* present_last */
+   NULL, /* get_last_present_time */
+   NULL, /* hw_ring_install */
+   NULL, /* hw_ring_fence_new */
+   NULL, /* hw_ring_fence_free */
+   NULL, /* hw_ring_fence_signal */
+   NULL, /* hw_ring_fence_wait */
+   NULL, /* hw_ring_capture */
+   NULL, /* hw_ring_present_slot */
+   NULL, /* hw_ring_context_new */
+   NULL, /* hw_ring_context_free */
+   NULL, /* hw_ring_framebuffer */
+   gl1_update_texture
 };
 
 static void gl1_get_poke_interface(void *data,
@@ -3322,18 +3398,14 @@ static unsigned gl1_get_alignment(unsigned pitch)
    return 8;
 }
 
-static bool gl1_overlay_load(void *data,
-      const void *image_data, unsigned num_images)
+/* A page's names and geometry; @textures are the overlay pack's, or
+ * NULL for names of the driver's own */
+static bool gl1_overlay_alloc(gl1_t *gl, unsigned num_images,
+      const uintptr_t *textures)
 {
    size_t o_vertex, o_tex, o_color;
    size_t i;
    int j;
-   gl1_t *gl = (gl1_t*)data;
-   const struct texture_image *images =
-      (const struct texture_image*)image_data;
-
-   if (!gl)
-      return false;
 
    gl1_free_overlay(gl);
    /* The texture names and the vertex, texture and colour coordinate
@@ -3353,7 +3425,38 @@ static bool gl1_overlay_load(void *data,
    gl->overlay_color_coord  = (GLfloat*)((uint8_t*)gl->overlay_tex + o_color);
 
    gl->overlays             = num_images;
-   glGenTextures(num_images, gl->overlay_tex);
+   if (textures)
+   {
+      for (i = 0; i < num_images; i++)
+         gl->overlay_tex[i] = (GLuint)textures[i];
+      gl->flags |= GL1_FLAG_OVERLAY_BORROWED;
+   }
+   else
+      glGenTextures(num_images, gl->overlay_tex);
+
+   for (i = 0; i < num_images; i++)
+   {
+      /* Default. Stretch to whole screen. */
+      gl1_overlay_tex_geom(gl, i, 0, 0, 1, 1);
+      gl1_overlay_vertex_geom(gl, i, 0, 0, 1, 1);
+
+      for (j = 0; j < 16; j++)
+         gl->overlay_color_coord[16 * i + j] = 1.0f;
+   }
+
+   return true;
+}
+
+static bool gl1_overlay_load(void *data,
+      const void *image_data, unsigned num_images)
+{
+   size_t i;
+   gl1_t *gl = (gl1_t*)data;
+   const struct texture_image *images =
+      (const struct texture_image*)image_data;
+
+   if (!gl || !gl1_overlay_alloc(gl, num_images, NULL))
+      return false;
 
    for (i = 0; i < num_images; i++)
    {
@@ -3365,16 +3468,20 @@ static bool gl1_overlay_load(void *data,
             alignment,
             images[i].width, images[i].height, images[i].pixels,
             sizeof(uint32_t));
-
-      /* Default. Stretch to whole screen. */
-      gl1_overlay_tex_geom(gl, i, 0, 0, 1, 1);
-      gl1_overlay_vertex_geom(gl, i, 0, 0, 1, 1);
-
-      for (j = 0; j < 16; j++)
-         gl->overlay_color_coord[16 * i + j] = 1.0f;
    }
 
    return true;
+}
+
+/* A page of the pack's textures: gl1_load_texture's names, uploaded
+ * once for every page */
+static bool gl1_overlay_load_textures(void *data,
+      const uintptr_t *textures, unsigned num_textures)
+{
+   gl1_t *gl = (gl1_t*)data;
+   if (!gl)
+      return false;
+   return gl1_overlay_alloc(gl, num_textures, textures);
 }
 
 static void gl1_overlay_enable(void *data, bool state)
@@ -3426,7 +3533,7 @@ static void gl1_overlay_set_alpha(void *data, unsigned image, float mod)
 static const video_overlay_interface_t gl1_overlay_interface = {
    gl1_overlay_enable,
    gl1_overlay_load,
-   NULL, /* load_textures */
+   gl1_overlay_load_textures,
    gl1_overlay_tex_geom,
    gl1_overlay_vertex_geom,
    gl1_overlay_full_screen,
@@ -3615,7 +3722,13 @@ video_driver_t video_gl1 = {
 #endif
    NULL, /* invalidate_hw_render_cache */
    gl1_read_viewport_hdr,
-   &gl1_raster_font
+   &gl1_raster_font,
+#ifdef HAVE_OPENXR
+   NULL, /* get_vr_frame_state */
+   NULL, /* set_vr_content_info */
+   NULL, /* get_video_views_status */
+#endif
+   gl1_read_viewport_bgrx
 };
 
 gfx_display_ctx_driver_t gfx_display_ctx_gl1 = {

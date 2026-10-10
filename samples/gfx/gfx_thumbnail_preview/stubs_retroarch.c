@@ -31,6 +31,12 @@ bool video_driver_texture_load(void *data, unsigned filter_type,
    *id = 0x1000 + hp.texture_uploads;
    hp.last_tex_w = img->width;
    hp.last_tex_h = img->height;
+   if (img->fp16 && img->pixels)
+   {
+      size_t c = ((size_t)img->height / 2 * img->width + img->width / 2) * 4;
+      hp.fp16_uploads++;
+      hp.fp16_r = ((const unsigned short*)img->pixels)[c];
+   }
    return true;
 }
 bool video_driver_texture_unload(uintptr_t *id)
@@ -42,8 +48,9 @@ bool video_driver_texture_unload(uintptr_t *id)
 /* No in-place path: every animation frame is a replacement load, so
  * the upload and unload counts the probes read keep their meaning. */
 bool video_driver_texture_can_update(void) { return false; }
-bool video_driver_texture_update(uintptr_t id, void *data)
-{ (void)id; (void)data; return false; }
+/* enum video_texture_update: 0 is refused. */
+int video_driver_texture_update(uintptr_t id, void *data)
+{ (void)id; (void)data; return 0; }
 unsigned video_driver_get_disp_flags(void) { return 0; }
 void video_driver_get_video_output_size(unsigned *dims, char *d, size_t l)
 { *dims = VIDEO_SCALE_PACK(1920, 1080); (void)d; (void)l; }
@@ -90,6 +97,7 @@ void gfx_display_blend_end(void *dispctx, void *data)
 bool gfx_animation_kill_by_tag(uintptr_t *tag) { (void)tag; return true; }
 
 /* ---- task queue ---- */
+bool task_is_on_main_thread(void) { return true; }
 bool task_push_image_load(const char *path, bool rgba, unsigned t,
       unsigned c, void *cb, void *ud)
 {
@@ -98,6 +106,13 @@ bool task_push_image_load(const char *path, bool rgba, unsigned t,
    free(ud);              /* the tag would be freed by the callback */
    return true;
 }
+/* The thumbnail loads its stills with the flags form; the same here. */
+bool task_push_image_load_ex(const char *path, unsigned flags, unsigned t,
+      unsigned c, void *cb, void *ud)
+{
+   (void)flags;
+   return task_push_image_load(path, false, t, c, cb, ud);
+}
 bool task_image_detach_video_stream(void *t, void **s, int *ty, void **x,
       void **b, size_t *l)
 { (void)t; (void)s; (void)ty; (void)x; (void)b; (void)l; return false; }
@@ -105,6 +120,29 @@ bool task_image_detach_video_stream(void *t, void **s, int *ty, void **x,
  * anything that is not a completed PNG image task, and unknown is
  * exactly what sends the open down its historical file probe. */
 int task_image_png_probe(void *t) { (void)t; return -1; }
+
+/* A set is decoded and lands here and now, with nothing: the tags go
+ * back through the thumbnail's own landing, as the real callback
+ * would hand them */
+bool task_push_image_load_set(const char *const *paths,
+      void *const *item_uds, unsigned n, unsigned load_flags,
+      unsigned upscale_threshold, unsigned downscale_cap,
+      void (*cb)(void *img, int png_probe, void *ud), uint64_t tag)
+{
+   unsigned i;
+   (void)paths; (void)load_flags; (void)upscale_threshold;
+   (void)downscale_cap; (void)tag;
+   hp.still_sets++;
+   hp.set_items += (int)n;
+   if ((int)n > hp.set_max)
+      hp.set_max = (int)n;
+   for (i = 0; i < n; i++)
+      cb(NULL, -1, item_uds[i]);
+   return true;
+}
+bool task_image_set_tag(void *task, uint64_t *tag)
+{ (void)task; (void)tag; return false; }
+bool task_queue_is_threaded(void) { return hp.threaded_queue != 0; }
 
 void *task_queue_find(void *id) { (void)id; return NULL; }
 void task_set_flags(void *t, uint32_t f, bool s) { (void)t; (void)f; (void)s; }
@@ -118,11 +156,20 @@ void task_set_flags(void *t, uint32_t f, bool s) { (void)t; (void)f; (void)s; }
 extern const size_t settings_layout_sizeof;
 extern const size_t settings_layout_preview_audio_off;
 extern const size_t settings_layout_preview_threads_off;
+extern const size_t settings_layout_gfx_thumbnails_off;
+extern const size_t settings_layout_dir_thumbnails_off;
 static char g_settings[1 << 20];
 void *config_get_ptr(void)
 {
    if (settings_layout_sizeof > sizeof(g_settings))
       abort();
+   if (hp.thumb_cfg)
+   {
+      unsigned on = 1;
+      memcpy(g_settings + settings_layout_gfx_thumbnails_off, &on,
+            sizeof(on));
+      strcpy(g_settings + settings_layout_dir_thumbnails_off, "/tmp");
+   }
    g_settings[settings_layout_preview_audio_off] =
          hp.force_preview_audio ? 1 : 0;
    {
@@ -137,14 +184,37 @@ void *config_get_ptr(void)
 }
 
 /* ---- menu / runloop / playlist ---- */
-void *menu_state_get_ptr(void) { static char b[65536]; return b; }
-void *runloop_state_get_ptr(void) { static char b[1 << 18]; return b; }
+static char g_menu_blob[65536];
+static char g_runloop_blob[1 << 18];
+void *menu_state_get_ptr(void) { return g_menu_blob; }
+void *runloop_state_get_ptr(void) { return g_runloop_blob; }
+
+/* A one-entry playlist, cached while a test holds it: the entry is laid
+ * out by settings_layout_uut.c, which sees the UUT's struct layouts. */
+extern const void *layout_savestate_entry_setup(void *menu_blob,
+      size_t menu_size, void *runloop_blob, size_t runloop_size,
+      const char *savestate_dir, const char *entry_path);
+static const void *g_playlist_entry;
+int stub_playlist_entry_set(const char *savestate_dir, const char *entry_path)
+{
+   if (!entry_path)
+   {
+      g_playlist_entry = NULL;
+      return 1;
+   }
+   g_playlist_entry = layout_savestate_entry_setup(
+         g_menu_blob, sizeof(g_menu_blob),
+         g_runloop_blob, sizeof(g_runloop_blob),
+         savestate_dir, entry_path);
+   return g_playlist_entry != NULL;
+}
 void runloop_path_set_redirect(void *a, char *b, char *c)
 { (void)a; (void)b; (void)c; }
 void dir_set(unsigned t, const char *p) { (void)t; (void)p; }
-void *playlist_get_cached(void) { return NULL; }
+void *playlist_get_cached(void)
+{ return g_playlist_entry ? (void*)&g_playlist_entry : NULL; }
 void playlist_get_index(void *p, size_t i, const void **e)
-{ (void)p; (void)i; if (e) *e = NULL; }
+{ (void)i; if (e) *e = p ? g_playlist_entry : NULL; }
 size_t playlist_get_size(void *p) { (void)p; return 0; }
 char *playlist_get_conf_path(void *p) { (void)p; return NULL; }
 void playlist_get_db_name(void *p, size_t i, const char **n)
@@ -155,23 +225,27 @@ const char *msg_hash_to_str(unsigned id) { (void)id; return ""; }
 /* ---- threads: single-threaded harness, real locks not needed.
  * The threaded build links rthreads itself and has none of these. ---- */
 #ifndef PREVIEW_THREADED
-void *slock_new(void) { return malloc(1); }
-void slock_free(void *l) { free(l); }
-void slock_lock(void *l) { (void)l; }
-void slock_unlock(void *l) { (void)l; }
-void *scond_new(void) { return malloc(1); }
-void scond_free(void *c) { free(c); }
-void scond_wait(void *c, void *l) { (void)c; (void)l; }
-void scond_signal(void *c) { (void)c; }
-void scond_broadcast(void *c) { (void)c; }
-void *sthread_create(void *f, void *ud) { (void)f; (void)ud; return NULL; }
-void sthread_join(void *t) { (void)t; }
+/* Declared by rthreads.h, which the audio driver header below pulls
+ * in, so the stubs keep its types: opaque, never dereferenced here. */
+#include <rthreads/rthreads.h>
+slock_t *slock_new(void) { return (slock_t*)malloc(1); }
+void slock_free(slock_t *l) { free(l); }
+void slock_lock(slock_t *l) { (void)l; }
+void slock_unlock(slock_t *l) { (void)l; }
+scond_t *scond_new(void) { return (scond_t*)malloc(1); }
+void scond_free(scond_t *c) { free(c); }
+void scond_wait(scond_t *c, slock_t *l) { (void)c; (void)l; }
+void scond_signal(scond_t *c) { (void)c; }
+int scond_broadcast(scond_t *c) { (void)c; return 0; }
+sthread_t *sthread_create(void (*f)(void*), void *ud) { (void)f; (void)ud; return NULL; }
+void sthread_join(sthread_t *t) { (void)t; }
 #else
 /* The threaded build of gfx_surface asks whether the video thread
  * wrapper is up before handing a load to it; the harness has no
  * video thread, so the surface takes its direct path. */
 bool video_driver_thread_wrapper_active(void) { return false; }
 bool video_thread_async_post(void *n) { (void)n; return false; }
+bool video_thread_lend_ready(int idx) { (void)idx; return true; }
 #endif
 
 bool path_is_directory(const char *p)
@@ -201,7 +275,7 @@ int path_is_media_type(const char *path)
    if (!strcasecmp(e, ".png") || !strcasecmp(e, ".jpg")
     || !strcasecmp(e, ".jpeg") || !strcasecmp(e, ".bmp")
     || !strcasecmp(e, ".tga") || !strcasecmp(e, ".webp"))
-      return 4 /* RARCH_CONTENT_IMAGE */;
+      return 3 /* RARCH_CONTENT_IMAGE */;
    return 0;
 }
 
@@ -318,5 +392,24 @@ int  config_userdata_get_string(void *u, const char *k, char **v,
  * sampling. */
 bool video_driver_test_all_flags(int flags)
 { (void)flags; return false; }
+/* With HDR_OUTPUT set the run looks like a driver on HDR output: it
+ * keeps half floats and shows them as linear scRGB, so gfx_surface
+ * offers FP16 to an HDR source. Nothing else is supported either way. */
 bool video_driver_supports_texture_format(int fmt)
-{ (void)fmt; return false; }
+{
+   return hp.hdr_output
+      && (fmt == TEXTURE_GPU_FORMAT_RGBA16F || fmt == TEXTURE_GPU_FORMAT_SCRGB);
+}
+
+/* No driver lends upload memory here: every slot stays the surface's. */
+void *video_driver_texture_lend(uintptr_t id, unsigned slot, size_t pitch)
+{
+   (void)id; (void)slot; (void)pitch;
+   return NULL;
+}
+
+bool video_driver_texture_lend_ready(uintptr_t id, unsigned slot)
+{
+   (void)id; (void)slot;
+   return true;
+}

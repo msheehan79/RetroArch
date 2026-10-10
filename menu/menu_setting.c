@@ -64,7 +64,6 @@
 #endif
 
 #include "../config.def.h"
-#include "../config.def.keybinds.h"
 
 #if !defined(__PSL1GHT__) && defined(__PS3__)
 #include <sysutil/sysutil_bgmplayback.h>
@@ -96,6 +95,7 @@
 #endif
 #include "../driver.h"
 #include "../paths.h"
+#include "../file_path_special.h"
 #include "../dynamic.h"
 #include "../list_special.h"
 #include "../msg_hash_lbl_str.h"
@@ -118,6 +118,9 @@ void android_app_set_window_settings(bool notch_write_over,
 #include "../network/cloud_sync_driver.h"
 #include "../record/record_driver.h"
 #include "../tasks/tasks_internal.h"
+#if defined(HAVE_KEYCHAIN) && defined(HAVE_CRYPTO) && defined(HAVE_CONFIGFILE)
+#include <file/keychain.h>
+#endif
 #include "../accessibility.h"
 #include "../config.def.h"
 #include "../ui/ui_companion_driver.h"
@@ -129,6 +132,7 @@ void android_app_set_window_settings(bool notch_write_over,
 #endif
 #include "../retroarch.h"
 #include "../gfx/video_display_server.h"
+#include "../gfx/video_views.h"
 #ifdef HAVE_MODELINE
 #include "../gfx/video_crt_switch.h"
 #endif
@@ -269,8 +273,8 @@ void win32_menubar_rebuild(void);
    if (SETTINGS_LIST_APPEND(a, b)) \
       config_hex(a, b, c, d, e, f, g, h, i, j, k, l)
 
-#define CONFIG_BIND_ALT(a, b, c, d, e, f, g, h, i, j, k) \
-   config_bind_alt(a, b, c, d, e, f, g, h, i, j, k)
+#define CONFIG_BIND_ALT(a, b, d, e, f, g, h, i, j, k) \
+   config_bind_alt(a, b, d, e, f, g, h, i, j, k)
 
 #define CONFIG_BIND(a, b, c, d, e, f, g, h, i, j, k, l) \
    if (SETTINGS_LIST_APPEND(a, b)) \
@@ -427,6 +431,9 @@ enum settings_list_type
 #endif
 #ifdef HAVE_SMBCLIENT
    SETTINGS_LIST_SMBCLIENT,
+#endif
+#ifdef HAVE_NFSCLIENT
+   SETTINGS_LIST_NFSCLIENT,
 #endif
    SETTINGS_LIST_MANUAL_CONTENT_SCAN
 };
@@ -683,8 +690,8 @@ static void menu_input_st_string_cb(void *userdata, const char *str)
          {
             if (setting->value.target.string)
                strlcpy(setting->value.target.string, str, setting->size);
-            if (setting->actions->change)
-               setting->actions->change(setting);
+            /* menu_setting_generic() runs the change handler; it was
+             * run here as well, and the row's command fired twice */
             menu_setting_generic(setting, 0, false);
          }
       }
@@ -753,6 +760,284 @@ static int setting_string_action_start_generic(rarch_setting_t *setting)
    setting->value.target.string[0] = '\0';
 
    return 0;
+}
+
+/* The rows for entries and macros in the hotkeys list: one a number,
+ * each the text of what that number is, as the configuration writes it
+ * (input_combo_N, input_macro_N). Edited as a line of text; what is
+ * typed is read as an entry or a macro, and the row then shows it as
+ * it is kept - or what it was, if what was typed did not read. An
+ * empty line takes that number out. */
+#define MENU_ENTRY_ROWS 16
+static char menu_entry_text[MENU_ENTRY_ROWS][256];
+static char menu_macro_text[MENU_ENTRY_ROWS][512];
+
+/* After a row's number is set or taken out the list is made again,
+ * not only drawn again: which rows it has follows what there is - the
+ * empty row to add the next with moves on, or back. */
+static void setting_entry_rows_repopulate(void)
+{
+   struct menu_state *menu_st = menu_state_get_ptr();
+   menu_st->flags            &= ~MENU_ST_FLAG_PREVENT_POPULATE;
+   menu_st->flags            |=  MENU_ST_FLAG_ENTRIES_NEED_REFRESH;
+}
+
+static void setting_entry_text_change(rarch_setting_t *setting)
+{
+   unsigned n = setting->index_offset;
+   char    *s = setting->value.target.string;
+   if (!*s)
+      input_entry_remove(n);
+   else if (!input_entry_add(n, s))
+      RARCH_WARN("[Input] \"%s\" is not read as an entry: it wants"
+            " \"buttons and a key with + between them : a hotkey or a"
+            " command\".\n", s);
+   if (!input_entry_spec(n, s, setting->size))
+      s[0] = '\0';
+   setting_entry_rows_repopulate();
+}
+
+static void setting_macro_text_change(rarch_setting_t *setting)
+{
+   unsigned n = setting->index_offset;
+   char    *s = setting->value.target.string;
+   if (!*s)
+      input_macro_remove(n);
+   else if (!input_macro_set(n, s))
+      RARCH_WARN("[Input] \"%s\" is not read as a macro: it wants steps"
+            " with commas between, each \"buttons with + between them,"
+            " or -, and a number of frames\".\n", s);
+   if (!input_macro_spec(n, s, setting->size))
+      s[0] = '\0';
+   setting_entry_rows_repopulate();
+}
+
+/* (Start, on a row: the number is taken out.) */
+static int setting_entry_text_start(rarch_setting_t *setting)
+{
+   if (!setting)
+      return -1;
+   setting->value.target.string[0] = '\0';
+   if ((setting->actions && setting->actions->change))
+      setting->actions->change(setting);
+   return 0;
+}
+
+/* What a combination is to do, picked from a list: one setting, never
+ * shown as a row, whose drop-down is opened for a combination - after
+ * its buttons were held on an empty row, or by Left on a row with an
+ * entry. Its values are every target there is (input_entry_targets()),
+ * made again each time it is opened; each is shown by its name in the
+ * menu. */
+static char     menu_target_text[64];
+static char     menu_target_values[4096];
+static unsigned menu_target_number;
+static unsigned menu_target_pad;   /* the buttons held, for a new one; 0 keeps them */
+
+/* After what it does is picked, how quickly it does it: a second list,
+ * "Response Time" - Instant, or Hold For - and after Hold For a third,
+ * "Hold For", of how long: half a second to ten, by half seconds. Each
+ * opens at the next pass of the menu (menu_setting_entry_pending()),
+ * the list that was picked from being taken down after its change
+ * handler returns. */
+static char     menu_hold_text[8];
+static char     menu_time_text[8];
+static unsigned menu_hold_number;
+static unsigned menu_hold_pending;
+static unsigned menu_time_pending;
+static const char menu_hold_values[] = "0|hold";
+static const char menu_time_values[] =
+   "5|10|15|20|25|30|35|40|45|50|55|60|65|70|75|80|85|90|95|100";
+
+static void setting_entry_hold_change(rarch_setting_t *setting)
+{
+   if (!menu_hold_number)
+      return;
+   if (!strcmp(setting->value.target.string, "hold"))
+      /* how long, next */
+      menu_time_pending = menu_hold_number;
+   else
+   {
+      input_entry_set_hold(menu_hold_number, 0);
+      setting_entry_rows_repopulate();
+   }
+   menu_hold_number = 0;
+}
+
+static size_t setting_entry_hold_repr(rarch_setting_t *setting,
+      char *s, size_t len)
+{
+   return strlcpy(s, msg_hash_to_str(
+            strcmp(setting->value.target.string, "hold")
+            ? MSG_INPUT_COMBO_INSTANT : MSG_INPUT_COMBO_HOLD_FOR), len);
+}
+
+static void setting_entry_time_change(rarch_setting_t *setting)
+{
+   if (!menu_hold_number)
+      return;
+   input_entry_set_hold(menu_hold_number,
+         (unsigned)strtoul(setting->value.target.string, NULL, 10));
+   menu_hold_number = 0;
+   setting_entry_rows_repopulate();
+}
+
+static size_t setting_entry_time_repr(rarch_setting_t *setting,
+      char *s, size_t len)
+{
+   char secs[16];
+   unsigned tenths = (unsigned)strtoul(setting->value.target.string, NULL, 10);
+   snprintf(secs, sizeof(secs), "%u.%u", tenths / 10, tenths % 10);
+   return (size_t)snprintf(s, len, msg_hash_to_str(MSG_INPUT_COMBO_HOLD_SECONDS), secs);
+}
+
+/* One of the lists waiting to be opened, opened. */
+void menu_setting_entry_pending(void)
+{
+   char buf[16];
+   unsigned number;
+   enum msg_hash_enums list_enum;
+   struct menu_state *menu_st = menu_state_get_ptr();
+
+   if (menu_hold_pending)
+   {
+      number            = menu_hold_pending;
+      menu_hold_pending = 0;
+      list_enum         = MENU_ENUM_LABEL_INPUT_COMBO_HOLD;
+   }
+   else if (menu_time_pending)
+   {
+      number            = menu_time_pending;
+      menu_time_pending = 0;
+      list_enum         = MENU_ENUM_LABEL_INPUT_COMBO_HOLD_TIME;
+   }
+   else
+      return;
+   if (!input_entry_target(number, buf, sizeof(buf)))
+      return;   /* (not made after all) */
+   menu_hold_number = number;
+   /* checked in the list: what it has now */
+   if (input_entry_hold(number))
+   {
+      strlcpy(menu_hold_text, "hold", sizeof(menu_hold_text));
+      snprintf(menu_time_text, sizeof(menu_time_text), "%u", input_entry_hold(number));
+   }
+   else
+   {
+      strlcpy(menu_hold_text, "0", sizeof(menu_hold_text));
+      strlcpy(menu_time_text, "10", sizeof(menu_time_text));
+   }
+   snprintf(buf, sizeof(buf), "%d", list_enum);
+   generic_action_ok_displaylist_push(buf, NULL, NULL, 0,
+         menu_st->selection_ptr, 0, ACTION_OK_DL_DROPDOWN_BOX_LIST);
+}
+
+static void setting_entry_target_change(rarch_setting_t *setting)
+{
+   const char *target = setting->value.target.string;
+   bool made;
+   if (!menu_target_number || !*target)
+      return;
+   if (menu_target_pad)
+      made = input_entry_set_from_pad(menu_target_number, menu_target_pad, target);
+   else
+      made = input_entry_set_target(menu_target_number, target);
+   /* and then how quickly */
+   if (made)
+      menu_hold_pending = menu_target_number;
+   menu_target_number = 0;
+   menu_target_pad    = 0;
+   setting_entry_rows_repopulate();
+}
+
+static size_t setting_entry_target_repr(rarch_setting_t *setting,
+      char *s, size_t len)
+{
+   return input_entry_target_desc(setting->value.target.string, s, len);
+}
+
+/* The list opened, for combination @number: with @pad the buttons held
+ * on its empty row, or 0 to change what an entry there is does. */
+void menu_setting_entry_target_pick(unsigned number, unsigned pad)
+{
+   char enum_idx[16];
+   struct menu_state *menu_st = menu_state_get_ptr();
+
+   if (!input_entry_targets(menu_target_values, sizeof(menu_target_values)))
+      return;
+   menu_target_number = number;
+   menu_target_pad    = pad;
+   /* checked in the list: what it does now, or the first there is */
+   if (!input_entry_target(number, menu_target_text, sizeof(menu_target_text)))
+   {
+      const char *bar = strchr(menu_target_values, '|');
+      size_t      n   = bar ? (size_t)(bar - menu_target_values)
+                            : strlen(menu_target_values);
+      if (n >= sizeof(menu_target_text))
+         n = sizeof(menu_target_text) - 1;
+      memcpy(menu_target_text, menu_target_values, n);
+      menu_target_text[n] = '\0';
+   }
+   snprintf(enum_idx, sizeof(enum_idx), "%d", MENU_ENUM_LABEL_INPUT_COMBO_TARGET);
+   generic_action_ok_displaylist_push(enum_idx, NULL, NULL, 0,
+         menu_st->selection_ptr, 0, ACTION_OK_DL_DROPDOWN_BOX_LIST);
+}
+
+/* Right, on a combination row: its buttons set by holding them. On an
+ * empty row, what it is to do is picked after. (OK types the whole
+ * line; Left picks what it does; Start takes it out.) */
+static int setting_entry_text_right(rarch_setting_t *setting, size_t idx,
+      bool wraparound)
+{
+   (void)idx;
+   (void)wraparound;
+   if (setting)
+      menu_input_entry_capture_begin(setting->index_offset);
+   return 0;
+}
+
+/* Left, on a combination row with an entry: what it does, picked. */
+static int setting_entry_text_left(rarch_setting_t *setting, size_t idx,
+      bool wraparound)
+{
+   char text[64];
+   (void)idx;
+   (void)wraparound;
+   if (setting && input_entry_target(setting->index_offset, text, sizeof(text)))
+      menu_setting_entry_target_pick(setting->index_offset, 0);
+   return 0;
+}
+
+/* What a row shows: what that number is now, as the configuration
+ * writes it - kept by the input, and changed by more than this row */
+static size_t setting_entry_text_repr(rarch_setting_t *setting,
+      char *s, size_t len)
+{
+   size_t n = input_entry_spec(setting->index_offset, s, len);
+   if (!n && len)
+      s[0] = '\0';
+   return n;
+}
+
+static size_t setting_macro_text_repr(rarch_setting_t *setting,
+      char *s, size_t len)
+{
+   size_t n = input_macro_spec(setting->index_offset, s, len);
+   if (!n && len)
+      s[0] = '\0';
+   return n;
+}
+
+void menu_setting_entries_refresh(void)
+{
+   unsigned i;
+   for (i = 0; i < MENU_ENTRY_ROWS; i++)
+   {
+      if (!input_entry_spec(i + 1, menu_entry_text[i], sizeof(menu_entry_text[i])))
+         menu_entry_text[i][0] = '\0';
+      if (!input_macro_spec(i + 1, menu_macro_text[i], sizeof(menu_macro_text[i])))
+         menu_macro_text[i][0] = '\0';
+   }
 }
 
 static void setting_add_special_callbacks(
@@ -840,13 +1125,16 @@ static int setting_int_action_right_default(
 static int setting_bind_action_start(rarch_setting_t *setting)
 {
    unsigned bind_type;
-   struct retro_keybind *keybind   = NULL;
-   struct retro_keybind *def_binds = (struct retro_keybind *)retro_keybinds_1;
+   struct retro_keybind *keybind         = NULL;
+   const struct retro_keybind_def *def   = NULL;
 
    if (!setting)
       return -1;
 
-   if (!(keybind = (struct retro_keybind*)setting->value.target.keybind))
+   /* the setting says whose bind and which; where it is kept is asked */
+   bind_type        = setting->bind_type;
+   if (!(keybind = input_config_bind_edit(setting->index_offset,
+               bind_type - MENU_SETTINGS_BIND_BEGIN)))
       return -1;
 
    keybind->joykey  = NO_BTN;
@@ -855,14 +1143,11 @@ static int setting_bind_action_start(rarch_setting_t *setting)
    /* Clear old mapping bit */
    input_keyboard_mapping_bits(0, RETRO_KEYBIND_KEY(keybind));
 
-   if (setting->index_offset)
-      def_binds     = (struct retro_keybind*)retro_keybinds_rest;
+   def              = input_config_bind_def(setting->index_offset,
+         bind_type - MENU_SETTINGS_BIND_BEGIN);
 
-   bind_type        = setting->bind_type;
-
-   RETRO_KEYBIND_SET_KEY(keybind,
-         RETRO_KEYBIND_KEY(&def_binds[bind_type - MENU_SETTINGS_BIND_BEGIN]));
-   keybind->mbutton = def_binds[bind_type - MENU_SETTINGS_BIND_BEGIN].mbutton;
+   RETRO_KEYBIND_SET_KEY(keybind, RETRO_KEYBIND_DEF_KEY(def));
+   RETRO_KEYBIND_SET_MBUTTON(keybind, def->mbutton);
 
    /* Store new mapping bit */
    input_keyboard_mapping_bits(1, RETRO_KEYBIND_KEY(keybind));
@@ -1299,7 +1584,10 @@ static void setting_reset_setting(rarch_setting_t* setting)
          *setting->value.target.fraction         = setting->default_value.fraction;
          break;
       case ST_BIND:
-         *setting->value.target.keybind          = *setting->default_value.keybind;
+         input_config_bind_from_def(
+               input_config_bind_edit(setting->index_offset,
+                  setting->bind_type - MENU_SETTINGS_BIND_BEGIN),
+               setting->default_value.keybind);
          break;
       case ST_STRING:
       case ST_STRING_OPTIONS:
@@ -1416,6 +1704,7 @@ static size_t setting_get_string_representation_st_bind(rarch_setting_t *setting
       char *s, size_t len)
 {
    unsigned index_offset                 = 0;
+   unsigned id                           = 0;
    const struct retro_keybind* keybind   = NULL;
    const struct retro_keybind* auto_bind = NULL;
    settings_t *settings                  = config_get_ptr();
@@ -1423,15 +1712,13 @@ static size_t setting_get_string_representation_st_bind(rarch_setting_t *setting
    if (!setting)
       return 0;
    index_offset = setting->index_offset;
-   keybind      = (const struct retro_keybind*)setting->value.target.keybind;
+   id           = setting->bind_type - MENU_SETTINGS_BIND_BEGIN;
+   keybind      = input_config_bind(index_offset, id);
    auto_bind    = (const struct retro_keybind*)
-      input_config_get_bind_auto(index_offset, keybind->id);
-   if (keybind->id >= RARCH_BIND_LIST_END)
-      return input_config_get_bind_string(settings, s, keybind, auto_bind,
-            NULL, NULL, len);
+      input_config_get_bind_auto(index_offset, id);
    return input_config_get_bind_string(settings, s, keybind, auto_bind,
-         &input_config_bind_labels[index_offset][keybind->id],
-         &input_autoconf_bind_labels[index_offset][keybind->id], len);
+         input_config_bind_names(index_offset, id),
+         input_autoconf_bind_names(index_offset, id), len);
 }
 
 static int setting_action_action_ok(
@@ -1812,10 +2099,13 @@ static rarch_setting_t setting_size_setting(const char* name,
  *
  * Returns: setting of type ST_BIND.
  **/
+/* A bind's setting says whose bind it is (its index_offset) and which
+ * (its bind_type, set by whoever makes it); it does not hold where the
+ * bind is stored. */
 static rarch_setting_t setting_bind_setting(const char* name,
-      const char* short_description, struct retro_keybind* target,
+      const char* short_description,
       uint32_t idx, uint32_t idx_offset,
-      const struct retro_keybind* default_value,
+      const struct retro_keybind_def* default_value,
       const char *group, const char *subgroup,
       const char *parent_group,
       bool dont_use_enum_idx)
@@ -1847,7 +2137,6 @@ static rarch_setting_t setting_bind_setting(const char* name,
    result.step                      = 0.0f;
    result.aux.rounding_fraction         = NULL;
 
-   result.value.target.keybind      = target;
    result.default_value.keybind     = default_value;
 
    result.cmd_trigger_idx           = CMD_EVENT_NONE;
@@ -2639,10 +2928,9 @@ static void config_string_options(
 static void config_bind_alt(
       rarch_setting_t **list,
       rarch_setting_info_t *list_info,
-      struct retro_keybind *s,
       uint32_t player, uint32_t player_offset,
       const char *name, const char *SHORT,
-      const struct retro_keybind *default_value,
+      const struct retro_keybind_def *default_value,
       rarch_setting_group_info_t *group_info,
       rarch_setting_group_info_t *subgroup_info,
       const char *parent_group)
@@ -2654,7 +2942,7 @@ static void config_bind_alt(
 
    (*list)[list_info->index++] = setting_bind_setting(
          strdup(name), strdup(SHORT),
-         s, player, player_offset,
+         player, player_offset,
          default_value,
          group_info->name, subgroup_info->name, parent_group,
          true);
@@ -2789,13 +3077,12 @@ static int setting_action_ok_bind_all_save_autoconfig(
 
    if (      name
          && *name
-         && config_save_autoconf_profile(name, map))
+         && config_save_autoconf_profile(name, index_offset))
    {
       int i;
       size_t _len;
       char buf[128];
       char msg[NAME_MAX_LENGTH];
-      struct retro_keybind *target = &input_config_binds[map][0];
 
       config_get_autoconf_profile_filename(name, map, buf, sizeof(buf));
       _len = snprintf(msg, sizeof(msg),
@@ -2805,21 +3092,17 @@ static int setting_action_ok_bind_all_save_autoconfig(
 
       /* Clear manual controller binds */
       for ( i  = MENU_SETTINGS_BIND_BEGIN;
-            i <= MENU_SETTINGS_BIND_LAST; i++, target++)
+            i <= MENU_SETTINGS_BIND_LAST; i++)
       {
+         /* each bind by its number, not by stepping along the row */
+         struct retro_keybind *target = input_config_bind_edit(
+               index_offset, i - MENU_SETTINGS_BIND_BEGIN);
          target->joykey  = NO_BTN;
          target->joyaxis = AXIS_NONE;
       }
 
       /* Load and activate saved profile */
-      {
-         const input_device_driver_t *joypad = input_state_get_ptr()->primary_joypad;
-
-         if (joypad)
-            input_autoconfigure_connect(joypad->name(map),
-                  NULL, NULL, joypad->ident,
-                  map, 0, 0);
-      }
+      input_driver_autoconfigure_pad(map);
    }
    else
    {
@@ -2839,26 +3122,24 @@ static int setting_action_ok_bind_defaults(
    struct menu_state    *menu_st         = menu_state_get_ptr();
    struct menu_bind_state *binds         = &menu_st->input_binds;
    struct retro_keybind *target          = NULL;
-   const struct retro_keybind *def_binds = NULL;
 
    if (!setting)
       return -1;
 
-   target             =  &input_config_binds[setting->index_offset][0];
-   def_binds          =  (setting->index_offset)
-                        ? retro_keybinds_rest
-                        : retro_keybinds_1;
    binds->begin       = MENU_SETTINGS_BIND_BEGIN;
    binds->last        = MENU_SETTINGS_BIND_LAST;
 
    for ( i  = MENU_SETTINGS_BIND_BEGIN;
-         i <= MENU_SETTINGS_BIND_LAST; i++, target++)
+         i <= MENU_SETTINGS_BIND_LAST; i++)
    {
-      RETRO_KEYBIND_SET_KEY(target,
-            RETRO_KEYBIND_KEY(&def_binds[i - MENU_SETTINGS_BIND_BEGIN]));
+      target = input_config_bind_edit(setting->index_offset,
+            i - MENU_SETTINGS_BIND_BEGIN);
+      RETRO_KEYBIND_SET_KEY(target, RETRO_KEYBIND_DEF_KEY(
+               input_config_bind_def(setting->index_offset,
+                  i - MENU_SETTINGS_BIND_BEGIN)));
       target->joykey  = NO_BTN;
       target->joyaxis = AXIS_NONE;
-      target->mbutton = NO_BTN;
+      RETRO_KEYBIND_SET_MBUTTON(target, NO_BTN);
    }
 
    return 0;
@@ -2969,7 +3250,7 @@ static int setting_action_left_retropad_bind(
       rarch_setting_t *setting, size_t idx, bool wraparound)
 {
    int value       = 0;
-   int step        = 1;
+   int max         = 0;
    int i           = 0;
    bool overflowed = false;
 
@@ -2977,24 +3258,28 @@ static int setting_action_left_retropad_bind(
       return -1;
 
    value = *setting->value.target.integer;
+   max   = (int)setting->max;
 
-   if (value < 0)
+   /* input_config_bind_order holds every ID from 0 to max, so a
+    * value outside that range (e.g. from a hand-edited config) is
+    * not in it and is treated like the empty bind. */
+   if (value < 0 || value > max)
       overflowed = true;
-   else if (input_config_bind_order[value] == 0)
-      *setting->value.target.integer = -1;
    else
    {
-      for (i = 0; i < setting->max + 1; i++)
-      {
+      for (i = 0; i < max; i++)
          if ((int)input_config_bind_order[i] == value)
-         {
-            *setting->value.target.integer = input_config_bind_order[i - step];
             break;
-         }
-      }
+
+      /* Left of the first entry is the empty bind, on the settings
+       * whose range has one; the others stop or wrap below. */
+      if (i > 0)
+         *setting->value.target.integer = input_config_bind_order[i - 1];
+      else if (setting->min < 0)
+         *setting->value.target.integer = -1;
    }
 
-   i -= step;
+   i--;
 
    if (setting->flags & SD_FLAG_ENFORCE_MINRANGE)
    {
@@ -3004,10 +3289,7 @@ static int setting_action_left_retropad_bind(
 
          if (settings &&
              settings->bools.menu_navigation_wraparound_enable)
-         {
-            unsigned max = (unsigned)setting->max;
             *setting->value.target.integer = input_config_bind_order[max];
-         }
       }
    }
 
@@ -3018,33 +3300,35 @@ static int setting_action_right_retropad_bind(
       rarch_setting_t *setting, size_t idx, bool wraparound)
 {
    int value = 0;
-   int step  = 1;
+   int max   = 0;
    int i     = 0;
 
    if (!setting)
       return -1;
 
    value = *setting->value.target.integer;
+   max   = (int)setting->max;
 
-   if (value < 0)
+   /* The empty bind and any value outside the range move to the
+    * first entry. */
+   if (value < 0 || value > max)
       *setting->value.target.integer = input_config_bind_order[0];
    else
    {
-      for (i = 0; i < setting->max + 1; i++)
-      {
+      for (i = 0; i < max; i++)
          if ((int)input_config_bind_order[i] == value)
-         {
-            *setting->value.target.integer = input_config_bind_order[i + step];
             break;
-         }
-      }
+
+      /* Right of the last entry stops there or wraps below. */
+      if (i < max)
+         *setting->value.target.integer = input_config_bind_order[i + 1];
    }
 
-   i += step;
+   i++;
 
    if (setting->flags & SD_FLAG_ENFORCE_MAXRANGE)
    {
-      if (i > setting->max)
+      if (i > max)
       {
          settings_t *settings = config_get_ptr();
          int min              = (int)setting->min;
@@ -3443,6 +3727,155 @@ static size_t setting_get_string_representation_video_hdr_subpixel_layout(
       }
    }
    return 0;
+}
+
+static size_t setting_get_string_representation_video_stereo_mode(
+      rarch_setting_t *setting, char *s, size_t len)
+{
+   if (setting)
+   {
+      switch (*setting->value.target.unsigned_integer)
+      {
+         case VIDEO_STEREO_MODE_2D:
+            return strlcpy(s, msg_hash_to_str(
+                     MENU_ENUM_LABEL_VALUE_VIDEO_STEREO_MODE_2D), len);
+         case VIDEO_STEREO_MODE_SBS_HALF:
+            return strlcpy(s, msg_hash_to_str(
+                     MENU_ENUM_LABEL_VALUE_VIDEO_STEREO_MODE_SBS_HALF), len);
+         case VIDEO_STEREO_MODE_SBS_FULL:
+            return strlcpy(s, msg_hash_to_str(
+                     MENU_ENUM_LABEL_VALUE_VIDEO_STEREO_MODE_SBS_FULL), len);
+         case VIDEO_STEREO_MODE_TOP_BOTTOM:
+            return strlcpy(s, msg_hash_to_str(
+                     MENU_ENUM_LABEL_VALUE_VIDEO_STEREO_MODE_TOP_BOTTOM), len);
+         case VIDEO_STEREO_MODE_ANAGLYPH:
+            return strlcpy(s, msg_hash_to_str(
+                     MENU_ENUM_LABEL_VALUE_VIDEO_STEREO_MODE_ANAGLYPH), len);
+         case VIDEO_STEREO_MODE_INTERLACED:
+            return strlcpy(s, msg_hash_to_str(
+                     MENU_ENUM_LABEL_VALUE_VIDEO_STEREO_MODE_INTERLACED), len);
+      }
+   }
+   return 0;
+}
+
+static size_t setting_get_string_representation_video_screen_layout(
+      rarch_setting_t *setting, char *s, size_t len)
+{
+   if (setting)
+   {
+      switch (*setting->value.target.unsigned_integer)
+      {
+         case VIDEO_SCREEN_LAYOUT_VERTICAL:
+            return strlcpy(s, msg_hash_to_str(
+                     MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_LAYOUT_VERTICAL), len);
+         case VIDEO_SCREEN_LAYOUT_HORIZONTAL:
+            return strlcpy(s, msg_hash_to_str(
+                     MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_LAYOUT_HORIZONTAL), len);
+      }
+   }
+   return 0;
+}
+
+static size_t setting_get_string_representation_video_openxr_controllers(
+      rarch_setting_t *setting, char *s, size_t len)
+{
+   if (setting)
+   {
+      switch (*setting->value.target.unsigned_integer)
+      {
+         case VIDEO_OPENXR_CONTROLLERS_COMBINED:
+            return strlcpy(s, msg_hash_to_str(
+                     MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_CONTROLLERS_COMBINED), len);
+         case VIDEO_OPENXR_CONTROLLERS_SEPARATE:
+            return strlcpy(s, msg_hash_to_str(
+                     MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_CONTROLLERS_SEPARATE), len);
+      }
+   }
+   return 0;
+}
+
+static size_t setting_get_string_representation_video_openxr_laser(
+      rarch_setting_t *setting, char *s, size_t len)
+{
+   if (setting)
+   {
+      switch (*setting->value.target.unsigned_integer)
+      {
+         case VIDEO_OPENXR_LASER_AUTO:
+            return strlcpy(s, msg_hash_to_str(
+                     MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_AUTO), len);
+         case VIDEO_OPENXR_LASER_ALWAYS:
+            return strlcpy(s, msg_hash_to_str(
+                     MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_ALWAYS), len);
+         case VIDEO_OPENXR_LASER_OFF:
+            return strlcpy(s, msg_hash_to_str(
+                     MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_OFF), len);
+      }
+   }
+   return 0;
+}
+
+static size_t setting_get_string_representation_video_openxr_refresh_rate(
+      rarch_setting_t *setting, char *s, size_t len)
+{
+   if (!setting)
+      return 0;
+   switch (*setting->value.target.unsigned_integer)
+   {
+      case VIDEO_OPENXR_REFRESH_AUTO:
+         return strlcpy(s, msg_hash_to_str(
+                  MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_REFRESH_AUTO), len);
+      case VIDEO_OPENXR_REFRESH_HEADSET:
+         return strlcpy(s, msg_hash_to_str(
+                  MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_REFRESH_HEADSET), len);
+   }
+   return snprintf(s, len, "%u Hz", *setting->value.target.unsigned_integer);
+}
+
+static int setting_action_ok_video_openxr_refresh_rate(
+      rarch_setting_t *setting, size_t idx, bool wraparound)
+{
+   if (!setting)
+      return -1;
+   generic_action_ok_displaylist_push(
+         NULL, NULL, NULL, 0, idx, 0,
+         ACTION_OK_DL_DROPDOWN_BOX_LIST_HEADSET_REFRESH_RATE);
+   return 0;
+}
+
+/* The next or previous choice, round; a rate the headset doesn't list
+ * steps to the first or the last. */
+static int setting_uint_step_video_openxr_refresh_rate(
+      rarch_setting_t *setting, bool forward)
+{
+   unsigned values[2 + VIDEO_HEADSET_MAX_RATES];
+   unsigned i, n, cur;
+   if (!setting)
+      return -1;
+   n   = video_driver_headset_rate_choices(values,
+         sizeof(values) / sizeof(values[0]));
+   cur = *setting->value.target.unsigned_integer;
+   if (!n)
+      return -1;
+   for (i = 0; i < n && values[i] != cur; i++) { }
+   if (i == n)
+      i = forward ? n - 1 : 0;
+   i = forward ? (i + 1) % n : (i + n - 1) % n;
+   *setting->value.target.unsigned_integer = values[i];
+   return 0;
+}
+
+static int setting_uint_action_left_video_openxr_refresh_rate(
+      rarch_setting_t *setting, size_t idx, bool wraparound)
+{
+   return setting_uint_step_video_openxr_refresh_rate(setting, false);
+}
+
+static int setting_uint_action_right_video_openxr_refresh_rate(
+      rarch_setting_t *setting, size_t idx, bool wraparound)
+{
+   return setting_uint_step_video_openxr_refresh_rate(setting, true);
 }
 
 static size_t setting_get_string_representation_state_slot(
@@ -6155,22 +6588,42 @@ static int setting_action_left_libretro_device_type(
    return 0;
 }
 
+/* Port Controls has no Device Type entry while the port is mapped to
+ * 'None', so Mapped Port is one entry higher: the cursor follows it. */
+static void setting_input_remap_port_follow(struct menu_state *menu_st,
+      unsigned was, unsigned now)
+{
+   if (now >= MAX_USERS && was < MAX_USERS)
+   {
+      if (menu_st->selection_ptr)
+         menu_st->selection_ptr--;
+   }
+   else if (was >= MAX_USERS && now < MAX_USERS)
+      menu_st->selection_ptr++;
+}
+
 static int setting_action_left_input_remap_port(
       rarch_setting_t *setting, size_t idx, bool wraparound)
 {
    struct menu_state *menu_st = menu_state_get_ptr();
    unsigned port              = 0;
+   unsigned was;
    settings_t *settings       = config_get_ptr();
 
    if (!setting)
       return -1;
 
    port = setting->index_offset;
+   was  = settings->uints.input_remap_ports[port];
 
+   /* MAX_USERS is 'None', between the last port and the first */
    if (settings->uints.input_remap_ports[port] > 0)
       settings->uints.input_remap_ports[port]--;
    else
-      settings->uints.input_remap_ports[port] = MAX_USERS - 1;
+      settings->uints.input_remap_ports[port] = MAX_USERS;
+   setting_input_remap_port_follow(menu_st, was,
+         settings->uints.input_remap_ports[port]);
+   input_first_press_set_by_hand(port);
 
    /* Must be called whenever settings->uints.input_remap_ports
     * is modified */
@@ -6311,11 +6764,59 @@ static int setting_action_left_input_mouse_index(
 
    p = &settings->uints.input_mouse_index[setting->index_offset];
 
-   if (*p)
+   /* to the mouse before: an index Mouse Index does not offer - one
+    * with no mouse, or with something that is not one - is passed
+    * over */
+   {
+      unsigned tries;
+      for (tries = 0; tries < MAX_INPUT_DEVICES; tries++)
+      {
+         if (*p)
+            (*p)--;
+         else
+            *p = MAX_INPUT_DEVICES - 1;
+         if (input_config_mouse_offered(*p))
+            break;
+      }
+   }
+
+   /* the port is pinned to the mouse chosen, not to its number */
+   input_mouse_pin_from_index(setting->index_offset, true);
+   settings->flags |= SETTINGS_FLG_MODIFIED;
+   return 0;
+}
+
+/* Keyboard Index: 0 is every keyboard as one, N the Nth keyboard the
+ * input driver lists. Left and right go through the ones there are. */
+static unsigned setting_input_keyboard_count(void)
+{
+   unsigned n = 0;
+   while (n < MAX_INPUT_DEVICES && input_config_get_keyboard_display_name(n))
+      n++;
+   return n;
+}
+
+static int setting_action_left_input_keyboard_index(
+      rarch_setting_t *setting, size_t idx, bool wraparound)
+{
+   settings_t      *settings = config_get_ptr();
+   unsigned *p               = NULL;
+   unsigned n                = setting_input_keyboard_count();
+
+   if (!setting || !settings)
+      return -1;
+
+   p = &settings->uints.input_keyboard_index[setting->index_offset];
+
+   if (*p > n)
+      *p = n;
+   else if (*p)
       (*p)--;
    else
-      *p = MAX_INPUT_DEVICES - 1;
+      *p = n;
 
+   /* the port is pinned to the keyboard chosen, not to its number */
+   input_keyboard_pin_from_index(setting->index_offset);
    settings->flags |= SETTINGS_FLG_MODIFIED;
    return 0;
 }
@@ -7299,6 +7800,22 @@ static int setting_action_crt_switch_write_edid(
 }
 #endif
 
+static size_t setting_get_string_representation_uint_menu_frame_rate(
+      rarch_setting_t *setting, char *s, size_t len)
+{
+   if (setting)
+   {
+      switch (*setting->value.target.unsigned_integer)
+      {
+         case MENU_FRAME_RATE_DISPLAY:
+            return strlcpy(s, msg_hash_to_str(MSG_MENU_FRAME_RATE_DISPLAY), len);
+         case MENU_FRAME_RATE_CONTENT:
+            return strlcpy(s, msg_hash_to_str(MSG_MENU_FRAME_RATE_CONTENT), len);
+      }
+   }
+   return 0;
+}
+
 static size_t setting_get_string_representation_uint_video_sdl_display_server(
       rarch_setting_t *setting, char *s, size_t len)
 {
@@ -7455,7 +7972,7 @@ static size_t setting_get_string_representation_uint_analog_dpad_mode(
    {
       default:
       case ANALOG_DPAD_NONE:
-         name = msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NONE);
+         name = msg_hash_to_str(MENU_ENUM_LABEL_VALUE_OFF);
          break;
       case ANALOG_DPAD_LSTICK:
          name = msg_hash_to_str(MENU_ENUM_LABEL_VALUE_LEFT_ANALOG);
@@ -7491,10 +8008,12 @@ static size_t setting_get_string_representation_uint_analog_dpad_mode(
 static size_t setting_get_string_representation_uint_input_remap_port(
       rarch_setting_t *setting, char *s, size_t len)
 {
-   if (setting)
-      return snprintf(s, len, "%u",
-            *setting->value.target.unsigned_integer + 1);
-   return 0;
+   if (!setting)
+      return 0;
+   if (*setting->value.target.unsigned_integer >= MAX_USERS)
+      return strlcpy(s, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NONE), len);
+   return snprintf(s, len, "%u",
+         *setting->value.target.unsigned_integer + 1);
 }
 
 #ifdef HAVE_THREADS
@@ -7689,13 +8208,87 @@ static size_t setting_get_string_representation_retropad_bind(
          return strlcpy(s, RARCH_NO_BIND, len);
       else
       {
-         const struct retro_keybind *keyptr =
-               &input_config_binds[0][retro_id];
-
-         return strlcpy(s, msg_hash_to_str(RETRO_KEYBIND_ENUM_IDX(keyptr)), len);
+         return strlcpy(s, msg_hash_to_str(input_config_bind_label(retro_id)), len);
       }
    }
    return 0;
+}
+
+static size_t setting_get_string_representation_input_aim_stick(
+      rarch_setting_t *setting, char *s, size_t len)
+{
+   enum msg_hash_enums e = MENU_ENUM_LABEL_VALUE_OFF;
+   if (!setting)
+      return 0;
+   switch (*setting->value.target.unsigned_integer)
+   {
+      case INPUT_AIM_STICK_LEFT:
+         e = MENU_ENUM_LABEL_VALUE_LEFT_ANALOG;
+         break;
+      case INPUT_AIM_STICK_RIGHT:
+         e = MENU_ENUM_LABEL_VALUE_RIGHT_ANALOG;
+         break;
+   }
+   return strlcpy(s, msg_hash_to_str(e), len);
+}
+
+static size_t setting_get_string_representation_input_rotation(
+      rarch_setting_t *setting, char *s, size_t len)
+{
+   enum msg_hash_enums e = MENU_ENUM_LABEL_VALUE_OFF;
+   if (!setting)
+      return 0;
+   switch (*setting->value.target.unsigned_integer)
+   {
+      case 1:
+         e = MENU_ENUM_LABEL_VALUE_VIDEO_ROTATION_90_DEG;
+         break;
+      case 2:
+         e = MENU_ENUM_LABEL_VALUE_VIDEO_ROTATION_180_DEG;
+         break;
+      case 3:
+         e = MENU_ENUM_LABEL_VALUE_VIDEO_ROTATION_270_DEG;
+         break;
+      case INPUT_ROTATION_AUTO:
+         e = MENU_ENUM_LABEL_VALUE_INPUT_ROTATION_AUTO;
+         break;
+   }
+   return strlcpy(s, msg_hash_to_str(e), len);
+}
+
+static size_t setting_get_string_representation_socd(
+      rarch_setting_t *setting, char *s, size_t len)
+{
+   enum msg_hash_enums e = MENU_ENUM_LABEL_VALUE_OFF;
+   if (!setting)
+      return 0;
+   switch (*setting->value.target.unsigned_integer)
+   {
+      case INPUT_SOCD_NEUTRAL:
+         e = MENU_ENUM_LABEL_VALUE_INPUT_SOCD_NEUTRAL;
+         break;
+      case INPUT_SOCD_LAST:
+         e = MENU_ENUM_LABEL_VALUE_INPUT_SOCD_LAST;
+         break;
+      case INPUT_SOCD_FIRST:
+         e = MENU_ENUM_LABEL_VALUE_INPUT_SOCD_FIRST;
+         break;
+      case INPUT_SOCD_UP:
+         e = MENU_ENUM_LABEL_VALUE_INPUT_SOCD_UP;
+         break;
+   }
+   return strlcpy(s, msg_hash_to_str(e), len);
+}
+
+static size_t setting_get_string_representation_assign_ports_keyboard(
+      rarch_setting_t *setting, char *s, size_t len)
+{
+   if (!setting)
+      return 0;
+   return strlcpy(s, msg_hash_to_str(
+            *setting->value.target.unsigned_integer
+            ? MENU_ENUM_LABEL_VALUE_INPUT_ASSIGN_PORTS_KEYBOARD_WAITS
+            : MENU_ENUM_LABEL_VALUE_INPUT_ASSIGN_PORTS_KEYBOARD_ASSIGNS), len);
 }
 
 static size_t setting_get_string_representation_poll_type_behavior(
@@ -7955,6 +8548,8 @@ static size_t setting_get_string_representation_uint_video_scale_integer_scaling
    return 0;
 }
 
+/* The History settings (pl_desc_2) are built where they are shown */
+#if defined(HAVE_OZONE) || defined(HAVE_XMB) || defined(RETROARCH_VALIDATION_DUMPS)
 static size_t setting_get_string_representation_uint_playlist_show_history_icons(
       rarch_setting_t *setting, char *s, size_t len)
 {
@@ -7972,6 +8567,7 @@ static size_t setting_get_string_representation_uint_playlist_show_history_icons
    }
    return 0;
 }
+#endif
 
 static size_t setting_get_string_representation_uint_menu_screensaver_timeout(
       rarch_setting_t *setting, char *s, size_t len)
@@ -8157,6 +8753,15 @@ static void menu_settings_list_current_add_range(
    (*list)[idx].flags            |= SD_FLAG_HAS_RANGE;
 }
 
+/* The row whose handler menu_action_handle_setting() is running. A
+ * handler may run the change handler itself, and menu_setting_generic()
+ * runs it again after: the command a change handler fires is held for
+ * that row until then, so one press fires it once. Hiding the row's
+ * command flags (#19730) does that for a command the flags ask for; a
+ * command the change handler picks itself - the audio rows, the video
+ * scale, HDR - is fired whatever the flags say, and goes by this. */
+static const rarch_setting_t *setting_cmd_held_for;
+
 int menu_setting_generic(rarch_setting_t *setting, size_t idx, bool wraparound)
 {
    uint32_t flags = setting->flags;
@@ -8240,6 +8845,14 @@ int menu_action_handle_setting(rarch_setting_t *setting,
             int ret                       = -1;
             struct menu_state *menu_st    = menu_state_get_ptr();
             size_t selection              = menu_st->selection_ptr;
+            /* A handler may run the change handler itself;
+             * menu_setting_generic() fires the command. */
+            uint32_t cmd_flags            = setting->flags
+               & (SD_FLAG_CMD_APPLY_AUTO
+               |  SD_FLAG_CMD_TRIGGER_EVENT_TRIGGERED);
+
+            setting->flags               &= ~cmd_flags;
+            setting_cmd_held_for          = setting;
             switch (action)
             {
                case MENU_ACTION_UP:
@@ -8273,6 +8886,8 @@ int menu_action_handle_setting(rarch_setting_t *setting,
                      ret = setting->actions->start(setting);
                   break;
             }
+            setting->flags               |= cmd_flags;
+            setting_cmd_held_for          = NULL;
 
             if (ret == 0)
                return menu_setting_generic(setting, selection, wraparound);
@@ -8352,10 +8967,13 @@ static const enum settings_list_type settings_list_build_order[] =
 #ifdef HAVE_SMBCLIENT
       SETTINGS_LIST_SMBCLIENT,
 #endif
+#ifdef HAVE_NFSCLIENT
+      SETTINGS_LIST_NFSCLIENT,
+#endif
       SETTINGS_LIST_MANUAL_CONTENT_SCAN
    };
 
-static bool setting_append_list(settings_t *settings, global_t *global,
+static bool setting_append_list(settings_t *settings,
       enum settings_list_type type, rarch_setting_t **list,
       rarch_setting_info_t *list_info, const char *parent_group);
 
@@ -8586,6 +9204,7 @@ static int setting_action_start_input_device_index(rarch_setting_t *setting)
    configuration_set_uint(settings,
          settings->uints.input_joypad_index[setting->index_offset],
          setting->index_offset);
+   input_driver_deadzones_refresh();
    return 0;
 }
 
@@ -8723,7 +9342,10 @@ static int setting_action_start_input_remap_port(rarch_setting_t *setting)
       return -1;
 
    port                                    = setting->index_offset;
+   setting_input_remap_port_follow(menu_st,
+         settings->uints.input_remap_ports[port], port);
    settings->uints.input_remap_ports[port] = port;
+   input_first_press_set_by_hand(port);
 
    /* Must be called whenever settings->uints.input_remap_ports
     * is modified */
@@ -8753,6 +9375,19 @@ static int setting_action_start_video_refresh_rate_polled(
    return setting_action_ok_video_refresh_rate_polled(setting, 0, false);
 }
 
+static int setting_action_start_input_keyboard_index(rarch_setting_t *setting)
+{
+   settings_t      *settings = config_get_ptr();
+
+   if (!setting || !settings)
+      return -1;
+
+   configuration_set_uint(settings,
+         settings->uints.input_keyboard_index[setting->index_offset], 0);
+   input_keyboard_pin_from_index(setting->index_offset);
+   return 0;
+}
+
 static int setting_action_start_input_mouse_index(rarch_setting_t *setting)
 {
    settings_t      *settings = config_get_ptr();
@@ -8763,6 +9398,8 @@ static int setting_action_start_input_mouse_index(rarch_setting_t *setting)
    configuration_set_uint(settings,
          settings->uints.input_mouse_index[setting->index_offset],
          setting->index_offset);
+   /* back to the port's own number, and to no mouse in particular */
+   input_mouse_pin_from_index(setting->index_offset, false);
    return 0;
 }
 
@@ -8832,6 +9469,7 @@ static int setting_action_right_input_remap_port(
       rarch_setting_t *setting, size_t idx, bool wraparound)
 {
    unsigned port              = 0;
+   unsigned was;
    struct menu_state *menu_st = menu_state_get_ptr();
    settings_t *settings       = config_get_ptr();
 
@@ -8839,11 +9477,15 @@ static int setting_action_right_input_remap_port(
       return -1;
 
    port = setting->index_offset;
+   was  = settings->uints.input_remap_ports[port];
 
-   if (settings->uints.input_remap_ports[port] < MAX_USERS - 1)
+   if (settings->uints.input_remap_ports[port] < MAX_USERS)
       settings->uints.input_remap_ports[port]++;
    else
       settings->uints.input_remap_ports[port] = 0;
+   setting_input_remap_port_follow(menu_st, was,
+         settings->uints.input_remap_ports[port]);
+   input_first_press_set_by_hand(port);
 
    /* Must be called whenever settings->uints.input_remap_ports
     * is modified */
@@ -8908,6 +9550,28 @@ static int setting_action_right_input_device_reservation_type(
    return 0;
 }
 
+static int setting_action_right_input_keyboard_index(
+      rarch_setting_t *setting, size_t idx, bool wraparound)
+{
+   settings_t      *settings = config_get_ptr();
+   unsigned *p               = NULL;
+   unsigned n                = setting_input_keyboard_count();
+
+   if (!setting || !settings)
+      return -1;
+
+   p = &settings->uints.input_keyboard_index[setting->index_offset];
+
+   if (*p < n)
+      (*p)++;
+   else
+      *p = 0;
+
+   input_keyboard_pin_from_index(setting->index_offset);
+   settings->flags |= SETTINGS_FLG_MODIFIED;
+   return 0;
+}
+
 static int setting_action_right_input_mouse_index(
       rarch_setting_t *setting, size_t idx, bool wraparound)
 {
@@ -8919,11 +9583,21 @@ static int setting_action_right_input_mouse_index(
 
    p = &settings->uints.input_mouse_index[setting->index_offset];
 
-   if (*p < MAX_INPUT_DEVICES - 1)
-      (*p)++;
-   else
-      *p = 0;
+   /* to the next mouse; see setting_action_left_input_mouse_index() */
+   {
+      unsigned tries;
+      for (tries = 0; tries < MAX_INPUT_DEVICES; tries++)
+      {
+         if (*p < MAX_INPUT_DEVICES - 1)
+            (*p)++;
+         else
+            *p = 0;
+         if (input_config_mouse_offered(*p))
+            break;
+      }
+   }
 
+   input_mouse_pin_from_index(setting->index_offset, true);
    settings->flags |= SETTINGS_FLG_MODIFIED;
    return 0;
 }
@@ -9067,7 +9741,7 @@ static size_t get_string_representation_input_device_reservation_type(
       return 0;
    map = settings->uints.input_device_reservation_type[setting->index_offset];
    if (map == INPUT_DEVICE_RESERVATION_NONE)
-      return strlcpy(s, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_DEVICE_RESERVATION_NONE), len);
+      return strlcpy(s, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_OFF), len);
    else if (map == INPUT_DEVICE_RESERVATION_PREFERRED)
       return strlcpy(s, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_DEVICE_RESERVATION_PREFERRED), len);
    else if (map == INPUT_DEVICE_RESERVATION_RESERVED)
@@ -9081,7 +9755,7 @@ static size_t setting_get_string_representation_input_device_reserved_device_nam
    if (!setting)
       return 0;
    if (!setting->value.target.string || !*setting->value.target.string)
-      return strlcpy(s, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NONE), len);
+      return strlcpy(s, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_OFF), len);
    str = setting->value.target.string;
    if (   ((str[0] >= '0' && str[0] <= '9') || (str[0] >= 'a' && str[0] <= 'f') || (str[0] >= 'A' && str[0] <= 'F'))
        && ((str[1] >= '0' && str[1] <= '9') || (str[1] >= 'a' && str[1] <= 'f') || (str[1] >= 'A' && str[1] <= 'F'))
@@ -9097,6 +9771,39 @@ static size_t setting_get_string_representation_input_device_reserved_device_nam
    return strlcpy(s, str, len);
 }
 
+size_t menu_setting_keyboard_index_name(unsigned idx, char *s, size_t len)
+{
+   const char *name;
+   if (idx == 0)
+      return strlcpy(s,
+            msg_hash_to_str(MENU_ENUM_LABEL_VALUE_INPUT_KEYBOARD_INDEX_ALL), len);
+   /* a keyboard that is not there is read as "All" until it is */
+   name = input_config_get_keyboard_display_name(idx - 1);
+   return snprintf(s, len, "#%u: %s", idx,
+         name ? name : msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NOT_AVAILABLE));
+}
+
+static size_t get_string_representation_input_keyboard_index(
+      rarch_setting_t *setting, char *s, size_t len)
+{
+   settings_t *settings = config_get_ptr();
+   unsigned map         = 0;
+
+   if (!setting || !settings)
+      return 0;
+
+   map = settings->uints.input_keyboard_index[setting->index_offset];
+
+   /* pinned to a keyboard that is not plugged in: it is named, not a
+    * number that is some other keyboard's now */
+   if (input_keyboard_pin_absent(setting->index_offset))
+      return snprintf(s, len,
+            msg_hash_to_str(MENU_ENUM_LABEL_VALUE_INPUT_KEYBOARD_INDEX_ABSENT),
+            settings->arrays.input_keyboard_device[setting->index_offset]);
+
+   return menu_setting_keyboard_index_name(map, s, len);
+}
+
 static size_t get_string_representation_input_mouse_index(
       rarch_setting_t *setting, char *s, size_t len)
 {
@@ -9108,6 +9815,13 @@ static size_t get_string_representation_input_mouse_index(
       return 0;
 
    map = settings->uints.input_mouse_index[setting->index_offset];
+
+   /* pinned to a mouse that is not plugged in: it is named, not a
+    * number that is some other mouse's now */
+   if (input_mouse_pin_absent(setting->index_offset))
+      return snprintf(s, len,
+            msg_hash_to_str(MENU_ENUM_LABEL_VALUE_INPUT_KEYBOARD_INDEX_ABSENT),
+            settings->arrays.input_mouse_device[setting->index_offset]);
 
    if (map < MAX_INPUT_DEVICES)
    {
@@ -9215,7 +9929,8 @@ static void write_handler_logging_verbosity(rarch_setting_t *setting)
    }
    retroarch_override_setting_unset(RARCH_OVERRIDE_SETTING_VERBOSITY, NULL);
 
-   if (rarch_cmd || (setting->flags & SD_FLAG_CMD_TRIGGER_EVENT_TRIGGERED))
+   if (     setting != setting_cmd_held_for
+         && (rarch_cmd || (setting->flags & SD_FLAG_CMD_TRIGGER_EVENT_TRIGGERED)))
       command_event(rarch_cmd, NULL);
 }
 
@@ -9230,12 +9945,33 @@ static void general_write_handler(rarch_setting_t *setting)
 
    rarch_cmd                    = write_handler_get_cmd(setting);
 
+   /* each port's deadzones worked out again: a deadzone setting, or a
+    * port's controller, may be what was written (sixteen ports, and
+    * only on a write) */
+   input_driver_deadzones_refresh();
+
+   /* a mouse picked for a port from the list of them: the port is
+    * pinned to that mouse */
+   if (     setting->enum_idx >= MENU_ENUM_LABEL_INPUT_MOUSE_INDEX
+         && setting->enum_idx <= MENU_ENUM_LABEL_INPUT_MOUSE_INDEX_LAST)
+      input_mouse_pin_from_index(setting->index_offset, true);
+   /* and a keyboard, the same */
+   if (     setting->enum_idx >= MENU_ENUM_LABEL_INPUT_KEYBOARD_INDEX
+         && setting->enum_idx <= MENU_ENUM_LABEL_INPUT_KEYBOARD_INDEX_LAST)
+      input_keyboard_pin_from_index(setting->index_offset);
+
    switch (setting->enum_idx)
    {
       case MENU_ENUM_LABEL_VIDEO_SHADERS_ENABLE:
 #if defined(HAVE_CG) || defined(HAVE_GLSL) || defined(HAVE_SLANG) || defined(HAVE_HLSL)
          video_shader_toggle(settings, true);
 #endif
+         break;
+      case MENU_ENUM_LABEL_VIDEO_SCANLINE_SYNC:
+         /* Lock from fresh output lines rather than whatever the last
+          * time it was on left behind */
+         if (*setting->value.target.boolean)
+            video_driver_scanline_init();
          break;
       case MENU_ENUM_LABEL_VIDEO_THREADED:
          if (*setting->value.target.boolean)
@@ -9707,6 +10443,11 @@ static void general_write_handler(rarch_setting_t *setting)
          }
          break;
 #ifdef HAVE_VIDEO_FILTER
+      case MENU_ENUM_LABEL_VIDEO_FILTER_ENABLE:
+         /* As the toggle hotkey. A second run of this handler for the
+          * same press finds the driver told already. */
+         video_driver_filter_apply();
+         break;
       case MENU_ENUM_LABEL_VIDEO_FILTER_THREADS:
          /* Rebuild a running filter on the new worker count; with no
           * filter loaded the value is picked up at the next load. */
@@ -9849,13 +10590,21 @@ static void general_write_handler(rarch_setting_t *setting)
          break;
 #endif
       case MENU_ENUM_LABEL_PAL60_ENABLE:
-         if (*setting->value.target.boolean && global_get_ptr()->console.screen.pal_enable)
-            rarch_cmd = CMD_EVENT_REINIT;
-         else
          {
-            *setting->value.target.boolean = false;
-            if (setting->actions->change)
-               setting->actions->change(setting);
+            /* Only 720x576 output converts */
+            unsigned dims = 0;
+            char desc[64];
+            if (     *setting->value.target.boolean
+                  && video_driver_get_video_output_size(&dims, desc,
+                     sizeof(desc))
+                  && dims == VIDEO_SCALE_PACK(720, 576))
+               rarch_cmd = CMD_EVENT_REINIT;
+            else
+            {
+               *setting->value.target.boolean = false;
+               if (setting->actions->change)
+                  setting->actions->change(setting);
+            }
          }
          break;
       case MENU_ENUM_LABEL_SYSTEM_BGM_ENABLE:
@@ -9916,6 +10665,39 @@ static void general_write_handler(rarch_setting_t *setting)
       case MENU_ENUM_LABEL_SUSTAINED_PERFORMANCE_MODE:
          frontend_driver_set_sustained_performance_mode(settings->bools.sustained_performance_mode);
          break;
+#ifdef HAVE_THREADS
+      case MENU_ENUM_LABEL_MAIN_THREAD_PRIORITY:
+         retroarch_main_thread_priority(settings->bools.main_thread_priority);
+         break;
+#endif
+#if defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)
+      case MENU_ENUM_LABEL_WIN32_POWER_PLAN:
+      case MENU_ENUM_LABEL_WIN32_POWER_PLAN_IDLE_DISABLE:
+         {
+            bool plan = settings->bools.win32_power_plan;
+            bool idle = settings->bools.win32_power_plan_idle_disable;
+            const char *_msg;
+
+            if (frontend_driver_set_power_plan(plan, idle) || !plan)
+               break;
+            /* Without idle states held off, the plan may still apply */
+            if (idle && frontend_driver_set_power_plan(plan, false))
+            {
+               _msg = msg_hash_to_str(MSG_FAILED_TO_DISABLE_IDLE_STATES);
+               configuration_set_bool(settings,
+                     settings->bools.win32_power_plan_idle_disable, false);
+            }
+            else
+            {
+               _msg = msg_hash_to_str(MSG_FAILED_TO_APPLY_POWER_PLAN);
+               configuration_set_bool(settings,
+                     settings->bools.win32_power_plan, false);
+            }
+            runloop_msg_queue_push(_msg, strlen(_msg), 1, 180, true, NULL,
+                  MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
+         }
+         break;
+#endif
 #ifdef ANDROID
       case MENU_ENUM_LABEL_VIDEO_NOTCH_WRITE_OVER:
       case MENU_ENUM_LABEL_INPUT_AUTO_MOUSE_GRAB:
@@ -10165,14 +10947,8 @@ static void general_write_handler(rarch_setting_t *setting)
 #ifdef HAVE_XMB
       case MENU_ENUM_LABEL_XMB_ENTRY_ICONS:
 #endif
-         {
-            /* Reset wallpaper by menu context reset */
-            struct menu_state *menu_st = menu_state_get_ptr();
-
-            if (menu_st->driver_ctx && menu_st->driver_ctx->context_reset)
-               menu_st->driver_ctx->context_reset(menu_st->userdata,
-                     video_driver_is_threaded());
-         }
+         /* Reset wallpaper by menu context rebuild */
+         menu_driver_context_rebuild();
          break;
 #if HAVE_CLOUDSYNC
       case MENU_ENUM_LABEL_CLOUD_SYNC_DRIVER:
@@ -10232,6 +11008,7 @@ static void general_write_handler(rarch_setting_t *setting)
          if (   (setting->enum_idx >= MENU_ENUM_LABEL_INPUT_REMAP_PORT)
              && (setting->enum_idx <= MENU_ENUM_LABEL_INPUT_REMAP_PORT_LAST))
          {
+            input_first_press_set_by_hand(setting->index_offset);
             /* Must be called whenever settings->uints.input_remap_ports
              * is modified */
             input_remapping_update_port_map();
@@ -10245,7 +11022,8 @@ static void general_write_handler(rarch_setting_t *setting)
          break;
    }
 
-   if (rarch_cmd || (setting->flags & SD_FLAG_CMD_TRIGGER_EVENT_TRIGGERED))
+   if (     setting != setting_cmd_held_for
+         && (rarch_cmd || (setting->flags & SD_FLAG_CMD_TRIGGER_EVENT_TRIGGERED)))
       command_event(rarch_cmd, NULL);
 }
 
@@ -11203,8 +11981,6 @@ static bool setting_append_list_input_player_options(
    rarch_setting_group_info_t subgroup_info;
    settings_t *settings                       = config_get_ptr();
    rarch_system_info_t *sys_info              = &runloop_state_get_ptr()->system;
-   const struct retro_keybind* const defaults = (user == 0)
-         ? retro_keybinds_1 : retro_keybinds_rest;
    const char *binds_group_label              = msg_hash_to_str
          ((enum msg_hash_enums)(MENU_ENUM_LABEL_INPUT_USER_1_BINDS + user));
 
@@ -11229,6 +12005,8 @@ static bool setting_append_list_input_player_options(
       char device_reservation_type[64];
       char device_reserved_device[64];
       char mouse_index[64];
+      char keyboard_index[64];
+      char aim_stick[64];
       char bind_all[64];
       char bind_all_save_autoconfig[64];
       char bind_defaults[64];
@@ -11252,6 +12030,12 @@ static bool setting_append_list_input_player_options(
             user + 1);
       snprintf(mouse_index, sizeof(mouse_index),
             MENU_ENUM_LABEL_INPUT_MOUSE_INDEX_STR,
+            user + 1);
+      snprintf(keyboard_index, sizeof(keyboard_index),
+            MENU_ENUM_LABEL_INPUT_KEYBOARD_INDEX_STR,
+            user + 1);
+      snprintf(aim_stick, sizeof(aim_stick),
+            MENU_ENUM_LABEL_INPUT_AIM_STICK_STR,
             user + 1);
       snprintf(bind_all, sizeof(bind_all),
             MENU_ENUM_LABEL_INPUT_BIND_ALL_INDEX_STR,
@@ -11335,6 +12119,29 @@ static bool setting_append_list_input_player_options(
 
       CONFIG_UINT_ALT(
             list, list_info,
+            &settings->uints.input_keyboard_index[user],
+            keyboard_index,
+            msg_hash_to_str(MENU_ENUM_LABEL_VALUE_INPUT_KEYBOARD_INDEX),
+            0,
+            &group_info,
+            &subgroup_info,
+            parent_group,
+            general_write_handler,
+            general_read_handler);
+      (*list)[list_info->index - 1].index         = user + 1;
+      (*list)[list_info->index - 1].index_offset  = user;
+      SETTINGS_ACTION_SET(start, &(*list)[list_info->index - 1], &setting_action_start_input_keyboard_index)
+      SETTINGS_ACTION_SET(left, &(*list)[list_info->index - 1], &setting_action_left_input_keyboard_index)
+      SETTINGS_ACTION_SET(right, &(*list)[list_info->index - 1], &setting_action_right_input_keyboard_index)
+      SETTINGS_ACTION_SET(sel, &(*list)[list_info->index - 1], &setting_action_right_input_keyboard_index)
+      SETTINGS_ACTION_SET(ok, &(*list)[list_info->index - 1], &setting_action_ok_uint)
+      SETTINGS_ACTION_SET(repr, &(*list)[list_info->index - 1], &get_string_representation_input_keyboard_index)
+      menu_settings_list_current_add_range(list, list_info, 0, MAX_INPUT_DEVICES, 1.0, true, true);
+      MENU_SETTINGS_LIST_CURRENT_ADD_ENUM_IDX_PTR(list, list_info,
+            (enum msg_hash_enums)(MENU_ENUM_LABEL_INPUT_KEYBOARD_INDEX + user));
+
+      CONFIG_UINT_ALT(
+            list, list_info,
             &settings->uints.input_analog_dpad_mode[user],
             analog_to_digital,
             msg_hash_to_str(MENU_ENUM_LABEL_VALUE_INPUT_ADC_TYPE),
@@ -11354,6 +12161,25 @@ static bool setting_append_list_input_player_options(
       menu_settings_list_current_add_range(list, list_info, 0, ANALOG_DPAD_LAST-1, 1.0, true, true);
       MENU_SETTINGS_LIST_CURRENT_ADD_ENUM_IDX_PTR(list, list_info,
             (enum msg_hash_enums)(MENU_ENUM_LABEL_INPUT_PLAYER_ANALOG_DPAD_MODE + user));
+
+      CONFIG_UINT_ALT(
+            list, list_info,
+            &settings->uints.input_aim_stick[user],
+            aim_stick,
+            msg_hash_to_str(MENU_ENUM_LABEL_VALUE_INPUT_AIM_STICK),
+            INPUT_AIM_STICK_NONE,
+            &group_info,
+            &subgroup_info,
+            parent_group,
+            general_write_handler,
+            general_read_handler);
+      (*list)[list_info->index - 1].index         = user + 1;
+      (*list)[list_info->index - 1].index_offset  = user;
+      SETTINGS_ACTION_SET(ok, &(*list)[list_info->index - 1], &setting_action_ok_uint)
+      SETTINGS_ACTION_SET(repr, &(*list)[list_info->index - 1], &setting_get_string_representation_input_aim_stick)
+      menu_settings_list_current_add_range(list, list_info, 0, INPUT_AIM_STICK_LAST - 1, 1.0, true, true);
+      MENU_SETTINGS_LIST_CURRENT_ADD_ENUM_IDX_PTR(list, list_info,
+            (enum msg_hash_enums)(MENU_ENUM_LABEL_INPUT_AIM_STICK + user));
 
       CONFIG_UINT_ALT(
             list, list_info,
@@ -11384,7 +12210,7 @@ static bool setting_append_list_input_player_options(
             sizeof(settings->arrays.input_reserved_devices[user]),
             device_reserved_device,
             msg_hash_to_str(MENU_ENUM_LABEL_VALUE_INPUT_DEVICE_RESERVED_DEVICE_NAME),
-            msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NONE),
+            msg_hash_to_str(MENU_ENUM_LABEL_VALUE_OFF),
             &group_info,
             &subgroup_info,
             parent_group,
@@ -11507,12 +12333,11 @@ static bool setting_append_list_input_player_options(
 
          CONFIG_BIND_ALT(
                list, list_info,
-               &input_config_binds[user][i],
                user + 1,
                user,
                name,
                label,
-               &defaults[i],
+               input_config_bind_def(user, i),
                &group_info,
                &subgroup_info,
                parent_group);
@@ -11645,7 +12470,7 @@ static bool setting_append_list_input_remap_port_options(
       SETTINGS_ACTION_SET(start, &(*list)[list_info->index - 1], &setting_action_start_input_remap_port)
       SETTINGS_ACTION_SET(ok, &(*list)[list_info->index - 1], &setting_action_ok_uint)
       SETTINGS_ACTION_SET(repr, &(*list)[list_info->index - 1], &setting_get_string_representation_uint_input_remap_port)
-      menu_settings_list_current_add_range(list, list_info, 0, MAX_USERS-1, 1.0, true, true);
+      menu_settings_list_current_add_range(list, list_info, 0, MAX_USERS, 1.0, true, true);
       MENU_SETTINGS_LIST_CURRENT_ADD_ENUM_IDX_PTR(list, list_info,
             (enum msg_hash_enums)(MENU_ENUM_LABEL_INPUT_REMAP_PORT + user));
    }
@@ -11899,6 +12724,13 @@ static const setting_desc_t vid_desc_1[] = {
 #include "../settings/settings_def_video_monitor_index.h"
 };
 
+#if defined(GEKKO) || defined(_XBOX1) || defined(_XBOX360) || defined(HAVE_PSGL)
+static const setting_desc_t vid_console_desc[] = {
+/* GENERATED: rows come from settings_def_video_console_screen.h in order. */
+#include "../settings/settings_def_video_console_screen.h"
+};
+#endif
+
 #if defined(ANDROID) || TARGET_OS_IOS
 static const setting_desc_t vid_desc_2[] = {
 /* GENERATED: rows come from settings_def_video_notch.h in order. */
@@ -12122,6 +12954,16 @@ static const setting_desc_t hdr_desc2[] = {
 #include "../settings/settings_def_video_hdr_toggles.h"
 };
 
+static const setting_desc_t stereo_desc[] = {
+/* GENERATED: rows come from settings_def_video_stereo.h in order. */
+#include "../settings/settings_def_video_stereo.h"
+};
+
+static const setting_desc_t headset_desc[] = {
+/* GENERATED: rows come from settings_def_video_headset.h in order. */
+#include "../settings/settings_def_video_headset.h"
+};
+
 static const setting_desc_t vid_desc_20[] = {
 /* GENERATED: rows come from settings_def_screen_brightness.h in order. */
 #include "../settings/settings_def_screen_brightness.h"
@@ -12130,11 +12972,6 @@ static const setting_desc_t vid_desc_20[] = {
 static const setting_desc_t sync_desc[] = {
 /* GENERATED: rows come from settings_def_video_sync.h in order. */
 #include "../settings/settings_def_video_sync.h"
-#ifdef HAVE_D3DKMT
-   SDESC_BOOL_ROW(video_scanline_sync, VIDEO_SCANLINE_SYNC,
-         DEFAULT_SCANLINE_SYNC,
-         SD_FLAG_NONE, 0, CMD_EVENT_NONE),
-#endif
 };
 
 static const setting_desc_t avsync_desc[] = {
@@ -12435,9 +13272,9 @@ static const setting_desc_t frame_throttli_desc_0[] = {
 #include "../settings/settings_def_frame_throttle_general.h"
 };
 
-static const setting_desc_t menu_thr_desc[] = {
-/* GENERATED: rows come from settings_def_menu_throttle.h in order. */
-#include "../settings/settings_def_menu_throttle.h"
+static const setting_desc_t menu_frame_rate_desc[] = {
+/* GENERATED: rows come from settings_def_menu_frame_rate.h in order. */
+#include "../settings/settings_def_menu_frame_rate.h"
 };
 
 static const setting_desc_t frame_throttli_desc_1[] = {
@@ -12896,6 +13733,13 @@ static const setting_desc_t power_manageme_desc_1[] = {
 };
 #endif
 
+#if defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)
+static const setting_desc_t power_manageme_desc_2[] = {
+/* GENERATED: rows come from settings_def_power_plan.h in order. */
+#include "../settings/settings_def_power_plan.h"
+};
+#endif
+
 static const setting_desc_t wifi_managemen_desc_0[] = {
 /* GENERATED: rows come from settings_def_wifi.h in order. */
 #include "../settings/settings_def_wifi.h"
@@ -13018,10 +13862,12 @@ static const setting_desc_t pl_desc_1[] = {
 #include "../settings/settings_def_playlist_management.h"
 };
 
+#if defined(HAVE_OZONE) || defined(HAVE_XMB) || defined(RETROARCH_VALIDATION_DUMPS)
 static const setting_desc_t pl_desc_2[] = {
 /* GENERATED: rows come from settings_def_playlist_history.h in order. */
 #include "../settings/settings_def_playlist_history.h"
 };
+#endif
 
 static const setting_desc_t pl_desc_3[] = {
 /* GENERATED: rows come from settings_def_playlist_display.h in order. */
@@ -13081,7 +13927,7 @@ static const setting_desc_t core_updater_desc_2[] = {
 #endif
 #endif
 
-#ifdef HAVE_SMBCLIENT
+#if defined(HAVE_SMBCLIENT) || defined(HAVE_NFSCLIENT)
 static const setting_desc_t np_desc_0[] = {
 /* GENERATED: rows come from settings_def_netplay_action.h in order. */
 #include "../settings/settings_def_netplay_action.h"
@@ -13162,6 +14008,33 @@ static const setting_desc_t np_desc_8[] = {
 /* GENERATED: rows come from settings_def_network_ondemand_thumbnails.h in order. */
 #include "../settings/settings_def_network_ondemand_thumbnails.h"
 };
+#endif
+
+#if defined(HAVE_KEYCHAIN) && defined(HAVE_CRYPTO) && defined(HAVE_CONFIGFILE)
+static void menu_input_st_string_cb_keychain_passphrase(void *userdata,
+      const char *str)
+{
+   /* Enter only: a cancelled dialog does not call back. An empty
+    * entry removes the passphrase (or does nothing while locked). */
+   task_push_keychain_passphrase(str ? str : "");
+   menu_input_dialog_end();
+}
+
+static int setting_action_keychain_passphrase(
+      rarch_setting_t *setting, size_t idx, bool wraparound)
+{
+   menu_input_ctx_line_t line;
+   line.label         = msg_hash_to_str(keychain_is_locked()
+         ? MSG_INPUT_KEYCHAIN_PASSPHRASE : MSG_INPUT_KEYCHAIN_PASSPHRASE_NEW);
+   line.label_setting = setting ? setting->name : NULL;
+   line.type          = 0;
+   line.idx           = 0;
+   line.text_type     = MENU_INPUT_DIALOG_KB_TYPE_PASSWORD;
+   line.cb            = menu_input_st_string_cb_keychain_passphrase;
+   if (!menu_input_dialog_start(&line))
+      return -1;
+   return 0;
+}
 #endif
 
 static const setting_desc_t user_desc_0[] = {
@@ -13283,7 +14156,7 @@ static const setting_desc_t smbclient_desc_1[] = {
  * registry entry. */
 
 static void settings_build_main_menu(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -13292,7 +14165,7 @@ static void settings_build_main_menu(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
       START_GROUP(list, list_info, &group_info, MENU_ENUM_LABEL_MAIN_MENU_STR, parent_group);
       MENU_SETTINGS_LIST_CURRENT_ADD_ENUM_IDX_PTR(list, list_info, MENU_ENUM_LABEL_MAIN_MENU);
@@ -13423,7 +14296,7 @@ static void settings_build_main_menu(
 }
 
 static void settings_build_drivers(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -13431,7 +14304,7 @@ static void settings_build_drivers(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
 
          unsigned i, j = 0;
@@ -13637,7 +14510,7 @@ static void settings_build_drivers(
 }
 
 static void settings_build_core(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -13645,7 +14518,7 @@ static void settings_build_core(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
 
          unsigned i, listing = 0;
@@ -13778,7 +14651,7 @@ static void settings_build_core(
 }
 
 static void settings_build_configuration(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -13786,7 +14659,7 @@ static void settings_build_configuration(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
 
          uint8_t i, listing = 0;
@@ -13906,7 +14779,7 @@ static void settings_build_configuration(
 }
 
 static void settings_build_logging(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -13914,7 +14787,7 @@ static void settings_build_logging(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
 
          bool *tmp_b = NULL;
@@ -13977,7 +14850,7 @@ ADD_DESC(logging_desc_0);
 }
 
 static void settings_build_saving(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -13985,7 +14858,7 @@ static void settings_build_saving(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
 
          uint8_t i, listing = 0;
@@ -14119,7 +14992,7 @@ static void settings_build_saving(
 }
 
 static void settings_build_cloud_sync(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -14127,7 +15000,7 @@ static void settings_build_cloud_sync(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
 #ifdef HAVE_CLOUDSYNC
       GROUP_STATE(MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SETTINGS, MENU_ENUM_LABEL_CLOUD_SYNC_SETTINGS);
@@ -14165,7 +15038,7 @@ static void settings_build_cloud_sync(
 
 
 static void settings_build_rewind(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -14173,7 +15046,7 @@ static void settings_build_rewind(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
       START_GROUP(list, list_info, &group_info, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_REWIND_SETTINGS), parent_group);
 
@@ -14207,7 +15080,7 @@ static void settings_build_rewind(
 
 
 static void settings_build_cheat_details(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -14215,7 +15088,7 @@ static void settings_build_cheat_details(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
 #ifdef HAVE_CHEATS
       {
@@ -14475,7 +15348,7 @@ static void settings_build_cheat_details(
 }
 
 static void settings_build_cheat_search(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -14483,7 +15356,7 @@ static void settings_build_cheat_search(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
 #ifdef HAVE_CHEATS
       if (!cheat_manager_state.cheats)
@@ -14711,7 +15584,7 @@ static void settings_build_cheat_search(
 }
 
 static void settings_build_video(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -14719,7 +15592,7 @@ static void settings_build_video(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
 
          START_GROUP(list, list_info, &group_info,
@@ -14738,8 +15611,9 @@ static void settings_build_video(
          START_SUB_GROUP(list, list_info, "Platform-specific", &group_info,
                &subgroup_info, parent_group);
 
-         video_driver_menu_settings((void**)list, (void*)list_info,
-               (void*)&group_info, (void*)&subgroup_info, parent_group);
+#if defined(GEKKO) || defined(_XBOX1) || defined(_XBOX360) || defined(HAVE_PSGL)
+            ADD_DESC(vid_console_desc);
+#endif
 
          END_SUB_GROUP(list, list_info, parent_group);
          START_SUB_GROUP(list, list_info, "Monitor", &group_info, &subgroup_info, parent_group);
@@ -15002,6 +15876,18 @@ static void settings_build_video(
             END_SUB_GROUP(list, list_info, parent_group);
          }
 
+         START_SUB_GROUP(list, list_info, "Stereo 3D & Screens", &group_info, &subgroup_info, parent_group);
+
+         ADD_DESC(stereo_desc);
+
+         END_SUB_GROUP(list, list_info, parent_group);
+
+         START_SUB_GROUP(list, list_info, "Headset", &group_info, &subgroup_info, parent_group);
+
+         ADD_DESC(headset_desc);
+
+         END_SUB_GROUP(list, list_info, parent_group);
+
          START_SUB_GROUP(
                list,
                list_info,
@@ -15118,7 +16004,7 @@ static void settings_build_video(
 
 
 static void settings_build_audio(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -15126,7 +16012,7 @@ static void settings_build_audio(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
       START_GROUP(list, list_info, &group_info,
             msg_hash_to_str(MENU_ENUM_LABEL_VALUE_AUDIO_SETTINGS), parent_group);
@@ -15243,7 +16129,7 @@ ADD_DESC(audio_skew_desc);
 
 #ifdef HAVE_MICROPHONE
 static void settings_build_microphone(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -15251,7 +16137,7 @@ static void settings_build_microphone(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
       START_GROUP(list, list_info, &group_info,
             msg_hash_to_str(MENU_ENUM_LABEL_VALUE_MICROPHONE_SETTINGS), parent_group);
@@ -15300,7 +16186,7 @@ static void settings_build_microphone(
 #endif
 
 static void settings_build_input(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -15308,7 +16194,7 @@ static void settings_build_input(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
 
 
@@ -15352,9 +16238,7 @@ static void settings_build_input(
             ADD_DESC(inp_desc_9);
 
       {
-         input_driver_state_t *st = input_state_get_ptr();
-         input_driver_t *current_input = st->current_driver;
-         if (string_is_equal(current_input->ident, "android"))
+         if (string_is_equal(input_driver_get_ident(), "android"))
          {
             /* Descriptor holdout: value target outside settings_t. */
             CONFIG_ACTION(
@@ -15386,6 +16270,67 @@ static void settings_build_input(
                   general_write_handler,
                   general_read_handler,
                   SD_FLAG_NONE);
+
+            CONFIG_BOOL(
+                  list, list_info,
+                  &settings->bools.input_stylus_enable,
+                  MENU_ENUM_LABEL_INPUT_STYLUS_ENABLE,
+                  MENU_ENUM_LABEL_VALUE_INPUT_STYLUS_ENABLE,
+                  true,
+                  MENU_ENUM_LABEL_VALUE_OFF,
+                  MENU_ENUM_LABEL_VALUE_ON,
+                  &group_info,
+                  &subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler,
+                  SD_FLAG_NONE);
+
+            CONFIG_BOOL(
+                  list, list_info,
+                  &settings->bools.input_stylus_require_contact_for_click,
+                  MENU_ENUM_LABEL_INPUT_STYLUS_REQUIRE_CONTACT_FOR_CLICK,
+                  MENU_ENUM_LABEL_VALUE_INPUT_STYLUS_REQUIRE_CONTACT_FOR_CLICK,
+                  true,
+                  MENU_ENUM_LABEL_VALUE_OFF,
+                  MENU_ENUM_LABEL_VALUE_ON,
+                  &group_info,
+                  &subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler,
+                  SD_FLAG_NONE);
+
+            CONFIG_BOOL(
+                  list, list_info,
+                  &settings->bools.input_stylus_hover_moves_pointer,
+                  MENU_ENUM_LABEL_INPUT_STYLUS_HOVER_MOVES_POINTER,
+                  MENU_ENUM_LABEL_VALUE_INPUT_STYLUS_HOVER_MOVES_POINTER,
+                  false,
+                  MENU_ENUM_LABEL_VALUE_OFF,
+                  MENU_ENUM_LABEL_VALUE_ON,
+                  &group_info,
+                  &subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler,
+                  SD_FLAG_NONE);
+
+            CONFIG_UINT(
+                  list, list_info,
+                  &settings->uints.input_stylus_pressure_sensitivity,
+                  MENU_ENUM_LABEL_INPUT_STYLUS_PRESSURE_SENSITIVITY,
+                  MENU_ENUM_LABEL_VALUE_INPUT_STYLUS_PRESSURE_SENSITIVITY,
+                  DEFAULT_INPUT_STYLUS_PRESSURE_SENSITIVITY,
+                  &group_info,
+                  &subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler);
+            SETTINGS_ACTION_SET(ok, &(*list)[list_info->index - 1], &setting_action_ok_uint)
+            SETTINGS_ACTION_SET(repr, &(*list)[list_info->index - 1], &setting_get_string_representation_max_users)
+            (*list)[list_info->index - 1].offset_by = 1;
+            menu_settings_list_current_add_range(list, list_info, 1, 100, 1, true, true);
 #endif
 #ifdef HAVE_SDL3
       {
@@ -15394,10 +16339,7 @@ static void settings_build_input(
           * Android entries above are gated on the active input driver.
           * A gl+udev desktop build compiled with SDL3 support should
           * not show a toggle that does nothing. */
-         input_driver_state_t *st      = input_state_get_ptr();
-         input_driver_t *current_input = st->current_driver;
-         if (     current_input
-               && string_is_equal(current_input->ident, "sdl3")
+         if (     string_is_equal(input_driver_get_ident(), "sdl3")
                && input_osk_native_available())
             CONFIG_BOOL(
                   list, list_info,
@@ -15496,7 +16438,7 @@ static void settings_build_input(
 
 
 static void settings_build_recording(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -15505,7 +16447,7 @@ static void settings_build_recording(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
          GROUP_STATE(MENU_ENUM_LABEL_VALUE_RECORDING_SETTINGS, MENU_ENUM_LABEL_RECORDING_SETTINGS);
 
@@ -15579,7 +16521,7 @@ static void settings_build_recording(
 }
 
 static void settings_build_input_hotkey(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -15587,7 +16529,7 @@ static void settings_build_input_hotkey(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
 
          unsigned i;
@@ -15610,11 +16552,10 @@ static void settings_build_input_hotkey(
 #endif
             CONFIG_BIND_ALT(
                   list, list_info,
-                  &input_config_binds[0][i],
                   0, 0,
                   input_config_bind_map_get_base(i),
                   input_config_bind_map_get_desc(i),
-                  &retro_keybinds_1[i],
+                  input_config_bind_def(0, i),
                   &group_info, &subgroup_info, parent_group);
             (*list)[list_info->index - 1].ui_type        = ST_UI_TYPE_BIND_BUTTON;
             (*list)[list_info->index - 1].bind_type      = i + MENU_SETTINGS_BIND_BEGIN;
@@ -15622,13 +16563,90 @@ static void settings_build_input_hotkey(
                   (enum msg_hash_enums)(MENU_ENUM_LABEL_INPUT_HOTKEY_BIND_BEGIN + i));
          }
 
+         /* entries and macros, a row a number: see menu_entry_text */
+         for (i = 0; i < MENU_ENTRY_ROWS; i++)
+         {
+            char name[32];
+            char shortname[48];
+            unsigned k;
+            for (k = 0; k < 2; k++)
+            {
+               snprintf(name, sizeof(name), k ? "input_macro_%u" : "input_combo_%u", i + 1);
+               snprintf(shortname, sizeof(shortname), k ? "Macro %u" : "Combination %u", i + 1);
+               CONFIG_STRING_ALT(
+                     list, list_info,
+                     k ? menu_macro_text[i] : menu_entry_text[i],
+                     k ? sizeof(menu_macro_text[i]) : sizeof(menu_entry_text[i]),
+                     name, shortname, "",
+                     &group_info, &subgroup_info, parent_group,
+                     k ? setting_macro_text_change : setting_entry_text_change,
+                     NULL);
+               (*list)[list_info->index - 1].index_offset = i + 1;
+               (*list)[list_info->index - 1].ui_type      = ST_UI_TYPE_STRING_LINE_EDIT;
+               SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
+               SETTINGS_ACTION_SET(start, &(*list)[list_info->index - 1], setting_entry_text_start)
+               SETTINGS_ACTION_SET(repr, &(*list)[list_info->index - 1],
+                     k ? setting_macro_text_repr : setting_entry_text_repr)
+               if (!k)
+               {
+                  SETTINGS_ACTION_SET(right, &(*list)[list_info->index - 1], setting_entry_text_right)
+                  SETTINGS_ACTION_SET(left,  &(*list)[list_info->index - 1], setting_entry_text_left)
+               }
+            }
+         }
+
+         /* what a combination does, picked from a list: not a row */
+         input_entry_targets(menu_target_values, sizeof(menu_target_values));
+         CONFIG_STRING_OPTIONS(
+               list, list_info,
+               menu_target_text, sizeof(menu_target_text),
+               MENU_ENUM_LABEL_INPUT_COMBO_TARGET,
+               MENU_ENUM_LABEL_VALUE_INPUT_COMBO_TARGET,
+               "", menu_target_values,
+               &group_info, &subgroup_info, parent_group,
+               setting_entry_target_change, NULL);
+         MENU_SETTINGS_LIST_CURRENT_ADD_ENUM_IDX_PTR(list, list_info,
+               MENU_ENUM_LABEL_INPUT_COMBO_TARGET);
+         SETTINGS_ACTION_SET(repr, &(*list)[list_info->index - 1], setting_entry_target_repr)
+         /* its values are this file's own buffer, made again each time
+          * the list is opened: not to be freed with the settings */
+         (*list)[list_info->index - 1].free_flags &= ~SD_FREE_FLAG_VALUES;
+
+         /* how quickly it does it, picked from a list: not a row */
+         CONFIG_STRING_OPTIONS(
+               list, list_info,
+               menu_hold_text, sizeof(menu_hold_text),
+               MENU_ENUM_LABEL_INPUT_COMBO_HOLD,
+               MENU_ENUM_LABEL_VALUE_INPUT_COMBO_HOLD,
+               "0", menu_hold_values,
+               &group_info, &subgroup_info, parent_group,
+               setting_entry_hold_change, NULL);
+         MENU_SETTINGS_LIST_CURRENT_ADD_ENUM_IDX_PTR(list, list_info,
+               MENU_ENUM_LABEL_INPUT_COMBO_HOLD);
+         SETTINGS_ACTION_SET(repr, &(*list)[list_info->index - 1], setting_entry_hold_repr)
+         (*list)[list_info->index - 1].free_flags &= ~SD_FREE_FLAG_VALUES;
+
+         /* how long, after Hold For: not a row */
+         CONFIG_STRING_OPTIONS(
+               list, list_info,
+               menu_time_text, sizeof(menu_time_text),
+               MENU_ENUM_LABEL_INPUT_COMBO_HOLD_TIME,
+               MENU_ENUM_LABEL_VALUE_INPUT_COMBO_HOLD_TIME,
+               "10", menu_time_values,
+               &group_info, &subgroup_info, parent_group,
+               setting_entry_time_change, NULL);
+         MENU_SETTINGS_LIST_CURRENT_ADD_ENUM_IDX_PTR(list, list_info,
+               MENU_ENUM_LABEL_INPUT_COMBO_HOLD_TIME);
+         SETTINGS_ACTION_SET(repr, &(*list)[list_info->index - 1], setting_entry_time_repr)
+         (*list)[list_info->index - 1].free_flags &= ~SD_FREE_FLAG_VALUES;
+
          GROUP_END();
 
    }
 }
 
 static void settings_build_frame_throttling(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -15636,13 +16654,13 @@ static void settings_build_frame_throttling(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
       GROUP_STATE(MENU_ENUM_LABEL_VALUE_FRAME_THROTTLE_SETTINGS, MENU_ENUM_LABEL_FRAME_THROTTLE_SETTINGS);
 
             ADD_DESC(frame_throttli_desc_0);
 
-            ADD_DESC(menu_thr_desc);
+            ADD_DESC(menu_frame_rate_desc);
             ADD_DESC(frame_throttli_desc_1);
 
 #ifdef HAVE_RUNAHEAD
@@ -15697,7 +16715,7 @@ ADD_DESC(frame_throttli_desc_2);
 }
 
 static void settings_build_onscreen_notifications(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -15705,7 +16723,7 @@ static void settings_build_onscreen_notifications(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
       START_GROUP(list, list_info, &group_info,
             msg_hash_to_str(MENU_ENUM_LABEL_VALUE_ONSCREEN_DISPLAY_SETTINGS),
@@ -15752,8 +16770,37 @@ static void settings_build_onscreen_notifications(
    }
 }
 
+#ifdef HAVE_OVERLAY
+/* Start on an overlay preset row: back to what a fresh configuration
+ * has, which on mobile is the bundled gamepad (or keyboard), as touch
+ * devices have no other controls, and elsewhere no overlay. The row's
+ * default string is where its file browser opens, not a preset. */
+static int setting_overlay_preset_action_start(rarch_setting_t *setting)
+{
+   struct menu_state *menu_st = menu_state_get_ptr();
+#ifdef RARCH_MOBILE
+   settings_t *settings       = config_get_ptr();
+#endif
+
+   if (!setting || !setting->value.target.string)
+      return -1;
+   setting->value.target.string[0] = '\0';
+#ifdef RARCH_MOBILE
+   if (*settings->paths.directory_overlay)
+      fill_pathname_join_special(setting->value.target.string,
+            settings->paths.directory_overlay,
+            (setting->enum_idx == MENU_ENUM_LABEL_OSK_OVERLAY_PRESET)
+            ? FILE_PATH_DEFAULT_OSK_OVERLAY : FILE_PATH_DEFAULT_OVERLAY,
+            setting->size);
+#endif
+   menu_st->flags |= MENU_ST_FLAG_PREVENT_POPULATE
+                  |  MENU_ST_FLAG_ENTRIES_NEED_REFRESH;
+   return 0;
+}
+#endif
+
 static void settings_build_overlay(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -15761,7 +16808,7 @@ static void settings_build_overlay(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
 #ifdef HAVE_OVERLAY
       START_GROUP(list, list_info, &group_info,
@@ -15804,6 +16851,7 @@ static void settings_build_overlay(
             ADD_DESC(ovl_desc_1);
 
             ADD_DESC(overlay2_desc_0);
+            SETTINGS_ACTION_SET(start, &(*list)[list_info->index - 1], setting_overlay_preset_action_start)
 
             ADD_DESC(ovl_desc_2);
 
@@ -15817,7 +16865,7 @@ static void settings_build_overlay(
 }
 
 static void settings_build_osk_overlay(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -15825,7 +16873,7 @@ static void settings_build_osk_overlay(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
 #ifdef HAVE_OVERLAY
       START_GROUP(list, list_info, &group_info,
@@ -15836,7 +16884,12 @@ static void settings_build_osk_overlay(
 
       START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
-            ADD_DESC(osk_overlay_desc_0);
+            {
+               /* The preset is the first of the rows */
+               unsigned preset = list_info->index;
+               ADD_DESC(osk_overlay_desc_0);
+               SETTINGS_ACTION_SET(start, &(*list)[preset], setting_overlay_preset_action_start)
+            }
 
       GROUP_END();
 #endif
@@ -15846,7 +16899,7 @@ static void settings_build_osk_overlay(
 
 
 static void settings_build_menu(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -15854,7 +16907,7 @@ static void settings_build_menu(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
       START_GROUP(list, list_info, &group_info,
             msg_hash_to_str(MENU_ENUM_LABEL_VALUE_MENU_SETTINGS),
@@ -16196,7 +17249,7 @@ static void settings_build_menu(
 
 
 static void settings_build_power_management(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -16204,7 +17257,7 @@ static void settings_build_power_management(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
       GROUP_STATE(MENU_ENUM_LABEL_VALUE_POWER_MANAGEMENT_SETTINGS, MENU_ENUM_LABEL_POWER_MANAGEMENT_SETTINGS);
 
@@ -16217,6 +17270,9 @@ static void settings_build_power_management(
 #ifndef HAVE_LAKKA
       if (frontend_driver_has_gamemode())
             ADD_DESC(power_manageme_desc_1);
+#if defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)
+            ADD_DESC(power_manageme_desc_2);
+#endif
 
       GROUP_END();
 #endif
@@ -16227,7 +17283,7 @@ static void settings_build_power_management(
 
 
 static void settings_build_ai_service(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -16235,7 +17291,7 @@ static void settings_build_ai_service(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
 #ifdef HAVE_TRANSLATE
       GROUP_STATE(MENU_ENUM_LABEL_VALUE_AI_SERVICE_SETTINGS, MENU_ENUM_LABEL_AI_SERVICE_SETTINGS);
@@ -16285,7 +17341,7 @@ static void settings_build_ai_service(
 }
 
 static void settings_build_user_interface(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -16293,7 +17349,7 @@ static void settings_build_user_interface(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
       GROUP_STATE(MENU_ENUM_LABEL_VALUE_USER_INTERFACE_SETTINGS, MENU_ENUM_LABEL_USER_INTERFACE_SETTINGS);
 
@@ -16435,7 +17491,7 @@ ADD_DESC(ui_desc_13);
 }
 
 static void settings_build_playlist(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -16443,7 +17499,7 @@ static void settings_build_playlist(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
       START_GROUP(list, list_info, &group_info,
             MENU_ENUM_LABEL_PLAYLIST_SETTINGS_BEGIN_STR,
@@ -16488,7 +17544,7 @@ static void settings_build_playlist(
 }
 
 static void settings_build_cheevos(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -16496,7 +17552,7 @@ static void settings_build_cheevos(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
 #ifdef HAVE_CHEEVOS
       GROUP_STATE(MENU_ENUM_LABEL_VALUE_CHEEVOS_SETTINGS, MENU_ENUM_LABEL_RETRO_ACHIEVEMENTS_SETTINGS);
@@ -16546,7 +17602,7 @@ static void settings_build_cheevos(
 }
 
 static void settings_build_cheevos_appearance(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -16554,7 +17610,7 @@ static void settings_build_cheevos_appearance(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
 #ifdef HAVE_CHEEVOS
       GROUP_STATE(MENU_ENUM_LABEL_VALUE_CHEEVOS_APPEARANCE_SETTINGS, MENU_ENUM_LABEL_CHEEVOS_APPEARANCE_SETTINGS);
@@ -16634,7 +17690,7 @@ static void settings_build_cheevos_appearance(
 }
 
 static void settings_build_cheevos_visibility(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -16642,7 +17698,7 @@ static void settings_build_cheevos_visibility(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
 #ifdef HAVE_CHEEVOS
       GROUP_STATE(MENU_ENUM_LABEL_VALUE_CHEEVOS_VISIBILITY_SETTINGS, MENU_ENUM_LABEL_CHEEVOS_VISIBILITY_SETTINGS);
@@ -16674,7 +17730,7 @@ static void settings_build_cheevos_visibility(
 }
 
 static void settings_build_core_updater(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -16682,7 +17738,7 @@ static void settings_build_core_updater(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
       GROUP_STATE(MENU_ENUM_LABEL_VALUE_CORE_UPDATER_SETTINGS, MENU_ENUM_LABEL_UPDATER_SETTINGS);
 #ifdef HAVE_NETWORKING
@@ -16767,7 +17823,7 @@ static void settings_build_core_updater(
 }
 
 static void settings_build_netplay(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -16775,7 +17831,7 @@ static void settings_build_netplay(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
       START_GROUP(list, list_info, &group_info,
             msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NETWORK_SETTINGS),
@@ -16978,7 +18034,7 @@ static void settings_build_netplay(
 }
 
 static void settings_build_lakka_services(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -16986,7 +18042,7 @@ static void settings_build_lakka_services(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
 
 #if defined(HAVE_LAKKA)
@@ -17110,7 +18166,7 @@ static void settings_build_lakka_services(
 
 #ifdef HAVE_LAKKA_SWITCH
 static void settings_build_lakka_switch_options(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -17118,7 +18174,7 @@ static void settings_build_lakka_switch_options(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
 
          START_GROUP(list, list_info, &group_info,
@@ -17185,7 +18241,7 @@ static void settings_build_lakka_switch_options(
 #endif
 
 static void settings_build_user(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -17193,7 +18249,7 @@ static void settings_build_user(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
       GROUP_STATE(MENU_ENUM_LABEL_VALUE_USER_SETTINGS, MENU_ENUM_LABEL_USER_SETTINGS);
 
@@ -17238,7 +18294,7 @@ static void settings_build_user(
 }
 
 static void settings_build_user_accounts(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -17246,7 +18302,7 @@ static void settings_build_user_accounts(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
       GROUP_STATE(MENU_ENUM_LABEL_VALUE_ACCOUNTS_LIST_END, MENU_ENUM_LABEL_SETTINGS);
 
@@ -17263,7 +18319,7 @@ static void settings_build_user_accounts(
 }
 
 static void settings_build_user_accounts_youtube(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -17271,7 +18327,7 @@ static void settings_build_user_accounts_youtube(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
       GROUP_STATE(MENU_ENUM_LABEL_VALUE_ACCOUNTS_YOUTUBE, MENU_ENUM_LABEL_SETTINGS);
 
@@ -17297,7 +18353,7 @@ static void settings_build_user_accounts_youtube(
 }
 
 static void settings_build_user_accounts_twitch(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -17305,7 +18361,7 @@ static void settings_build_user_accounts_twitch(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
       GROUP_STATE(MENU_ENUM_LABEL_VALUE_ACCOUNTS_TWITCH, MENU_ENUM_LABEL_SETTINGS);
 
@@ -17330,7 +18386,7 @@ static void settings_build_user_accounts_twitch(
 }
 
 static void settings_build_user_accounts_facebook(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -17338,7 +18394,7 @@ static void settings_build_user_accounts_facebook(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
       GROUP_STATE(MENU_ENUM_LABEL_VALUE_ACCOUNTS_FACEBOOK, MENU_ENUM_LABEL_SETTINGS);
 
@@ -17363,7 +18419,7 @@ static void settings_build_user_accounts_facebook(
 }
 
 static void settings_build_user_accounts_kick(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -17371,7 +18427,7 @@ static void settings_build_user_accounts_kick(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
       GROUP_STATE(MENU_ENUM_LABEL_VALUE_ACCOUNTS_KICK, MENU_ENUM_LABEL_SETTINGS);
 
@@ -17397,7 +18453,7 @@ static void settings_build_user_accounts_kick(
 
 
 static void settings_build_directory(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -17406,7 +18462,7 @@ static void settings_build_directory(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
       START_GROUP(list, list_info, &group_info,
             msg_hash_to_str(MENU_ENUM_LABEL_VALUE_DIRECTORY_SETTINGS),
@@ -17493,7 +18549,7 @@ static void settings_build_directory(
 }
 
 static void settings_build_privacy(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -17501,7 +18557,7 @@ static void settings_build_privacy(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
       START_GROUP(list, list_info, &group_info,
             msg_hash_to_str(MENU_ENUM_LABEL_VALUE_PRIVACY_SETTINGS), parent_group);
@@ -17529,7 +18585,7 @@ static void settings_build_privacy(
 }
 
 static void settings_build_midi(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -17537,7 +18593,7 @@ static void settings_build_midi(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
       START_GROUP(list, list_info, &group_info,
             msg_hash_to_str(MENU_ENUM_LABEL_VALUE_MIDI_SETTINGS), parent_group);
@@ -17558,7 +18614,7 @@ static void settings_build_midi(
 }
 
 static void settings_build_manual_content_scan(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -17566,7 +18622,7 @@ static void settings_build_manual_content_scan(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
       START_GROUP(list, list_info, &group_info,
             msg_hash_to_str(MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_LIST), parent_group);
@@ -17740,7 +18796,7 @@ static void settings_build_manual_content_scan(
 
 #ifdef HAVE_SMBCLIENT
 static void settings_build_smbclient(
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -17748,7 +18804,7 @@ static void settings_build_smbclient(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)settings; (void)global; (void)group_info; (void)subgroup_info;
+   (void)settings; (void)group_info; (void)subgroup_info;
    {
       GROUP_STATE(MENU_ENUM_LABEL_VALUE_SMB_CLIENT_SETTINGS, MENU_ENUM_LABEL_SMB_CLIENT_SETTINGS);
 
@@ -17847,10 +18903,57 @@ static void settings_build_smbclient(
 }
 #endif
 
+#ifdef HAVE_NFSCLIENT
+#define NFS_STRING(field, T)                                             \
+   CONFIG_STRING(list, list_info, settings->arrays.field,                \
+         sizeof(settings->arrays.field), MENU_ENUM_LABEL_##T,            \
+         MENU_ENUM_LABEL_VALUE_##T, "", &group_info, &subgroup_info,     \
+         parent_group, NULL, NULL);                                      \
+   SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT)
+#define NFS_UINT(field, T, def, mn, mx)                                  \
+   CONFIG_UINT(list, list_info, &settings->uints.field,                  \
+         MENU_ENUM_LABEL_##T, MENU_ENUM_LABEL_VALUE_##T, def,            \
+         &group_info, &subgroup_info, parent_group, general_write_handler, \
+         general_read_handler);                                          \
+   SETTINGS_ACTION_SET(ok, &(*list)[list_info->index - 1], &setting_action_ok_uint) \
+   menu_settings_list_current_add_range(list, list_info, mn, mx, 1, true, true)
+
+/* Descriptor holdouts: the strings take free input, the uints are
+ * plain ranges. */
+static void settings_build_nfsclient(
+      settings_t *settings,
+      rarch_setting_t **list, rarch_setting_info_t *list_info,
+      const char *parent_group)
+{
+   rarch_setting_group_info_t group_info;
+   rarch_setting_group_info_t subgroup_info;
+   group_info.name    = NULL;
+   subgroup_info.name = NULL;
+   {
+      GROUP_STATE(MENU_ENUM_LABEL_VALUE_NFS_CLIENT_SETTINGS, MENU_ENUM_LABEL_NFS_CLIENT_SETTINGS);
+      NFS_STRING(nfs_server, NFS_CLIENT_SERVER);
+      NFS_STRING(nfs_export, NFS_CLIENT_EXPORT);
+      NFS_STRING(nfs_subdir, NFS_CLIENT_SUBDIR);
+      NFS_UINT(nfs_timeout,      NFS_CLIENT_TIMEOUT,      DEFAULT_NFS_TIMEOUT,      1, 60);
+      NFS_UINT(nfs_num_contexts, NFS_CLIENT_NUM_CONTEXTS, DEFAULT_NFS_NUM_CONTEXTS, 1, 16);
+      NFS_UINT(nfs_port,         NFS_CLIENT_PORT,         DEFAULT_NFS_PORT,         0, 65535);
+      NFS_UINT(nfs_mount_port,   NFS_CLIENT_MOUNT_PORT,   DEFAULT_NFS_MOUNT_PORT,   0, 65535);
+      NFS_UINT(nfs_version,      NFS_CLIENT_VERSION,      DEFAULT_NFS_VERSION,      3, 4);
+      NFS_UINT(nfs_readahead,    NFS_CLIENT_READAHEAD,    DEFAULT_NFS_READAHEAD,    0, DEFAULT_NFS_MAX_READAHEAD);
+      /* in 64 KiB steps, as SMB's: 0 (off), 64, 128 ... */
+      menu_settings_list_current_add_range(list, list_info,
+            0, DEFAULT_NFS_MAX_READAHEAD, 64, true, true);
+      GROUP_END();
+   }
+}
+#undef NFS_STRING
+#undef NFS_UINT
+#endif
+
 typedef struct settings_build_entry
 {
    enum settings_list_type type;
-   void (*build)(settings_t *settings, global_t *global,
+   void (*build)(settings_t *settings,
          rarch_setting_t **list, rarch_setting_info_t *list_info,
          const char *parent_group);
    /* Data-driven groups: when build is NULL the generic builder runs
@@ -17864,7 +18967,7 @@ typedef struct settings_build_entry
 
 static void settings_build_desc_group(
       const settings_build_entry_t *e,
-      settings_t *settings, global_t *global,
+      settings_t *settings,
       rarch_setting_t **list, rarch_setting_info_t *list_info,
       const char *parent_group)
 {
@@ -17872,7 +18975,6 @@ static void settings_build_desc_group(
    rarch_setting_group_info_t subgroup_info;
    group_info.name    = NULL;
    subgroup_info.name = NULL;
-   (void)global;
    START_GROUP(list, list_info, &group_info,
          msg_hash_to_str(e->value_label), parent_group);
    if (e->idx_label)
@@ -18013,11 +19115,13 @@ static const settings_build_entry_t settings_build_registry[] = {
 #ifdef HAVE_SMBCLIENT
    { SETTINGS_LIST_SMBCLIENT, settings_build_smbclient, NULL, 0, MSG_UNKNOWN, MSG_UNKNOWN, MSG_UNKNOWN },
 #endif
+#ifdef HAVE_NFSCLIENT
+   { SETTINGS_LIST_NFSCLIENT, settings_build_nfsclient, NULL, 0, MSG_UNKNOWN, MSG_UNKNOWN, MSG_UNKNOWN },
+#endif
 };
 
 static bool setting_append_list(
       settings_t *settings,
-      global_t *global,
       enum settings_list_type type,
       rarch_setting_t **list,
       rarch_setting_info_t *list_info,
@@ -18029,11 +19133,11 @@ static bool setting_append_list(
       if (settings_build_registry[i].type != type)
          continue;
       if (settings_build_registry[i].build)
-         settings_build_registry[i].build(settings, global,
+         settings_build_registry[i].build(settings,
                list, list_info, parent_group);
       else
          settings_build_desc_group(&settings_build_registry[i],
-               settings, global, list, list_info, parent_group);
+               settings, list, list_info, parent_group);
       return true;
    }
    return true;
@@ -18109,7 +19213,6 @@ void menu_setting_free(rarch_setting_t *setting)
 static rarch_setting_t *settings_lazy_get(unsigned k)
 {
    settings_t *settings = config_get_ptr();
-   global_t *global     = global_get_ptr();
    rarch_setting_t *sl       = NULL;
    rarch_setting_t **lp      = NULL;
    rarch_setting_info_t li;
@@ -18127,7 +19230,7 @@ static rarch_setting_t *settings_lazy_get(unsigned k)
    {
       MENU_SETTING_INITIALIZE((&sl)[0], j);
    }
-   if (!setting_append_list(settings, global,
+   if (!setting_append_list(settings,
          settings_list_build_order[k], &sl, &li,
          MENU_ENUM_LABEL_MAIN_MENU_STR))
    {
@@ -18227,6 +19330,9 @@ static const settings_desc_table_t settings_desc_registry[] = {
    { vid_desc_0, (uint16_t)ARRAY_SIZE(vid_desc_0) },
 #endif
    { vid_desc_1, (uint16_t)ARRAY_SIZE(vid_desc_1) },
+#if defined(GEKKO) || defined(_XBOX1) || defined(_XBOX360) || defined(HAVE_PSGL)
+   { vid_console_desc, (uint16_t)ARRAY_SIZE(vid_console_desc) },
+#endif
 #if defined(ANDROID) || TARGET_OS_IOS
    { vid_desc_2, (uint16_t)ARRAY_SIZE(vid_desc_2) },
 #endif
@@ -18388,7 +19494,7 @@ static const settings_desc_table_t settings_desc_registry[] = {
    { runahead_frames_desc, (uint16_t)ARRAY_SIZE(runahead_frames_desc) },
 #endif
    { frame_throttli_desc_0, (uint16_t)ARRAY_SIZE(frame_throttli_desc_0) },
-   { menu_thr_desc, (uint16_t)ARRAY_SIZE(menu_thr_desc) },
+   { menu_frame_rate_desc, (uint16_t)ARRAY_SIZE(menu_frame_rate_desc) },
    { frame_throttli_desc_1, (uint16_t)ARRAY_SIZE(frame_throttli_desc_1) },
 #ifdef HAVE_RUNAHEAD
    { frame_throttli_desc_2, (uint16_t)ARRAY_SIZE(frame_throttli_desc_2) },
@@ -18543,6 +19649,9 @@ static const settings_desc_table_t settings_desc_registry[] = {
 #endif
 #ifndef HAVE_LAKKA
    { power_manageme_desc_1, (uint16_t)ARRAY_SIZE(power_manageme_desc_1) },
+#endif
+#if defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)
+   { power_manageme_desc_2, (uint16_t)ARRAY_SIZE(power_manageme_desc_2) },
 #endif
 #ifdef HAVE_TRANSLATE
    { ai_service_desc_0, (uint16_t)ARRAY_SIZE(ai_service_desc_0) },
@@ -18710,7 +19819,6 @@ static rarch_setting_t *menu_setting_new_internal(rarch_setting_info_t *list_inf
    unsigned i;
    rarch_setting_t* resized_list        = NULL;
       settings_t *settings                 = config_get_ptr();
-   global_t   *global                   = global_get_ptr();
    const char *root                     = NULL;
    rarch_setting_t **list_ptr           = NULL;
    rarch_setting_t *list                = (rarch_setting_t*)
@@ -18729,7 +19837,7 @@ static rarch_setting_t *menu_setting_new_internal(rarch_setting_info_t *list_inf
    for (i = 0; i < ARRAY_SIZE(settings_list_build_order); i++)
    {
       if (!setting_append_list(
-               settings, global,
+               settings,
                settings_list_build_order[i], &list, list_info, root))
       {
          free(list);
@@ -19136,84 +20244,3 @@ rarch_setting_t *menu_setting_new(void)
    return token;
 }
 
-void video_driver_menu_settings(void **list_data, void *list_info_data,
-      void *group_data, void *subgroup_data, const char *parent_group)
-{
-#ifdef HAVE_MENU
-   rarch_setting_t **list                    = (rarch_setting_t**)list_data;
-   rarch_setting_info_t *list_info           = (rarch_setting_info_t*)list_info_data;
-   rarch_setting_group_info_t *group_info    = (rarch_setting_group_info_t*)group_data;
-   rarch_setting_group_info_t *subgroup_info = (rarch_setting_group_info_t*)subgroup_data;
-   global_t                        *global   = global_get_ptr();
-
-   (void)list;
-   (void)list_info;
-   (void)group_info;
-   (void)subgroup_info;
-   (void)global;
-
-#if defined(GEKKO) || defined(_XBOX360)
-   /* Descriptor holdout: value target outside settings_t. */
-   CONFIG_UINT(
-         list, list_info,
-         &global->console.screen.gamma_correction,
-         MENU_ENUM_LABEL_VIDEO_GAMMA,
-         MENU_ENUM_LABEL_VALUE_VIDEO_GAMMA,
-         0,
-         group_info,
-         subgroup_info,
-         parent_group,
-         general_write_handler,
-         general_read_handler);
-   MENU_SETTINGS_LIST_CURRENT_ADD_CMD(
-         list,
-         list_info,
-         CMD_EVENT_VIDEO_APPLY_STATE_CHANGES);
-   menu_settings_list_current_add_range(
-         list,
-         list_info,
-         0,
-         MAX_GAMMA_SETTING,
-         1,
-         true,
-         true);
-   SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info,
-         SD_FLAG_CMD_APPLY_AUTO|SD_FLAG_ADVANCED);
-#endif
-#if defined(_XBOX1) || defined(HW_RVL)
-   CONFIG_BOOL(
-         list, list_info,
-         &global->console.softfilter_enable,
-         MENU_ENUM_LABEL_VIDEO_SOFT_FILTER,
-         MENU_ENUM_LABEL_VALUE_VIDEO_SOFT_FILTER,
-         false,
-         MENU_ENUM_LABEL_VALUE_OFF,
-         MENU_ENUM_LABEL_VALUE_ON,
-         group_info,
-         subgroup_info,
-         parent_group,
-         general_write_handler,
-         general_read_handler,
-         SD_FLAG_NONE);
-   MENU_SETTINGS_LIST_CURRENT_ADD_CMD(
-         list,
-         list_info,
-         CMD_EVENT_VIDEO_APPLY_STATE_CHANGES);
-#endif
-#ifdef _XBOX1
-   CONFIG_UINT(
-         list, list_info,
-         &global->console.screen.flicker_filter_index,
-         MENU_ENUM_LABEL_VIDEO_FILTER_FLICKER,
-         MENU_ENUM_LABEL_VALUE_VIDEO_FILTER_FLICKER,
-         0,
-         group_info,
-         subgroup_info,
-         parent_group,
-         general_write_handler,
-         general_read_handler);
-   menu_settings_list_current_add_range(list, list_info,
-         0, 5, 1, true, true);
-#endif
-#endif
-}

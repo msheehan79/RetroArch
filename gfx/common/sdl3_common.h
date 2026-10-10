@@ -95,6 +95,10 @@ void sdl3_set_handles(SDL_Window *window);
  * for the SDL input driver to handle itself. */
 void sdl3_pump_window_events(bool *quit, bool *resize);
 
+/* Pumps the SDL event queue for the input drivers, unless the video
+ * thread owns the window and pumps it already. */
+void sdl3_pump_input_events(void);
+
 /* Creates or resizes the window, or toggles fullscreen. */
 bool sdl3_window_set_video_mode(SDL_Window **win,
       unsigned dims, bool fullscreen,
@@ -119,12 +123,10 @@ bool sdl3_window_has_focus(SDL_Window *win);
 bool sdl3_suppress_screensaver(void *data, bool enable);
 
 /* Initializes the input driver paired with an SDL3 window. */
-void sdl3_input_driver(const char *joypad_name,
-      input_driver_t **input, void **input_data);
+void sdl3_input_driver(const char *joypad_name);
 
 /* gfx_ctx_driver_t input_driver callback wrapping sdl3_input_driver. */
-void sdl3_ctx_input_driver(void *data, const char *name,
-      input_driver_t **input, void **input_data);
+void sdl3_ctx_input_driver(void *data, const char *name);
 
 /* Determines whether or not an SDL3 context driver should be
  * initialized. Will return true when the user is using the

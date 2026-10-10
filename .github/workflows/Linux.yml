@@ -23,6 +23,9 @@ jobs:
     timeout-minutes: 30
     container:
       image: reallibretroretroarch/libretro-build-i386-ubuntu:xenial-gcc9
+      credentials:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
       options: --user root
 
     steps:
@@ -32,6 +35,12 @@ jobs:
       - name: Configure Build
         run: |
           ./configure --disable-qt --enable-xdelta
+
+      - name: Include order
+        run: |
+          # The tree's own headers are found before same-named ones in the
+          # system include dirs configure or pkg-config put on the line.
+          sh tools/include_order_check.sh
 
       - name: Compile RA
         run: |

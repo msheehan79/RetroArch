@@ -130,7 +130,6 @@
 #ifdef HAVE_THREADS
 static retro_eventcount_t rh265_rows_ec;
 static int rh265_rows_ec_ok;
-static slock_t *rh265_pool_lock;
 #endif
 
 
@@ -160,10 +159,11 @@ typedef struct
    const uint8_t *buf;
    size_t size;
    size_t bitpos;
+   int malformed;
 } rh265_bits;
 
 static void rh265_bits_init(rh265_bits *b, const uint8_t *buf, size_t size)
-{ b->buf = buf; b->size = size; b->bitpos = 0; }
+{ b->buf = buf; b->size = size; b->bitpos = 0; b->malformed = 0; }
 
 static uint32_t rh265_u1(rh265_bits *b)
 {
@@ -181,13 +181,36 @@ static uint32_t rh265_un(rh265_bits *b, int n)
    return v;
 }
 
+/* No ue(v) field this decoder reads goes past 2^25 - 2 - the largest
+ * are picture sizes and cropping, which stop at 16888 - so a longer
+ * code marks the unit malformed (and reads as 0). That keeps every
+ * value well inside int, and the sums the parsers make of them from
+ * overflowing. A field the spec lets run to 2^32 - 2 that nothing
+ * reads is skipped with rh265_ue_skip(). */
+#define RH265_UE_MAX_LZ 24
+
 static uint32_t rh265_ue(rh265_bits *b)
 {
    int lz = 0;
-   while (lz < 32 && !rh265_u1(b)) lz++;
-   if (lz >= 32) return 0xffffffffu;
+   while (lz <= RH265_UE_MAX_LZ && !rh265_u1(b)) lz++;
+   if (lz > RH265_UE_MAX_LZ)
+   {
+      b->malformed = 1;
+      return 0;
+   }
    if (!lz) return 0;
    return (uint32_t)((1u << lz) - 1u + rh265_un(b, lz));
+}
+
+/* A ue(v) of any length the spec allows, skipped */
+static void rh265_ue_skip(rh265_bits *b)
+{
+   int lz = 0;
+   while (lz < 32 && !rh265_u1(b)) lz++;
+   if (lz >= 32)
+      b->malformed = 1;
+   else if (lz)
+      rh265_un(b, lz);
 }
 
 static int32_t rh265_se(rh265_bits *b)
@@ -198,7 +221,7 @@ static int32_t rh265_se(rh265_bits *b)
 }
 
 static int rh265_bits_overrun(const rh265_bits *b)
-{ return b->bitpos > b->size * 8; }
+{ return b->malformed || b->bitpos > b->size * 8; }
 
 
 
@@ -668,7 +691,7 @@ static int rh265_parse_sps(const uint8_t *rbsp, size_t size, rh265_sps *s,
       {
          s->max_dec_pic_buffering = (int)rh265_ue(&b) + 1;
          s->max_num_reorder_pics  = (int)rh265_ue(&b);
-         rh265_ue(&b);                   /* sps_max_latency_increase_plus1 */
+         rh265_ue_skip(&b);              /* sps_max_latency_increase_plus1 */
       }
    }
    s->log2_min_cb = (int)rh265_ue(&b) + 3;
@@ -1450,6 +1473,35 @@ typedef struct
 #define RH265_MAX_DPB  18
 #define RH265_MAX_CTX  8
 #define RH265_NAL_POOL 32
+
+/* A pool slot holds a pointer or nothing, and changes hands in one
+ * atomic swap: whoever swaps a pointer out owns it. Without pointer
+ * atomics a decoder runs on the one thread that calls it, so its
+ * slots are plain. */
+#ifdef RETRO_ATOMIC_HAS_PTR
+typedef retro_atomic_ptr_t rh265_slot_t;
+#define rh265_slot_peek(s)    retro_atomic_load_relaxed_ptr(s)
+#define rh265_slot_take(s)    retro_atomic_exchange_ptr((s), NULL)
+#define rh265_slot_fill(s, p) retro_atomic_cas_ptr((s), NULL, (p))
+#else
+typedef void *rh265_slot_t;
+#define rh265_slot_peek(s)    (*(s))
+
+static void *rh265_slot_take(rh265_slot_t *s)
+{
+   void *p = *s;
+   *s      = NULL;
+   return p;
+}
+
+static int rh265_slot_fill(rh265_slot_t *s, void *p)
+{
+   if (*s)
+      return 0;
+   *s = p;
+   return 1;
+}
+#endif
 
 typedef struct
 {
@@ -3809,12 +3861,8 @@ struct rh265_video
    /* pictures decode concurrently on the pool (frame threading); the
     * wavefront stays off then, the pool being the pictures' */
    int       threaded;
-   /* unescape buffers and slice jobs between uses */
-   uint8_t  *nal_free[RH265_NAL_POOL];
-   size_t    nal_free_cap[RH265_NAL_POOL];
-   int       nal_free_n;
-   struct rh265_slice_job *job_free;
-   int       job_free_n;
+   /* finished slice jobs between uses, each with its unescape buffer */
+   rh265_slot_t job_pool[RH265_NAL_POOL];
    rh265_sps sps[RH265_MAX_SPS];
    rh265_pps pps[RH265_MAX_PPS];
    /* One decode state per picture that can be in flight; a new picture
@@ -4135,6 +4183,11 @@ void rh265_video_set_thread_pool(rh265_video *v, void *pool,
    }
    if (threads > RH265_MAX_CTX - 1)
       threads = RH265_MAX_CTX - 1;
+#ifndef RETRO_ATOMIC_HAS_PTR
+   /* Pictures in flight on the pool hand their buffers over through
+    * the slots: no pool without pointer atomics */
+   pool = NULL;
+#endif
    if (!pool || threads <= 1)
    {
       v->pool     = NULL;
@@ -4150,11 +4203,8 @@ void rh265_video_set_thread_pool(rh265_video *v, void *pool,
     * rows of the ones it predicts from instead. */
    if (!rh265_rows_ec_ok)
    {
-      rh265_pool_lock = slock_new();
-      if (!rh265_pool_lock || !retro_eventcount_init(&rh265_rows_ec))
+      if (!retro_eventcount_init(&rh265_rows_ec))
       {
-         if (rh265_pool_lock) slock_free(rh265_pool_lock);
-         rh265_pool_lock = NULL;
          retro_eventcount_free(&rh265_rows_ec);
          return;
       }
@@ -4179,27 +4229,35 @@ int rh265_video_ref_wait_misses(void)
    return retro_atomic_load_acquire_int(&rh265_ref_wait_misses);
 }
 
-/* rh265_rows_ec / rh265_pool_lock: one eventcount for every row
- * publication, every wait on one, and the join of a picture, shared by
- * the decoders in the process - a publication notifies without a lock
- * unless a thread is parked - and a lock for the pools of buffers and
- * jobs. Made by the first decoder given a pool for its pictures;
+/* rh265_rows_ec: one eventcount for every row publication, every wait
+ * on one, and the join of a picture, shared by the decoders in the
+ * process - a publication notifies without a lock unless a thread is
+ * parked. Made by the first decoder given a pool for its pictures;
  * declared with the pool includes. */
 
-static void rh265_pool_lock_take(void)
+static rh265_slice_job *rh265_job_take(rh265_video *v)
 {
-#ifdef HAVE_THREADS
-   if (rh265_pool_lock)
-      slock_lock(rh265_pool_lock);
-#endif
+   int i;
+   for (i = 0; i < RH265_NAL_POOL; i++)
+   {
+      void *j;
+      if (     rh265_slot_peek(&v->job_pool[i])
+            && (j = rh265_slot_take(&v->job_pool[i])))
+         return (rh265_slice_job*)j;
+   }
+   return NULL;
 }
 
-static void rh265_pool_lock_drop(void)
+/* Back to the pool with its buffer, or freed when the pool is full. */
+static void rh265_job_park(rh265_video *v, rh265_slice_job *j)
 {
-#ifdef HAVE_THREADS
-   if (rh265_pool_lock)
-      slock_unlock(rh265_pool_lock);
-#endif
+   int i;
+   for (i = 0; i < RH265_NAL_POOL; i++)
+      if (    !rh265_slot_peek(&v->job_pool[i])
+            && rh265_slot_fill(&v->job_pool[i], j))
+         return;
+   free(j->buf);
+   free(j);
 }
 
 #ifdef HAVE_THREADS
@@ -4478,21 +4536,20 @@ static int rh265_decode_slice_data(rh265_video *v, rh265_dec *d, const uint8_t *
 
 /* Queue the slice just parsed on @d: the job takes the decoder's
  * unescape buffer, the one the slice was parsed from, and the decoder
- * draws another from the pool. */
+ * takes the one a pooled job came back with. */
 static rh265_slice_job *rh265_ctx_queue_slice(rh265_video *v, rh265_dec *d,
       const uint8_t *rbsp, size_t rbsp_size, size_t data_bit,
       const uint32_t *esc_pos, int esc_count)
 {
-   rh265_slice_job *j;
-   rh265_pool_lock_take();
-   if ((j = v->job_free))
-   {
-      v->job_free = j->next;
-      v->job_free_n--;
-   }
-   rh265_pool_lock_drop();
+   uint8_t *spare     = NULL;
+   size_t spare_cap   = 0;
+   rh265_slice_job *j = rh265_job_take(v);
    if (j)
+   {
+      spare     = j->buf;
+      spare_cap = j->cap;
       memset(j, 0, sizeof(*j));
+   }
    else if (!(j = (rh265_slice_job*)calloc(1, sizeof(*j))))
       return NULL;
    j->buf       = v->nal_scratch;
@@ -4506,16 +4563,8 @@ static rh265_slice_job *rh265_ctx_queue_slice(rh265_video *v, rh265_dec *d,
    j->sh        = d->sh;
    memcpy(j->ref_list, d->ref_list, sizeof(j->ref_list));
    j->col_ref   = d->col_ref;
-   v->nal_scratch     = NULL;
-   v->nal_scratch_cap = 0;
-   rh265_pool_lock_take();
-   if (v->nal_free_n > 0)
-   {
-      v->nal_free_n--;
-      v->nal_scratch     = v->nal_free[v->nal_free_n];
-      v->nal_scratch_cap = v->nal_free_cap[v->nal_free_n];
-   }
-   rh265_pool_lock_drop();
+   v->nal_scratch     = spare;
+   v->nal_scratch_cap = spare_cap;
    if (d->jobs_tail)
       d->jobs_tail->next = j;
    else
@@ -4560,26 +4609,7 @@ static void rh265_ctx_run_slices(rh265_video *v, rh265_dec *d)
          else
             d->ctb_end = r;
       }
-      /* the buffer and the job back to their pools, the buffer first */
-      rh265_pool_lock_take();
-      if (v->nal_free_n < RH265_NAL_POOL)
-      {
-         v->nal_free[v->nal_free_n]     = j->buf;
-         v->nal_free_cap[v->nal_free_n] = j->cap;
-         v->nal_free_n++;
-      }
-      else
-         free(j->buf);
-      j->buf = NULL;
-      if (v->job_free_n < RH265_NAL_POOL)
-      {
-         j->next     = v->job_free;
-         v->job_free = j;
-         v->job_free_n++;
-         j = NULL;
-      }
-      rh265_pool_lock_drop();
-      free(j);
+      rh265_job_park(v, j);
    }
    if (d->job_rc == 0 && d->cur && d->ctb_end >= d->sps->pic_size_ctbs
          && !d->completed)
@@ -5068,12 +5098,12 @@ void rh265_video_close(rh265_video *v)
             free(j->buf);
             free(j);
          }
-      for (k = 0; k < v->nal_free_n; k++)
-         free(v->nal_free[k]);
-      while (v->job_free)
+      for (;;)
       {
-         rh265_slice_job *j = v->job_free;
-         v->job_free = j->next;
+         rh265_slice_job *j = rh265_job_take(v);
+         if (!j)
+            break;
+         free(j->buf);
          free(j);
       }
    }

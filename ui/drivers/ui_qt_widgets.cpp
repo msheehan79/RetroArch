@@ -1035,7 +1035,8 @@ void FloatSlider::onValueChanged(int value)
 
 void FloatSlider::paintEvent(QPaintEvent *event)
 {
-   if (value() / m_precision != *m_value)
+   /* The same float division onValueChanged stores */
+   if ((float)value() / m_precision != *m_value)
    {
       blockSignals(true);
 
@@ -5608,23 +5609,20 @@ QWidget *UserBindsPage::widget()
       {
          char descriptor[300];
          const struct retro_keybind *keybind   =
-            &input_config_binds[p][retro_id];
+            input_config_bind(p, retro_id);
          const struct retro_keybind *auto_bind =
             (const struct retro_keybind*)
             input_config_get_bind_auto(p, retro_id);
 
          input_config_get_bind_string(settings, descriptor,
             keybind, auto_bind,
-            &input_config_bind_labels[p][retro_id],
-            &input_autoconf_bind_labels[p][retro_id],
+            input_config_bind_names(p, retro_id),
+            input_autoconf_bind_names(p, retro_id),
             sizeof(descriptor));
 
-         const struct retro_keybind *keyptr =
-            &input_config_binds[p][retro_id];
+         QString label = msg_hash_to_str(input_config_bind_label(retro_id));
 
-         QString label = msg_hash_to_str(RETRO_KEYBIND_ENUM_IDX(keyptr));
-
-         form->addRow(QString(msg_hash_to_str(RETRO_KEYBIND_ENUM_IDX(keyptr))),
+         form->addRow(QString(msg_hash_to_str(input_config_bind_label(retro_id))),
                new QPushButton(QString(descriptor)));
       }
 

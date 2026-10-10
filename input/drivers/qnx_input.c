@@ -31,6 +31,7 @@
 
 
 #include "../../retroarch.h"
+#include "../input_driver.h"
 #include "../../tasks/tasks_internal.h"
 
 #include "../../command.h"
@@ -66,9 +67,18 @@ struct input_pointer
 {
    int contact_id;
    int map;
-   int16_t x, y;
-   int16_t full_x, full_y;
+   uint32_t pos;       /* x, y in the viewport: VIDEO_POS_PACK */
+   uint32_t full_pos;  /* x, y in the whole screen */
 };
+
+/* A touch at screen @x, @y; a translation that fails (no viewport)
+ * leaves what was there. */
+static void qnx_pointer_set(struct input_pointer *p,
+      struct video_viewport *vp, int x, int y)
+{
+   input_driver_translate_coord_viewport_wrap(vp, x, y,
+         &p->pos, &p->full_pos);
+}
 
 #define QNX_MAX_KEYS (65535 + 7) / 8
 #define TRACKPAD_CPI 500
@@ -427,11 +437,7 @@ static void qnx_process_touch_event(
 
                qnx->pointer[i].contact_id  = contact_id;
 
-               video_driver_translate_coord_viewport_wrap(
-                     &vp,
-                     pos[0], pos[1],
-                     &qnx->pointer[i].x, &qnx->pointer[i].y,
-                     &qnx->pointer[i].full_x, &qnx->pointer[i].full_y);
+               qnx_pointer_set(&qnx->pointer[i], &vp, pos[0], pos[1]);
 
                /* Add this pointer to the map to signal it's valid. */
                qnx->pointer[i].map = qnx->pointer_count;
@@ -477,10 +483,7 @@ static void qnx_process_touch_event(
                vp.dims                     = 0;
                vp.full_dims                = 0;
 
-               video_driver_translate_coord_viewport_wrap(&vp,
-                     pos[0], pos[1],
-                     &qnx->pointer[i].x, &qnx->pointer[i].y,
-                     &qnx->pointer[i].full_x, &qnx->pointer[i].full_y);
+               qnx_pointer_set(&qnx->pointer[i], &vp, pos[0], pos[1]);
                break;
             }
          }
@@ -587,7 +590,7 @@ static void qnx_handle_navigator_event(
          }
          break;
       case NAVIGATOR_SWIPE_DOWN:
-         command_event(CMD_EVENT_MENU_TOGGLE, NULL);
+         input_driver_platform_request(INPUT_PLATFORM_MENU_TOGGLE);
          break;
       case NAVIGATOR_WINDOW_STATE:
          switch(navigator_event_get_window_state(event))
@@ -624,7 +627,7 @@ static void qnx_handle_navigator_event(
    return;
 
 shutdown:
-   retroarch_ctl(RARCH_CTL_SET_SHUTDOWN, NULL);
+   input_driver_platform_request(INPUT_PLATFORM_SHUTDOWN);
 }
 
 static void *qnx_input_init(const char *joypad_driver)
@@ -699,13 +702,13 @@ static int16_t qnx_pointer_input_state(qnx_input_t *qnx,
 
    if (screen)
    {
-       x = qnx->pointer[idx].full_x;
-       y = qnx->pointer[idx].full_y;
+       x = VIDEO_POS_X(qnx->pointer[idx].full_pos);
+       y = VIDEO_POS_Y(qnx->pointer[idx].full_pos);
    }
    else
    {
-       x = qnx->pointer[idx].x;
-       y = qnx->pointer[idx].y;
+       x = VIDEO_POS_X(qnx->pointer[idx].pos);
+       y = VIDEO_POS_Y(qnx->pointer[idx].pos);
    }
 
    switch (id)
@@ -723,13 +726,25 @@ static int16_t qnx_pointer_input_state(qnx_input_t *qnx,
    return 0;
 }
 
+/* Which of @keys are down: bit n of @down for keys[n]. */
+static void qnx_keys_down(void *data, unsigned port,
+      const uint16_t *keys, const uint8_t *bind, unsigned count,
+      uint32_t *down)
+{
+   unsigned i;
+   qnx_input_t *qnx = (qnx_input_t*)data;
+   (void)port;
+   (void)bind;
+   for (i = 0; i < count; i++)
+      if (qnx_keyboard_pressed(qnx, keys[i]))
+         down[i >> 5] |= (1u << (i & 31));
+}
+
 static int16_t qnx_input_state(
       void *data,
       const input_device_driver_t *joypad,
-      const input_device_driver_t *sec_joypad,
       rarch_joypad_info_t *joypad_info,
       const retro_keybind_set *binds,
-      bool keyboard_mapping_blocked,
       unsigned port,
       unsigned device,
       unsigned idx,
@@ -739,40 +754,11 @@ static int16_t qnx_input_state(
 
    switch (device)
    {
-      case RETRO_DEVICE_JOYPAD:
-         if (id == RETRO_DEVICE_ID_JOYPAD_MASK)
-         {
-            unsigned i;
-            int16_t ret = 0;
-
-            if (!keyboard_mapping_blocked)
-            {
-               for (i = 0; i < RARCH_FIRST_CUSTOM_BIND; i++)
-               {
-                  if (RETRO_KEYBIND_VALID(&binds[port][i]))
-                  {
-                     if (qnx_keyboard_pressed(qnx, key))
-                        ret |= (1 << i);
-                  }
-               }
-            }
-
-            return ret;
-         }
-
-         if (id < RARCH_BIND_LIST_END)
-         {
-            if (RETRO_KEYBIND_VALID(&binds[port][id]))
-            {
-               if (
-                     ((id == RARCH_GAME_FOCUS_TOGGLE) ||
-                      !keyboard_mapping_blocked) &&
-                     qnx_keyboard_pressed(qnx, key)
-                  )
-                  return 1;
-            }
-         }
-         break;
+      /* The RetroPad's buttons and the hotkeys, where they are bound
+       * to keys, are the frontend's to answer: it asks
+       * qnx_keys_down() for the keys once a poll. What was here read
+       * the binds it was handed and then asked for a key it never
+       * named - it did not compile. */
       case RETRO_DEVICE_ANALOG:
          break;
       case RETRO_DEVICE_KEYBOARD:
@@ -813,7 +799,9 @@ input_driver_t input_qnx = {
    NULL,
    qnx_input_get_capabilities,
    "qnx_input",
+   NULL,                         /* grab_mouse */
    NULL,
    NULL,
-   NULL
+   NULL,                         /* survives_video */
+   qnx_keys_down
 };

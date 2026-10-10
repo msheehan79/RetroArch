@@ -540,13 +540,11 @@ error:
 }
 
 static void gfx_ctx_xegl_input_driver(void *data,
-      const char *joypad_name,
-      input_driver_t **input, void **input_data)
+      const char *joypad_name)
 {
-   void *xinput = input_driver_init_wrap(&input_x, joypad_name);
-
-   *input       = xinput ? &input_x : NULL;
-   *input_data  = xinput;
+   /* no input driver of this context's own: the frontend starts the
+    * one that goes with an X11 window */
+   input_driver_video_window(INPUT_WINDOW_X11, NULL);
 }
 
 static enum gfx_ctx_api gfx_ctx_xegl_get_api(void *data) { return xegl_api; }

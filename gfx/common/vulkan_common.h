@@ -38,6 +38,8 @@
 #include <retro_inline.h>
 #include <retro_common_api.h>
 #include <retro_miscellaneous.h>
+#include <retro_atomic.h>
+#include <rthreads/retro_eventcount.h>
 
 #include <libretro.h>
 #include <libretro_vulkan.h>
@@ -125,7 +127,15 @@ enum vk_flags
    VK_FLAG_GPU_RECORDING       = (1 << 19),
    /* VK_ERROR_DEVICE_LOST was seen and reported to the runloop once;
     * the frames until the reinit fail quietly. */
-   VK_FLAG_DEVICE_LOST_REPORTED = (1 << 20)
+   VK_FLAG_DEVICE_LOST_REPORTED = (1 << 20),
+   /* Held across creating a frame texture to lend the core: it stays in
+    * cached system memory, never video memory, because the core and the
+    * frontend may read a lent frame back. */
+   VK_FLAG_TEXTURE_FOR_LEND     = (1 << 21),
+   /* frontend uses openxr */
+   VK_FLAG_OPEN_XR              = (1 << 22),
+   /* core opted into VR via SET_VIDEO_VIEWS */
+   VK_FLAG_XR_STEREO            = (1 << 23)
 };
 
 enum vk_texture_type
@@ -178,14 +188,6 @@ enum vulkan_context_flags
    VK_CTX_FLAG_HDR_SCRGB                    = (1 << 6)
 };
 
-enum vulkan_emulated_mailbox_flags
-{
-   VK_MAILBOX_FLAG_ACQUIRED            = (1 << 0),
-   VK_MAILBOX_FLAG_REQUEST_ACQUIRE     = (1 << 1),
-   VK_MAILBOX_FLAG_DEAD                = (1 << 2),
-   VK_MAILBOX_FLAG_HAS_PENDING_REQUEST = (1 << 3)
-};
-
 enum gfx_ctx_vulkan_data_flags
 {
    /* If set, prefer a path where we use
@@ -205,13 +207,35 @@ enum vk_texture_flags
 {
    VK_TEX_FLAG_DEFAULT_SMOOTH               = (1 << 0),
    VK_TEX_FLAG_NEED_MANUAL_CACHE_MANAGEMENT = (1 << 1),
-   VK_TEX_FLAG_MIPMAP                       = (1 << 2)
+   VK_TEX_FLAG_MIPMAP                       = (1 << 2),
+   /* Streamed texture in device-local host-visible memory: written by
+    * the CPU, never read by it. */
+   VK_TEX_FLAG_BAR_MAPPED                   = (1 << 3)
 };
+
+/* The settings a swapchain is made from.  The thread that draws can
+ * make one (a lost swapchain is remade on the next acquire), so it is
+ * made from this copy: seeded when the context is made, and taken
+ * from each frame after that, never read from the settings there. */
+typedef struct vulkan_swapchain_settings
+{
+   float    display_peak;        /* nits; 0 for the fixed metadata  */
+   unsigned hdr_mode;
+   unsigned bit_depth;           /* video_swapchain_bit_depth       */
+   unsigned max_images;
+   unsigned fse_negotiation;
+   bool     vsync;
+   bool     adaptive_vsync;
+   bool     windowed_fullscreen;
+} vulkan_swapchain_settings_t;
 
 typedef struct vulkan_context
 {
    slock_t *queue_lock;
    retro_vulkan_destroy_device_t destroy_device;   /* ptr alignment */
+   /* Headset output, or NULL. Always present, like debug_callback: every
+    * translation unit that includes this header shares the layout. */
+   struct vulkan_openxr *xr;
 
    VkInstance instance;
    VkPhysicalDevice gpu;
@@ -282,6 +306,7 @@ typedef struct vulkan_context
 
    unsigned swapchain_dims;      /* VIDEO_SCALE_PACK */
    unsigned num_recycled_acquire_semaphores;
+   vulkan_swapchain_settings_t swapchain_settings;
    /* Present mode the current swapchain was created with; compared
     * against the mode a new swap_interval resolves to so a request
     * that would not change the swapchain does not recreate it. */
@@ -295,20 +320,38 @@ typedef struct vulkan_context
    bool present_pending;
 } vulkan_context_t;
 
+/* The acquire thread behind emulated mailbox, and the thread that
+ * presents. There is no lock between them: three words, each written
+ * by one side and taken by the other, and an eventcount each way.
+ *
+ *   request   the presenting thread wants an image; the acquire
+ *             thread takes it (exchange) and acquires
+ *   acquired  the acquire thread has an answer; result and index were
+ *             written before it was raised, and are not written again
+ *             until the presenting thread has lowered it and asked
+ *             again
+ *   dead      teardown
+ */
 struct vulkan_emulated_mailbox
 {
    sthread_t *thread;
-   slock_t *lock;
-   scond_t *cond;
    VkDevice device;              /* ptr alignment */
    VkSwapchainKHR swapchain;     /* ptr alignment */
    /* Every wait this object makes, from the display's rate; sampled at
     * init so the thread never reads video state. */
    int64_t timeout_us;
 
+   retro_eventcount_t work;      /* the acquire thread sleeps: request, dead */
+   retro_eventcount_t answered;  /* the presenting thread sleeps: acquired */
+   retro_atomic_int_t request;
+   retro_atomic_int_t acquired;
+   retro_atomic_int_t dead;
+
    unsigned index;
    VkResult result;              /* enum alignment */
-   uint8_t flags;
+   /* The presenting thread only: a request is out and its answer has
+    * not been taken yet. */
+   bool has_pending_request;
 };
 
 typedef struct gfx_ctx_vulkan_data
@@ -403,6 +446,16 @@ uint32_t vulkan_find_memory_type(
       const VkPhysicalDeviceMemoryProperties *mem_props,
       uint32_t device_reqs, uint32_t host_reqs);
 
+/* Allocates alloc->allocationSize for a buffer the CPU only writes and
+ * the GPU reads. alloc->memoryTypeIndex is the caller's host-visible
+ * choice; it is used as given unless the device maps all of its memory
+ * host-visible (resizable BAR, unified memory), where the device-local
+ * host-visible coherent type is tried first. */
+VkResult vulkan_allocate_cpu_write_memory(VkDevice device,
+      const VkPhysicalDeviceMemoryProperties *mem_props,
+      uint32_t type_bits, const VkMemoryAllocateInfo *alloc,
+      VkDeviceMemory *memory);
+
 uint32_t vulkan_find_memory_type_fallback(
       const VkPhysicalDeviceMemoryProperties *mem_props,
       uint32_t device_reqs, uint32_t host_reqs_first,
@@ -412,6 +465,15 @@ void vulkan_debug_mark_buffer(VkDevice device, VkBuffer buffer);
 
 bool vulkan_context_init(gfx_ctx_vulkan_data_t *vk,
       enum vulkan_wsi_type type);
+
+#ifdef HAVE_OPENXR
+bool vulkan_context_init_headless_device(gfx_ctx_vulkan_data_t *vk);
+#endif
+#if defined(HAVE_OPENXR) && defined(ANDROID)
+bool vulkan_context_create_android_surface(gfx_ctx_vulkan_data_t *vk,
+   void *window);
+void vulkan_context_advance_frame(gfx_ctx_vulkan_data_t *vk);
+#endif
 
 #ifdef __APPLE__
 /* Returns the version string of the MoltenVK implementation in use,

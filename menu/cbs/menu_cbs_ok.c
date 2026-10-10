@@ -46,6 +46,9 @@
 
 #include "../../config.def.h"
 #include "../../gfx/gfx_surface.h"
+#ifdef HAVE_GFX_WIDGETS
+#include "../../gfx/gfx_widgets.h"
+#endif
 #include "../../driver.h"
 #include "../../file_path_special.h"
 
@@ -287,6 +290,8 @@ static enum msg_hash_enums action_ok_dl_to_enum(unsigned lbl)
          return MENU_ENUM_LABEL_DEFERRED_DROPDOWN_BOX_LIST_RESOLUTION;
       case ACTION_OK_DL_DROPDOWN_BOX_LIST_CRT_SUPER_RESOLUTION:
          return MENU_ENUM_LABEL_DEFERRED_DROPDOWN_BOX_LIST_CRT_SUPER_RESOLUTION;
+      case ACTION_OK_DL_DROPDOWN_BOX_LIST_HEADSET_REFRESH_RATE:
+         return MENU_ENUM_LABEL_DEFERRED_DROPDOWN_BOX_LIST_HEADSET_REFRESH_RATE;
       case ACTION_OK_DL_DROPDOWN_BOX_LIST_AUDIO_DEVICE:
          return MENU_ENUM_LABEL_DEFERRED_DROPDOWN_BOX_LIST_AUDIO_DEVICE;
       case ACTION_OK_DL_DROPDOWN_BOX_LIST_MIDI_DEVICE:
@@ -351,6 +356,10 @@ static enum msg_hash_enums action_ok_dl_to_enum(unsigned lbl)
          return MENU_ENUM_LABEL_DEFERRED_INPUT_HAPTIC_FEEDBACK_SETTINGS_LIST;
       case ACTION_OK_DL_INPUT_SENSOR_SETTINGS_LIST:
          return MENU_ENUM_LABEL_DEFERRED_INPUT_SENSOR_SETTINGS_LIST;
+      case ACTION_OK_DL_NETPLAY_REQUEST_DEVICES_LIST:
+         return MENU_ENUM_LABEL_DEFERRED_NETPLAY_REQUEST_DEVICES_LIST;
+      case ACTION_OK_DL_NETWORK_REMOTE_USERS_LIST:
+         return MENU_ENUM_LABEL_DEFERRED_NETWORK_REMOTE_USERS_LIST;
       case ACTION_OK_DL_LATENCY_SETTINGS_LIST:
          return MENU_ENUM_LABEL_DEFERRED_LATENCY_SETTINGS_LIST;
       case ACTION_OK_DL_DRIVER_SETTINGS_LIST:
@@ -379,6 +388,8 @@ static enum msg_hash_enums action_ok_dl_to_enum(unsigned lbl)
          return MENU_ENUM_LABEL_DEFERRED_VIDEO_SCALING_SETTINGS_LIST;
       case ACTION_OK_DL_VIDEO_HDR_SETTINGS_LIST:
          return MENU_ENUM_LABEL_DEFERRED_VIDEO_HDR_SETTINGS_LIST;
+      case ACTION_OK_DL_VIDEO_STEREO_SETTINGS_LIST:
+         return MENU_ENUM_LABEL_DEFERRED_VIDEO_STEREO_SETTINGS_LIST;
       case ACTION_OK_DL_VIDEO_OUTPUT_SETTINGS_LIST:
          return MENU_ENUM_LABEL_DEFERRED_VIDEO_OUTPUT_SETTINGS_LIST;
       case ACTION_OK_DL_CRT_SWITCHRES_SETTINGS_LIST:
@@ -436,6 +447,10 @@ static enum msg_hash_enums action_ok_dl_to_enum(unsigned lbl)
 #ifdef HAVE_SMBCLIENT
       case ACTION_OK_DL_SMB_CLIENT_SETTINGS_LIST:
          return MENU_ENUM_LABEL_DEFERRED_SMB_CLIENT_SETTINGS_LIST;
+#endif
+#ifdef HAVE_NFSCLIENT
+      case ACTION_OK_DL_NFS_CLIENT_SETTINGS_LIST:
+         return MENU_ENUM_LABEL_DEFERRED_NFS_CLIENT_SETTINGS_LIST;
 #endif
       case ACTION_OK_DL_ACCESSIBILITY_SETTINGS_LIST:
          return MENU_ENUM_LABEL_DEFERRED_ACCESSIBILITY_SETTINGS_LIST;
@@ -843,6 +858,14 @@ int generic_action_ok_displaylist_push(
          info_path          = path;
          info_label         = MENU_ENUM_LABEL_DEFERRED_DROPDOWN_BOX_LIST_CRT_SUPER_RESOLUTION_STR;
          info.enum_idx      = MENU_ENUM_LABEL_DEFERRED_DROPDOWN_BOX_LIST_CRT_SUPER_RESOLUTION;
+         dl_type            = DISPLAYLIST_GENERIC;
+         break;
+      case ACTION_OK_DL_DROPDOWN_BOX_LIST_HEADSET_REFRESH_RATE:
+         info.type          = type;
+         info.directory_ptr = idx;
+         info_path          = path;
+         info_label         = MENU_ENUM_LABEL_DEFERRED_DROPDOWN_BOX_LIST_HEADSET_REFRESH_RATE_STR;
+         info.enum_idx      = MENU_ENUM_LABEL_DEFERRED_DROPDOWN_BOX_LIST_HEADSET_REFRESH_RATE;
          dl_type            = DISPLAYLIST_GENERIC;
          break;
       case ACTION_OK_DL_DROPDOWN_BOX_LIST_PLAYLIST_DEFAULT_CORE:
@@ -1777,6 +1800,8 @@ int generic_action_ok_displaylist_push(
       case ACTION_OK_DL_INPUT_TURBO_FIRE_SETTINGS_LIST:
       case ACTION_OK_DL_INPUT_HAPTIC_FEEDBACK_SETTINGS_LIST:
       case ACTION_OK_DL_INPUT_SENSOR_SETTINGS_LIST:
+      case ACTION_OK_DL_NETPLAY_REQUEST_DEVICES_LIST:
+      case ACTION_OK_DL_NETWORK_REMOTE_USERS_LIST:
       case ACTION_OK_DL_LATENCY_SETTINGS_LIST:
       case ACTION_OK_DL_DRIVER_SETTINGS_LIST:
       case ACTION_OK_DL_CORE_SETTINGS_LIST:
@@ -1786,6 +1811,7 @@ int generic_action_ok_displaylist_push(
 #endif
       case ACTION_OK_DL_VIDEO_SETTINGS_LIST:
       case ACTION_OK_DL_VIDEO_HDR_SETTINGS_LIST:
+      case ACTION_OK_DL_VIDEO_STEREO_SETTINGS_LIST:
       case ACTION_OK_DL_VIDEO_SYNCHRONIZATION_SETTINGS_LIST:
       case ACTION_OK_DL_VIDEO_FULLSCREEN_MODE_SETTINGS_LIST:
       case ACTION_OK_DL_VIDEO_WINDOWED_MODE_SETTINGS_LIST:
@@ -1818,6 +1844,9 @@ int generic_action_ok_displaylist_push(
       case ACTION_OK_DL_AI_SERVICE_SETTINGS_LIST:
 #ifdef HAVE_SMBCLIENT
       case ACTION_OK_DL_SMB_CLIENT_SETTINGS_LIST:
+#endif
+#ifdef HAVE_NFSCLIENT
+      case ACTION_OK_DL_NFS_CLIENT_SETTINGS_LIST:
 #endif
       case ACTION_OK_DL_ACCESSIBILITY_SETTINGS_LIST:
       case ACTION_OK_DL_POWER_MANAGEMENT_SETTINGS_LIST:
@@ -1961,6 +1990,10 @@ static const ok_dl_map_t ok_dl_map[] = {
    { MENU_ENUM_LABEL_INPUT_TURBO_FIRE_SETTINGS, ACTION_OK_DL_INPUT_TURBO_FIRE_SETTINGS_LIST },
    { MENU_ENUM_LABEL_INPUT_HAPTIC_FEEDBACK_SETTINGS, ACTION_OK_DL_INPUT_HAPTIC_FEEDBACK_SETTINGS_LIST },
    { MENU_ENUM_LABEL_INPUT_SENSOR_SETTINGS, ACTION_OK_DL_INPUT_SENSOR_SETTINGS_LIST },
+#ifdef HAVE_NETWORKING
+   { MENU_ENUM_LABEL_NETPLAY_REQUEST_DEVICES, ACTION_OK_DL_NETPLAY_REQUEST_DEVICES_LIST },
+   { MENU_ENUM_LABEL_NETWORK_REMOTE_USERS, ACTION_OK_DL_NETWORK_REMOTE_USERS_LIST },
+#endif
    { MENU_ENUM_LABEL_DRIVER_SETTINGS, ACTION_OK_DL_DRIVER_SETTINGS_LIST },
    { MENU_ENUM_LABEL_VIDEO_SETTINGS, ACTION_OK_DL_VIDEO_SETTINGS_LIST },
    { MENU_ENUM_LABEL_VIDEO_SYNCHRONIZATION_SETTINGS, ACTION_OK_DL_VIDEO_SYNCHRONIZATION_SETTINGS_LIST },
@@ -1968,6 +2001,7 @@ static const ok_dl_map_t ok_dl_map[] = {
    { MENU_ENUM_LABEL_VIDEO_WINDOWED_MODE_SETTINGS, ACTION_OK_DL_VIDEO_WINDOWED_MODE_SETTINGS_LIST },
    { MENU_ENUM_LABEL_VIDEO_SCALING_SETTINGS, ACTION_OK_DL_VIDEO_SCALING_SETTINGS_LIST },
    { MENU_ENUM_LABEL_VIDEO_HDR_SETTINGS, ACTION_OK_DL_VIDEO_HDR_SETTINGS_LIST },
+   { MENU_ENUM_LABEL_VIDEO_STEREO_SETTINGS, ACTION_OK_DL_VIDEO_STEREO_SETTINGS_LIST },
    { MENU_ENUM_LABEL_VIDEO_OUTPUT_SETTINGS, ACTION_OK_DL_VIDEO_OUTPUT_SETTINGS_LIST },
    { MENU_ENUM_LABEL_CRT_SWITCHRES_SETTINGS, ACTION_OK_DL_CRT_SWITCHRES_SETTINGS_LIST },
    { MENU_ENUM_LABEL_AUDIO_SETTINGS, ACTION_OK_DL_AUDIO_SETTINGS_LIST },
@@ -2368,8 +2402,8 @@ static int set_path_generic(const char *label, const char *action_path)
    {
       if (setting->value.target.string)
          strlcpy(setting->value.target.string, action_path, setting->size);
-      if (setting->actions->change)
-         setting->actions->change(setting);
+      /* menu_setting_generic() runs the change handler; it was run
+       * here as well, and the row's command fired twice */
       return menu_setting_generic(setting, 0, false);
    }
 
@@ -3953,11 +3987,10 @@ static int action_ok_video_filter_remove(const char *path,
       return -1;
    if (*settings->paths.path_softfilter_plugin)
    {
-      /* Unload video filter. The driver was set up for its output
-       * (pixel format and scale), so set it up again without it, as
-       * the reset does */
+      /* Unload video filter; the driver gets the core's frames */
       settings->paths.path_softfilter_plugin[0] = '\0';
-      command_event(CMD_EVENT_REINIT, NULL);
+      video_driver_filter_free();
+      video_driver_filter_apply();
       /* Refresh menu */
       menu_st->flags         |=  MENU_ST_FLAG_ENTRIES_NEED_REFRESH
                              |  MENU_ST_FLAG_PREVENT_POPULATE;
@@ -4053,8 +4086,7 @@ static int action_ok_rename_entry(const char *path,
    if ((playlist = playlist_get_cached()))
       playlist_get_index(playlist, entry_idx, &entry);
    if (entry && entry->label && *entry->label)
-      input_keyboard_line_append(&input_state_get_ptr()->keyboard_line,
-            entry->label, strlen(entry->label));
+      input_driver_keyboard_line_append(entry->label, strlen(entry->label));
 
    return 0;
 }
@@ -4301,6 +4333,14 @@ static int action_ok_remap_file_reset(const char *path,
    input_remapping_set_defaults(false);
    runloop_msg_queue_push(_msg, strlen(_msg), 1, 100, true, NULL,
          MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
+   return 0;
+}
+
+static int action_ok_input_remap_find(const char *path,
+      const char *label, unsigned type, size_t idx, size_t entry_idx)
+{
+   /* the entry carries its port */
+   menu_input_remap_find_begin((unsigned)entry_idx);
    return 0;
 }
 
@@ -4808,6 +4848,28 @@ static int action_ok_cheat_reload_cheats(const char *path,
 }
 #endif
 
+/* Information > Input Information: the controller on the entry's port
+ * made to connect to this computer over Bluetooth. */
+static int action_ok_input_bt_pair(const char *path,
+      const char *label, unsigned type, size_t idx, size_t entry_idx)
+{
+   char msg[128];
+   uint8_t host[6];
+   size_t _len;
+   struct menu_state *menu_st = menu_state_get_ptr();
+   bool paired                = input_bluetooth_host_address(host, NULL, 0)
+      && input_driver_set_bt_host((unsigned)entry_idx, host);
+
+   _len = snprintf(msg, sizeof(msg), msg_hash_to_str(paired
+            ? MSG_INPUT_BT_PAIRED : MSG_INPUT_BT_PAIR_FAILED),
+         (unsigned)entry_idx + 1);
+   runloop_msg_queue_push(msg, _len, 1, 180, true, NULL,
+         MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
+   menu_st->flags |=  MENU_ST_FLAG_ENTRIES_NEED_REFRESH;
+   menu_st->flags &= ~MENU_ST_FLAG_PREVENT_POPULATE;
+   return 0;
+}
+
 static int action_ok_start_recording(const char *path,
       const char *label, unsigned type, size_t idx, size_t entry_idx)
 {
@@ -5290,7 +5352,14 @@ static void cb_decompressed(retro_task_t *task,
       switch (enum_idx)
       {
          case MENU_ENUM_LABEL_CB_UPDATE_ASSETS:
-            generic_action_ok_command(CMD_EVENT_REINIT);
+            /* The menu reads its icons and fonts from the assets
+             * directory when its context is built, so the new ones
+             * only need that context rebuilt against the running
+             * video driver. */
+            menu_driver_context_rebuild();
+#ifdef HAVE_GFX_WIDGETS
+            gfx_widgets_reload_assets();
+#endif
             break;
          case MENU_ENUM_LABEL_CB_UPDATE_AUTOCONFIG_PROFILES:
             {
@@ -5797,8 +5866,6 @@ void cb_generic_download(retro_task_t *task,
    if (path_is_compressed_file(output_path))
    {
       retro_task_t *decompress_task = NULL;
-      void *frontend_userdata       = task->frontend_userdata;
-      task->frontend_userdata       = NULL;
 
       /* Content from the Content Downloader is saved into a category
        * sub-directory. Make sure to extract it to the same directory.
@@ -5818,7 +5885,7 @@ void cb_generic_download(retro_task_t *task,
             NULL,
             cb_decompressed,
             (void*)(uintptr_t)transf->enum_idx,
-            frontend_userdata,
+            NULL,
             false);
 
       if (!decompress_task)
@@ -5826,6 +5893,10 @@ void cb_generic_download(retro_task_t *task,
          err = msg_hash_to_str(MSG_DECOMPRESSION_FAILED);
          goto finish;
       }
+#ifdef HAVE_GFX_WIDGETS
+      /* Rebind before a delayed extraction can inherit expiration. */
+      gfx_widgets_task_transfer(task, decompress_task);
+#endif
    }
 #endif
 
@@ -7074,6 +7145,9 @@ STATIC_DEFAULT_ACTION_OK_FUNC(action_ok_push_audio_mixer_settings_list, ACTION_O
 #ifdef HAVE_SMBCLIENT
 STATIC_DEFAULT_ACTION_OK_FUNC(action_ok_push_smb_client_settings_list, ACTION_OK_DL_SMB_CLIENT_SETTINGS_LIST)
 #endif
+#ifdef HAVE_NFSCLIENT
+STATIC_DEFAULT_ACTION_OK_FUNC(action_ok_push_nfs_client_settings_list, ACTION_OK_DL_NFS_CLIENT_SETTINGS_LIST)
+#endif
 STATIC_DEFAULT_ACTION_OK_FUNC(action_ok_push_user_binds_list, ACTION_OK_DL_USER_BINDS_LIST)
 STATIC_DEFAULT_ACTION_OK_FUNC(action_ok_push_accounts_cheevos_list, ACTION_OK_DL_ACCOUNTS_CHEEVOS_LIST)
 #ifdef HAVE_LAKKA
@@ -7591,14 +7665,38 @@ static int generic_action_ok_dropdown_setting(const char *path, const char *labe
 
    switch (setting->type)
    {
+      /* Integer lists are built from the minimum (0 unless the range
+       * enforces one) in whole steps, so entry @idx is that value;
+       * the value is taken back the same way, not from offset_by,
+       * which only some settings set to their minimum. */
       case ST_INT:
-         setting_int_set(setting,
-               (int)((idx * setting->step) + setting->offset_by));
+         {
+            int32_t i_min  = (setting->flags & SD_FLAG_ENFORCE_MINRANGE)
+               ? (int32_t)setting->min : 0;
+            int32_t i_step = (int32_t)setting->step;
+            int32_t value;
+            if (i_step < 1)
+               i_step = 1;
+            value = i_min + (int32_t)idx * i_step;
+            if (     (setting->flags & SD_FLAG_ENFORCE_MAXRANGE)
+                  && value > (int32_t)setting->max)
+               value = (int32_t)setting->max;
+            setting_int_set(setting, value);
+         }
          break;
       case ST_UINT:
          {
-            unsigned value = (unsigned)((idx * setting->step) + setting->offset_by);
-            setting_uint_set(setting, value);
+            int32_t i_min  = (setting->flags & SD_FLAG_ENFORCE_MINRANGE)
+               ? (int32_t)setting->min : 0;
+            int32_t i_step = (int32_t)setting->step;
+            int32_t value;
+            if (i_step < 1)
+               i_step = 1;
+            value = i_min + (int32_t)idx * i_step;
+            if (     (setting->flags & SD_FLAG_ENFORCE_MAXRANGE)
+                  && value > (int32_t)setting->max)
+               value = (int32_t)setting->max;
+            setting_uint_set(setting, (unsigned)value);
          }
          break;
       case ST_FLOAT:
@@ -7787,7 +7885,7 @@ static int action_ok_push_dropdown_item_video_shader_param_generic(const char *p
    val                  = MIN(MAX(param_prev->minimum, val),
          param_prev->maximum);
    video_shader_driver_set_parameter(shader_info.data,
-         entry_idx - offset, val);
+         (unsigned)(entry_idx - offset), val);
    param_menu->current  = val;
 
    shader->flags       |= SHDR_FLAG_MODIFIED;
@@ -7840,6 +7938,27 @@ static int action_ok_push_dropdown_item_crt_super_resolution(const char *path,
 
    configuration_set_uint(settings,
          settings->uints.crt_switch_resolution_super, values[idx]);
+
+   return action_cancel_pop_default(NULL, NULL, 0, 0);
+}
+
+/* The values are Auto, Headset's Choice and rates in Hz, not an
+ * index, so they are rebuilt as the list was and the row picks one. */
+static int action_ok_push_dropdown_item_headset_refresh_rate(
+      const char *path, const char *label, unsigned type, size_t idx,
+      size_t entry_idx)
+{
+   unsigned values[2 + VIDEO_HEADSET_MAX_RATES];
+   unsigned n;
+   settings_t *settings = config_get_ptr();
+
+   n = video_driver_headset_rate_choices(values,
+         sizeof(values) / sizeof(values[0]));
+   if (idx >= n)
+      return -1;
+
+   configuration_set_uint(settings,
+         settings->uints.video_openxr_refresh_rate, values[idx]);
 
    return action_cancel_pop_default(NULL, NULL, 0, 0);
 }
@@ -8181,7 +8300,7 @@ static int action_ok_push_dropdown_item_input_select_reserved_device(const char 
         return -1;
 
     reserved_device_name = path;
-    no_device = msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NONE);
+    no_device = msg_hash_to_str(MENU_ENUM_LABEL_VALUE_OFF);
 
     if (string_is_equal(reserved_device_name, no_device))
        settings->arrays.input_reserved_devices[user][0] = '\0';
@@ -8301,7 +8420,7 @@ static int action_ok_push_dropdown_item_input_description(const char *path,
       return -1;
 
    /* Assign new mapping */
-   settings->uints.input_remap_ids[user_idx][btn_idx] = remap_idx;
+   input_config_set_remap_id(user_idx, btn_idx, remap_idx);
 
    return action_cancel_pop_default(NULL, NULL, 0, 0);
 }
@@ -8469,8 +8588,6 @@ static int action_ok_state_slot_run(const char *path,
    return 0;
 }
 
-static int action_ok_load_archive_detect_core(const char *path,
-      const char *label, unsigned type, size_t idx, size_t entry_idx);
 
 static int action_ok_load_archive(const char *path,
       const char *label, unsigned type, size_t idx, size_t entry_idx)
@@ -8504,7 +8621,7 @@ static int action_ok_load_archive(const char *path,
          CORE_TYPE_PLAIN);
 }
 
-static int action_ok_load_archive_detect_core(const char *path,
+int action_ok_load_archive_detect_core(const char *path,
       const char *label, unsigned type, size_t idx, size_t entry_idx)
 {
    char new_core_path[PATH_MAX_LENGTH];
@@ -8967,7 +9084,8 @@ static int action_ok_core_create_backup(const char *path,
    if (!core_path || !*core_path)
       return -1;
    task_push_core_backup(core_path, NULL, 0, CORE_BACKUP_MODE_MANUAL,
-         (size_t)auto_backup_history_size, dir_core_assets, false);
+         (size_t)auto_backup_history_size, dir_core_assets, false,
+         NULL, NULL);
    return 0;
 }
 
@@ -9459,6 +9577,31 @@ static int action_ok_core_steam_uninstall(
 }
 #endif
 
+#ifdef HAVE_NFSCLIENT
+static int action_ok_nfs_browse(const char *path,
+      const char *label, unsigned type, size_t idx, size_t entry_idx)
+{
+   char nfs_path[PATH_MAX_LENGTH];
+
+   if (!menu_displaylist_build_nfs_root(nfs_path, sizeof(nfs_path)))
+   {
+      runloop_msg_queue_push(
+            "NFS server address not configured.",
+            0, 100, 180, true, NULL,
+            MESSAGE_QUEUE_ICON_DEFAULT,
+            MESSAGE_QUEUE_CATEGORY_ERROR);
+      return -1;
+   }
+   filebrowser_set_type(FILEBROWSER_SELECT_FILE);
+   return generic_action_ok_displaylist_push(
+      nfs_path,
+      nfs_path,
+      msg_hash_to_str(MENU_ENUM_LABEL_FAVORITES),
+      type, idx, entry_idx,
+      ACTION_OK_DL_CONTENT_LIST);
+}
+#endif
+
 #ifdef HAVE_SMBCLIENT
 static int action_ok_smb_browse(const char *path,
       const char *label, unsigned type, size_t idx, size_t entry_idx)
@@ -9562,6 +9705,7 @@ static int menu_cbs_init_bind_ok_compare_label(menu_file_list_cbs_t *cbs,
          {MENU_ENUM_LABEL_CHEAT_DELETE,                        action_ok_cheat_delete},
 #endif
          {MENU_ENUM_LABEL_RUN_MUSIC,                           action_ok_audio_run},
+         {MENU_ENUM_LABEL_INPUT_BT_PAIR,                       action_ok_input_bt_pair},
 #ifdef HAVE_AUDIOMIXER
          {MENU_ENUM_LABEL_ADD_TO_MIXER_AND_COLLECTION,         action_ok_audio_add_to_mixer_and_collection},
          {MENU_ENUM_LABEL_ADD_TO_MIXER_AND_COLLECTION_AND_PLAY,action_ok_audio_add_to_mixer_and_collection_and_play},
@@ -9702,6 +9846,10 @@ static int menu_cbs_init_bind_ok_compare_label(menu_file_list_cbs_t *cbs,
          {MENU_ENUM_LABEL_SMB_CLIENT_SETTINGS,                 action_ok_push_smb_client_settings_list},
          {MENU_ENUM_LABEL_SMB_CLIENT_BROWSE,                   action_ok_smb_browse},
 #endif
+#ifdef HAVE_NFSCLIENT
+         {MENU_ENUM_LABEL_NFS_CLIENT_SETTINGS,                 action_ok_push_nfs_client_settings_list},
+         {MENU_ENUM_LABEL_NFS_CLIENT_BROWSE,                   action_ok_nfs_browse},
+#endif
          {MENU_ENUM_LABEL_CORE_DELETE,                         action_ok_core_delete},
          {MENU_ENUM_LABEL_CORE_CREATE_BACKUP,                  action_ok_core_create_backup},
          {MENU_ENUM_LABEL_DELETE_PLAYLIST,                     action_ok_delete_playlist},
@@ -9739,6 +9887,7 @@ static int menu_cbs_init_bind_ok_compare_label(menu_file_list_cbs_t *cbs,
          {MENU_ENUM_LABEL_SYSTEM_INFORMATION,                  action_ok_push_default},
          {MENU_ENUM_LABEL_DISPLAY_INFORMATION,                 action_ok_push_default},
          {MENU_ENUM_LABEL_DISPLAY_EDID_INFORMATION,            action_ok_push_default},
+         {MENU_ENUM_LABEL_INPUT_INFORMATION,                   action_ok_push_default},
          {MENU_ENUM_LABEL_NETWORK_INFORMATION,                 action_ok_push_default},
          {MENU_ENUM_LABEL_ACHIEVEMENT_LIST,                    action_ok_push_default},
          {MENU_ENUM_LABEL_DISK_OPTIONS,                        action_ok_push_default},
@@ -9750,7 +9899,6 @@ static int menu_cbs_init_bind_ok_compare_label(menu_file_list_cbs_t *cbs,
          {MENU_ENUM_LABEL_LOAD_CONTENT_LIST,                   action_ok_push_default},
          {MENU_ENUM_LABEL_ADD_CONTENT_LIST,                    action_ok_push_default},
          {MENU_ENUM_LABEL_CONFIGURATIONS_LIST,                 action_ok_push_default},
-         {MENU_ENUM_LABEL_HELP_LIST,                           action_ok_push_default},
          {MENU_ENUM_LABEL_INFORMATION_LIST,                    action_ok_push_default},
          {MENU_ENUM_LABEL_INFORMATION,                         action_ok_push_default},
          {MENU_ENUM_LABEL_CONTENT_SETTINGS,                    action_ok_push_default},
@@ -9777,6 +9925,7 @@ static int menu_cbs_init_bind_ok_compare_label(menu_file_list_cbs_t *cbs,
          {MENU_ENUM_LABEL_REMAP_FILE_REMOVE_CONTENT_DIR,       action_ok_remap_file_remove_content_dir},
          {MENU_ENUM_LABEL_REMAP_FILE_REMOVE_GAME,              action_ok_remap_file_remove_game},
          {MENU_ENUM_LABEL_REMAP_FILE_RESET,                    action_ok_remap_file_reset},
+         {MENU_ENUM_LABEL_INPUT_REMAP_FIND,                    action_ok_input_remap_find},
          {MENU_ENUM_LABEL_REMAP_FILE_FLUSH,                    action_ok_remap_file_flush},
          {MENU_ENUM_LABEL_OVERRIDE_FILE_LOAD,                  action_ok_override_file},
          {MENU_ENUM_LABEL_OVERRIDE_FILE_SAVE_AS,               action_ok_override_file_save_as},
@@ -10028,6 +10177,9 @@ static int menu_cbs_init_bind_ok_compare_type(menu_file_list_cbs_t *cbs,
             break;
          case MENU_SETTING_DROPDOWN_ITEM_CRT_SUPER_RESOLUTION:
             BIND_ACTION_OK(cbs, action_ok_push_dropdown_item_crt_super_resolution);
+            break;
+         case MENU_SETTING_DROPDOWN_ITEM_HEADSET_REFRESH_RATE:
+            BIND_ACTION_OK(cbs, action_ok_push_dropdown_item_headset_refresh_rate);
             break;
          case MENU_SETTING_DROPDOWN_ITEM_VIDEO_SHADER_NUM_PASS:
             BIND_ACTION_OK(cbs, action_ok_push_dropdown_item_video_shader_num_pass);

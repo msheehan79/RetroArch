@@ -2372,6 +2372,21 @@ void dxgi_copy(
          break;
       }
 
+      case DXGI_FORMAT_R16G16B16A16_FLOAT:
+         /* RGBA half floats, which only ever go to the same format. */
+         if ((unsigned)dst_format == DXGI_FORMAT_R16G16B16A16_FLOAT)
+         {
+            const UINT8* in  = (const UINT8*)src_data;
+            UINT8*       out = (UINT8*)dst_data;
+            for (i = 0; i < height; i++)
+            {
+               memcpy(out, in, (size_t)width * 8);
+               in  += src_pitch ? src_pitch : width * 8;
+               out += dst_pitch ? dst_pitch : width * 8;
+            }
+         }
+         break;
+
       case DXGI_FORMAT_R10G10B10A2_UNORM:
       {
          /* Native 10-bit source. The ABI's XRGB2101010 packs R in bits
@@ -2858,7 +2873,8 @@ void dxgi_set_hdr_metadata(
       float                         max_output_nits,
       float                         min_output_nits,
       float                         max_cll,
-      float                         max_fall
+      float                         max_fall,
+      float                         display_peak
 )
 {
    /* TODO/FIXME - static globals - not thread-safe */
@@ -2873,8 +2889,7 @@ void dxgi_set_hdr_metadata(
    DXGI_HDR_METADATA_HDR10 hdr10_meta_data          = {0};
    int selected_chroma                              = 0;
    /* The driver's fixed values unless Use Display Peak supplies the
-    * display's */
-   float display_peak = video_driver_hdr_metadata_peak(0.0f);
+    * display's (@display_peak, 0 when it does not) */
    if (display_peak > 0.0f)
    {
       max_output_nits = display_peak;

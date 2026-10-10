@@ -82,7 +82,16 @@ struct descriptor
    int id_min;
    int id_max;
    uint16_t *value;
+   /* frames since each value last changed, up to REPEAT_SETTLED */
+   uint8_t  *age;
 };
+
+/* A change is sent by UDP, which may lose it, and nothing else would
+ * correct the receiver until the control changes again. So it is sent
+ * again this many frames after the change, three times. */
+#define REPEAT_1       5
+#define REPEAT_2       15
+#define REPEAT_SETTLED 30
 
 struct remote_joypad_message
 {
@@ -613,6 +622,9 @@ void NETRETROPAD_CORE_PREFIX(retro_init)(void)
       struct descriptor *desc = descriptors[i];
       int                size = DESC_NUM_PORTS(desc) * DESC_NUM_INDICES(desc) * DESC_NUM_IDS(desc);
       descriptors[i]->value   = (uint16_t*)calloc(size, sizeof(uint16_t));
+      descriptors[i]->age     = (uint8_t*)malloc(size);
+      if (descriptors[i]->age)
+         memset(descriptors[i]->age, REPEAT_SETTLED, size);
    }
 
    NETRETROPAD_CORE_PREFIX(log_cb)(RETRO_LOG_INFO, "Initialising sockets...\n");
@@ -636,6 +648,8 @@ void NETRETROPAD_CORE_PREFIX(retro_deinit)(void)
    {
       free(descriptors[i]->value);
       descriptors[i]->value = NULL;
+      free(descriptors[i]->age);
+      descriptors[i]->age   = NULL;
    }
 
    sensors_disable();
@@ -781,12 +795,25 @@ static void retropad_update_input(void)
                      index,
                      id);
 
-               /* Continue if state is unchanged */
                if (state == old)
-                  continue;
-
-               /* Update state */
-               desc->value[offset] = state;
+               {
+                  /* unchanged: nothing to do, unless a change is due
+                   * to be sent again (only what is sent at all) */
+                  uint8_t *age = desc->age ? &desc->age[offset] : NULL;
+                  if (i > 1 || !age || *age >= REPEAT_SETTLED)
+                     continue;
+                  (*age)++;
+                  if (     *age != REPEAT_1 && *age != REPEAT_2
+                        && *age != REPEAT_SETTLED)
+                     continue;
+               }
+               else
+               {
+                  /* Update state */
+                  desc->value[offset] = state;
+                  if (desc->age)
+                     desc->age[offset] = 0;
+               }
 
                if (i > 2)
                {
@@ -1015,7 +1042,7 @@ void NETRETROPAD_CORE_PREFIX(retro_run)(void)
    {
       int offset = DESC_OFFSET(&joypad, 0, 0, i);
       if (joypad.value[offset])
-         input_state |= 1 << i;
+         input_state |= 1U << i;
 
       /* Construct a red gradient representation for analog buttons */
       offset = DESC_OFFSET(&analog_button, 0, RETRO_DEVICE_INDEX_ANALOG_BUTTON, i);
@@ -1030,44 +1057,44 @@ void NETRETROPAD_CORE_PREFIX(retro_run)(void)
       int offset = DESC_OFFSET(&analog, 0, RETRO_DEVICE_INDEX_ANALOG_LEFT, i);
       if (     (int16_t)analog.value[offset] < -32768/2)
       {
-         input_state |= 1 << (16 + i*8 + 0);
+         input_state |= 1U << (16 + i*8 + 0);
          analog_item_colors[  16 + i*8 + 0] = (uint16_t)((-1*((int16_t)analog.value[offset])-32768/2) /528) << 11;
       }
       else if ((int16_t)analog.value[offset] < -3276)
       {
-         input_state |= 1 << (16 + i*8 + 1);
+         input_state |= 1U << (16 + i*8 + 1);
          analog_item_colors[  16 + i*8 + 1] = (uint16_t)((-1*((int16_t)analog.value[offset])        ) /528) << 11;
       }
       else if ((int16_t)analog.value[offset] > 32768/2)
       {
-         input_state |= 1 << (16 + i*8 + 3);
+         input_state |= 1U << (16 + i*8 + 3);
          analog_item_colors[  16 + i*8 + 3] = (uint16_t)((   ((int16_t)analog.value[offset])-32768/2) /528) << 11;
       }
       else if ((int16_t)analog.value[offset] > 3276)
       {
-         input_state |= 1 << (16 + i*8 + 2);
+         input_state |= 1U << (16 + i*8 + 2);
          analog_item_colors[  16 + i*8 + 2] = (uint16_t)((   ((int16_t)analog.value[offset])        ) /528) << 11;
       }
 
       offset = DESC_OFFSET(&analog, 0, RETRO_DEVICE_INDEX_ANALOG_RIGHT, i);
       if (     (int16_t)analog.value[offset] < -32768/2)
       {
-         input_state |= 1 << (16 + i*8 + 4);
+         input_state |= 1U << (16 + i*8 + 4);
          analog_item_colors[  16 + i*8 + 4] = (uint16_t)((-1*((int16_t)analog.value[offset])-32768/2) /528) << 11;
       }
       else if ((int16_t)analog.value[offset] < -3276)
       {
-         input_state |= 1 << (16 + i*8 + 5);
+         input_state |= 1U << (16 + i*8 + 5);
          analog_item_colors[  16 + i*8 + 5] = (uint16_t)((-1*((int16_t)analog.value[offset])        ) /528) << 11;
       }
       else if ((int16_t)analog.value[offset] > 32768/2)
       {
-         input_state |= 1 << (16 + i*8 + 7);
+         input_state |= 1U << (16 + i*8 + 7);
          analog_item_colors[  16 + i*8 + 7] = (uint16_t)((   ((int16_t)analog.value[offset])-32768/2) /528) << 11;
       }
       else if ((int16_t)analog.value[offset] > 3276)
       {
-         input_state |= 1 << (16 + i*8 + 6);
+         input_state |= 1U << (16 + i*8 + 6);
          analog_item_colors[  16 + i*8 + 6] = (uint16_t)((   ((int16_t)analog.value[offset])        ) /528) << 11;
       }
    }
@@ -1341,7 +1368,10 @@ void NETRETROPAD_CORE_PREFIX(retro_run)(void)
 
          if (input_test_steps[current_test_step].expected_button < KEYBOARD_OFFSET)
          {
-            expected_input = 1 << input_test_steps[current_test_step].expected_button;
+            /* The test file may name a button past input_state's 32 bits */
+            expected_input = (input_test_steps[current_test_step].expected_button < 32)
+               ? 1U << input_test_steps[current_test_step].expected_button
+               : 0;
             if (input_state & expected_input)
                test_success = true;
          }
@@ -1383,9 +1413,9 @@ void NETRETROPAD_CORE_PREFIX(retro_run)(void)
                /* 0  - 15: buttons, 16 - 31: analog x/y */
                /* 32 - 47: analog input for same buttons */
                if (retropad_buttons[rle] < 32)
-                  button        = 1 <<  retropad_buttons[rle];
+                  button        = 1U <<  retropad_buttons[rle];
                else
-                  button_analog = 1 << (retropad_buttons[rle] - 32);
+                  button_analog = 1U << (retropad_buttons[rle] - 32);
 
                /* Red for active inputs */
                if (input_state & button)

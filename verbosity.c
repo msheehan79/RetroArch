@@ -28,7 +28,11 @@
 #if TARGET_IPHONE_SIMULATOR
 #include <stdio.h>
 #else
-#if __IPHONE_OS_VERSION_MIN_REQUIRED > __IPHONE_10_0 || __TV_OS_VERSION_MIN_REQUIRED > __TVOS_10_0
+/* The same test as the os_log call site below: a 10.0 floor logs through
+ * os_log, anything lower (or an SDK without os/log.h) through asl. */
+#if (defined(__IPHONE_10_0) && (__IPHONE_OS_VERSION_MIN_REQUIRED >= __IPHONE_10_0)) \
+   || (defined(__TV_OS_VERSION_MIN_REQUIRED) && defined(__TVOS_10_0) \
+      && (__TV_OS_VERSION_MIN_REQUIRED >= __TVOS_10_0))
 #include <os/log.h>
 #else
 #include <asl.h>
@@ -143,6 +147,11 @@ bool nxlink_connected = false;
 void verbosity_set_log_level(unsigned level)
 {
    verbosity_log_level = level;
+}
+
+unsigned verbosity_get_log_level(void)
+{
+   return verbosity_log_level;
 }
 
 void verbosity_enable(void)

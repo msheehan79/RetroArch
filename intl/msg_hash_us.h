@@ -1330,6 +1330,14 @@ MSG_HASH(
    "View the EDID the display in use reports: identity, capabilities, supported timings and extension blocks."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_INFORMATION,
+   "Input Information"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_INFORMATION,
+   "View the controller in each port and the configuration it uses."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DATABASE_MANAGER,
    "Database Manager"
    )
@@ -1732,6 +1740,10 @@ MSG_HASH(
    "A built-in laptop or all-in-one panel carries no EDID. An external display connected over DDC does."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_DISPLAY_EDID_UNAVAILABLE_ANDROID,
+   "Android does not let apps read the EDID of a phone or tablet's built-in screen. A TV box driving a display over HDMI exposes it where the device allows."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DISPLAY_EDID_RAW,
    "Raw"
    )
@@ -1857,6 +1869,54 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_MONTH,
    "Release Date Month"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_MONTH_JANUARY,
+   "January"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_MONTH_FEBRUARY,
+   "February"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_MONTH_MARCH,
+   "March"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_MONTH_APRIL,
+   "April"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_MONTH_MAY,
+   "May"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_MONTH_JUNE,
+   "June"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_MONTH_JULY,
+   "July"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_MONTH_AUGUST,
+   "August"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_MONTH_SEPTEMBER,
+   "September"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_MONTH_OCTOBER,
+   "October"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_MONTH_NOVEMBER,
+   "November"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_MONTH_DECEMBER,
+   "December"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_YEAR,
@@ -4644,6 +4704,38 @@ MSG_HASH(MENU_ENUM_LABEL_VALUE_##T, us)
 #undef S_FLOAT
 #undef S_FLOAT_NS
 #undef SETTINGS_DEF_STRINGS_PASS
+/* GENERATED REGION: console screen filters and gamma (see settings_def_video_console_screen.h). */
+#define SETTINGS_DEF_STRINGS_PASS
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+MSG_HASH(MENU_ENUM_LABEL_VALUE_##T, us) \
+MSG_HASH(MENU_ENUM_SUBLABEL_##T, sub)
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+MSG_HASH(MENU_ENUM_LABEL_VALUE_##T, us)
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+MSG_HASH(MENU_ENUM_LABEL_VALUE_##T, us) \
+MSG_HASH(MENU_ENUM_SUBLABEL_##T, sub)
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+MSG_HASH(MENU_ENUM_LABEL_VALUE_##T, us)
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+MSG_HASH(MENU_ENUM_LABEL_VALUE_##T, us) \
+MSG_HASH(MENU_ENUM_SUBLABEL_##T, sub)
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+MSG_HASH(MENU_ENUM_LABEL_VALUE_##T, us)
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+MSG_HASH(MENU_ENUM_LABEL_VALUE_##T, us) \
+MSG_HASH(MENU_ENUM_SUBLABEL_##T, sub)
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+MSG_HASH(MENU_ENUM_LABEL_VALUE_##T, us)
+#include "../settings/settings_def_video_console_screen.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+#undef SETTINGS_DEF_STRINGS_PASS
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_USE_METAL_ARG_BUFFERS,
    "Use Metal Argument Buffers (Restart required)"
@@ -7420,7 +7512,7 @@ MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_HDR_EXPAND_GAMUT_SUPER,
    "Super"
    )
-/* GENERATED REGION: HDR toggle group (see settings_def_video_hdr_toggles.h). */
+/* GENERATED REGION: HDR toggle group, stereo 3D & screens group and headset group (see settings_def_video_hdr_toggles.h, settings_def_video_stereo.h and settings_def_video_headset.h). */
 #define SETTINGS_DEF_STRINGS_PASS
 #define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
 MSG_HASH(MENU_ENUM_LABEL_VALUE_##T, us) \
@@ -7498,6 +7590,8 @@ MSG_HASH(MENU_ENUM_SUBLABEL_##T, sub)
 #define S_ACTION_EX_NS(T, n, sd, ok, rp, c, us) \
 MSG_HASH(MENU_ENUM_LABEL_VALUE_##T, us)
 #include "../settings/settings_def_video_hdr_toggles.h"
+#include "../settings/settings_def_video_stereo.h"
+#include "../settings/settings_def_video_headset.h"
 #undef S_BOOL
 #undef S_BOOL_NS
 #undef S_BOOL_H
@@ -7595,6 +7689,66 @@ MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_HDR_SUBPIXEL_LAYOUT_BGR,
    "BGR"
    )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_VIDEO_STEREO_MODE_2D,
+   "2D"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_VIDEO_STEREO_MODE_SBS_HALF,
+   "Side by Side (Half)"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_VIDEO_STEREO_MODE_SBS_FULL,
+   "Side by Side (Full)"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_VIDEO_STEREO_MODE_TOP_BOTTOM,
+   "Top-Bottom"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_VIDEO_STEREO_MODE_ANAGLYPH,
+   "Anaglyph (Red/Cyan)"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_VIDEO_STEREO_MODE_INTERLACED,
+   "Interlaced"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_LAYOUT_VERTICAL,
+   "Vertical"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_LAYOUT_HORIZONTAL,
+   "Horizontal"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_CONTROLLERS_COMBINED,
+   "Combined"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_CONTROLLERS_SEPARATE,
+   "Separate"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_AUTO,
+   "Auto"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_ALWAYS,
+   "Always"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_OFF,
+   "Off"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_REFRESH_AUTO,
+   "Auto"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_REFRESH_HEADSET,
+   "Headset's Choice"
+   )
 
 
 /* Settings > Video > Synchronization */
@@ -7636,14 +7790,6 @@ MSG_HASH(MENU_ENUM_LABEL_VALUE_##T, us)
 #undef S_FLOAT
 #undef S_FLOAT_NS
 #undef SETTINGS_DEF_STRINGS_PASS
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_VIDEO_SCANLINE_SYNC,
-   "Scanline Sync"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_VIDEO_SCANLINE_SYNC,
-   "Synchronize video presentation to scanline position prediction based on core time. Requirements: VSync off, Frame Delay off, display Hz near 1x core FPS and GPU at max clocks."
-   )
 /* GENERATED REGION: frame delay group (see settings_def_frame_delay.h). */
 #define SETTINGS_DEF_STRINGS_PASS
 #define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
@@ -10630,6 +10776,38 @@ MSG_HASH(
    MENU_ENUM_LABEL_HELP_INPUT_SELECT_PHYSICAL_KEYBOARD,
    "If RetroArch identifies a hardware keyboard as some kind of gamepad, this setting can be used to force RetroArch to treat the misidentified device as a keyboard.\nThis can be useful if you are trying to emulate a computer in some Android TV device and also own a physical keyboard that can be attached to the box."
    )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_STYLUS_ENABLE,
+   "Stylus Support"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_STYLUS_ENABLE,
+   "Enable stylus devices. Provides precise input for drawing and pointing games. Disable if experiencing input conflicts."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_STYLUS_REQUIRE_CONTACT_FOR_CLICK,
+   "Stylus Requires Screen Contact"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_STYLUS_REQUIRE_CONTACT_FOR_CLICK,
+   "ON: Stylus must physically touch screen to register as a click. OFF: Stylus can click by touching screen OR by hovering and pressing the side button."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_STYLUS_HOVER_MOVES_POINTER,
+   "Stylus Hover Moves Cursor"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_STYLUS_HOVER_MOVES_POINTER,
+   "Allow stylus hover (without touching screen) to move the cursor. Essential for drawing and painting games or lightgun games. Turn OFF if cursor moves unexpectedly."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_STYLUS_PRESSURE_SENSITIVITY,
+   "Stylus Pressure Sensitivity"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_STYLUS_PRESSURE_SENSITIVITY,
+   "Stylus touch sensitivity. Higher values = more sensitive (lighter touch). Default 70 works for most devices. Lower if using a screen protector (40-50)."
+   )
 #endif
 /* GENERATED REGION: analog deadzone and sensitivity group (see settings_def_analog_deadzone.h). */
 #define SETTINGS_DEF_STRINGS_PASS
@@ -12140,6 +12318,22 @@ MSG_HASH(
    "Switches software 'Video Filter' on/off."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_META_HEADSET_RECENTER,
+   "Recenter Headset Screens"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_META_HEADSET_RECENTER,
+   "Places the headset's screens in front of where you are looking now."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_META_LASER_POINTER_TOGGLE,
+   "Laser Pointer (Toggle)"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_META_LASER_POINTER_TOGGLE,
+   "Switches the headset's Laser Pointer between Off and its last mode."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_META_FPS_TOGGLE,
    "Show FPS (Toggle)"
    )
@@ -12285,7 +12479,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_REMAP_PORT,
-   "Specifies which core port will receive input from frontend controller port %u."
+   "Specifies which core port will receive input from frontend controller port %u. 'None' sends its input to no core port."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_BIND_ALL,
@@ -12317,7 +12511,31 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_MOUSE_INDEX,
-   "The physical mouse as recognized by RetroArch."
+   "The physical mouse as recognized by RetroArch. Where the input driver can tell mice apart, a mouse chosen here is remembered by what it is, and stays this port's when mice are plugged in or out."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_AIM_STICK,
+   "Aim From Analog Stick"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_AIM_STICK,
+   "Lets an analog stick aim this port's lightgun or pointer: where the stick is held is where it points on the screen, with the centre of the stick at the centre. Several players can then each aim without a mouse each. The gun's buttons are bound below as usual."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_KEYBOARD_INDEX,
+   "Keyboard Index"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_KEYBOARD_INDEX,
+   "The keyboard this port's key binds are read from. 'All' reads every keyboard as one. A single keyboard can be chosen where the input driver can tell keyboards apart; it is remembered by what it is, and stays this port's when keyboards are plugged in or out. Hotkeys and the menu always answer to every keyboard."
+   )
+MSG_HASH( /* The value of Keyboard Index, or of Mouse Index, for a port whose keyboard or mouse is not plugged in. %s is what the device is known by, such as its USB ids "046d:c31c" */
+   MENU_ENUM_LABEL_VALUE_INPUT_KEYBOARD_INDEX_ABSENT,
+   "%s (not connected)"
+   )
+MSG_HASH( /* A value of 'Keyboard Index': every keyboard, read as one */
+   MENU_ENUM_LABEL_VALUE_INPUT_KEYBOARD_INDEX_ALL,
+   "All"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_JOYPAD_B,
@@ -13532,14 +13750,6 @@ MSG_HASH(MENU_ENUM_LABEL_VALUE_##T, us)
 #undef S_UINT_AT_EX_H
 #undef S_UINT_AT_EX_NS_H
 #undef SETTINGS_DEF_STRINGS_PASS
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_MENU_ENUM_THROTTLE_FRAMERATE,
-   "Throttle Menu Framerate"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_MENU_ENUM_THROTTLE_FRAMERATE,
-   "Makes sure the framerate is capped while inside the menu."
-   )
 
 /* Settings > Frame Throttle > Rewind */
 
@@ -21311,6 +21521,22 @@ MSG_HASH(
    MENU_ENUM_SUBLABEL_NETPLAY_REQUEST_DEVICE_I,
    "Request to play with the given input device."
    )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_NETPLAY_REQUEST_DEVICES,
+   "Request Devices"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_NETPLAY_REQUEST_DEVICES,
+   "The player slots to ask the host for when joining a netplay session. With none chosen, the host gives the first free one."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_NETWORK_REMOTE_USERS,
+   "Network RetroPad Users"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_NETWORK_REMOTE_USERS,
+   "The users another device may play as over the network. Each one chosen listens on its own port, counted up from the base port."
+   )
 /* GENERATED REGION: netplay NAT traversal setting (see settings_def_netplay_nat.h). */
 #define SETTINGS_DEF_STRINGS_PASS
 #define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
@@ -24081,6 +24307,10 @@ MSG_HASH(
    "By Release Year"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_EXPLORE_BY_RELEASE_MONTH,
+   "By Release Month"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_EXPLORE_BY_PLAYER_COUNT,
    "By Player Count"
    )
@@ -24695,6 +24925,38 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_REMAP_FILE_RESET,
    "Set all input remapping options to default values."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_REMAP_FIND,
+   "Find a Button by Pressing It"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_COMBO_TARGET,
+   "What the Combination Does"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_COMBO_TARGET,
+   "What happens when all of the combination's buttons are held down together: any hotkey, a command that has no hotkey, or one of your macros. The buttons still reach the game as well."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_COMBO_HOLD,
+   "Response Time"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_COMBO_HOLD,
+   "Instant acts the moment all of the buttons are down. Hold For waits until they have been held together for a time you choose next, so that pressing them briefly - in the middle of a game, say - does nothing."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_COMBO_HOLD_TIME,
+   "Hold For"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_COMBO_HOLD_TIME,
+   "How long all of the combination's buttons must be held down together before it acts."
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_REMAP_FIND,
+   "Press a button or push a stick on this port's controller, or a key bound to one, and the list below jumps to it."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_REMAP_FILE_FLUSH,
@@ -26674,6 +26936,34 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_POLL_TYPE_BEHAVIOR_LATE,
    "Late"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_ASSIGN_PORTS_KEYBOARD_ASSIGNS,
+   "Assigns its Port"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_ASSIGN_PORTS_KEYBOARD_WAITS,
+   "Waits for its Controller"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_ROTATION_AUTO,
+   "Auto (Video Rotation)"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_SOCD_NEUTRAL,
+   "Neutral"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_SOCD_LAST,
+   "Last Input Priority"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_SOCD_FIRST,
+   "First Input Priority"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_SOCD_UP,
+   "Up Priority"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_TIMEDATE_YMD_HMS,
@@ -31320,6 +31610,58 @@ MSG_HASH(
    "Device Display Name: %s\nDevice Config Name: %s\nDevice VID/PID: %d/%d"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_PORT_DEVICE_NO_PROFILE,
+   "No Autoconfig Profile"
+   )
+MSG_HASH( /* An entry of Information > Input Information: the number of a connected keyboard and its name */
+   MENU_ENUM_LABEL_VALUE_KEYBOARD_DEVICE_NAME,
+   "Keyboard %d: %s"
+   )
+MSG_HASH( /* Information > Input Information: a user's Network RetroPad, with nothing received yet */
+   MENU_ENUM_LABEL_VALUE_NETWORK_REMOTE_INFO_WAITING,
+   "Network RetroPad %u: port %u, no device yet"
+   )
+MSG_HASH( /* The same, with the address of the device last heard from */
+   MENU_ENUM_LABEL_VALUE_NETWORK_REMOTE_INFO_HEARD,
+   "Network RetroPad %u: port %u, from %u.%u.%u.%u"
+   )
+MSG_HASH( /* Under a keyboard's entry in Information > Input Information: its USB vendor and product ids */
+   MENU_ENUM_LABEL_VALUE_KEYBOARD_DEVICE_INFO,
+   "Device VID/PID: %d/%d"
+   )
+MSG_HASH( /* An entry of Information > Input Information: a connected mouse. The first %s is its Mouse Index number, or several ("2, 3") when one mouse has more than one; the second is its name */
+   MENU_ENUM_LABEL_VALUE_MOUSE_DEVICE_NAME,
+   "Mouse %s: %s"
+   )
+MSG_HASH( /* An entry of Information > Input Information, where the input driver cannot tell one keyboard from another. %s is the input driver's name, such as "wayland" or "x" */
+   MENU_ENUM_LABEL_VALUE_KEYBOARD_SYSTEM_NAME,
+   "Keyboard: All Keyboards (%s)"
+   )
+MSG_HASH( /* The same for mice */
+   MENU_ENUM_LABEL_VALUE_MOUSE_SYSTEM_NAME,
+   "Mouse: All Mice (%s)"
+   )
+MSG_HASH( /* Under either of those two entries. %s is the input driver's name */
+   MENU_ENUM_LABEL_VALUE_INPUT_SYSTEM_DEVICE_INFO,
+   "The \"%s\" input driver reads these as one device and cannot tell them apart."
+   )
+MSG_HASH( /* An entry of Information > Input Information: this computer's Bluetooth adapter. The first %s is its name, such as "hci0"; the second its address */
+   MENU_ENUM_LABEL_VALUE_BLUETOOTH_HOST_INFO,
+   "Bluetooth: %s (%s)"
+   )
+MSG_HASH( /* Under a controller's entry in Information > Input Information: the Bluetooth address the controller connects to when unplugged, such as a DualShock 3's */
+   MENU_ENUM_LABEL_VALUE_PORT_BT_HOST,
+   "- Connects over Bluetooth to: %s"
+   )
+MSG_HASH( /* The same, when that address is this computer's */
+   MENU_ENUM_LABEL_VALUE_PORT_BT_HOST_THIS,
+   "- Connects over Bluetooth to: This Computer (%s)"
+   )
+MSG_HASH( /* Under the same entry: selecting it makes the controller connect to this computer over Bluetooth when it is unplugged */
+   MENU_ENUM_LABEL_VALUE_PORT_BT_PAIR,
+   "- Pair with This Computer"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CHEAT_SETTINGS,
    "Cheat Settings"
    )
@@ -32455,6 +32797,14 @@ MSG_HASH(
    "Failed to initialize netplay."
    )
 MSG_HASH(
+   MSG_TLS_VERIFY_FAILED,
+   "Secure connection refused: the server's certificate could not be verified. See the log, or the 'TLS Certificate Verification' setting."
+   )
+MSG_HASH(
+   MSG_TLS_VERIFY_DISABLED,
+   "TLS certificate verification is disabled. Secure connections are not checked and can be intercepted."
+   )
+MSG_HASH(
    MSG_NETPLAY_UNSUPPORTED,
    "Core does not support netplay."
    )
@@ -32515,6 +32865,10 @@ MSG_HASH(
    "Recording terminated due to resize."
    )
 MSG_HASH(
+   MSG_RECORDING_GAME_ONLY_UNSUPPORTED,
+   "This video driver can't Record Game Only: the menu and messages are recorded."
+   )
+MSG_HASH(
    MSG_RECORDING_TO,
    "Recording to"
    )
@@ -32541,6 +32895,46 @@ MSG_HASH(
 MSG_HASH(
    MSG_REMAP_FILE_RESET,
    "All input remapping options reset to default."
+   )
+MSG_HASH(
+   MSG_INPUT_REMAP_FIND_PRESS,
+   "Press a button or push a stick on the controller of Port %u\n(Timeout %u seconds)"
+   )
+MSG_HASH( /* %u is the controller's port */
+   MSG_INPUT_BT_PAIRED,
+   "Port %u's controller will connect to this computer over Bluetooth when unplugged."
+   )
+MSG_HASH(
+   MSG_INPUT_BT_PAIR_FAILED,
+   "Port %u's controller could not be paired with this computer."
+   )
+MSG_HASH(
+   MSG_INPUT_COMBO_SET_BUTTONS,
+   "Set Buttons"
+   )
+MSG_HASH(
+   MSG_INPUT_COMBO_CHOOSE_ACTION,
+   "Choose Action"
+   )
+MSG_HASH(
+   MSG_INPUT_COMBO_INSTANT,
+   "Instant"
+   )
+MSG_HASH(
+   MSG_INPUT_COMBO_HOLD_SECONDS,
+   "%s Seconds"
+   )
+MSG_HASH(
+   MSG_INPUT_COMBO_HOLD_FOR,
+   "Hold For"
+   )
+MSG_HASH(
+   MSG_INPUT_COMBO_ROW_SUBLABEL,
+   "Buttons held together that set off a hotkey, a command or a macro. Right: hold the buttons to use, then choose what they do. Left: choose what they do. OK: type it. Start: remove it."
+   )
+MSG_HASH(
+   MSG_INPUT_MACRO_ROW_SUBLABEL,
+   "Buttons pressed for you a step at a time, each held for a number of the game's frames, written as \"down 2, down+right 2, a 4\". A combination sets it off. Start: remove it."
    )
 MSG_HASH(
    MSG_REMOVING_TEMPORARY_CONTENT_FILE,
@@ -32831,6 +33225,18 @@ MSG_HASH(
    "%s configured in port %u"
    )
 MSG_HASH(
+   MSG_DEVICE_ASSIGNED_TO_CORE_PORT_NR,
+   "%s assigned to core port %u"
+   )
+MSG_HASH(
+   MSG_KEYBOARD_ASSIGNED_TO_CORE_PORT_NR,
+   "Keyboard assigned to core port %u"
+   )
+MSG_HASH(
+   MSG_DEVICE_AND_KEYBOARD_ASSIGNED_TO_CORE_PORT_NR,
+   "%s and keyboard assigned to core port %u"
+   )
+MSG_HASH(
    MSG_DEVICE_DISCONNECTED_FROM_PORT_NR,
    "%s disconnected from port %u"
    )
@@ -32905,6 +33311,42 @@ MSG_HASH(
 MSG_HASH(
    MSG_INPUT_KIOSK_MODE_PASSWORD_NOK,
    "Password incorrect."
+   )
+MSG_HASH(
+   MSG_INPUT_KEYCHAIN_PASSPHRASE,
+   "Keychain Passphrase"
+   )
+MSG_HASH(
+   MSG_INPUT_KEYCHAIN_PASSPHRASE_NEW,
+   "New Keychain Passphrase (empty removes it)"
+   )
+MSG_HASH(
+   MSG_KEYCHAIN_UNLOCKING,
+   "Unlocking keychain..."
+   )
+MSG_HASH(
+   MSG_KEYCHAIN_SETTING_PASSPHRASE,
+   "Setting keychain passphrase..."
+   )
+MSG_HASH(
+   MSG_KEYCHAIN_UNLOCKED,
+   "Keychain unlocked."
+   )
+MSG_HASH(
+   MSG_KEYCHAIN_PASSPHRASE_WRONG,
+   "Keychain passphrase incorrect."
+   )
+MSG_HASH(
+   MSG_KEYCHAIN_PASSPHRASE_SET,
+   "Keychain passphrase set."
+   )
+MSG_HASH(
+   MSG_KEYCHAIN_PASSPHRASE_REMOVED,
+   "Keychain passphrase removed."
+   )
+MSG_HASH(
+   MSG_KEYCHAIN_WRITE_FAILED,
+   "Could not update the keychain key file."
    )
 MSG_HASH(
    MSG_CONFIG_OVERRIDE_LOADED,
@@ -33251,6 +33693,14 @@ MSG_HASH(
    "RetroAchievements login expired. Please re-enter your password and reload the game."
    )
 MSG_HASH(
+   MSG_MENU_FRAME_RATE_DISPLAY,
+   "Display Rate"
+   )
+MSG_HASH(
+   MSG_MENU_FRAME_RATE_CONTENT,
+   "Content Rate"
+   )
+MSG_HASH(
    MSG_RESAMPLER_QUALITY_LOWEST,
    "Lowest"
    )
@@ -33475,6 +33925,14 @@ MSG_HASH(
    "Failed to enter GameMode"
    )
 MSG_HASH(
+   MSG_FAILED_TO_APPLY_POWER_PLAN,
+   "Failed to activate the low-latency power plan"
+   )
+MSG_HASH(
+   MSG_FAILED_TO_DISABLE_IDLE_STATES,
+   "Failed to disable processor idle states"
+   )
+MSG_HASH(
    MSG_FAILED_TO_ENTER_GAMEMODE_LINUX,
    "Failed to enter GameMode - ensure GameMode daemon is installed/running"
    )
@@ -33497,6 +33955,30 @@ MSG_HASH(
 MSG_HASH(
    MSG_VIDEO_FILTER_ENABLE_OFF,
    "Video-Filter: Disable"
+   )
+MSG_HASH(
+   MSG_OPENXR_UNAVAILABLE,
+   "Headset output is off: no OpenXR runtime or headset was found."
+   )
+MSG_HASH(
+   MSG_OPENXR_FAILED,
+   "Headset output could not start. The window shows the output."
+   )
+MSG_HASH(
+   MSG_OPENXR_SESSION_ENDED,
+   "The headset session ended. Turn Headset Output off and on to try again."
+   )
+MSG_HASH(
+   MSG_OPENXR_NEEDS_RELOAD,
+   "Headset output starts when the content is loaded again."
+   )
+MSG_HASH(
+   MSG_OPENXR_RATE_MISFIT,
+   "The headset runs at %u Hz, which doesn't fit this game's %.2f fps; its motion will judder. Set the headset's refresh rate for RetroArch to a multiple of the game's rate (in SteamVR: VR Video Settings)."
+   )
+MSG_HASH(
+   MSG_OPENXR_LASER_POINTER,
+   "Laser Pointer: %s"
    )
 
 
@@ -33833,18 +34315,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_FILE_BROWSER_OPEN_PICKER,
    "Open another directory using the system file picker"
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_VIDEO_FILTER_FLICKER,
-   "Flicker filter"
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_VIDEO_GAMMA,
-   "Video Gamma"
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_VIDEO_SOFT_FILTER,
-   "Soft Filter"
    )
 /* GENERATED REGION: eighth main menu action (see settings_def_menu_main_actions_8.h). */
 #define SETTINGS_DEF_STRINGS_PASS
@@ -34415,6 +34885,38 @@ MSG_HASH(MENU_ENUM_LABEL_VALUE_##T, us)
 #undef S_FLOAT
 #undef S_FLOAT_NS
 #undef SETTINGS_DEF_STRINGS_PASS
+/* GENERATED REGION: Windows low-latency power plan (see settings_def_power_plan.h). */
+#define SETTINGS_DEF_STRINGS_PASS
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+MSG_HASH(MENU_ENUM_LABEL_VALUE_##T, us) \
+MSG_HASH(MENU_ENUM_SUBLABEL_##T, sub)
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+MSG_HASH(MENU_ENUM_LABEL_VALUE_##T, us)
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+MSG_HASH(MENU_ENUM_LABEL_VALUE_##T, us) \
+MSG_HASH(MENU_ENUM_SUBLABEL_##T, sub)
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+MSG_HASH(MENU_ENUM_LABEL_VALUE_##T, us)
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+MSG_HASH(MENU_ENUM_LABEL_VALUE_##T, us) \
+MSG_HASH(MENU_ENUM_SUBLABEL_##T, sub)
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+MSG_HASH(MENU_ENUM_LABEL_VALUE_##T, us)
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+MSG_HASH(MENU_ENUM_LABEL_VALUE_##T, us) \
+MSG_HASH(MENU_ENUM_SUBLABEL_##T, sub)
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+MSG_HASH(MENU_ENUM_LABEL_VALUE_##T, us)
+#include "../settings/settings_def_power_plan.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+#undef SETTINGS_DEF_STRINGS_PASS
 MSG_HASH(
    MENU_ENUM_SUBLABEL_GAMEMODE_ENABLE_LINUX,
    "Can improve performance, reduce latency and fix audio crackling issues. You need https://github.com/FeralInteractive/gamemode for this to work."
@@ -34422,10 +34924,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_GAMEMODE_ENABLE,
    "Enabling Linux GameMode can improve latency, fix audio crackling issues and maximize overall performance by automatically configuring your CPU and GPU for best performance.\nThe GameMode software needs to be installed for this to work. See https://github.com/FeralInteractive/gamemode for information on how to install GameMode."
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_PAL60_ENABLE,
-   "Use PAL60 Mode"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_META_RESTART_KEY,
@@ -36328,7 +36826,7 @@ MSG_HASH(MENU_ENUM_LABEL_VALUE_##T, us)
 
 
 #endif
-#ifdef HAVE_SMBCLIENT
+#if defined(HAVE_SMBCLIENT) || defined(HAVE_NFSCLIENT)
 /* GENERATED REGION: netplay action (see settings_def_netplay_action.h). */
 #define SETTINGS_DEF_STRINGS_PASS
 #define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
@@ -36822,7 +37320,89 @@ MSG_HASH(
    "SMB Share"
    )
 #endif
-/* GENERATED REGION: menu throttle setting (see settings_def_menu_throttle.h). */
+#ifdef HAVE_NFSCLIENT
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_NFS_CLIENT_SERVER,
+   "NFS Server"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_NFS_CLIENT_SERVER,
+   "Server IP address or hostname."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_NFS_CLIENT_EXPORT,
+   "NFS Export"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_NFS_CLIENT_EXPORT,
+   "Path the server exports, e.g. /export/roms. The directory's path on the server works for NFS version 4 too, where the server may present it under a shorter name. Leave empty to give the export in the address as nfs://server/export/path."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_NFS_CLIENT_SUBDIR,
+   "NFS Sub directory"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_NFS_CLIENT_SUBDIR,
+   "Sub directory path under the export. Optional."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_NFS_CLIENT_TIMEOUT,
+   "NFS Timeout"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_NFS_CLIENT_TIMEOUT,
+   "Seconds to wait for the server on each request."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_NFS_CLIENT_NUM_CONTEXTS,
+   "NFS Maximum connections"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_NFS_CLIENT_NUM_CONTEXTS,
+   "Connections kept open to the server."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_NFS_CLIENT_PORT,
+   "NFS Port"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_NFS_CLIENT_PORT,
+   "Port of the NFS service. 0 asks the server's portmapper."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_NFS_CLIENT_MOUNT_PORT,
+   "NFS Mount Port"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_NFS_CLIENT_MOUNT_PORT,
+   "Port of the MOUNT service. 0 asks the server's portmapper."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_NFS_CLIENT_VERSION,
+   "NFS Version"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_NFS_CLIENT_VERSION,
+   "3 uses the portmapper and MOUNT service; 4 connects straight to the NFS port and takes the export as the server's pseudo-filesystem path, speaking the newest of 4.2, 4.1 and 4.0 the server offers."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_NFS_CLIENT_READAHEAD,
+   "NFS Read-Ahead (KiB)"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_NFS_CLIENT_READAHEAD,
+   "Data fetched ahead when a game reads a file in small pieces, with a background thread keeping the next window coming. Can smooth large disc images over a slow link; costs that much memory and one more connection per open file. 0 turns it off: each read is one request, as before read-ahead existed."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_NFS_CLIENT_BROWSE,
+   "Browse NFS Export"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_NFS_CLIENT_BROWSE,
+   "Browse the configured NFS export for content."
+   )
+#endif
+/* GENERATED REGION: menu frame rate setting (see settings_def_menu_frame_rate.h). */
 #define SETTINGS_DEF_STRINGS_PASS
 #define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
 MSG_HASH(MENU_ENUM_LABEL_VALUE_##T, us) \
@@ -36911,7 +37491,7 @@ MSG_HASH(MENU_ENUM_SUBLABEL_##T, sub)
 #define S_ACTION_LV(T, TV, n, sd, ok, rp, c, us, sub) \
 MSG_HASH(MENU_ENUM_SUBLABEL_##T, sub)
 #define S_ACTION_LV_NS(T, TV, n, sd, ok, rp, c, us)
-#include "../settings/settings_def_menu_throttle.h"
+#include "../settings/settings_def_menu_frame_rate.h"
 #undef S_BOOL
 #undef S_BOOL_NS
 #undef S_BOOL_H
