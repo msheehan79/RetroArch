@@ -3368,7 +3368,8 @@ static void frontend_unix_init(void *data)
     * the Java side has resolved the runtime permission state.  The
     * wait pumps lifecycle commands, so a pause or rotation while a
     * permission dialog is up cannot block the UI thread's
-    * synchronized window teardown (ANR).  A launch with the
+    * synchronized window teardown (ANR).  Settings may remove the
+    * window, so wait for its replacement as well.  A launch with the
     * permission already settled signals before this loop is reached
     * and never waits. */
    for (;;)
@@ -3377,7 +3378,7 @@ static void frontend_unix_init(void *data)
 
       resolved = (android_lifecycle_flags(&android_app->lc)
             & ANDROID_LC_PERM_RESOLVED) != 0;
-      if (resolved)
+      if (resolved && android_app_window(android_app))
          break;
 
       if (!android_run_events(android_app))
@@ -3430,6 +3431,8 @@ static void frontend_unix_init(void *data)
          "getUserLanguageString", "()Ljava/lang/String;");
    GET_METHOD_ID(env, android_app->isPlayStoreBuild, class,
          "isPlayStoreBuild", "()Z");
+   GET_METHOD_ID(env, android_app->isMetaQuestBuild, class,
+         "isMetaQuestBuild", "()Z");
    GET_METHOD_ID(env, android_app->getAvailableCores, class,
          "getAvailableCores", "()[Ljava/lang/String;");
    GET_METHOD_ID(env, android_app->getInstalledCores, class,
@@ -3457,7 +3460,8 @@ static void frontend_unix_init(void *data)
 
    CALL_BOOLEAN_METHOD(env, android_app->is_play_store_build,
          android_app->activity->clazz, android_app->isPlayStoreBuild);
-
+   CALL_BOOLEAN_METHOD(env, android_app->is_meta_quest_build,
+         android_app->activity->clazz, android_app->isMetaQuestBuild);
 #ifdef HAVE_SAF
    GET_METHOD_ID(env, android_app->requestOpenDocumentTree, class,
          "requestOpenDocumentTree", "()V");

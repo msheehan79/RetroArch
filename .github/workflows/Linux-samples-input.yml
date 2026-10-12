@@ -489,6 +489,14 @@ jobs:
           make clean
           echo "[pass] bind_trigger_axis_test (ASan)"
 
+      - name: Build and run hotkey_menu_test (ASan + UBSan, mingw + Wine)
+        shell: bash
+        run: |
+          set -eu
+          make -C samples/input/hotkey_menu clean check SANITIZER=address,undefined
+          make -C samples/input/hotkey_menu clean check CC=x86_64-w64-mingw32-gcc EXE=.exe RUNNER=wine
+          make -C samples/input/hotkey_menu clean
+
       - name: Build and run key_lane_test (plain, ASan + UBSan, TSan)
         shell: bash
         working-directory: samples/input/key_lane
@@ -652,6 +660,34 @@ jobs:
              timeout 60 ./overlay_textures_test
           make clean
           echo "[pass] overlay_textures_test (plain, ASan, threaded ASan)"
+
+      - name: Check WinRaw mouse button publication
+        working-directory: samples/input/winraw_mouse_buttons
+        shell: bash
+        run: |
+          set -eu
+          make clean all SANITIZER=address,undefined
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 ./winraw_mouse_buttons_test
+          make clean all SANITIZER=thread
+          TSAN_OPTIONS=halt_on_error=1 ./winraw_mouse_buttons_test
+          make clean all CC=x86_64-w64-mingw32-gcc LDFLAGS="-static -lpthread"
+          WINEDEBUG=-all wine ./winraw_mouse_buttons_test.exe
+          make clean
+
+      - name: Check WinRaw mouse position-source draining
+        working-directory: samples/input/winraw_mouse_pending
+        shell: bash
+        run: |
+          set -eu
+          make clean all check
+          make clean
+          make SANITIZER=address,undefined check
+          make clean
+          make SANITIZER=thread check
+          make clean
+          make CC=x86_64-w64-mingw32-gcc all
+          WINEDEBUG=-all timeout 60 wine ./winraw_mouse_pending_test.exe
+          make clean
 
       - name: Build and run winraw_abs_pos_test (mingw + Wine)
         shell: bash

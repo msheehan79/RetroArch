@@ -3816,6 +3816,64 @@ static size_t setting_get_string_representation_video_openxr_laser(
    return 0;
 }
 
+static size_t setting_get_string_representation_video_openxr_placement(
+      rarch_setting_t *setting, char *s, size_t len)
+{
+   if (setting)
+   {
+      switch (*setting->value.target.unsigned_integer)
+      {
+         case VIDEO_OPENXR_PLACEMENT_FIXED:
+            return strlcpy(s, msg_hash_to_str(
+                     MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_PLACEMENT_FIXED), len);
+         case VIDEO_OPENXR_PLACEMENT_FOLLOW:
+            return strlcpy(s, msg_hash_to_str(
+                     MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_PLACEMENT_FOLLOW), len);
+         case VIDEO_OPENXR_PLACEMENT_LAZY:
+            return strlcpy(s, msg_hash_to_str(
+                     MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_PLACEMENT_LAZY), len);
+      }
+   }
+   return 0;
+}
+
+/* Stereo 3D & Screens has no Stereo Mode entry while the headset is
+ * on, so Headset Output is one entry higher: the cursor follows it. */
+static void setting_video_openxr_enable_follow(bool was, bool now)
+{
+   struct menu_state *menu_st = menu_state_get_ptr();
+   if (now && !was)
+   {
+      if (menu_st->selection_ptr)
+         menu_st->selection_ptr--;
+   }
+   else if (was && !now)
+      menu_st->selection_ptr++;
+}
+
+static int setting_bool_action_ok_video_openxr_enable(
+      rarch_setting_t *setting, size_t idx, bool wraparound)
+{
+   bool was;
+   if (!setting)
+      return -1;
+   was = *setting->value.target.boolean;
+   setting_bool_action_left_with_refresh(setting, idx, wraparound);
+   setting_video_openxr_enable_follow(was, *setting->value.target.boolean);
+   return 0;
+}
+
+static int setting_action_start_video_openxr_enable(rarch_setting_t *setting)
+{
+   bool was;
+   if (!setting)
+      return -1;
+   was = *setting->value.target.boolean;
+   setting_generic_action_start_default(setting);
+   setting_video_openxr_enable_follow(was, *setting->value.target.boolean);
+   return 0;
+}
+
 static size_t setting_get_string_representation_video_openxr_refresh_rate(
       rarch_setting_t *setting, char *s, size_t len)
 {
@@ -7694,6 +7752,24 @@ static size_t setting_get_string_representation_uint_video_fse_negotiation(
    return 0;
 }
 
+static size_t setting_get_string_representation_uint_video_hw_decode(
+      rarch_setting_t *setting, char *s, size_t len)
+{
+   if (setting)
+   {
+      switch (*setting->value.target.unsigned_integer)
+      {
+         case VIDEO_HW_DECODE_OFF:
+            return strlcpy(s,
+                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_OFF), len);
+         case VIDEO_HW_DECODE_AUTO:
+            return strlcpy(s,
+                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_AUTO), len);
+      }
+   }
+   return 0;
+}
+
 static size_t setting_get_string_representation_uint_video_rotation(
       rarch_setting_t *setting, char *s, size_t len)
 {
@@ -9224,6 +9300,7 @@ static int setting_action_start_input_device_reservation_type(rarch_setting_t *s
 static int setting_action_start_input_device_reserved_device_name(
    rarch_setting_t *setting)
 {
+   int reinit_flags = DRIVER_VIDEO_AND_INPUT_MASK;
    settings_t      *settings = config_get_ptr();
 
    if (!setting || !settings)
@@ -9233,7 +9310,7 @@ static int setting_action_start_input_device_reserved_device_name(
          settings->arrays.input_reserved_devices[setting->index_offset],
          "");
 
-   command_event(CMD_EVENT_REINIT, NULL);
+   command_event(CMD_EVENT_REINIT, &reinit_flags);
    return 0;
 }
 
@@ -9936,6 +10013,7 @@ static void write_handler_logging_verbosity(rarch_setting_t *setting)
 
 static void general_write_handler(rarch_setting_t *setting)
 {
+   int reinit_flags = DRIVERS_CMD_ALL;
    enum event_command rarch_cmd = CMD_EVENT_NONE;
    settings_t *settings         = config_get_ptr();
    unsigned vp_w, vp_h;
@@ -10014,6 +10092,8 @@ static void general_write_handler(rarch_setting_t *setting)
          break;
       case MENU_ENUM_LABEL_VIDEO_FONT_PATH:
       case MENU_ENUM_LABEL_VIDEO_FONT_SIZE:
+      {
+         int reinit_flags = DRIVER_VIDEO_AND_INPUT_MASK;
          /* The OSD font is rebuilt where it stands: the font_data_t
           * keeps its address, so nothing holding one has to be told,
           * and the generation bump recomputes the derived metrics on
@@ -10028,8 +10108,9 @@ static void general_write_handler(rarch_setting_t *setting)
           * and need a reinit for the change to land. */
          if (!font_driver_reinit_osd(settings->paths.path_font,
                   settings->floats.video_font_size))
-            command_event(CMD_EVENT_REINIT, NULL);
+            command_event(CMD_EVENT_REINIT, &reinit_flags);
          break;
+      }
       case MENU_ENUM_LABEL_USER_LANGUAGE:
 #if defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__) && defined(HAVE_MENU)
          /* The native Win32 menubar bakes translated strings at
@@ -10294,8 +10375,7 @@ static void general_write_handler(rarch_setting_t *setting)
          settings->flags                  |= SETTINGS_FLG_MODIFIED;
          settings->uints.video_scale       = *setting->value.target.unsigned_integer;
 
-         if (!settings->bools.video_fullscreen)
-            rarch_cmd = CMD_EVENT_REINIT;
+         rarch_cmd = CMD_EVENT_APPLY_WINDOWED_SCALE;
          break;
       case MENU_ENUM_LABEL_REWIND_ENABLE:
          {
@@ -10316,6 +10396,7 @@ static void general_write_handler(rarch_setting_t *setting)
             settings->flags               |= SETTINGS_FLG_MODIFIED;
             settings->uints.video_hdr_mode = *setting->value.target.unsigned_integer;
 
+            reinit_flags                   = DRIVER_VIDEO_AND_INPUT_MASK;
             rarch_cmd                      = CMD_EVENT_REINIT;
 
             /* Switching HDR on/off shows or hides the dependent HDR
@@ -11024,7 +11105,8 @@ static void general_write_handler(rarch_setting_t *setting)
 
    if (     setting != setting_cmd_held_for
          && (rarch_cmd || (setting->flags & SD_FLAG_CMD_TRIGGER_EVENT_TRIGGERED)))
-      command_event(rarch_cmd, NULL);
+      command_event(rarch_cmd, rarch_cmd == CMD_EVENT_REINIT
+            ? &reinit_flags : NULL);
 }
 
 static void frontend_log_level_change_handler(rarch_setting_t *setting)
@@ -18234,6 +18316,21 @@ static void settings_build_lakka_switch_options(
                general_read_handler,
                SD_FLAG_NONE);
          SETTINGS_ACTION_SET(change, &(*list)[list_info->index - 1], bluetooth_ertm_disable_toggle_change_handler)
+
+         CONFIG_BOOL(
+               list, list_info,
+               &settings->bools.reboot_force_self_on_update,
+               MENU_ENUM_LABEL_REBOOT_FORCE_SELF_ON_UPDATE,
+               MENU_ENUM_LABEL_VALUE_REBOOT_FORCE_SELF_ON_UPDATE,
+               DEFAULT_REBOOT_FORCE_SELF_ON_UPDATE,
+               MENU_ENUM_LABEL_VALUE_OFF,
+               MENU_ENUM_LABEL_VALUE_ON,
+               &group_info,
+               &subgroup_info,
+               parent_group,
+               general_write_handler,
+               general_read_handler,
+               SD_FLAG_NONE);
          GROUP_END();
 
    }

@@ -712,13 +712,33 @@ RETRO_API void harness_core_set_run_us(unsigned us)
       harness_run_us    = us;
    }
 }
+/* Nonzero: every frame carries this number instead of the run's, at
+ * the base size, so two ways of drawing it can be compared on screen */
+static unsigned harness_frozen;
+RETRO_API void harness_core_freeze(unsigned n) { harness_frozen = n; }
+/* The access a framebuffer is asked with: read and write by default,
+ * as a core that snapshots its frame for a wipe asks; write only for
+ * one that only draws */
+static unsigned harness_fb_access = RETRO_MEMORY_ACCESS_WRITE
+                                  | RETRO_MEMORY_ACCESS_READ;
+RETRO_API void harness_core_fb_access(unsigned a) { harness_fb_access = a; }
+/* Nonzero: every frame is the run's number, its low 8 bits as eight
+ * bands across the frame, each all ones or all zeroes, so the number a
+ * scaled, filtered frame on screen came from can still be read; at the
+ * base size always */
+static unsigned harness_stamp;
+/* The number the last frame pushed, not a dupe, carried */
+static unsigned harness_last_pushed;
+RETRO_API void harness_core_stamp(unsigned on)      { harness_stamp = on; }
+RETRO_API unsigned harness_core_last_pushed(void)   { return harness_last_pushed; }
 RETRO_API unsigned harness_core_fb_granted(void)   { return harness_fb_granted; }
 RETRO_API unsigned harness_core_fb_uncached(void)  { return harness_fb_uncached; }
 
 void retro_run(void)
 {
-   unsigned h = (runs % 61 == 60) ? H_OVERSIZE : H;
-   unsigned i;
+   unsigned h = (runs % 61 == 60 && !harness_frozen && !harness_stamp)
+      ? H_OVERSIZE : H;
+   unsigned i, n;
    uint8_t *dst   = frame;
    size_t   pitch = W * bpp;
    unsigned out_w = W, out_h = h;
@@ -764,10 +784,7 @@ void retro_run(void)
       memset(&fb, 0, sizeof(fb));
       fb.width        = W;
       fb.height       = H;
-      /* Read as well as write, as a core that snapshots its frame
-       * for a wipe asks: the lend must not be refused for it. */
-      fb.access_flags = RETRO_MEMORY_ACCESS_WRITE
-                      | RETRO_MEMORY_ACCESS_READ;
+      fb.access_flags = harness_fb_access;
       if (     environ_cb(RETRO_ENVIRONMENT_GET_CURRENT_SOFTWARE_FRAMEBUFFER, &fb)
             && fb.format == pixel_format)
       {
@@ -783,13 +800,17 @@ void retro_run(void)
     * lane reading the first pixel as 16-bit sees the run number
     * move whichever format is on. Rows at the pitch: a loan may pad
     * them. */
+   n = harness_frozen ? harness_frozen : runs;
    for (i = 0; i < W * h; i++)
    {
       uint8_t *px = dst + (i / W) * pitch + (i % W) * bpp;
+      uint32_t v  = (uint32_t)(n + i);
+      if (harness_stamp)
+         v = ((n >> ((i % W) / (W / 8))) & 1) ? 0xffffffffu : 0;
       if (bpp == 4)
-         *(uint32_t*)px = (uint32_t)(runs + i);
+         *(uint32_t*)px = v;
       else
-         *(uint16_t*)px = (uint16_t)(runs + i);
+         *(uint16_t*)px = (uint16_t)v;
    }
    push = dst;
    if (harness_use_fb == 2 && h == H)
@@ -803,7 +824,10 @@ void retro_run(void)
    if (runs % 3 == 0)
       video_cb(NULL, out_w, out_h, pitch);
    else
+   {
+      harness_last_pushed = n;
       video_cb(push, out_w, out_h, pitch);
+   }
 }
 size_t retro_serialize_size(void) { return 0; }
 bool retro_serialize(void *data, size_t size) { (void)data; (void)size; return false; }

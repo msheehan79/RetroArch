@@ -1944,7 +1944,7 @@ static void *wasapi_init(const char *dev_id, unsigned rate, unsigned latency,
       if (w->ac3 && fifo_bytes < (size_t)IEC61937_AC3_BURST_BYTES * 4 + 1)
          fifo_bytes     = (size_t)IEC61937_AC3_BURST_BYTES * 4 + 1;
       w->fifo_size = fifo_bytes;
-      if (!retro_spsc_init(&w->ring, fifo_bytes))
+      if (!retro_spsc_init_mirrored(&w->ring, fifo_bytes))
          goto error;
       RARCH_LOG("[WASAPI] Exclusive: %u ms setting as a %u-frame fifo (%u ms, rate control holds it about half full) in front of a %u-frame device period (%.1f ms); about %u ms from write to the device.\n",
             latency,
@@ -2052,7 +2052,7 @@ static void *wasapi_init(const char *dev_id, unsigned rate, unsigned latency,
       }
 
       w->fifo_size = sh_buffer_length * w->frame_size;
-      if (!retro_spsc_init(&w->ring, w->fifo_size))
+      if (!retro_spsc_init_mirrored(&w->ring, w->fifo_size))
          goto error;
       RARCH_LOG("[WASAPI] Shared: %u ms setting as a %u-frame fifo (%u ms) in front of a %u-frame engine buffer (%u ms) fed a %s-frame period at a time; %u ms in all, rate control holds the fifo about half full.\n",
             latency, sh_buffer_length, (unsigned)((uint64_t)sh_buffer_length * 1000 / rate),
@@ -2698,6 +2698,55 @@ static ssize_t wasapi_write_raw(wasapi_t *w, const void *data, size_t len)
    return _len;
 }
 
+/* The lend pair: the ring the pump drains, handed out span by span.
+ * Without the pump nothing drains a lent span, so without threads the
+ * pair refuses and write() keeps its inline drain; AC-3 frames are
+ * encapsulated inside write(), which a lend would skip. */
+static size_t wasapi_write_begin(void *wh, size_t len, void **region)
+{
+   wasapi_t *w = (wasapi_t*)wh;
+   *region     = NULL;
+#ifdef HAVE_THREADS
+   if (!(w->flags & WASAPI_FLG_RUNNING) || w->ac3)
+      return 0;
+   {
+      void  *ptr  = NULL;
+      size_t room = wasapi_ring_room(w);
+      size_t span = retro_spsc_write_begin(&w->ring, &ptr);
+      if (span > room)
+         span = room;
+      if (span > len)
+         span = len;
+      if (!span || !ptr)
+      {
+         retro_spsc_write_end(&w->ring, 0);
+         return 0;
+      }
+      *region = ptr;
+      return span;
+   }
+#else
+   (void)w;
+   (void)len;
+   return 0;
+#endif
+}
+
+static ssize_t wasapi_write_end(void *wh, size_t len)
+{
+   wasapi_t *w = (wasapi_t*)wh;
+#ifdef HAVE_THREADS
+   retro_spsc_write_end(&w->ring, len);
+   if (len)
+      retro_atomic_store_release_int(&w->fed, 1);
+   return (ssize_t)len;
+#else
+   (void)w;
+   (void)len;
+   return -1;
+#endif
+}
+
 static bool wasapi_stop(void *wh)
 {
    wasapi_t *w = (wasapi_t*)wh;
@@ -3143,5 +3192,7 @@ audio_driver_t audio_wasapi = {
    wasapi_layout,
    wasapi_frames_consumed_fallback,
    wasapi_device_clock_ppm,
-   wasapi_thread_grant
+   wasapi_thread_grant,
+   wasapi_write_begin,
+   wasapi_write_end
 };

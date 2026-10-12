@@ -12,6 +12,10 @@ name: CI Vulkan/GL/D3D11 [idle waits + driver harness]
 # 1. Idle-wait check: tools/vulkan_idle_wait_check.py fails on any
 #    vkQueueWaitIdle/vkDeviceWaitIdle in the Vulkan code that is not
 #    on tools/vulkan_idle_wait_allow.list, and on a stale entry.
+#    tools/d3d12_idle_wait_check.py holds the D3D12 driver to the same:
+#    a queue drain or a fence wait not on
+#    tools/d3d12_idle_wait_allow.list fails, so the frame paths, which
+#    wait only for their predecessor's own signal, stay that way.
 #
 # 2. Validation harness: the threaded-video harness (real frontend,
 #    real driver, only main() replaced) run on the Vulkan driver over
@@ -101,6 +105,27 @@ jobs:
           set -eu
           python3 tools/vulkan_idle_wait_check.py
 
+  d3d12-idle-waits:
+    name: D3D12 wait allowlist
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Checker self-test
+        shell: bash
+        run: |
+          set -eu
+          python3 tools/d3d12_idle_wait_check.py --selftest
+
+      - name: Tree check
+        shell: bash
+        run: |
+          set -eu
+          python3 tools/d3d12_idle_wait_check.py
+
   vulkan-teardown-order:
     name: Vulkan teardown order
     runs-on: ubuntu-latest
@@ -125,13 +150,13 @@ jobs:
   vulkan-validation-harness:
     name: Threaded-video harness on Vulkan (lavapipe, validation layer)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
 
     steps:
       - name: Install dependencies
         timeout-minutes: 20
         run: |
-          pkgs="build-essential libxkbcommon-dev libx11-xcb-dev libxcb1-dev libxinerama-dev libxrandr-dev libxxf86vm-dev libxv-dev xvfb x11-utils zlib1g-dev libfreetype6-dev libvulkan-dev mesa-vulkan-drivers vulkan-validationlayers vulkan-tools libasound2-dev"
+          pkgs="build-essential libxkbcommon-dev libx11-xcb-dev libxcb1-dev libxinerama-dev libxrandr-dev libxxf86vm-dev libxv-dev xvfb x11-utils zlib1g-dev libfreetype6-dev libvulkan-dev mesa-vulkan-drivers vulkan-validationlayers vulkan-tools libasound2-dev libgl1-mesa-dri libgl-dev imagemagick"
           for i in 1 2 3; do
             sudo timeout 90 apt-get update -y \
               -o Acquire::Retries=3 -o Acquire::http::Timeout=30 && break
@@ -281,6 +306,24 @@ jobs:
           # it was created with, HDR support included.
           HARNESS_CORE_HW_VULKAN=3 SAN=none VK_DEBUG=1 GFX_INSTRUMENT=1 CYCLES=1 make -C samples/gfx/threaded_video check-vulkan
           make -C samples/gfx/threaded_video clean
+
+      - name: Views on gl, glcore and Vulkan, end to end (Xvfb, llvmpipe, lavapipe)
+        shell: bash
+        run: |
+          set -eu
+          # The views compositor (gfx/video_views_draw.h) as gl, glcore
+          # and Vulkan instantiate it: the video_views test core's map in
+          # each stereo mode, a view per eye, the blend canvas, views
+          # read exactly out of the frame in every way the drivers copy
+          # or draw them, the UI layer per eye with the menu open, and a
+          # pointer mapped back through it. Each case runs on an Xvfb of
+          # its own; Vulkan here under the validation layer.
+          make -C samples/cores/video_views
+          export VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json
+          export LIBGL_ALWAYS_SOFTWARE=1
+          RA_E2E_XVFB=1 RA_E2E_ONLY='^(3ds-sbs-full|3ds-sbs-half|3ds-top-bottom|3ds-anaglyph|3ds-interlaced|ds-horizontal|exact-3ds|crop-threaded-menu|pointer-sbs-full)$' \
+            python3 samples/cores/video_views/e2e/run.py ./retroarch \
+            "$RUNNER_TEMP/views-e2e" gl glcore vulkan
 
   vulkan-validation-openxr:
     name: Threaded-video harness on Vulkan built with OpenXR (lavapipe, validation layer)
@@ -668,7 +711,7 @@ jobs:
           make -C samples/gfx/threaded_video clean
 
   gl-harness:
-    name: Threaded-video harness on ${{ matrix.driver }} (llvmpipe, ${{ matrix.san }})
+    name: Threaded-video harness on ${{ matrix.driver }} (llvmpipe, ${{ matrix.api }}, ${{ matrix.san }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -676,6 +719,15 @@ jobs:
       matrix:
         driver: [gl, glcore, gl1]
         san: [none, address, thread]
+        api: [desktop]
+        # A GLES 3 build (the Android one): frame memory and the
+        # framebuffer loan through EXT_buffer_storage, which llvmpipe's
+        # GLES 3.2 has, and the harness fails a GL driver without them
+        include:
+          - { driver: gl,     san: none,    api: gles3 }
+          - { driver: glcore, san: none,    api: gles3 }
+          - { driver: gl,     san: address, api: gles3 }
+          - { driver: glcore, san: thread,  api: gles3 }
 
     steps:
       - name: Install dependencies
@@ -753,7 +805,13 @@ jobs:
 
       - name: Configure
         run: |
-          ./configure --disable-qt
+          if [ "${{ matrix.api }}" = gles3 ]; then
+            ./configure --disable-qt --enable-opengles --enable-opengles3 \
+              --disable-opengl1
+            grep -q '^HAVE_OPENGLES3 = 1' config.mk
+          else
+            ./configure --disable-qt
+          fi
           grep -q '^HAVE_OPENGL = 1' config.mk
           grep -q '^HAVE_OPENGL_CORE = 1' config.mk
 

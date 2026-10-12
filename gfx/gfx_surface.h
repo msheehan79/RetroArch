@@ -100,7 +100,7 @@ struct gfx_surface
    gfx_surface_payload_free_t payload_free;
    void *payload;
    /* Each slot is a frame of @pixfmt: VIDEO_SCALE_AREA(dims) times
-    * GFX_SURFACE_PIXFMT_BPP(pixfmt) bytes. */
+    * IMAGE_PIXFMT_BPP(pixfmt) bytes. */
    uint32_t *slots[GFX_SURFACE_MAX_SLOTS];
    /* The surface's own slot memory. Under direct video a slot whose
     * texture the driver can stream may instead be lent upload memory
@@ -122,7 +122,7 @@ struct gfx_surface
    unsigned dims;
    unsigned num_slots;
    unsigned inflight_slot;
-   /* The one gfx_surface_pixfmt bit the slots hold; 0 for a static
+   /* The one image_pixfmt bit the slots hold; 0 for a static
     * surface, whose every submit names its own. */
    uint32_t pixfmt;
    /* Which submit_path asked for the decode out now; an older one's
@@ -158,7 +158,24 @@ struct gfx_surface
    uint8_t can_update; /* driver updates in place */
    /* Set while release() runs for a dropped submit. */
    uint8_t dropped;
+   /* A planar surface (I420, NV12): the colour space its frames are
+    * in, as IMAGE_YUV_FLAG_* (BT709, FULL_RANGE, VU). */
+   uint8_t yuv;
+   /* A planar surface's frame as the driver is given it, when the
+    * driver converts YCbCr itself (TEXTURE_GPU_FORMAT_YUV420). */
+   struct texture_planar planar;
+   /* A planar surface under a driver that does not: the frame
+    * converted for upload, made on the first such frame. The
+    * conversion reads the planes where they lie, so it is the one pass
+    * over the frame. NULL until then, and for any other surface. */
+   uint32_t *rgb;
+   /* An imported surface's frame in flight (gfx_surface_submit_import) */
+   video_frame_import_t import;
+   uint8_t imported;
 };
+
+#define GFX_SURFACE_IS_PLANAR(s) \
+   (((s)->pixfmt & (IMAGE_PIXFMT_I420 | IMAGE_PIXFMT_NV12)) != 0)
 
 /* What the active video driver wants of an image, asked once before
  * it is decoded rather than guessed from a flag at every producer.
@@ -167,42 +184,17 @@ struct gfx_surface
  * order, a context flag for 10-bit sources, a poke for compressed
  * formats - and every producer that cared had to know all three. A
  * decoder asks this instead, and emits what it is told. */
-/* Pixel formats a producer may be asked for, as a bit per format so
- * a driver can accept several and a producer can pick the best one it
- * can actually emit. A name here is a promise about the layout, not
- * about any driver supporting it. Ten bits is not the ceiling: the
- * surface sizes slots, pitches and copies from the format
- * (GFX_SURFACE_PIXFMT_BPP), keys its in-place updates on it, and
- * refuses a submit of a format the texture interface has no encoding
- * for yet, so adding one - FP16 scRGB first - is a driver change and
- * a texture_image encoding, not an API change. */
-enum gfx_surface_pixfmt
+/* A planar frame where it lies: a decoder's output surface, a camera
+ * buffer. Plane 0 is luma; planes 1 and 2 are Cb and Cr, each
+ * @chroma_step bytes from one sample to the next (1 for I420, 2 for
+ * NV12, whose single interleaved plane is then planes[1] at offset 0
+ * and planes[2] at offset 1). Strides in bytes. */
+typedef struct
 {
-   /* 8 bits a channel in a 32-bit word, the order req.rgba names. */
-   GFX_SURFACE_PIXFMT_8888     = (1 << 0),
-   /* XRGB2101010: 10 bits a channel, bits [29:20]=R [19:10]=G [9:0]=B. */
-   GFX_SURFACE_PIXFMT_2101010  = (1 << 1),
-   /* Half-float per channel, linear scRGB (1.0 = 80 nits), the format
-    * an HDR framebuffer wants without an encode pass. */
-   GFX_SURFACE_PIXFMT_FP16     = (1 << 2),
-   /* Reserved names for layouts a driver may come to accept; a
-    * producer that cannot emit one simply never sets it. */
-   GFX_SURFACE_PIXFMT_FP32     = (1 << 3),
-   GFX_SURFACE_PIXFMT_565      = (1 << 4),
-   GFX_SURFACE_PIXFMT_4444     = (1 << 5),
-   /* GX RGBA8, the GameCube/Wii texture layout: 4x4 tiles of 64 bytes,
-    * the AR halves of a tile's 16 texels then their GB halves, width
-    * and height multiples of 4 (image_texture_tile_gx). No surface
-    * takes it: the gx drivers tile what they are given as they load
-    * or update a texture. */
-   GFX_SURFACE_PIXFMT_GX_RGBA8 = (1 << 6)
-};
-
-/* Bytes a texel of one gfx_surface_pixfmt bit takes. */
-#define GFX_SURFACE_PIXFMT_BPP(f) \
-   (((f) & GFX_SURFACE_PIXFMT_FP32) ? 16u \
-   : ((f) & GFX_SURFACE_PIXFMT_FP16) ? 8u \
-   : ((f) & (GFX_SURFACE_PIXFMT_565 | GFX_SURFACE_PIXFMT_4444)) ? 2u : 4u)
+   const uint8_t *planes[3];
+   unsigned strides[3];
+   unsigned chroma_step;
+} gfx_surface_planes_t;
 
 /* An upload of pixels the caller keeps (gfx_surface_submit_external). */
 typedef struct
@@ -215,7 +207,7 @@ typedef struct
     * @pixels usually live inside it. */
    void *payload;
    gfx_surface_payload_free_t payload_free;
-   /* Exactly one gfx_surface_pixfmt bit. */
+   /* Exactly one image_pixfmt bit. */
    uint32_t pixfmt;
    /* Channel order of the 8-bit formats, as gfx_surface_requirements_t
     * names it. */
@@ -230,7 +222,7 @@ typedef struct
     * formats; the wider ones have their layout fixed by the format. */
    bool rgba;
    /* Every format the driver samples without the frontend converting
-    * first, as gfx_surface_pixfmt bits: GFX_SURFACE_PIXFMT_8888 and
+    * first, as image_pixfmt bits: IMAGE_PIXFMT_8888 and
     * whatever the driver adds to it. A format is only listed
     * when a submit of it reaches the GPU as that format - a scRGB
     * framebuffer is not by itself a reason to list FP16. */
@@ -260,7 +252,7 @@ typedef struct
  *
  * Formats: a producer asks whether a bit is in @formats rather than
  * assuming a bit depth, so a driver that starts taking FP16 scRGB, or
- * anything else added to gfx_surface_pixfmt, is picked up by every
+ * anything else added to image_pixfmt, is picked up by every
  * producer that can emit it without this contract changing again.
  *
  * False when @width has no row that size_t can express - reachable
@@ -276,6 +268,16 @@ bool gfx_surface_query_requirements(unsigned width,
  * false for ARGB words. Shorthand for the rgba field of a full query,
  * and the same answer. */
 bool gfx_surface_wants_rgba(void);
+
+/* What a decode for the active driver is asked for: @rgba as the
+ * caller names it, 10-bit where the driver samples it, linear half
+ * floats with GFX_SURFACE_REQ_HDR where it samples those, the file's
+ * compressed payload with GFX_SURFACE_REQ_COMPRESSED. The one place a
+ * request is made from the driver's answers. */
+#define GFX_SURFACE_REQ_HDR        (1 << 0)
+#define GFX_SURFACE_REQ_COMPRESSED (1 << 1)
+void gfx_surface_image_request(image_texture_request_t *req,
+      bool rgba, unsigned flags);
 
 /* Whether the active driver can sample @fmt as a compressed texture,
  * so a decoder can keep the GPU-native payload instead of expanding
@@ -294,6 +296,24 @@ gfx_surface_t *gfx_surface_new_static(unsigned dims,
  * when an image has landed sets release/user on it; a still whose
  * texture is read when drawn needs neither. NULL when out of memory. */
 gfx_surface_t *gfx_surface_new_still(enum texture_filter_type filter);
+
+/* A surface whose frames live on the driver's device - a hardware
+ * decoder's - and are converted into its texture on the GPU
+ * (video_poke_interface::import_texture): no slots, no pixels. NULL
+ * when out of memory. */
+gfx_surface_t *gfx_surface_new_import(unsigned dims,
+      enum texture_filter_type filter, gfx_surface_release_t release,
+      void *user);
+
+/* Hands @frame to the driver; the descriptor is copied. DONE or QUEUED:
+ * the driver will signal frame->done once it reads the frame no more
+ * (QUEUED: release() comes once the video thread has taken it, with
+ * dropped set when it was not, and then done is never signalled).
+ * DROPPED: not taken, done never signalled. BUSY: a frame is still on
+ * its way to the video thread. FAILED: the driver imports no such
+ * frame. Main thread. */
+enum gfx_surface_submit_result gfx_surface_submit_import(gfx_surface_t *s,
+      const video_frame_import_t *frame);
 
 /* The still in @slot, made on first use; its filter is @filter from
  * here, for the next image it is given. NULL when out of memory. */
@@ -367,9 +387,18 @@ enum gfx_surface_submit_result gfx_surface_submit_external(gfx_surface_t *s,
       gfx_surface_release_t release, void *user);
 
 /* A surface of @num_slots (1..GFX_SURFACE_MAX_SLOTS) frames of @dims
- * (one packed size word) in @pixfmt, one gfx_surface_pixfmt bit, all
+ * (one packed size word) in @pixfmt, one image_pixfmt bit, all
  * in one allocation. NULL when out of memory or the arguments are out
- * of range. */
+ * of range.
+ *
+ * A planar @pixfmt (I420, NV12) makes slots of IMAGE_PIXFMT_FRAME_SIZE
+ * bytes, the planes one after another with no padding: luma rows of
+ * width bytes, then chroma rows of (width + 1) / 2 samples - two
+ * planes of them for I420, one interleaved plane for NV12. Until a
+ * driver samples YCbCr the frame is converted to 8888 at submit,
+ * once, from where it lies; the slot is free again as soon as the
+ * submit returns. P010 is refused until there is a 10-bit
+ * conversion. */
 gfx_surface_t *gfx_surface_new(unsigned dims,
       unsigned num_slots, uint32_t pixfmt, enum texture_filter_type filter,
       gfx_surface_release_t release, void *user);
@@ -391,6 +420,19 @@ enum gfx_surface_submit_result gfx_surface_submit(gfx_surface_t *s,
  * sample the surface's format and the surface knows how. */
 enum gfx_surface_submit_result gfx_surface_submit_pixels(gfx_surface_t *s,
       const void *pixels, bool rgba);
+
+/* The colour space of a planar surface's frames from now on:
+ * IMAGE_YUV_FLAG_BT709, _FULL_RANGE and _VU (formats/image_yuv_blit.h);
+ * BT.601 limited range by default. Ignored by any other surface. */
+void gfx_surface_set_yuv(gfx_surface_t *s, unsigned flags);
+
+/* Upload a planar frame from where it lies. The planes are the
+ * caller's again when this returns, whatever the result: direct video
+ * reads them in the call, and under the thread wrapper a driver that
+ * converts on the GPU has them copied into slot 0 first (BUSY while
+ * that slot is the GPU's). Main thread. */
+enum gfx_surface_submit_result gfx_surface_submit_planes(gfx_surface_t *s,
+      const gfx_surface_planes_t *p, bool rgba);
 
 /* Whether slot @slot may be written now. A slot lent the driver's upload
  * memory is the GPU's until the copy of its last frame has run; the
@@ -414,7 +456,8 @@ void gfx_surface_slot_end(gfx_surface_t *s, unsigned slot);
 /* Unload the texture and free the surface. A submit in flight keeps
  * the slots alive until it completes, without a release() call; its
  * payload is still freed then. A decode still queued likewise: the
- * surface goes once it is answered. */
+ * surface goes once it is answered. A still with nothing in flight
+ * may be freed from the thread that draws it. NULL is a no-op. */
 void gfx_surface_free(gfx_surface_t *s);
 
 /* gfx_surface_free() for a surface whose submit was given pixels the

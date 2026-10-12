@@ -306,6 +306,9 @@ VIDEO CONTEXT
 #if defined(_WIN32) && !defined(_XBOX)
 
 #if (defined(HAVE_OPENGL) || defined(HAVE_OPENGL1) || defined(HAVE_OPENGL_CORE) || defined(HAVE_OPENGLES)) && !defined(HAVE_ANGLE)
+#ifndef __WINRT__
+#include "../gfx/common/win_wgl_dxgi.c"
+#endif
 #include "../gfx/drivers_context/wgl_ctx.c"
 #endif
 #if defined(HAVE_VULKAN)
@@ -323,8 +326,9 @@ VIDEO CONTEXT
 #if defined(ANDROID)
 #include "../gfx/drivers_context/android_ctx.c"
 #if defined(HAVE_OPENXR)
-#include "../input/drivers/openxr_input.c"
+#if defined(HAVE_OPENGLES3)
 #include "../gfx/drivers_context/gl_android_openxr_ctx.c"
+#endif
 #include "../deps/openxr/src/xr_generated_dispatch_table_core.c"
 #endif
 #if defined(HAVE_VULKAN)
@@ -367,13 +371,29 @@ VIDEO CONTEXT
 #ifdef HAVE_VULKAN
 #include "../gfx/common/vulkan_common.c"
 #include "../libretro-common/vulkan/vulkan_symbol_wrapper.c"
+#ifdef HAVE_RMP4
+#include "../gfx/common/vulkan_video_decode.c"
+#endif
 #ifdef HAVE_OPENXR
-#include "../gfx/video_xr.c"
 #include "../gfx/common/vulkan_openxr.c"
-#include "../input/common/input_openxr.c"
 #endif
 #ifdef HAVE_VULKAN_DISPLAY
 #include "../gfx/drivers_context/khr_display_ctx.c"
+#endif
+#endif
+
+#ifdef HAVE_OPENXR
+/* The headset's units that name no graphics API. */
+#include "../gfx/video_xr.c"
+#include "../gfx/common/openxr_runtime.c"
+#include "../gfx/common/openxr_session.c"
+#include "../gfx/common/openxr_tracking.c"
+#include "../gfx/common/openxr_host.c"
+#include "../gfx/common/openxr_swapchain.c"
+#include "../gfx/common/openxr_frame.c"
+#include "../input/common/input_openxr.c"
+#if defined(ANDROID) && defined(HAVE_OPENGLES3)
+#include "../gfx/common/openxr_binding_gles.c"
 #endif
 #endif
 
@@ -434,6 +454,7 @@ VIDEO SHADERS
 #ifdef HAVE_SLANG
 #include "../gfx/drivers_shader/glslang_util.c"
 #include "../gfx/drivers_shader/slang_cache.c"
+#include "../gfx/drivers_shader/slang_rect.c"
 #include "../gfx/drivers_shader/slang_process.c"
 #endif
 
@@ -476,6 +497,7 @@ VIDEO IMAGE
 ============================================================ */
 
 #include "../libretro-common/formats/image_texture.c"
+#include "../libretro-common/formats/image/image_yuv_blit.c"
 #include "../libretro-common/formats/image_texture_scale.c"
 #include "../libretro-common/formats/image_texture_set.c"
 
@@ -508,6 +530,7 @@ VIDEO IMAGE
 #endif
 
 #include "../libretro-common/formats/image_transfer.c"
+#include "../libretro-common/formats/video_player.c"
 #include "../libretro-common/formats/data_transfer.c"
 #ifdef HAVE_RPNG
 #include "../libretro-common/formats/png/rpng.c"
@@ -617,6 +640,11 @@ VIDEO DRIVER
 #if defined(HAVE_D3D11)
 #include "../gfx/drivers/d3d11.c"
 #include "../gfx/common/d3d11_deferred_proxy.c"
+#endif
+
+#if (defined(HAVE_D3D11) || defined(HAVE_D3D12)) && defined(HAVE_RMP4) \
+ && !defined(__WINRT__)
+#include "../gfx/common/d3d11_video_decode.c"
 #endif
 
 #if defined(HAVE_D3D12)
@@ -1221,6 +1249,7 @@ DRIVERS
 #include "../gfx/gfx_display.c"
 #include "../gfx/gfx_instrument.c"
 #include "../gfx/gfx_surface.c"
+#include "../gfx/gfx_surface_player.c"
 #include "../gfx/gfx_thumbnail.c"
 #include "../gfx/gfx_anim_preview.c"
 
@@ -1929,4 +1958,13 @@ SMB CLIENT
 #endif
 #if defined(HAVE_SMBCLIENT) || defined(HAVE_NFSCLIENT)
 #include "../libretro-common/vfs/vfs_prefetch.c"
+#endif
+
+#if defined(_WIN32) && !defined(__WINRT__)
+#if defined(HAVE_VULKAN) || defined(HAVE_OPENGL) || defined(HAVE_OPENGL1) || defined(HAVE_OPENGL_CORE) || defined(HAVE_OPENGLES)
+#include "../gfx/common/win_dxgi_present.c"
+#endif
+#ifdef HAVE_VULKAN
+#include "../gfx/common/win_vulkan_dxgi.c"
+#endif
 #endif

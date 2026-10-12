@@ -369,6 +369,12 @@ struct runloop
       char xdelta   [PATH_MAX_LENGTH];
    } name;
 
+   /* Main-thread state for deferred automatic state loading. */
+   bool auto_state_load_pending;
+   bool auto_state_load_attempted;
+   bool auto_state_load_ready;
+   bool auto_state_load_core_ran;
+
    bool perfcnt_enable;
    bool paused_hotkey;
 
@@ -397,8 +403,8 @@ struct runloop
     * iteration (see menu_core_due_ns), so nothing that counts the
     * core's frames - achievements - steps either. Main thread only. */
    bool menu_core_skipped;
-   /* Set by RETRO_ENVIRONMENT_SET_VIDEO_VIEWS when a headset took the
-    * map, read by the GET_VR_FRAME_STATE/GET_VR_HEAD_POSE calls. */
+   /* The core uses a tracking headset: a tracked map was accepted or it
+    * asked for a pose. It is sampled before each run until it unloads. */
 #ifdef HAVE_OPENXR
    bool core_vr_content;
 #endif
@@ -1014,6 +1020,10 @@ void runloop_path_set_basename(const char *path);
 void runloop_path_set_names(void);
 
 uint32_t runloop_get_flags(void);
+
+bool runloop_set_fastmotion(bool enabled);
+
+bool runloop_set_slowmotion(bool enabled);
 
 /* The platform has taken the application away, or given it back:
  * paused and idle while it is away. */

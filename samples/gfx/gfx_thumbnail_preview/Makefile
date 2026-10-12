@@ -1,5 +1,7 @@
 # HAVE_MMAP means POSIX mmap: the VFS and memmap take the Win32
 # mapping calls without it, the way the tree's own Windows build does.
+include ../../sample_objdir.mk
+
 ifeq ($(OS),Windows_NT)
 MMAP_DEF :=
 else
@@ -30,6 +32,9 @@ ANIM_PREVIEW_OBJ := gfx_anim_preview_uut.o
 # The streaming surface the animation frames go through, real.
 SURFACE_SRC := $(REPO_ROOT)/gfx/gfx_surface.c
 SURFACE_OBJ := gfx_surface_uut.o
+# The playback the animation goes through, and its surface side.
+PLAYER_SRC := $(REPO_ROOT)/gfx/gfx_surface_player.c
+PLAYER_OBJ := gfx_surface_player_uut.o
 
 # Layout facts (settings_t offsets/size) for the stubs, compiled with
 # UUT_CFLAGS so they match what the UUT's configuration.h produces.
@@ -52,8 +57,10 @@ SOURCES := gfx_thumbnail_preview_test.c \
            $(LIBRETRO_COMM_DIR)/formats/audio_transfer.c \
            $(LIBRETRO_COMM_DIR)/formats/data_transfer.c \
            $(LIBRETRO_COMM_DIR)/formats/image_texture.c \
+           $(LIBRETRO_COMM_DIR)/formats/image/image_yuv_blit.c \
            $(LIBRETRO_COMM_DIR)/formats/image_texture_set.c \
            $(LIBRETRO_COMM_DIR)/formats/image_transfer.c \
+           $(LIBRETRO_COMM_DIR)/formats/video_player.c \
            $(LIBRETRO_COMM_DIR)/formats/image/image_hdr_blit.c \
            $(LIBRETRO_COMM_DIR)/formats/image/image_blit_bands.c \
            $(LIBRETRO_COMM_DIR)/formats/aac/raac.c \
@@ -95,7 +102,7 @@ endif
 CFLAGS     += $(EXTRA_CFLAGS)
 UUT_CFLAGS += $(EXTRA_CFLAGS)
 
-OBJS := $(SOURCES:.c=.o)
+OBJS := $(call sample_objs,$(SOURCES:.c=.o))
 
 # The decode test drives the real mixer directly (no gfx UUT, no
 # driver stubs), so it builds from its own leaner source list.  The
@@ -210,14 +217,15 @@ endif
 # and a variable set below it is empty there.
 THREADED_TARGET := gfx_thumbnail_preview_test_threaded
 AUDIO_ORACLE_TARGET := preview_audio_oracle_test
+AUDIO_FEED_TARGET := preview_audio_feed_test
 CATCHUP_THREADED_TARGET := $(CATCHUP_TARGET)_threaded
 THREADED_DEFS   := -DHAVE_THREADS -DPREVIEW_THREADED
 THREADED_EXTRA  := $(LIBRETRO_COMM_DIR)/rthreads/rthreads.c \
                    $(LIBRETRO_COMM_DIR)/rthreads/tpool.c \
                    $(LIBRETRO_COMM_DIR)/rthreads/retro_eventcount.c
-THREADED_OBJS   := $(SOURCES:.c=.t.o) $(THREADED_EXTRA:.c=.t.o)
+THREADED_OBJS   := $(call sample_objs,$(SOURCES:.c=.t.o) $(THREADED_EXTRA:.c=.t.o))
 
-all: $(TARGET) $(DECODE_TARGET) $(DECODE_TARGET_NORWEBM) $(PLATFORM_TARGETS) $(BLIT_BANDS_TARGET) $(CATCHUP_TARGET) $(CATCHUP_THREADED_TARGET) $(AUDIO_ORACLE_TARGET) $(THREADED_TARGET)
+all: $(TARGET) $(DECODE_TARGET) $(DECODE_TARGET_NORWEBM) $(PLATFORM_TARGETS) $(BLIT_BANDS_TARGET) $(CATCHUP_TARGET) $(CATCHUP_THREADED_TARGET) $(AUDIO_ORACLE_TARGET) $(AUDIO_FEED_TARGET) $(THREADED_TARGET)
 
 $(ANIM_WINDOW_TARGET): $(ANIM_WINDOW_SOURCES)
 	$(CC) -o $@ $(ANIM_WINDOW_SOURCES) $(ANIM_WINDOW_CFLAGS) $(LDFLAGS) -lz
@@ -248,6 +256,13 @@ AUDIO_ORACLE_SOURCES := preview_audio_oracle_test.c $(filter-out preview_audio_d
                         $(LIBRETRO_COMM_DIR)/file/file_path_io.c
 $(AUDIO_ORACLE_TARGET): $(AUDIO_ORACLE_SOURCES)
 	$(CC) -o $@ $(AUDIO_ORACLE_SOURCES) $(DECODE_CFLAGS_COMMON) -DHAVE_RWEBM $(LDFLAGS) -lm
+
+AUDIO_FEED_SOURCES := preview_audio_feed_test.c $(ANIM_PREVIEW_SRC) \
+                     $(filter-out preview_audio_oracle_test.c,$(AUDIO_ORACLE_SOURCES)) \
+                     $(LIBRETRO_COMM_DIR)/compat/compat_strldup.c
+$(AUDIO_FEED_TARGET): $(AUDIO_FEED_SOURCES)
+	$(CC) -o $@ $(AUDIO_FEED_SOURCES) $(DECODE_CFLAGS_COMMON) -DHAVE_RWEBM \
+	      -I$(REPO_ROOT) -I$(REPO_ROOT)/deps $(LDFLAGS)
 
 # The banded colour conversion against the single-threaded one, frame
 # for frame, through the real rmp4_video stream on a real tpool.
@@ -316,13 +331,21 @@ $(ANIM_PREVIEW_OBJ): $(ANIM_PREVIEW_SRC)
 $(SURFACE_OBJ): $(SURFACE_SRC)
 	$(CC) -c -o $@ $< $(UUT_CFLAGS)
 
+$(PLAYER_OBJ): $(PLAYER_SRC)
+	$(CC) -c -o $@ $< $(UUT_CFLAGS)
+
 $(LAYOUT_OBJ): settings_layout_uut.c
 	$(CC) -c -o $@ $< $(UUT_CFLAGS)
 
 %.o: %.c
 	$(CC) -c -o $@ $< $(CFLAGS)
 
-$(TARGET): $(OBJS) $(UUT_OBJ) $(LAYOUT_OBJ) $(ANIM_PREVIEW_OBJ) $(SURFACE_OBJ)
+$(SAMPLE_OBJDIR)/%.o: $$(call sample_src,$$*).c
+	@mkdir -p $(@D)
+	$(CC) -c -o $@ $< $(CFLAGS)
+
+$(TARGET): $(OBJS) $(UUT_OBJ) $(LAYOUT_OBJ) $(ANIM_PREVIEW_OBJ) $(SURFACE_OBJ) \
+      $(PLAYER_OBJ)
 	$(CC) -o $@ $^ $(LDFLAGS)
 
 # The same test with HAVE_THREADS: the thumbnail decodes on its worker
@@ -335,17 +358,24 @@ $(TARGET): $(OBJS) $(UUT_OBJ) $(LAYOUT_OBJ) $(ANIM_PREVIEW_OBJ) $(SURFACE_OBJ)
 %.t.o: %.c
 	$(CC) -c -o $@ $< $(CFLAGS) $(THREADED_DEFS)
 
+$(SAMPLE_OBJDIR)/%.t.o: $$(call sample_src,$$*).c
+	@mkdir -p $(@D)
+	$(CC) -c -o $@ $< $(CFLAGS) $(THREADED_DEFS)
+
 gfx_thumbnail_uut.t.o: $(UUT_SRC)
 	$(CC) -c -o $@ $< $(UUT_CFLAGS) $(THREADED_DEFS)
 gfx_anim_preview_uut.t.o: $(ANIM_PREVIEW_SRC)
 	$(CC) -c -o $@ $< $(UUT_CFLAGS) $(THREADED_DEFS)
 gfx_surface_uut.t.o: $(SURFACE_SRC)
 	$(CC) -c -o $@ $< $(UUT_CFLAGS) $(THREADED_DEFS)
+gfx_surface_player_uut.t.o: $(PLAYER_SRC)
+	$(CC) -c -o $@ $< $(UUT_CFLAGS) $(THREADED_DEFS)
 settings_layout_uut.t.o: settings_layout_uut.c
 	$(CC) -c -o $@ $< $(UUT_CFLAGS) $(THREADED_DEFS)
 
 $(THREADED_TARGET): $(THREADED_OBJS) gfx_thumbnail_uut.t.o settings_layout_uut.t.o \
-                    gfx_anim_preview_uut.t.o gfx_surface_uut.t.o
+                    gfx_anim_preview_uut.t.o gfx_surface_uut.t.o \
+                    gfx_surface_player_uut.t.o
 	$(CC) -o $@ $^ $(LDFLAGS)
 
 # The fixtures are container layouts, not clips: see mkfixtures.py.
@@ -353,7 +383,7 @@ $(THREADED_TARGET): $(THREADED_OBJS) gfx_thumbnail_uut.t.o settings_layout_uut.t
 fixtures:
 	python3 mkfixtures.py fixtures
 
-check: $(TARGET) $(THREADED_TARGET) $(DECODE_TARGET) $(DECODE_TARGET_NORWEBM) $(PLATFORM_TARGETS) $(BLIT_BANDS_TARGET) $(CATCHUP_TARGET) $(CATCHUP_THREADED_TARGET) $(AUDIO_ORACLE_TARGET) fixtures
+check: $(TARGET) $(THREADED_TARGET) $(DECODE_TARGET) $(DECODE_TARGET_NORWEBM) $(PLATFORM_TARGETS) $(BLIT_BANDS_TARGET) $(CATCHUP_TARGET) $(CATCHUP_THREADED_TARGET) $(AUDIO_ORACLE_TARGET) $(AUDIO_FEED_TARGET) fixtures
 	./$(TARGET) fixtures/*.mp4 fixtures/anim_lossless.webp
 ifneq ($(OS),Windows_NT)
 	./$(ANIM_WINDOW_TARGET) fixtures
@@ -361,6 +391,7 @@ endif
 	./$(CATCHUP_TARGET) fixtures/bframes_h264.mp4 fixtures/bframes_hevc.mp4
 	./$(CATCHUP_THREADED_TARGET) fixtures/bframes_h264.mp4 fixtures/bframes_hevc.mp4
 	./$(AUDIO_ORACLE_TARGET) fixtures/trailing_small.mp4 fixtures/trailing_large.mp4
+	./$(AUDIO_FEED_TARGET) fixtures/audio_large_packet.m4a
 	FRAMES=180 PACE_HZ=60 PACE_MAX_STALL_MS=500 NOAUDIO=1 ./$(TARGET) fixtures/bframes_h264.mp4 fixtures/bframes_hevc.mp4
 	THREADS=4 FRAMES=180 PACE_HZ=60 PACE_MAX_STALL_MS=500 NOAUDIO=1 ./$(THREADED_TARGET) fixtures/bframes_h264.mp4 fixtures/bframes_hevc.mp4
 	./$(BLIT_BANDS_TARGET) fixtures/long_video.mp4
@@ -376,10 +407,12 @@ endif
 # a different SANITIZER=, and a clean that took the fixtures with it
 # left the following run globbing nothing.  Use distclean to drop them.
 clean:
+	rm -rf $(SAMPLE_OBJDIR)
 	rm -f $(TARGET) $(THREADED_TARGET) $(THREADED_TARGET).exe $(THREADED_OBJS) \
 	      gfx_thumbnail_uut.t.o settings_layout_uut.t.o gfx_anim_preview_uut.t.o gfx_surface_uut.t.o \
+	      gfx_surface_player_uut.t.o $(PLAYER_OBJ) \
 	      $(DECODE_TARGET) $(DECODE_TARGET_NORWEBM) \
-	      $(ANIM_WINDOW_TARGET) $(BLIT_BANDS_TARGET) $(CATCHUP_TARGET) $(CATCHUP_THREADED_TARGET) $(AUDIO_ORACLE_TARGET) $(BENCH_TARGET) \
+	      $(ANIM_WINDOW_TARGET) $(BLIT_BANDS_TARGET) $(CATCHUP_TARGET) $(CATCHUP_THREADED_TARGET) $(AUDIO_ORACLE_TARGET) $(AUDIO_FEED_TARGET) $(AUDIO_FEED_TARGET).exe $(BENCH_TARGET) \
 	      $(TARGET).exe $(CATCHUP_TARGET).exe $(BENCH_TARGET).exe $(BLIT_BANDS_TARGET).exe \
 	      $(OBJS) $(UUT_OBJ) $(LAYOUT_OBJ) $(ANIM_PREVIEW_OBJ) $(SURFACE_OBJ)
 

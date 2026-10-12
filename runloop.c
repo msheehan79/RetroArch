@@ -68,6 +68,9 @@
 #include <encodings/utf.h>
 
 #include <libretro.h>
+#ifdef HAVE_RMP4
+#include <formats/rh264.h>
+#endif
 #ifdef HAVE_VULKAN
 #include <libretro_vulkan.h>
 #endif
@@ -1810,6 +1813,77 @@ static void core_performance_counter_stop(struct retro_perf_counter *perf)
 }
 
 
+#ifdef HAVE_OPENXR
+/* The pose calls answer while the headset tracks. A core asking before
+ * a sampled frame is sampled now, and before each run from then on. */
+static bool runloop_vr_poses(runloop_state_t *runloop_st)
+{
+   if (!(video_driver_xr_headset() & VIDEO_XR_HEADSET_TRACKING))
+      return false;
+   if (!runloop_st->core_vr_content)
+   {
+      runloop_st->core_vr_content = true;
+      video_driver_vr_sample_tracking();
+   }
+   return true;
+}
+#endif
+
+#ifdef HAVE_RMP4
+static void *runloop_video_decode_open(void)
+{
+   rh264_video *v = rh264_video_open();
+   rh264_video_set_hw_readback(v, 1);
+   return v;
+}
+
+static int runloop_video_decode_frame(rh264_video *v,
+      struct retro_video_decode_frame *frame)
+{
+   int i, stride, w, h;
+   if (!frame || rh264_video_bit_depth(v) != 8)
+      return -1;
+   memset(frame, 0, sizeof(*frame));
+   for (i = 0; i < 3; i++)
+   {
+      frame->planes[i] = rh264_video_plane(v, i, &stride, &w, &h);
+      if (!frame->planes[i] || stride <= 0 || w <= 0 || h <= 0)
+         return -1;
+      frame->strides[i] = (unsigned)stride;
+      if (!i)
+      {
+         frame->width = (unsigned)w;
+         frame->height = (unsigned)h;
+      }
+      else if ((unsigned)w != (frame->width + 1) / 2
+            || (unsigned)h != (frame->height + 1) / 2)
+         return -1;
+   }
+   frame->hardware = rh264_video_is_hw(v) != 0;
+   return 1;
+}
+
+static int runloop_video_decode(void *decoder, const uint8_t *data,
+      size_t size, struct retro_video_decode_frame *frame)
+{
+   rh264_video *v = (rh264_video*)decoder;
+   int result = rh264_video_decode(v, data, size);
+   return result == 1 ? runloop_video_decode_frame(v, frame) : result;
+}
+
+static int runloop_video_decode_drain(void *decoder,
+      struct retro_video_decode_frame *frame)
+{
+   rh264_video *v = (rh264_video*)decoder;
+   return rh264_video_drain(v) == 0 ? runloop_video_decode_frame(v, frame) : 0;
+}
+
+static void runloop_video_decode_close(void *decoder)
+{
+   rh264_video_close((rh264_video*)decoder);
+}
+#endif
+
 bool runloop_environment_cb(unsigned cmd, void *data)
 {
    unsigned p;
@@ -2977,6 +3051,10 @@ bool runloop_environment_cb(unsigned cmd, void *data)
                       (runloop_st->audio_latency > audio_latency_default)
                      ? runloop_st->audio_latency : audio_latency_default;
          unsigned audio_latency_new;
+#ifdef HAVE_MICROPHONE
+         unsigned microphone_latency_current = MAX(
+               runloop_st->audio_latency, settings->uints.microphone_latency);
+#endif
 
          RARCH_LOG("[Environ] SET_MINIMUM_AUDIO_LATENCY.\n");
 
@@ -3004,51 +3082,21 @@ bool runloop_environment_cb(unsigned cmd, void *data)
             audio_latency_new = audio_latency_default;
          }
 
-         /* Check whether audio driver requires reinitialisation
-          * (Identical to RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO,
-          * without video driver initialisation) */
-         if (audio_latency_new != audio_latency_current)
+         /* A staged load applies the request when its drivers start. */
+         if (video_state_get_ptr()->data && !runloop_is_content_switching())
          {
-            recording_state_t *rec_st      = recording_state_get_ptr();
-            video_driver_state_t *video_st = video_state_get_ptr();
-            bool video_fullscreen          = settings->bools.video_fullscreen;
-            int reinit_flags               = DRIVERS_CMD_ALL &
-                  ~(DRIVER_VIDEO_MASK | DRIVER_INPUT_MASK | DRIVER_MENU_MASK);
-
-            RARCH_LOG("[Environ] Setting audio latency to %u ms.\n", audio_latency_new);
-
-            command_event(CMD_EVENT_REINIT, &reinit_flags);
-            command_event(CMD_EVENT_VIDEO_SET_ASPECT_RATIO, NULL);
-
-            /* Cannot continue recording with different
-             * parameters.
-             * Take the easiest route out and just restart
-             * the recording. */
-
-            if (rec_st->data)
+            if (MAX(audio_latency_new, settings->uints.audio_latency_floor)
+                  != MAX(audio_latency_current, settings->uints.audio_latency_floor))
             {
-               const char *_msg = msg_hash_to_str(MSG_RESTARTING_RECORDING_DUE_TO_DRIVER_REINIT);
-               runloop_msg_queue_push(_msg, strlen(_msg), 2, 180, false, NULL,
-                     MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
-               if (rec_st->streaming_enable)
-               {
-                  command_event(CMD_EVENT_STREAMING_TOGGLE, NULL);
-                  command_event(CMD_EVENT_STREAMING_TOGGLE, NULL);
-               }
-               else
-               {
-                  command_event(CMD_EVENT_RECORD_DEINIT, NULL);
-                  command_event(CMD_EVENT_RECORD_INIT, NULL);
-               }
+               RARCH_LOG("[Environ] Setting audio latency to %u ms.\n", audio_latency_new);
+               command_event(CMD_EVENT_AUDIO_REINIT, NULL);
             }
-
-            /* Hide mouse cursor in fullscreen mode */
-            if (video_fullscreen)
-            {
-               if (     video_st->poke
-                     && video_st->poke->show_mouse)
-                  video_st->poke->show_mouse(video_st->data, false);
-            }
+#ifdef HAVE_MICROPHONE
+            if (     settings->bools.microphone_enable
+                  && microphone_latency_current != MAX(
+                        runloop_st->audio_latency, settings->uints.microphone_latency))
+               command_event(CMD_EVENT_MICROPHONE_REINIT, NULL);
+#endif
          }
          break;
       }
@@ -3104,7 +3152,13 @@ bool runloop_environment_cb(unsigned cmd, void *data)
          cb->start                        = driver_camera_start;
          cb->stop                         = driver_camera_stop;
 
-         camera_st->cb                    = *cb;
+         /* The planar callback sits past the end of the struct an
+          * older core allocated; its caps bit says the field exists */
+         memcpy(&camera_st->cb, cb,
+               offsetof(struct retro_camera_callback, frame_planar));
+         camera_st->cb.frame_planar       =
+            (cb->caps & (UINT64_C(1) << RETRO_CAMERA_BUFFER_PLANAR))
+            ? cb->frame_planar : NULL;
          camera_st->active                = (cb->caps != 0);
          break;
       }
@@ -3128,6 +3182,23 @@ bool runloop_environment_cb(unsigned cmd, void *data)
          break;
       }
 
+      case RETRO_ENVIRONMENT_GET_VIDEO_DECODE_INTERFACE:
+#ifdef HAVE_RMP4
+         {
+            struct retro_video_decode_interface *iface =
+               (struct retro_video_decode_interface*)data;
+            if (!iface || iface->interface_version != RETRO_VIDEO_DECODE_INTERFACE_VERSION)
+               return false;
+            RARCH_LOG("[Environ] GET_VIDEO_DECODE_INTERFACE: H.264 with CPU planes.\n");
+            iface->open = runloop_video_decode_open;
+            iface->decode = runloop_video_decode;
+            iface->drain = runloop_video_decode_drain;
+            iface->close = runloop_video_decode_close;
+            return true;
+         }
+#else
+         return false;
+#endif
       case RETRO_ENVIRONMENT_GET_LOG_INTERFACE:
       {
          struct retro_log_callback *cb = (struct retro_log_callback*)data;
@@ -3568,6 +3639,7 @@ bool runloop_environment_cb(unsigned cmd, void *data)
       }
 
       case RETRO_ENVIRONMENT_SET_SERIALIZATION_QUIRKS:
+      case RETRO_ENVIRONMENT_SET_SERIALIZATION_QUIRKS_2:
       {
          uint64_t *quirks = (uint64_t *) data;
 
@@ -4237,7 +4309,13 @@ bool runloop_environment_cb(unsigned cmd, void *data)
          if (!video_driver_set_views((struct retro_video_views*)data))
             return false;
 #ifdef HAVE_OPENXR
-         runloop_st->core_vr_content = video_driver_vr_content_active();
+         if (     video_driver_vr_content_active()
+               && !runloop_st->core_vr_content)
+         {
+            runloop_st->core_vr_content = true;
+            /* A core reading poses later in this run needs a sample */
+            video_driver_vr_sample_tracking();
+         }
 #endif
          break;
 
@@ -4463,12 +4541,12 @@ bool runloop_environment_cb(unsigned cmd, void *data)
          break;
 #ifdef HAVE_OPENXR
       case RETRO_ENVIRONMENT_GET_VR_HEAD_POSE:
-         if (!data || !runloop_st->core_vr_content)
+         if (!data || !runloop_vr_poses(runloop_st))
             return false;
          return video_driver_get_vr_head_pose((struct retro_vr_head_pose*)data);
 
       case RETRO_ENVIRONMENT_GET_VR_FRAME_STATE:
-         if (!data || !runloop_st->core_vr_content)
+         if (!data || !runloop_vr_poses(runloop_st))
             return false;
          return video_driver_get_vr_frame_state(
                (struct retro_vr_frame_state*)data);
@@ -5256,6 +5334,14 @@ static bool core_unload_game(void)
    return true;
 }
 
+static void runloop_reset_auto_state_load(runloop_state_t *runloop_st)
+{
+   runloop_st->auto_state_load_pending   = false;
+   runloop_st->auto_state_load_attempted = false;
+   runloop_st->auto_state_load_ready     = false;
+   runloop_st->auto_state_load_core_ran  = false;
+}
+
 static void runloop_apply_fastmotion_override(runloop_state_t *runloop_st,
       bool frame_time_counter_auto_reset,
       float fastforward_ratio_default,
@@ -5333,6 +5419,79 @@ static void runloop_apply_fastmotion_override(runloop_state_t *runloop_st,
             fastforward_ratio_current);
 }
 
+static void runloop_apply_fastmotion(bool enabled)
+{
+   runloop_state_t *runloop_st     = &runloop_state;
+   input_driver_state_t *input_st = input_state_get_ptr();
+   audio_driver_state_t *audio_st = audio_state_get_ptr();
+   video_driver_state_t *video_st = video_state_get_ptr();
+   settings_t *settings          = config_get_ptr();
+
+   if (enabled)
+   {
+      input_st->flags   |= INP_FLAG_NONBLOCKING;
+      runloop_st->flags |= RUNLOOP_FLAG_FASTMOTION;
+      command_event(CMD_EVENT_SET_FRAME_LIMIT, NULL);
+   }
+   else
+   {
+      input_st->flags   &= ~INP_FLAG_NONBLOCKING;
+      runloop_st->flags &= ~RUNLOOP_FLAG_FASTMOTION;
+      runloop_st->fastforward_after_frames = 1;
+   }
+
+   if (settings->bools.audio_fastforward_mute && enabled)
+      AUDIO_FLAGS_SET(audio_st, AUDIO_FLAG_MUTED);
+   else
+      AUDIO_FLAGS_CLEAR(audio_st, AUDIO_FLAG_MUTED);
+
+   driver_set_nonblock_state();
+
+   if (!enabled && settings->bools.frame_time_counter_auto_reset)
+      video_st->frame_time_count = 0;
+}
+
+static bool runloop_can_set_speed(void)
+{
+   if (!(runloop_state.flags & RUNLOOP_FLAG_CORE_RUNNING)
+         || (runloop_state.flags & RUNLOOP_FLAG_PAUSED))
+      return false;
+#ifdef HAVE_NETWORKING
+   if (!netplay_driver_ctl(RARCH_NETPLAY_CTL_ALLOW_TIMESKIP, NULL))
+      return false;
+#endif
+   return true;
+}
+
+bool runloop_set_fastmotion(bool enabled)
+{
+   if (((runloop_state.flags & RUNLOOP_FLAG_FASTMOTION) != 0) == enabled)
+      return true;
+   if (!runloop_can_set_speed()
+         || runloop_state.fastmotion_override.pending
+         || runloop_state.fastmotion_override.current.inhibit_toggle)
+      return false;
+   runloop_apply_fastmotion(enabled);
+   return true;
+}
+
+bool runloop_set_slowmotion(bool enabled)
+{
+   if (((runloop_state.flags & RUNLOOP_FLAG_SLOWMOTION) != 0) == enabled)
+      return true;
+   if (!runloop_can_set_speed())
+      return false;
+#ifdef HAVE_CHEEVOS
+   if (rcheevos_hardcore_active())
+      return false;
+#endif
+   if (enabled)
+      runloop_state.flags |= RUNLOOP_FLAG_SLOWMOTION;
+   else
+      runloop_state.flags &= ~RUNLOOP_FLAG_SLOWMOTION;
+   return true;
+}
+
 void runloop_event_deinit_core(void)
 {
    video_driver_state_t
@@ -5361,6 +5520,8 @@ void runloop_event_deinit_core(void)
    if (runloop_st->flags & RUNLOOP_FLAG_USE_SRAM)
       autosave_deinit();
 #endif
+
+   runloop_reset_auto_state_load(runloop_st);
 
    /* Remap save and cleanup logic should be placed before
     * core_unload_game(), to ensure that input description data
@@ -5581,6 +5742,8 @@ static bool event_init_content(
    const enum rarch_core_type current_core_type = runloop_st->current_core_type;
    uint8_t flags                                = content_get_flags();
    bool entry_state_load                        = runloop_st->entry_state_slot > -1;
+
+   runloop_reset_auto_state_load(runloop_st);
 
    if (current_core_type == CORE_TYPE_PLAIN)
       runloop_st->flags |=  RUNLOOP_FLAG_USE_SRAM;
@@ -6333,7 +6496,10 @@ bool runloop_event_init_core(
          show_set_initial_disk_msg, initial_disk_change_enable);
 
    if (!runloop_event_load_core(runloop_st, poll_type_behavior))
+   {
+      runloop_reset_auto_state_load(runloop_st);
       return false;
+   }
 
    runloop_set_frame_limit(&video_st->av_info, fastforward_ratio);
    runloop_st->frame_limit_anchor_ns    = (int64_t)cpu_features_get_time_usec()
@@ -7085,6 +7251,8 @@ void runloop_msg_queue_push(
 
 }
 
+static void runloop_load_deferred_auto_state(void);
+
 #ifdef HAVE_MENU
 /* Display the libretro core's framebuffer onscreen. */
 static bool display_menu_libretro(
@@ -7108,6 +7276,7 @@ static bool display_menu_libretro(
 
       video_driver_ff_frameskip_decide(current_time);
       core_run();
+      runloop_load_deferred_auto_state();
       runloop_st->core_runtime_usec       +=
          runloop_core_runtime_tick(runloop_st, slowmotion_ratio, current_time);
       input_st->flags                     &= ~INP_FLAG_BLOCK_LIBRETRO_INPUT;
@@ -8430,6 +8599,9 @@ static enum runloop_state_enum runloop_check_state(
    HOTKEY_CHECK(RARCH_SCREENSHOT, CMD_EVENT_TAKE_SCREENSHOT, true, NULL);
 #endif
 
+   /* Check headset recenter hotkey: here, so it works in the menu too */
+   HOTKEY_CHECK(RARCH_HEADSET_RECENTER, CMD_EVENT_HEADSET_RECENTER, true, NULL);
+
 #ifdef HAVE_CHEEVOS
    /* Make sure not to evaluate this before calling menu_driver_iterate
     * as that may change its value */
@@ -8746,33 +8918,8 @@ static enum runloop_state_enum runloop_check_state(
 
       if (check2)
       {
-         bool audio_fastforward_mute = settings->bools.audio_fastforward_mute;
-         bool frame_time_counter_auto_reset = settings->bools.frame_time_counter_auto_reset;
-         if (input_st->flags & INP_FLAG_NONBLOCKING)
-         {
-            input_st->flags                     &= ~INP_FLAG_NONBLOCKING;
-            runloop_st->flags                   &= ~RUNLOOP_FLAG_FASTMOTION;
-            runloop_st->fastforward_after_frames = 1;
-         }
-         else
-         {
-            input_st->flags                     |=  INP_FLAG_NONBLOCKING;
-            runloop_st->flags                   |=  RUNLOOP_FLAG_FASTMOTION;
-            command_event(CMD_EVENT_SET_FRAME_LIMIT, NULL);
-         }
-
-         if (audio_fastforward_mute && (runloop_st->flags & RUNLOOP_FLAG_FASTMOTION))
-            AUDIO_FLAGS_SET(audio_st, AUDIO_FLAG_MUTED);
-         else
-            AUDIO_FLAGS_CLEAR(audio_st, AUDIO_FLAG_MUTED);
-
-         driver_set_nonblock_state();
-
-         /* Reset frame time counter when toggling
-          * fast-forward off, if required */
-         if ( !(runloop_st->flags & RUNLOOP_FLAG_FASTMOTION)
-             && frame_time_counter_auto_reset)
-            video_st->frame_time_count  = 0;
+         runloop_apply_fastmotion(
+               !(input_st->flags & INP_FLAG_NONBLOCKING));
       }
 
       old_button_state                  = new_button_state;
@@ -9039,9 +9186,6 @@ static enum runloop_state_enum runloop_check_state(
 
    /* Check VRR runloop hotkey */
    HOTKEY_CHECK(RARCH_VRR_RUNLOOP_TOGGLE, CMD_EVENT_VRR_RUNLOOP_TOGGLE, true, NULL);
-
-   /* Check headset recenter hotkey */
-   HOTKEY_CHECK(RARCH_HEADSET_RECENTER, CMD_EVENT_HEADSET_RECENTER, true, NULL);
 
    /* Check bsv movie hotkeys */
    HOTKEY_CHECK(RARCH_PLAY_REPLAY_KEY, CMD_EVENT_PLAY_REPLAY, true, NULL);
@@ -9622,7 +9766,8 @@ int runloop_iterate(void)
    if (runloop_st->frame_work & RUNLOOP_WORK_CAMERA)
       camera_st->driver->poll(camera_st->data,
             camera_st->cb.frame_raw_framebuffer,
-            camera_st->cb.frame_opengl_texture);
+            camera_st->cb.frame_opengl_texture,
+            camera_st->cb.frame_planar);
 
 #ifdef HAVE_OPENXR
    if (runloop_st->core_vr_content)
@@ -9662,6 +9807,8 @@ int runloop_iterate(void)
 #endif
          core_run();
    }
+
+   runloop_load_deferred_auto_state();
 
    /* Increment runtime tick counter after each call to
     * core_run() or run_ahead() */
@@ -10505,6 +10652,48 @@ void core_reset(void)
    runloop_st->current_core.retro_reset();
 }
 
+static void runloop_load_deferred_auto_state(void)
+{
+   runloop_state_t *runloop_st = &runloop_state;
+   settings_t *settings;
+
+   if (!runloop_st->auto_state_load_pending)
+      return;
+
+   settings = config_get_ptr();
+
+   if (!settings->bools.savestate_auto_load)
+   {
+      runloop_st->auto_state_load_pending   = false;
+      runloop_st->auto_state_load_ready     = false;
+      runloop_st->auto_state_load_core_ran  = false;
+      runloop_st->auto_state_load_attempted = true;
+      RARCH_LOG("[State] Deferred auto-load canceled because Auto Load State is disabled.\n");
+      return;
+   }
+
+   if (     runloop_st->content_closing
+         || !(runloop_st->current_core.flags & RETRO_CORE_FLAG_GAME_LOADED))
+   {
+      runloop_st->auto_state_load_pending   = false;
+      runloop_st->auto_state_load_ready     = false;
+      runloop_st->auto_state_load_core_ran  = false;
+      runloop_st->auto_state_load_attempted = true;
+      return;
+   }
+
+   /* A core may need several frames before serialization is available. */
+   if (!runloop_st->auto_state_load_core_ran || !core_serialize_size())
+      return;
+
+   runloop_st->auto_state_load_pending   = false;
+   runloop_st->auto_state_load_attempted = true;
+   runloop_st->auto_state_load_ready     = true;
+   command_event_load_auto_state();
+   runloop_st->auto_state_load_ready     = false;
+   runloop_st->auto_state_load_core_ran  = false;
+}
+
 void core_run(void)
 {
    runloop_state_t *runloop_st = &runloop_state;
@@ -10578,6 +10767,8 @@ void core_run(void)
        * all, reach the frame's own audio rather than the next frame's. */
       audio_driver_publish_runloop();
       current_core->retro_run();
+      if (runloop_st->auto_state_load_pending)
+         runloop_st->auto_state_load_core_ran = true;
       audio_driver_frame_end();
    }
 

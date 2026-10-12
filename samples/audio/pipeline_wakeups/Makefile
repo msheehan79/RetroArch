@@ -1,3 +1,5 @@
+include ../../sample_objdir.mk
+
 compiler     := gcc
 TARGET       := pipeline_wakeups_test
 
@@ -63,11 +65,15 @@ ifneq ($(SANITIZER),)
    LDFLAGS := -fsanitize=$(SANITIZER) $(LDFLAGS)
 endif
 
-OBJS := $(SOURCES_C:.c=.o)
+OBJS := $(call sample_objs,$(SOURCES_C:.c=.o))
 
 all: $(TARGET)
 
 %.o: %.c
+	$(CC) $(INCDIRS) $(CFLAGS) $(flags) -c -o$@ $<
+
+$(SAMPLE_OBJDIR)/%.o: $$(call sample_src,$$*).c
+	@mkdir -p $(@D)
 	$(CC) $(INCDIRS) $(CFLAGS) $(flags) -c -o$@ $<
 
 $(TARGET): $(OBJS)
@@ -106,6 +112,11 @@ check-wrapper: $(TARGET)
 	WRAPPER=1 SOURCE_FLOAT=1 DEVICE_INT16=1 TRANSPORT=lpf ./$(TARGET) 1
 	WRAPPER=1 SOURCE_FLOAT=1 DEVICE_INT16=1 TRANSPORT=stretch ./$(TARGET) 1
 
+check-lend: $(TARGET)
+	WRAPPER=1 LEND=1 TRANSPORT=dry ./$(TARGET) 1
+	WRAPPER=1 LEND=1 SOURCE_FLOAT=1 DEVICE_INT16=1 TRANSPORT=dry ./$(TARGET) 1
+	WRAPPER=1 LEND=1 SOURCE_FLOAT=1 TRANSPORT=stretch ./$(TARGET) 1
+
 check-tempo: $(TARGET)
 	@for tempo in 0.25 0.5 1 2 4 8 16 32; do \
 		WRAPPER=1 DEVICE_INT16=1 TRANSPORT=stretch TEMPO=$$tempo ./$(TARGET) 0.25 || exit 1; \
@@ -143,10 +154,11 @@ check-wide: $(TARGET)
 	done
 
 clean:
+	rm -rf $(SAMPLE_OBJDIR)
 	rm -f $(OBJS)
 	rm -f $(TARGET)
 
-.PHONY: clean all check check-consumer-exit check-transport check-wrapper check-tempo check-live check-wide check-layout check-speed-lpf check-runloop check-auto
+.PHONY: clean all check check-consumer-exit check-transport check-wrapper check-lend check-tempo check-live check-wide check-layout check-speed-lpf check-runloop check-auto
 
 check-consumer-exit: $(TARGET)
 	CONSUMER_EXIT=1 WRAPPER=1 TRANSPORT=dry ./$(TARGET) 0.25

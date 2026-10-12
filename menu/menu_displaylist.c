@@ -145,6 +145,9 @@
 #include "../manual_content_scan.h"
 #include "../core_backup.h"
 #include "../misc/cpufreq/cpufreq.h"
+#ifdef HAVE_LAKKA_SWITCH
+#include "../misc/reboot2payload/reboot2payload.h"
+#endif
 #include "../input/input_remapping.h"
 
 #ifdef HAVE_MICROPHONE
@@ -9747,6 +9750,7 @@ unsigned menu_displaylist_build_list(
                {MENU_ENUM_LABEL_AUDIO_MAX_TIMING_SKEW,           PARSE_ONLY_FLOAT,    true  },
                {MENU_ENUM_LABEL_AUDIO_RATE_CONTROL_DELTA,        PARSE_ONLY_FLOAT,    true  },
                {MENU_ENUM_LABEL_AUDIO_THREADED_PIPELINE,         PARSE_ONLY_BOOL,     true  },
+               {MENU_ENUM_LABEL_AUDIO_PIPELINE_FILL_CAP,         PARSE_ONLY_BOOL,     true  },
                {MENU_ENUM_LABEL_AUDIO_SINK_RATE_ESTIMATION,      PARSE_ONLY_BOOL,     true  },
                {MENU_ENUM_LABEL_AUDIO_THREAD_PRIORITY,           PARSE_ONLY_BOOL,     true  },
 #ifdef HAVE_WASAPI
@@ -12003,17 +12007,23 @@ unsigned menu_displaylist_build_list(
             {
                static const menu_displaylist_settings_row_t dl_rows_8[] = {
                   { MENU_ENUM_LABEL_VIDEO_DRIVER, PARSE_ONLY_STRING_OPTIONS, false },
-#ifndef __APPLE__
-                  /* Hide 'Threaded Video' from the menu on Apple platforms;
-                   * the underlying video_threaded setting itself is kept. */
                   { MENU_ENUM_LABEL_VIDEO_THREADED, PARSE_ONLY_BOOL, false },
-#endif
                   { MENU_ENUM_LABEL_VIDEO_GPU_INDEX, PARSE_ONLY_INT, false },
                   { MENU_ENUM_LABEL_VIDEO_MONITOR_INDEX, PARSE_ONLY_UINT, false },
                   { MENU_ENUM_LABEL_VIDEO_SWAPCHAIN_BIT_DEPTH, PARSE_ONLY_UINT, false },
+                  { MENU_ENUM_LABEL_VIDEO_HW_DECODE, PARSE_ONLY_UINT, false },
                };
                count += menu_displaylist_parse_settings_rows(list, settings,
                      dl_rows_8, (unsigned)ARRAY_SIZE(dl_rows_8));
+
+#if defined(_WIN32) && !defined(__WINRT__)
+               if (     video_context_driver_get_api() == GFX_CTX_OPENGL_API
+                     || video_context_driver_get_api() == GFX_CTX_VULKAN_API)
+                  if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
+                           MENU_ENUM_LABEL_VIDEO_DXGI_PRESENT,
+                           PARSE_ONLY_BOOL, false) == 0)
+                     count++;
+#endif
 
                /* Only the GPUs the driver found: an index past them
                 * names no device, and picking one leaves the frontend
@@ -12294,9 +12304,14 @@ unsigned menu_displaylist_build_list(
          break;
       case DISPLAYLIST_VIDEO_STEREO_SETTINGS_LIST:
 #ifdef HAVE_OPENXR
-         /* A headset gives each eye its own image (Vulkan only). */
+         /* A headset gives each eye its own image. */
+#ifdef ANDROID
+         if (!video_context_driver_headset_inline())
+#else
          if (     !settings->bools.video_openxr_enable
-               || !string_is_equal(settings->arrays.video_driver, "vulkan"))
+               || !video_driver_has_headset_path(
+                  settings->arrays.video_driver))
+#endif
 #endif
          {
             if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
@@ -12313,13 +12328,16 @@ unsigned menu_displaylist_build_list(
                   PARSE_ONLY_UINT, false) == 0)
             count++;
 #ifdef HAVE_OPENXR
-         /* Headset output is the Vulkan driver's. */
-         if (string_is_equal(settings->arrays.video_driver, "vulkan"))
+         if (video_driver_has_headset_path(settings->arrays.video_driver))
          {
+#ifndef ANDROID
+            /* A headset's own context needs no switch: Android starts
+             * in the headset when there is one. */
             if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
                      MENU_ENUM_LABEL_VIDEO_OPENXR_ENABLE,
                      PARSE_ONLY_BOOL, false) == 0)
                count++;
+#endif
             if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
                      MENU_ENUM_LABEL_VIDEO_OPENXR_REFRESH_RATE,
                      PARSE_ONLY_UINT, false) == 0)
@@ -12331,6 +12349,10 @@ unsigned menu_displaylist_build_list(
             if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
                      MENU_ENUM_LABEL_VIDEO_OPENXR_WIDTH,
                      PARSE_ONLY_FLOAT, false) == 0)
+               count++;
+            if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
+                     MENU_ENUM_LABEL_VIDEO_OPENXR_PLACEMENT,
+                     PARSE_ONLY_UINT, false) == 0)
                count++;
             if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
                      MENU_ENUM_LABEL_VIDEO_OPENXR_CONTROLLERS,
@@ -12487,21 +12509,37 @@ unsigned menu_displaylist_build_list(
 #endif
 #ifdef HAVE_LAKKA_SWITCH
       case DISPLAYLIST_LAKKA_SWITCH_OPTIONS_LIST:
-         {
-            static const menu_displaylist_build_info_t build_list[] = {
-               {MENU_ENUM_LABEL_SWITCH_OC_ENABLE,                                            PARSE_ONLY_BOOL},
-               {MENU_ENUM_LABEL_SWITCH_CEC_ENABLE,                                           PARSE_ONLY_BOOL},
-               {MENU_ENUM_LABEL_BLUETOOTH_ERTM_DISABLE,                                      PARSE_ONLY_BOOL},
-            };
+         if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
+                  MENU_ENUM_LABEL_SWITCH_OC_ENABLE,
+                  PARSE_ONLY_BOOL, false) == 0)
+            count++;
 
-            for (i = 0; i < ARRAY_SIZE(build_list); i++)
-            {
-               if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
-                        build_list[i].enum_idx,  build_list[i].parse_type,
-                        false) == 0)
-                  count++;
-            }
+         /* Reboot-to-payload needs the pmc_r2p kernel driver. The
+          * payload selector has no backing rarch_setting_t; its
+          * Left/Right/OK/value callbacks live in menu/cbs. */
+         if (r2p_is_supported())
+         {
+            if (menu_entries_append(list,
+                     msg_hash_to_str(MENU_ENUM_LABEL_VALUE_REBOOT_PAYLOAD),
+                     msg_hash_to_str(MENU_ENUM_LABEL_REBOOT_PAYLOAD),
+                     MENU_ENUM_LABEL_REBOOT_PAYLOAD,
+                     MENU_SETTING_ACTION, 0, 0, NULL))
+               count++;
+
+            if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
+                     MENU_ENUM_LABEL_REBOOT_FORCE_SELF_ON_UPDATE,
+                     PARSE_ONLY_BOOL, false) == 0)
+               count++;
          }
+
+         if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
+                  MENU_ENUM_LABEL_SWITCH_CEC_ENABLE,
+                  PARSE_ONLY_BOOL, false) == 0)
+            count++;
+         if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
+                  MENU_ENUM_LABEL_BLUETOOTH_ERTM_DISABLE,
+                  PARSE_ONLY_BOOL, false) == 0)
+            count++;
          break;
 #endif
       case DISPLAYLIST_MENU_VIEWS_SETTINGS_LIST:
@@ -17606,10 +17644,14 @@ static bool menu_displaylist_ctl_internal(
 
 #if defined(HAVE_LAKKA)
                if (settings->bools.menu_show_reboot)
+               {
+                  /* What the Reboot entry's value shows. */
+                  lakka_update_check();
                   if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(info->list,
                            MENU_ENUM_LABEL_REBOOT,
                            PARSE_ACTION, false) == 0)
                      count++;
+               }
 
                if (settings->bools.menu_show_shutdown)
                   if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(info->list,

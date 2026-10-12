@@ -444,16 +444,17 @@ static void gfx_display_wiiu_draw(gfx_display_ctx_draw_t *draw,
             The compiler will optimise 90% of this out anyway */
          unsigned dw  = VIDEO_SCALE_W(draw->dims);
          unsigned dh  = VIDEO_SCALE_H(draw->dims);
-         float y      = -(VIDEO_POS_Y(draw->pos) + dh - video_height);
+         float x      = VIDEO_POS_X(draw->pos);
+         float y      = VIDEO_POS_FLIP_Y(video_height, draw->pos, draw->dims);
          /* Remember: this is a triangle strip, not a quad, draw in a Z shape
             Bottom-left, right, top-left, right */
-         v[0].pos.x   = (VIDEO_POS_X(draw->pos)    ) / video_width;
+         v[0].pos.x   = (x          ) / video_width;
          v[0].pos.y   = (y       + dh) / video_height;
-         v[1].pos.x   = (VIDEO_POS_X(draw->pos) + dw) / video_width;
+         v[1].pos.x   = (x       + dw) / video_width;
          v[1].pos.y   = (y       + dh) / video_height;
-         v[2].pos.x   = (VIDEO_POS_X(draw->pos)    ) / video_width;
+         v[2].pos.x   = (x          ) / video_width;
          v[2].pos.y   = (y          ) / video_height;
-         v[3].pos.x   = (VIDEO_POS_X(draw->pos) + dw) / video_width;
+         v[3].pos.x   = (x       + dw) / video_width;
          v[3].pos.y   = (y          ) / video_height;
       }
       else
@@ -514,8 +515,8 @@ static void gfx_display_wiiu_draw(gfx_display_ctx_draw_t *draw,
 
       v                  = wiiu->vertex_cache.v + wiiu->vertex_cache.current;
       v->pos.x           = VIDEO_POS_X(draw->pos);
-      v->pos.y           = wiiu->color_buffer.surface.height -
-                           VIDEO_POS_Y(draw->pos) - VIDEO_SCALE_H(draw->dims);
+      v->pos.y           = VIDEO_POS_FLIP_Y(wiiu->color_buffer.surface.height,
+                           draw->pos, draw->dims);
       v->pos.width       = VIDEO_SCALE_W(draw->dims);
       v->pos.height      = VIDEO_SCALE_H(draw->dims);
       v->coord.u         = 0.0f;

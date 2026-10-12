@@ -34,6 +34,7 @@
 #include "input_overlay.h"
 #include "../gfx/gfx_instrument.h"
 #include "../gfx/gfx_surface.h"
+#include "../gfx/gfx_surface_player.h"
 #include "../gfx/video_driver.h"
 #ifdef HAVE_THREADS
 #include "../gfx/video_thread_wrapper.h"
@@ -70,11 +71,25 @@ static void input_overlay_forget_pixels(input_overlay_t *ol,
    }
 }
 
+void input_overlay_anim_stop(input_overlay_t *ol)
+{
+   size_t i;
+   if (!ol || !ol->anim_player)
+      return;
+   for (i = 0; i < ol->num_images; i++)
+   {
+      gfx_surface_player_free((gfx_surface_player_t*)ol->anim_player[i]);
+      ol->anim_player[i] = NULL;
+   }
+}
+
 void input_overlay_release_textures(input_overlay_t *ol)
 {
    size_t i;
    if (!ol)
       return;
+   /* a playback finds its surface in the array freed below */
+   input_overlay_anim_stop(ol);
    if (ol->surfaces)
    {
       for (i = 0; i < ol->num_images; i++)
@@ -152,14 +167,10 @@ bool input_overlay_anim_submit(input_overlay_t *ol, size_t i)
  * about to show the page through load(), which reads them. */
 static bool input_overlay_submit_textures(input_overlay_t *ol)
 {
-   gfx_surface_requirements_t req;
    size_t i;
-   bool take_10bit;
 
    if (!(ol->surfaces = (void**)calloc(ol->num_images, sizeof(void*))))
       return false;
-   take_10bit = gfx_surface_query_requirements(0, &req)
-         && (req.formats & GFX_SURFACE_PIXFMT_2101010);
 
    /* A still image's pixels are the pack's and stay where they are,
     * so its surface carries no slots of its own and the upload is the
@@ -182,7 +193,7 @@ static bool input_overlay_submit_textures(input_overlay_t *ol)
          : animated
          ? gfx_surface_new(VIDEO_SCALE_PACK(ol->images[i]->width,
                ol->images[i]->height),
-               1, GFX_SURFACE_PIXFMT_8888, TEXTURE_FILTER_LINEAR,
+               1, IMAGE_PIXFMT_8888, TEXTURE_FILTER_LINEAR,
                input_overlay_surface_release, ol)
          : gfx_surface_new_static(VIDEO_SCALE_PACK(ol->images[i]->width,
             ol->images[i]->height), TEXTURE_FILTER_LINEAR);
@@ -193,14 +204,13 @@ static bool input_overlay_submit_textures(input_overlay_t *ol)
       ol->surfaces[i]  = s;
       if (!s)
          return false;
-      /* The pack decoded 10-bit for a driver that took it. One that
-       * no longer does (a reinit since), or an animation, whose
-       * stream composes 8-bit frames into an 8888 slot, gets the
-       * image narrowed once, here, where the pack keeps its
-       * descriptor in step with its pixels. */
-      if (     ol->images[i]->pix10
-            && (animated || !take_10bit))
+      /* Fitted once, here, where the pack keeps its descriptor in step
+       * with its pixels: an animation's stream composes 8-bit frames
+       * into an 8888 slot, so its first frame is narrowed too. */
+      if (animated && ol->images[i]->pix10)
          image_texture_narrow_10bit(ol->images[i]);
+      if (!video_driver_texture_fit(ol->images[i]))
+         return false;
       if (animated)
       {
          /* The first frame is already composed in the decoded image:
@@ -211,7 +221,13 @@ static bool input_overlay_submit_textures(input_overlay_t *ol)
          if (gfx_surface_submit(s, 0, ol->images[i]->supports_rgba)
                == GFX_SURFACE_SUBMIT_FAILED)
             return false;
-         ol->anim_next_us[i] = 0;
+         if (ol->anim_player)
+         {
+            /* the clock starts again from the frame shown here */
+            gfx_surface_player_free(
+                  (gfx_surface_player_t*)ol->anim_player[i]);
+            ol->anim_player[i] = NULL;
+         }
          if (ol->anim_resend)
             ol->anim_resend[i] = 0;
          /* The new texture shows the first (unpressed) frame, so a
@@ -225,7 +241,7 @@ static bool input_overlay_submit_textures(input_overlay_t *ol)
       src.payload      = NULL;
       src.payload_free = NULL;
       src.pixfmt       = ol->images[i]->pix10
-         ? GFX_SURFACE_PIXFMT_2101010 : GFX_SURFACE_PIXFMT_8888;
+         ? IMAGE_PIXFMT_2101010 : IMAGE_PIXFMT_8888;
       src.rgba         = ol->images[i]->supports_rgba;
       if (gfx_surface_submit_external(s, &src, NULL, NULL)
             == GFX_SURFACE_SUBMIT_FAILED)

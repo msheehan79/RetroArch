@@ -132,10 +132,11 @@ enum vk_flags
     * cached system memory, never video memory, because the core and the
     * frontend may read a lent frame back. */
    VK_FLAG_TEXTURE_FOR_LEND     = (1 << 21),
-   /* frontend uses openxr */
+   /* A headset's own context: the window is images nothing presents,
+    * and the headset's frame is begun and ended around this one. */
    VK_FLAG_OPEN_XR              = (1 << 22),
-   /* core opted into VR via SET_VIDEO_VIEWS */
-   VK_FLAG_XR_STEREO            = (1 << 23)
+   /* Held across creating a texture a compute shader writes */
+   VK_FLAG_TEXTURE_FOR_STORAGE  = (1 << 24)
 };
 
 enum vk_texture_type
@@ -185,7 +186,10 @@ enum vulkan_context_flags
    /* Whether HDR colorspaces are supported by the instance */
    VK_CTX_FLAG_HDR_SUPPORT                  = (1 << 5),
    /* scRGB mode: RGBA16F swapchain with extended linear sRGB colour space */
-   VK_CTX_FLAG_HDR_SCRGB                    = (1 << 6)
+   VK_CTX_FLAG_HDR_SCRGB                    = (1 << 6),
+   /* The device was made with timeline semaphores, which imported
+    * frames are synchronised with */
+   VK_CTX_FLAG_TIMELINE_SEMAPHORE           = (1 << 7)
 };
 
 enum gfx_ctx_vulkan_data_flags
@@ -227,6 +231,7 @@ typedef struct vulkan_swapchain_settings
    bool     vsync;
    bool     adaptive_vsync;
    bool     windowed_fullscreen;
+   bool     dxgi_present;
 } vulkan_swapchain_settings_t;
 
 typedef struct vulkan_context
@@ -258,6 +263,7 @@ typedef struct vulkan_context
    unsigned swapchain_never_presented;
    /* The device in use, as the GPU list numbers it */
    int gpu_index;
+   bool swapchain_external;
    VkImage swapchain_images[VULKAN_MAX_SWAPCHAIN_IMAGES];
    VkFence swapchain_fences[VULKAN_MAX_SWAPCHAIN_IMAGES];
    VkFormat swapchain_format;
@@ -318,6 +324,15 @@ typedef struct vulkan_context
    bool swapchain_fences_signalled[VULKAN_MAX_SWAPCHAIN_IMAGES];
    /* A present was queued since present_fence was last waited on. */
    bool present_pending;
+   /* Hardware video decode (vulkan_video_decode.c), where the device
+    * was made with it: the family of the H.264 decode queues, and the
+    * family and first index of as many transfer queues beside them,
+    * which decoded pictures are copied out on. One of each per stream
+    * decoding at once; video_lanes 0 when there are none. */
+   uint32_t video_decode_family;
+   uint32_t video_xfer_family;
+   uint32_t video_xfer_first;
+   uint32_t video_lanes;
 } vulkan_context_t;
 
 /* The acquire thread behind emulated mailbox, and the thread that
@@ -361,6 +376,9 @@ typedef struct gfx_ctx_vulkan_data
    VkSurfaceKHR vk_surface;      /* ptr alignment */
    VkSwapchainKHR swapchain;     /* ptr alignment */
    struct vulkan_emulated_mailbox mailbox;
+   void *dxgi_presenter;
+   void *dxgi_window;
+   bool dxgi_failed;
    uint8_t flags;
    enum vulkan_wsi_type wsi_type;
    bool fse_supported;
@@ -379,6 +397,12 @@ typedef struct gfx_ctx_vulkan_data
    PFN_vkVoidFunction display_timing_query;
    uint32_t present_id;
    bool display_timing_supported;
+#ifdef HAVE_OPENXR
+   /* A headset's own context (the Quest's): OpenXR starts whatever
+    * Headset Output says, and a failure falls through to the flat
+    * context instead of rebuilding video. */
+   bool openxr_headset;
+#endif
 #ifdef VULKAN_HDR_SWAPCHAIN
    /* Loaded from VK_EXT_hdr_metadata when that optional device extension is
     * present; NULL otherwise. Used to signal SMPTE-2086 mastering-display
@@ -386,6 +410,17 @@ typedef struct gfx_ctx_vulkan_data
    PFN_vkSetHdrMetadataEXT set_hdr_metadata;
 #endif
 } gfx_ctx_vulkan_data_t;
+
+static INLINE bool vulkan_has_swapchain(const gfx_ctx_vulkan_data_t *vk)
+{
+   return vk->swapchain != VK_NULL_HANDLE || vk->context.swapchain_external;
+}
+
+static INLINE VkImageLayout vulkan_swapchain_layout(const vulkan_context_t *ctx)
+{
+   return ctx->swapchain_external ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+}
+
 
 struct vulkan_display_surface_info
 {

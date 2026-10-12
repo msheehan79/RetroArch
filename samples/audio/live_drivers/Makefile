@@ -1,3 +1,5 @@
+include ../../sample_objdir.mk
+
 TARGET := live_drivers_test
 
 LIBRETRO_COMM_DIR := ../../../libretro-common
@@ -6,7 +8,6 @@ INCDIRS := -I$(LIBRETRO_COMM_DIR)/include -I../../.. -I../../../deps
 SOURCES_C := \
 	live_drivers_test.c \
 	stubs_retroarch.c \
-	../../../audio/drivers/pulse.c \
 	../../../audio/common/alsa.c \
 	../../../audio/audio_upmix.c \
 	$(LIBRETRO_COMM_DIR)/string/stdstring.c \
@@ -26,7 +27,7 @@ ifneq ($(SANITIZER),)
    LDFLAGS := -fsanitize=$(SANITIZER) $(LDFLAGS)
 endif
 
-OBJS := $(SOURCES_C:.c=.o)
+OBJS := $(call sample_objs,$(SOURCES_C:.c=.o))
 
 all: $(TARGET)
 
@@ -36,7 +37,12 @@ $(TARGET): $(OBJS)
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+$(SAMPLE_OBJDIR)/%.o: $$(call sample_src,$$*).c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
 clean:
+	rm -rf $(SAMPLE_OBJDIR)
 	rm -f $(OBJS) $(TARGET)
 
 .PHONY: all clean

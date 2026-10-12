@@ -16,6 +16,7 @@
 
 #import <objc/objc-runtime.h>
 #include "../../apple_runtime.h"
+#include <dlfcn.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -85,11 +86,9 @@
 - (void)setActivationPolicy:(NSInteger)policy;
 @end
 #endif
-#if !defined(MAC_OS_X_VERSION_10_7) || MAC_OS_X_VERSION_MAX_ALLOWED < MAC_OS_X_VERSION_10_7
 @interface NSObject (RetroArchSelectors107)
 - (void)toggleFullScreen:(id)sender;
 @end
-#endif
 #if !defined(MAC_OS_X_VERSION_10_9) || MAC_OS_X_VERSION_MAX_ALLOWED < MAC_OS_X_VERSION_10_9
 @interface NSObject (RetroArchSelectors109)
 - (id)beginActivityWithOptions:(unsigned long long)options reason:(NSString *)reason;
@@ -105,6 +104,8 @@ typedef struct ui_application_cocoa
 /* TODO/FIXME - static global variables */
 static int waiting_argc;
 static char **waiting_argv;
+static bool cocoa_termination_pending;
+static bool cocoa_window_restored;
 
 extern id<ApplePlatform> apple_platform;
 
@@ -719,6 +720,23 @@ static ui_application_t ui_application_cocoa = {
 
 @implementation RetroArch_OSX
 
+#if defined(__BLOCKS__)
++ (void)restoreWindowWithIdentifier:(NSString *)identifier
+                             state:(NSCoder *)state
+                 completionHandler:(void (^)(NSWindow *, NSError *))completionHandler
+{
+   RetroArch_OSX *delegate = (RetroArch_OSX *)[NSApp delegate];
+   (void)state;
+   if ([identifier isEqualToString:@"RetroArchMainWindow"] && delegate.window)
+   {
+      cocoa_window_restored = true;
+      completionHandler(delegate.window, nil);
+   }
+   else
+      completionHandler(nil, nil);
+}
+#endif
+
 /* Written out rather than synthesized: a synthesized retain property
  * calls objc_setProperty / objc_getProperty, which the 10.4 runtime
  * does not have, and this is what keeps a 10.4-target binary from
@@ -777,16 +795,9 @@ static ui_application_t ui_application_cocoa = {
    apple_platform   = self;
    [self.window setAcceptsMouseMovedEvents: YES];
 
-   /* Full-screen-primary is 10.7; the property is on NSWindow from
-    * 10.5, so ask whether this system knows the behaviour rather than
-    * whether the build SDK declared the constant, which is spelled out
-    * above. Setting it on 10.5 or 10.6 would leave a window the system
-    * cannot full-screen anyway; there the bit is left alone. */
-   /* NSAppKitVersionNumber10_6 is 1038; 10.7 is 1138. */
-   if (     [self.window respondsToSelector:@selector(setCollectionBehavior:)]
-         && NSAppKitVersionNumber >= 1138.0)
-      [self.window setCollectionBehavior:
-            NS_WINDOW_COLLECTION_BEHAVIOR_FULLSCREEN_PRIMARY];
+   if (!cocoa_window_restored)
+      [self.window makeKeyAndOrderFront:nil];
+   [NSApp activateIgnoringOtherApps:YES];
 
    _listener = [WindowListener new];
    [_listener setWindow:self.window];
@@ -807,6 +818,7 @@ static ui_application_t ui_application_cocoa = {
    if (rarch_main(waiting_argc, waiting_argv, NULL))
       [[NSApplication sharedApplication] terminate:nil];
 
+   cocoa_window_restored = false;
    waiting_argc = 0;
 
    [self setupMainWindow];
@@ -1024,6 +1036,10 @@ static ui_application_t ui_application_cocoa = {
 {
    BOOL is_fullscreen = [self isFullScreen];
 
+   /* AppKit owns the restored frame and full-screen transition at launch. */
+   if (cocoa_window_restored)
+      return;
+
    if (mode.fullscreen)
    {
       if (!is_fullscreen)
@@ -1202,13 +1218,20 @@ void cocoa_publish_focus(bool focused);
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)theApplication { return YES; }
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender
 {
-   NSApplicationTerminateReply reply = NSTerminateNow;
+   if (!runloop_is_inited())
+      return NSTerminateNow;
 
-   command_event(CMD_EVENT_QUIT, NULL);
+   if (!cocoa_termination_pending)
+   {
+      cocoa_termination_pending = true;
+      command_event(CMD_EVENT_QUIT, NULL);
+#ifdef HAVE_QT
+      /* AppKit's pending termination runs a modal loop, not the Qt loop. */
+      rarch_start_draw_observer();
+#endif
+   }
 
-   rarch_stop_draw_observer();
-
-   return reply;
+   return NSTerminateLater;
 }
 
 - (void)application:(NSApplication *)sender openFiles:(NSArray *)filenames
@@ -1728,6 +1751,32 @@ static NSWindow *cocoa_create_main_window(void)
    [window setReleasedWhenClosed:NO];
    [window setAllowsToolTipsWhenApplicationIsInactive:NO];
    [window center];
+   /* Set before AppKit restores a native full-screen window (10.7+). */
+   if (     [window respondsToSelector:@selector(setCollectionBehavior:)]
+         && NSAppKitVersionNumber >= 1138.0)
+      [window setCollectionBehavior:
+            NS_WINDOW_COLLECTION_BEHAVIOR_FULLSCREEN_PRIMARY];
+#if defined(__BLOCKS__)
+   SEL set_identifier = sel_registerName("setIdentifier:");
+   SEL set_restoration = sel_registerName("setRestorationClass:");
+   if (     [window respondsToSelector:set_identifier]
+         && [window respondsToSelector:set_restoration])
+   {
+      Protocol *(*get_protocol)(const char *) =
+            (Protocol *(*)(const char *))dlsym(RTLD_DEFAULT, "objc_getProtocol");
+      BOOL (*add_protocol)(Class, Protocol *) =
+            (BOOL (*)(Class, Protocol *))dlsym(RTLD_DEFAULT, "class_addProtocol");
+      Protocol *protocol = get_protocol
+            ? get_protocol("NSWindowRestoration") : nil;
+      Class restoration_class = [RetroArch_OSX class];
+      apple_rt_send_id(window, set_identifier, @"RetroArchMainWindow");
+      if (protocol && ([restoration_class conformsToProtocol:protocol]
+               || (add_protocol && add_protocol(restoration_class, protocol))))
+         apple_rt_send_id(window, set_restoration, restoration_class);
+      else
+         RARCH_WARN("[Cocoa] Window restoration protocol unavailable.\n");
+   }
+#endif
    return window;
 }
 
@@ -1783,8 +1832,6 @@ int main(int argc, char *argv[])
 
       cocoa_create_menu_bar(delegate);
 
-      [window makeKeyAndOrderFront:nil];
-      [NSApp activateIgnoringOtherApps:YES];
       [NSApp run];
    RARCH_AUTORELEASEPOOL_END
    return 0;
@@ -1792,7 +1839,13 @@ int main(int argc, char *argv[])
 
 static void ui_companion_cocoa_deinit(void *data)
 {
-   [[NSApplication sharedApplication] terminate:nil];
+   if (cocoa_termination_pending)
+   {
+      cocoa_termination_pending = false;
+      [[NSApplication sharedApplication] replyToApplicationShouldTerminate:YES];
+   }
+   else
+      [[NSApplication sharedApplication] terminate:nil];
 }
 
 static void *ui_companion_cocoa_init(void) { return (void*)-1; }

@@ -115,6 +115,15 @@ bool video_driver_supports_texture_format(enum texture_gpu_format fmt)
    return false;
 }
 
+/* As the frontend fits an image, from this stub's own answers */
+bool video_driver_texture_fit(struct texture_image *ti)
+{
+   if (ti->pix10 && !video_driver_supports_texture_format(TEXTURE_GPU_FORMAT_RGB10A2))
+      image_texture_narrow_10bit(ti);
+   return !ti->fp16
+      || video_driver_supports_texture_format(TEXTURE_GPU_FORMAT_RGBA16F);
+}
+
 enum texture_filter_type gfx_display_texture_filter(void)
 {
    return TEXTURE_FILTER_LINEAR;
@@ -181,7 +190,6 @@ bool video_thread_async_post(video_thread_async_load_t *n)
    if (!stub_thread_active || !n)
       return false;
    STUB_NEXT(n)    = NULL;
-   n->caller_owned = 1;
    if (stub_in_tail)
       STUB_NEXT(stub_in_tail) = n;
    else
@@ -211,6 +219,14 @@ void *video_driver_texture_lend(uintptr_t id, unsigned slot, size_t pitch)
 {
    (void)id; (void)slot; (void)pitch;
    return NULL;
+}
+
+/* No device to import into */
+enum video_texture_update video_driver_texture_import(uintptr_t *id,
+      const video_frame_import_t *frame, enum texture_filter_type filter)
+{
+   (void)id; (void)frame; (void)filter;
+   return VIDEO_TEXTURE_UPDATE_REFUSED;
 }
 
 bool video_driver_texture_lend_ready(uintptr_t id, unsigned slot)

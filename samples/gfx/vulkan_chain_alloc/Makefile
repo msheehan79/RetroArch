@@ -1,12 +1,16 @@
+include ../../sample_objdir.mk
+
 TARGET := vulkan_chain_alloc_test
 
 REPO_ROOT         := ../../..
 LIBRETRO_COMM_DIR := $(REPO_ROOT)/libretro-common
 
 # gfx/drivers_shader/shader_vulkan.c compiled into the test, its Vulkan
-# calls through the real symbol wrapper pointed at the test's mocks.
+# calls through the real symbol wrapper pointed at the test's mocks, and
+# the real slang_rect.c it rewrites stages with.
 SOURCES := vulkan_chain_alloc_test.c \
            stubs.c \
+           $(REPO_ROOT)/gfx/drivers_shader/slang_rect.c \
            $(LIBRETRO_COMM_DIR)/vulkan/vulkan_symbol_wrapper.c \
            $(LIBRETRO_COMM_DIR)/compat/compat_strl.c
 
@@ -21,7 +25,7 @@ ifneq ($(SANITIZER),)
    LDFLAGS := -fsanitize=$(SANITIZER) $(LDFLAGS)
 endif
 
-OBJS := $(SOURCES:.c=.o)
+OBJS := $(call sample_objs,$(SOURCES:.c=.o))
 
 all: $(TARGET)
 
@@ -33,10 +37,15 @@ vulkan_chain_alloc_test.o: $(REPO_ROOT)/gfx/drivers_shader/shader_vulkan.c
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+$(SAMPLE_OBJDIR)/%.o: $$(call sample_src,$$*).c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
 check: $(TARGET)
 	./$(TARGET)
 
 clean:
+	rm -rf $(SAMPLE_OBJDIR)
 	rm -f $(OBJS) $(TARGET) $(TARGET).exe
 
 .PHONY: all check clean

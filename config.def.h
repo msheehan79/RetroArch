@@ -214,6 +214,7 @@
 #define DEFAULT_SWITCH_OC false
 #define DEFAULT_SWITCH_CEC true
 #define DEFAULT_BLUETOOTH_ERTM false
+#define DEFAULT_REBOOT_FORCE_SELF_ON_UPDATE true
 #endif
 
 #if (defined(_WIN32) && !defined(_XBOX)) || (defined(__linux) && !defined(ANDROID) && !defined(HAVE_LAKKA)) || (defined(__MACH__) && !TARGET_OS_IPHONE) || defined(__EMSCRIPTEN__)
@@ -286,6 +287,9 @@
 /* Not platform-specific: how hard to push for exclusive fullscreen
  * where the platform lets the application decide. */
 #define DEFAULT_VIDEO_FSE_NEGOTIATION VIDEO_FSE_RELAXED
+
+/* Previews decoded on the GPU where the video driver can */
+#define DEFAULT_VIDEO_HW_DECODE VIDEO_HW_DECODE_AUTO
 
 /* Enable automatic switching of the screen refresh rate when using the specified screen mode(s),
  * based on running core/content */
@@ -1428,6 +1432,12 @@
 #else
 #define DEFAULT_AUDIO_THREADED_PIPELINE false
 #endif
+
+/* The threaded pipeline's queue held to the frame-synchronous path's:
+ * see audio_driver_pipe_cap_frames(). Off, rate control holds the
+ * device near full with a publish on top, and an audio-paced core is
+ * held only by a full ring. */
+#define DEFAULT_AUDIO_PIPELINE_FILL_CAP true
 
 /* Ask the OS to schedule the audio thread ahead of the rest of the
  * frontend. Best effort: a system that refuses keeps the default

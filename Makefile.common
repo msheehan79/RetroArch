@@ -337,6 +337,7 @@ OBJ += \
        gfx/gfx_animation.o \
        gfx/gfx_instrument.o \
        gfx/gfx_surface.o \
+       gfx/gfx_surface_player.o \
        gfx/gfx_thumbnail.o \
        gfx/gfx_anim_preview.o \
        configuration.o \
@@ -518,7 +519,8 @@ endif
 
 OBJ += $(LIBRETRO_COMM_DIR)/formats/image_texture.o \
        $(LIBRETRO_COMM_DIR)/formats/image_texture_scale.o \
-       $(LIBRETRO_COMM_DIR)/formats/image_texture_set.o
+       $(LIBRETRO_COMM_DIR)/formats/image_texture_set.o \
+       $(LIBRETRO_COMM_DIR)/formats/image/image_yuv_blit.o
 
 ifeq ($(HAVE_IMAGEVIEWER), 1)
    DEFINES += -DHAVE_IMAGEVIEWER
@@ -1039,6 +1041,7 @@ endif
 
 ifeq ($(HAVE_LAKKA_SWITCH), 1)
    DEFINES += -DHAVE_LAKKA_SWITCH
+   OBJ += misc/reboot2payload/reboot2payload.o
 endif
 
 ifeq ($(HAVE_MENU_COMMON), 1)
@@ -1774,6 +1777,11 @@ ifeq ($(HAVE_VULKAN), 1)
           gfx/common/vulkan_common.o \
           $(LIBRETRO_COMM_DIR)/vulkan/vulkan_symbol_wrapper.o
 
+   # H.264 previews decoded on the GPU, as rh264's backend
+   ifeq ($(HAVE_RMP4), 1)
+      OBJ += gfx/common/vulkan_video_decode.o
+   endif
+
    ifeq ($(HAVE_SLANG), 1)
       OBJ += gfx/drivers_shader/shader_vulkan.o
    endif
@@ -1782,9 +1790,7 @@ ifeq ($(HAVE_VULKAN), 1)
       OBJ += gfx/drivers_context/khr_display_ctx.o
    endif
    ifeq ($(HAVE_OPENXR), 1)
-      OBJ += gfx/common/vulkan_openxr.o \
-             gfx/video_xr.o \
-             input/common/input_openxr.o
+      OBJ += gfx/common/vulkan_openxr.o
    endif
    NEED_CXX_LINKER = 1
    DEFINES += -DHAVE_VULKAN
@@ -1891,6 +1897,14 @@ ifeq ($(HAVE_D3D12), 1)
    DEFINES += -DHAVE_D3D12
 endif
 
+# H.264 previews decoded on the GPU, as rh264's backend; D3D12 imports
+# its frames as well
+ifneq ($(findstring 1, $(HAVE_D3D11) $(HAVE_D3D12)),)
+   ifeq ($(HAVE_RMP4), 1)
+      OBJ += gfx/common/d3d11_video_decode.o
+   endif
+endif
+
 ifneq ($(findstring 1, $(HAVE_D3D10) $(HAVE_D3D11) $(HAVE_D3D12)),)
    INCLUDE_DIRS += -isystemgfx/include/dxsdk
    OBJ += gfx/common/d3dcompiler_common.o \
@@ -1942,6 +1956,7 @@ ifeq ($(HAVE_SLANG),1)
    OBJ += gfx/drivers_shader/slang_process.o
    OBJ += gfx/drivers_shader/glslang_util.o
    OBJ += gfx/drivers_shader/slang_cache.o
+   OBJ += gfx/drivers_shader/slang_rect.o
 endif
 
 ifeq ($(HAVE_SHADERS_COMMON), 1)
@@ -1951,6 +1966,29 @@ endif
 ifeq ($(HAVE_OPENXR), 1)
    NEED_CXX_LINKER = 1
    DEFINES += -DHAVE_OPENXR
+   OBJ += gfx/common/openxr_runtime.o \
+          gfx/common/openxr_session.o \
+          gfx/common/openxr_tracking.o \
+          gfx/common/openxr_host.o \
+          gfx/common/openxr_swapchain.o \
+          gfx/common/openxr_frame.o \
+          gfx/video_xr.o \
+          input/common/input_openxr.o
+
+   # Desktop GL headset output: a context in the window's share group on
+   # the XR thread, made by an EGL or GLX context driver.
+   ifneq ($(findstring Linux,$(OS)),)
+      ifneq ($(HAVE_OPENGLES), 1)
+         ifneq ($(filter 1,$(HAVE_OPENGL) $(HAVE_OPENGL_CORE)),)
+            ifneq ($(filter 1,$(HAVE_EGL) $(HAVE_X11)),)
+               DEFINES += -DHAVE_OPENXR_GL
+               OBJ += gfx/common/openxr_ring.o \
+                      gfx/common/openxr_binding_gl.o \
+                      gfx/common/gl_openxr.o
+            endif
+         endif
+      endif
+   endif
    ifneq ($(findstring Win32,$(OS)),)
       DEFINES += -DXR_OS_WINDOWS -DXR_USE_PLATFORM_WIN32
    else ifneq ($(findstring Darwin,$(OS)),)
@@ -2434,6 +2472,7 @@ OBJ += $(LIBRETRO_COMM_DIR)/formats/bmp/rbmp_encode.o \
        $(LIBRETRO_COMM_DIR)/file/rbmp_file.o \
        $(LIBRETRO_COMM_DIR)/formats/json/rjson.o \
        $(LIBRETRO_COMM_DIR)/formats/image_transfer.o \
+       $(LIBRETRO_COMM_DIR)/formats/video_player.o \
        $(LIBRETRO_COMM_DIR)/formats/audio_transfer.o \
        $(LIBRETRO_COMM_DIR)/formats/data_transfer.o \
        $(LIBRETRO_COMM_DIR)/memmap/memmap.o \
@@ -3113,3 +3152,16 @@ endif
 endif
 
 ##################################
+
+ifneq ($(findstring Win32,$(OS)),)
+   ifneq ($(findstring 1,$(HAVE_VULKAN) $(WANT_WGL)),)
+      INCLUDE_DIRS += -isystemgfx/include/dxsdk
+      OBJ += gfx/common/win_dxgi_present.o
+      ifeq ($(HAVE_VULKAN),1)
+         OBJ += gfx/common/win_vulkan_dxgi.o
+      endif
+      ifeq ($(WANT_WGL),1)
+         OBJ += gfx/common/win_wgl_dxgi.o
+      endif
+   endif
+endif

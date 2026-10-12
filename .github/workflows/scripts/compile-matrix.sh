@@ -246,7 +246,10 @@ fi
 # networking they are built on) and the frontend compiled under exactly
 # them. Makefile.retrofw asked for the TLS client with no networking
 # and only its own workflow saw the undefined reference.
-pm_out=$(tools/platform_makefile_check.sh 2>&1); pm_rc=$?
+# Captured with the status in the same list: under set -e a failing
+# substitution in a plain assignment ends the script before the status
+# is read, with nothing said and every lane after it skipped.
+pm_out=$(tools/platform_makefile_check.sh 2>&1) && pm_rc=0 || pm_rc=$?
 printf '%s\n' "$pm_out" | sed 's/^ok    /ok    platform makefile: /'
 [ $pm_rc -eq 0 ] || { echo "FAIL  platform makefile check"; fail=1; }
 
@@ -254,7 +257,7 @@ printf '%s\n' "$pm_out" | sed 's/^ok    /ok    platform makefile: /'
 # no MCP server on any console (a desktop HAVE_MCP option; listed once
 # with the networking objects it broke the 3DS), and no crypto library
 # on the 24/32 MiB machines.
-co_out=$(tools/console_objects_check.sh 2>&1); co_rc=$?
+co_out=$(tools/console_objects_check.sh 2>&1) && co_rc=0 || co_rc=$?
 printf '%s\n' "$co_out" | sed 's/^ok    /ok    console objects: /'
 [ $co_rc -eq 0 ] || { echo "FAIL  console object check"; fail=1; }
 
@@ -427,6 +430,19 @@ d3d_video "d3d11 video, no threads"  "$D3DDEFS -DHAVE_D3D11 -UHAVE_THREADS" \
    gfx/drivers/d3d11.c
 d3d_video "d3d12 video, no threads"  "$D3DDEFS -DHAVE_D3D12 -UHAVE_THREADS" \
    gfx/drivers/d3d12.c
+# With the MP4 previews: frames from rh264's D3D11 video backend,
+# imported by D3D11 and D3D12 through shared handles and fences (11.4
+# interfaces from the bundled headers), and the backend itself.
+d3d_video "d3d11 video, frame import"  "$D3DDEFS -DHAVE_D3D11 -DHAVE_RMP4" \
+   gfx/drivers/d3d11.c
+d3d_video "d3d11 video, frame import, no threads" \
+   "$D3DDEFS -DHAVE_D3D11 -DHAVE_RMP4 -UHAVE_THREADS" gfx/drivers/d3d11.c
+d3d_video "d3d11 video decode backend" "$D3DDEFS -DHAVE_D3D11 -DHAVE_RMP4" \
+   gfx/common/d3d11_video_decode.c
+d3d_video "d3d12 video, frame import"  "$D3DDEFS -DHAVE_D3D12 -DHAVE_RMP4" \
+   gfx/drivers/d3d12.c
+d3d_video "d3d12 video, frame import, no threads" \
+   "$D3DDEFS -DHAVE_D3D12 -DHAVE_RMP4 -UHAVE_THREADS" gfx/drivers/d3d12.c
 
 # The context drivers, which no job here compiles either. Each answers
 # the frontend's window and size questions, so a change to what those
@@ -467,6 +483,19 @@ platform_video "ctx: wayland gl" "-DHAVE_WAYLAND -DHAVE_EGL -DHAVE_OPENGL" "" \
    gfx/drivers_context/wayland_ctx.c "$WL_H"
 platform_video "ctx: wayland vulkan" "-DHAVE_WAYLAND -DHAVE_VULKAN" "" \
    gfx/drivers_context/wayland_vk_ctx.c "$WL_H /usr/include/vulkan/vulkan.h"
+# The desktop GL headset host is built where a GL driver has an EGL or a
+# GLX context driver. Every job that builds it has both, so each
+# binding gets a lane without the other.
+XRGL="-DHAVE_OPENXR -DHAVE_OPENXR_GL -DHAVE_OPENGL"
+XRINC="-Ideps/openxr/include"
+platform_video "openxr gl host, glx only" "$XRGL -DHAVE_X11" "$XRINC" \
+   gfx/common/gl_openxr.c /usr/include/GL/glx.h
+platform_video "openxr gl binding, glx only" "$XRGL -DHAVE_X11" "$XRINC" \
+   gfx/common/openxr_binding_gl.c /usr/include/GL/glx.h
+platform_video "openxr gl host, egl only" "$XRGL -DHAVE_EGL" "$XRINC" \
+   gfx/common/gl_openxr.c /usr/include/EGL/egl.h
+platform_video "openxr gl binding, egl only" "$XRGL -DHAVE_EGL" "$XRINC" \
+   gfx/common/openxr_binding_gl.c /usr/include/EGL/egl.h
 # The shared Wayland code the two contexts above call into. It was the
 # only Wayland unit no lane compiled, which is how four declarations
 # after a statement sat in it. Its libdecor half is a second lane: the
@@ -550,6 +579,12 @@ check "gl3: desktop" \
    "$GL3DEFS $GLINC" gfx/drivers/gl3.c
 check "gl3: GLES3" \
    "$GL3DEFS -DHAVE_OPENGLES -DHAVE_OPENGLES3 -DHAVE_EGL $GLINC" gfx/drivers/gl3.c
+# The planar converter both GL drivers share: legacy and core GLSL, a
+# VAO and row lengths only where the API has them
+check "gl_common: GLES2" \
+   "$GLDEFS -DHAVE_OPENGLES -DHAVE_OPENGLES2 -DHAVE_EGL $GLINC" gfx/common/gl_common.c
+check "gl_common: GLES3" \
+   "$GL3DEFS -DHAVE_OPENGLES -DHAVE_OPENGLES3 -DHAVE_EGL $GLINC" gfx/common/gl_common.c
 # gl3 is not in the C89 job's configuration, so its C89 lane is here.
 # The flags the Makefile's C89_BUILD lane uses, _GNU_SOURCE included:
 # -ansi hides the C99 math names otherwise.
@@ -601,6 +636,15 @@ win32_audio "wasapi: C89, microphone" "-DHAVE_WASAPI -DHAVE_MICROPHONE" \
    audio/drivers/wasapi.c
 win32_audio "wasapi: C89, no microphone" "-DHAVE_WASAPI" \
    audio/drivers/wasapi.c
+win32_audio "wdmks: C89" "-DHAVE_WDMKS -DHAVE_MICROPHONE" \
+   audio/drivers/wdmks.c
+# WDM-KS keeps an inline path for builds without threads, which no
+# Windows job builds.
+SAVED_BASE=$BASE
+BASE=$NOTHREADS_BASE
+win32_audio "wdmks: C89, no threads" "-DHAVE_WDMKS -DHAVE_MICROPHONE" \
+   audio/drivers/wdmks.c
+BASE=$SAVED_BASE
 check "hw ring: OpenGL only" \
    "-DHAVE_OPENGL $GLINC" gfx/video_thread_hw.c
 check "hw ring: GLES only" \
@@ -679,8 +723,8 @@ check "features_cpu: emscripten" "$HOSTOFF -Itools/platform_stubs/emscripten -D_
 # the stubs already here and shed the host identity like the ones
 # above.
 MENUGFX="gfx/video_driver.c gfx/gfx_display.c gfx/gfx_widgets.c \
- gfx/gfx_thumbnail.c gfx/gfx_surface.c gfx/video_thread_wrapper.c \
- menu/drivers/xmb.c menu/drivers/ozone.c menu/drivers/materialui.c"
+ gfx/gfx_thumbnail.c gfx/gfx_surface.c gfx/gfx_surface_player.c \
+ gfx/video_thread_wrapper.c menu/drivers/xmb.c menu/drivers/ozone.c menu/drivers/materialui.c"
 MG_BASE="-DHAVE_XMB -DHAVE_OZONE -DHAVE_MATERIALUI -DHAVE_RGUI \
  -DHAVE_GFX_WIDGETS -DHAVE_OVERLAY -DHAVE_CONFIGFILE -DRARCH_CONSOLE \
  -DRARCH_INTERNAL -Iinput/include"
@@ -778,10 +822,18 @@ for tu in libretro-common/crypto/crypto.c libretro-common/crypto/kdf.c libretro-
       libretro-common/vfs/vfs_prefetch.c network/tls_log.c; do
    android_clang "android clang/aarch64: $(basename $tu)" "$ANDROID_NET" "$tu"
 done
+android_clang "android clang/aarch64: camera" "-Itools/platform_stubs/android -DHAVE_OPENGLES -DHAVE_OPENGLES2 -DHAVE_CAMERA -DRARCH_INTERNAL -include tools/platform_stubs/android/jni.h -include frontend/drivers/platform_unix.h -include verbosity.h" camera/drivers/android.c
 # rwebaudio is its own translation unit in the emscripten build, not
 # part of griffin's, and nothing else compiles it at all.
 check "emscripten: rwebaudio"  "$HOSTOFF -Itools/platform_stubs/emscripten -D__EMSCRIPTEN__ -DEMSCRIPTEN -DHAVE_RWEBAUDIO $CDECL" audio/drivers/rwebaudio.c
 check "emscripten: rwebcam"    "$HOSTOFF -Itools/platform_stubs/emscripten -D__EMSCRIPTEN__ -DEMSCRIPTEN $CDECL" camera/drivers/rwebcam.c
+# The Android camera driver is only ever compiled inside griffin on the
+# Android job, after platform_unix.h; the same shape here, so the C of
+# it is checked on every push.
+check "android: camera"        "$HOSTOFF -Itools/platform_stubs/android -DANDROID -DHAVE_OPENGLES -DHAVE_OPENGLES2 -DHAVE_CAMERA -include tools/platform_stubs/android/jni.h -include frontend/drivers/platform_unix.h -include verbosity.h $CDECL" camera/drivers/android.c
+[ -f /usr/include/linux/videodev2.h ] \
+   && check "camera: v4l2"     "-DHAVE_V4L2 -DHAVE_CAMERA $CDECL" camera/drivers/video4linux2.c \
+   || echo "skip  camera: v4l2 (no /usr/include/linux/videodev2.h)"
 
 # Two more that no job here compiles: the S3 cloud-sync backend, which
 # only griffin includes and which nothing defines HAVE_S3 for, and the
@@ -850,8 +902,8 @@ check "dingux: rgui" "-DDINGUX -DHAVE_MENU -DHAVE_RGUI" menu/drivers/rgui.c
 # colour conversion sit behind HAVE_THREADS; both shapes compile.
 check "vp9/h265/video streams: threads" "-DHAVE_RVP9 -DHAVE_RVP8 -DHAVE_RWEBM -DHAVE_RMP4 -DHAVE_RH264 -DHAVE_RH265" libretro-common/formats/vp9/rvp9.c libretro-common/formats/h265/rh265.c libretro-common/formats/webm/rwebm_video.c libretro-common/formats/mp4/rmp4_video.c libretro-common/formats/image/image_blit_bands.c
 check_nothreads "no threads: vp9/h265/video streams" "-DHAVE_RVP9 -DHAVE_RVP8 -DHAVE_RWEBM -DHAVE_RMP4 -DHAVE_RH264 -DHAVE_RH265" libretro-common/formats/vp9/rvp9.c libretro-common/formats/h265/rh265.c libretro-common/formats/webm/rwebm_video.c libretro-common/formats/mp4/rmp4_video.c libretro-common/formats/image/image_blit_bands.c
-check "gfx_surface: threads" "$GLINC" gfx/gfx_surface.c gfx/gfx_thumbnail.c
-check_nothreads "no threads: gfx_surface" "$GLINC" gfx/gfx_surface.c gfx/gfx_thumbnail.c
+check "gfx_surface: threads" "$GLINC" gfx/gfx_surface.c gfx/gfx_thumbnail.c gfx/gfx_surface_player.c libretro-common/formats/video_player.c
+check_nothreads "no threads: gfx_surface" "$GLINC" gfx/gfx_surface.c gfx/gfx_thumbnail.c gfx/gfx_surface_player.c libretro-common/formats/video_player.c
 check_nothreads "no threads: gl2"          "$GLDEFS $GLINC"       gfx/drivers/gl2.c
 check_nothreads "no threads: video_driver" "$GLINC"               gfx/video_driver.c
 check_nothreads "no threads: retroarch"    "$GLINC -DHAVE_COMMAND -DHAVE_STDIN_CMD" retroarch.c
@@ -1061,7 +1113,8 @@ fi
 # built only by C99 toolchains, opt out). And a
 # layout counter a driver has no use for is set but never read. GCC 15
 # and clang warn about that; the runner's GCC does not, so these lanes
-# ask clang, with the warning made an error.
+# ask clang, with the warning made an error. So is a directive inside a
+# macro's arguments, which MSVC's preprocessor takes as tokens.
 font_layout() {
    name="$1"; target="$2"; defs="$3"; tu="$4"
    if ! command -v clang > /dev/null 2>&1; then
@@ -1069,7 +1122,7 @@ font_layout() {
       return
    fi
    if ! out=$(clang $target -Werror=unused-but-set-variable \
-         -Werror=declaration-after-statement \
+         -Werror=declaration-after-statement -Werror=embedded-directive \
          $INC $BASE $defs -fsyntax-only "$tu" 2>&1); then
       echo "FAIL  $name"
       echo "      $tu"
@@ -1157,5 +1210,8 @@ check "unity: gl2 + gl3 + vulkan in one translation unit" \
    "-Igfx/include -DHAVE_OPENGL -DHAVE_OPENGL_CORE -DHAVE_GLSL -DHAVE_VULKAN -DHAVE_SLANG -DHAVE_SHADERPIPELINE -DHAVE_SPIRV_CROSS -DHAVE_GFX_WIDGETS -DHAVE_OVERLAY -DHAVE_X11" \
    "$UNITY_DIR/unity_gfx.c"
 rm -rf "$UNITY_DIR"
+
+check "image YUV: PS2 C89" "-DPS2 -DRARCH_CONSOLE $HOSTOFF -std=c89" \
+   libretro-common/formats/image/image_yuv_blit.c
 
 exit $fail

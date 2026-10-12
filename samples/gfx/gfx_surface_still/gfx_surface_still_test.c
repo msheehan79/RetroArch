@@ -15,6 +15,7 @@
 #include "gfx/video_driver.h"
 #include "gfx/video_thread_wrapper.h"
 #include "gfx/gfx_surface.h"
+#include <formats/image_yuv_blit.h>
 
 /* --- stub driver ------------------------------------------------- */
 static uintptr_t st_next = 1;
@@ -24,12 +25,33 @@ static int       st_live, st_loads, st_unloads, st_async;
 static int       st_drop, st_updates, st_null_updates;
 static uintptr_t st_last_unloaded;
 static video_thread_async_load_t *st_head, *st_tail;
+/* The first and last word of the last frame the driver read */
+static uint32_t st_px_first, st_px_last;
+/* The planes and colour space of the last planar frame read */
+static struct texture_planar st_planar;
+static int st_planar_reads;
+
+static void st_saw(void *data)
+{
+   const struct texture_image *ti = (const struct texture_image*)data;
+   if (ti && ti->planar)
+   {
+      st_planar = *ti->planar;
+      st_planar_reads++;
+      return;
+   }
+   if (ti && ti->pixels && ti->width && ti->height)
+   {
+      st_px_first = ti->pixels[0];
+      st_px_last  = ti->pixels[(size_t)ti->width * ti->height - 1];
+   }
+}
 
 bool video_driver_texture_load(void *data,
       enum texture_filter_type filter, uintptr_t *id)
 {
-   (void)data;
    (void)filter;
+   st_saw(data);
    *id = st_next++;
    st_loads++;
    st_live++;
@@ -53,6 +75,7 @@ enum video_texture_update video_driver_texture_update(uintptr_t id,
 {
    (void)id;
    st_updates++;
+   st_saw(data);
    if (!data)
       st_null_updates++;
    if (st_drop > 0)
@@ -67,16 +90,36 @@ bool video_driver_texture_can_update(void) { return true; }
 bool video_driver_thread_wrapper_active(void) { return st_async != 0; }
 bool task_is_on_main_thread(void) { return true; }
 unsigned video_driver_get_disp_flags(void) { return 0; }
+/* Whether the stub driver converts YCbCr itself */
+static int st_yuv420;
 bool video_driver_supports_texture_format(enum texture_gpu_format fmt)
 {
-   (void)fmt;
-   return false;
+   return fmt == TEXTURE_GPU_FORMAT_YUV420 && st_yuv420;
+}
+
+/* As the frontend fits an image, from this stub's own answers */
+bool video_driver_texture_fit(struct texture_image *ti)
+{
+   if (ti->planar)
+      return video_driver_supports_texture_format(TEXTURE_GPU_FORMAT_YUV420);
+   if (ti->pix10 && !video_driver_supports_texture_format(TEXTURE_GPU_FORMAT_RGB10A2))
+      image_texture_narrow_10bit(ti);
+   return !ti->fp16
+      || video_driver_supports_texture_format(TEXTURE_GPU_FORMAT_RGBA16F);
 }
 void *video_driver_texture_lend(uintptr_t id, unsigned slot, size_t pitch)
 {
    (void)id; (void)slot; (void)pitch;
    return NULL;
 }
+/* No device to import into */
+enum video_texture_update video_driver_texture_import(uintptr_t *id,
+      const video_frame_import_t *frame, enum texture_filter_type filter)
+{
+   (void)id; (void)frame; (void)filter;
+   return VIDEO_TEXTURE_UPDATE_REFUSED;
+}
+
 bool video_driver_texture_lend_ready(uintptr_t id, unsigned slot)
 {
    (void)id; (void)slot;
@@ -458,6 +501,120 @@ int main(void)
       gfx_surface_free(s);
       CHECK(st_live == 0, "%d textures live at the end", st_live);
    }
+
+   /* 9. planar: converted once from where the planes lie, the slot
+    * never lent, the colour space the surface's */
+   st_async = 0;
+   {
+      static uint8_t ext[2][64];
+      gfx_surface_planes_t p;
+      gfx_surface_t *s = gfx_surface_new(VIDEO_SCALE_PACK(5, 3), 1,
+            IMAGE_PIXFMT_I420, TEXTURE_FILTER_NEAREST, NULL, NULL);
+      uint8_t *f;
+      CHECK(!gfx_surface_new(VIDEO_SCALE_PACK(4, 4), 1, IMAGE_PIXFMT_P010,
+               TEXTURE_FILTER_NEAREST, NULL, NULL), "P010 surface made");
+      CHECK(s && GFX_SURFACE_IS_PLANAR(s) && !s->rgb, "no planar surface");
+      /* 5x3: 15 luma, two 3x2 chroma planes */
+      f = (uint8_t*)gfx_surface_slot_begin(s, 0);
+      memset(f, 235, 15);
+      memset(f + 15, 128, 12);
+      f[14] = 16;                   /* the odd corner: black */
+      gfx_surface_slot_end(s, 0);
+      CHECK(gfx_surface_submit(s, 0, false) == GFX_SURFACE_SUBMIT_DONE
+            && st_px_first == 0xffffffffu && st_px_last == 0xff000000u,
+            "I420 slot read %08x..%08x", (unsigned)st_px_first,
+            (unsigned)st_px_last);
+      CHECK(!s->lent, "a planar slot was lent the driver's memory");
+      CHECK(gfx_surface_submit(s, 0, false) == GFX_SURFACE_SUBMIT_DONE
+            && st_live == 1, "update made %d textures", st_live);
+      /* the caller's planes, padded rows, full-range BT.709 grey */
+      memset(ext, 128, sizeof(ext));
+      p.planes[0]   = ext[0];
+      p.planes[1]   = ext[1];
+      p.planes[2]   = ext[1] + 32;
+      p.strides[0]  = 8;
+      p.strides[1]  = p.strides[2] = 4;
+      p.chroma_step = 1;
+      gfx_surface_set_yuv(s, IMAGE_YUV_FLAG_BT709 | IMAGE_YUV_FLAG_FULL_RANGE);
+      CHECK(gfx_surface_submit_planes(s, &p, true)
+               == GFX_SURFACE_SUBMIT_DONE
+            && st_px_first == 0xff808080u && st_live == 1,
+            "external planes read %08x, %d live", (unsigned)st_px_first,
+            st_live);
+      gfx_surface_free(s);
+      CHECK(st_live == 0, "%d live after the planar surface", st_live);
+   }
+   /* NV12 under the wrapper: queued, busy until it lands */
+   st_async = 1;
+   {
+      gfx_surface_t *s = gfx_surface_new(VIDEO_SCALE_PACK(2, 2), 2,
+            IMAGE_PIXFMT_NV12, TEXTURE_FILTER_NEAREST, NULL, NULL);
+      uint8_t *f = (uint8_t*)s->slots[1];
+      memset(f, 16, 4);
+      f[4] = 128;                    /* Cb */
+      f[5] = 240;                    /* Cr: red */
+      CHECK(gfx_surface_submit(s, 1, false) == GFX_SURFACE_SUBMIT_QUEUED,
+            "NV12 not queued");
+      CHECK(gfx_surface_submit_pixels(s, f, false)
+            == GFX_SURFACE_SUBMIT_BUSY, "second NV12 frame not busy");
+      st_flush();
+      CHECK(st_live == 1 && (st_px_first & 0x00ff0000u) > 0x00a00000u
+            && (st_px_first & 0xffu) < 0x10u,
+            "NV12 red read %08x", (unsigned)st_px_first);
+      CHECK(gfx_surface_submit_pixels(s, f, false)
+               == GFX_SURFACE_SUBMIT_QUEUED && !s->node.lend,
+            "planar update asked to be lent");
+      st_flush();
+      gfx_surface_free(s);
+      CHECK(st_live == 0, "%d live after NV12", st_live);
+   }
+   st_async = 0;
+
+   /* A driver that converts on the GPU: given the planes as they lie,
+    * nothing converted, the caller's planes copied only for the
+    * wrapper, Cr first swapped back to Cb first */
+   st_yuv420 = 1;
+   {
+      static uint8_t frame[64];
+      gfx_surface_planes_t p;
+      gfx_surface_t *s = gfx_surface_new(VIDEO_SCALE_PACK(4, 4), 1,
+            IMAGE_PIXFMT_NV12, TEXTURE_FILTER_NEAREST, NULL, NULL);
+      int reads = st_planar_reads;
+      memset(frame, 0, sizeof(frame));
+      frame[16] = 1;  /* Cb, Cr of the first pair */
+      frame[17] = 2;
+      p.planes[0]   = frame;
+      p.planes[1]   = frame + 16;
+      p.planes[2]   = frame + 17;
+      p.strides[0]  = 4;
+      p.strides[1]  = p.strides[2] = 8;  /* padded chroma rows */
+      p.chroma_step = 2;
+      st_async = 0;
+      gfx_surface_set_yuv(s, IMAGE_YUV_FLAG_VU | IMAGE_YUV_FLAG_BT709);
+      CHECK(gfx_surface_submit_planes(s, &p, false)
+               == GFX_SURFACE_SUBMIT_DONE
+            && st_planar_reads == reads + 1
+            && st_planar.planes[0] == frame
+            && st_planar.planes[1] == frame + 17
+            && st_planar.planes[2] == frame + 16
+            && st_planar.strides[1] == 8
+            && st_planar.yuv == IMAGE_YUV_FLAG_BT709
+            && !s->rgb,
+            "direct planes not handed over as they lie");
+      st_async = 1;
+      CHECK(gfx_surface_submit_planes(s, &p, false)
+            == GFX_SURFACE_SUBMIT_QUEUED, "wrapper planes not queued");
+      memset(frame, 0xee, sizeof(frame)); /* the caller's again */
+      st_flush();
+      CHECK(st_planar.planes[0] == (const uint8_t*)s->slots[0]
+            && st_planar.planes[1][0] == 2 && st_planar.planes[2][0] == 1
+            && st_planar.strides[1] == 4 && st_planar.planes[0][0] == 0
+            && !s->rgb, "wrapper planes not copied into the slot");
+      st_async = 0;
+      gfx_surface_free(s);
+      CHECK(st_live == 0, "%d live after GPU planar", st_live);
+   }
+   st_yuv420 = 0;
 
    printf("%s\n", failures ? "FAILED" : "PASS");
    return failures ? 1 : 0;

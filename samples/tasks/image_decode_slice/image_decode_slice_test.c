@@ -140,12 +140,22 @@ bool gfx_surface_query_requirements(unsigned width,
    if (!req)
       return false;
    req->rgba       = false;
-   req->formats    = GFX_SURFACE_PIXFMT_8888;
-   req->preferred  = GFX_SURFACE_PIXFMT_8888;
+   req->formats    = IMAGE_PIXFMT_8888;
+   req->preferred  = IMAGE_PIXFMT_8888;
    req->can_update = false;
    req->pitch      = (size_t)width * sizeof(uint32_t);
    req->align      = 4;
    return true;
+}
+
+/* The request the frontend makes from those answers: 8-bit only */
+void gfx_surface_image_request(image_texture_request_t *req,
+      bool rgba, unsigned flags)
+{
+   req->rgba            = rgba;
+   req->want_10bit      = false;
+   req->want_fp16       = false;
+   req->want_compressed = (flags & GFX_SURFACE_REQ_COMPRESSED) ? true : false;
 }
 
 uint32_t video_driver_get_disp_flags(void)
@@ -160,24 +170,6 @@ bool video_driver_texture_load(void *data,
    (void)filter_type;
    if (id)
       *id = 1;
-   return true;
-}
-
-/* The asynchronous upload, as the contract has it: the handle comes
- * back through done() and the image is released, both here and at
- * once, which is what the synchronous case does. The sample does not
- * run a video thread; what it exercises is the task, and the task
- * has to hand its image and tag over exactly once either way. */
-bool video_driver_texture_load_async(void *data,
-      enum texture_filter_type filter_type,
-      void (*done)(void *user, uintptr_t handle), void *user,
-      void (*release)(void *img))
-{
-   (void)filter_type;
-   if (done)
-      done(user, (uintptr_t)1);
-   if (release)
-      release(data);
    return true;
 }
 

@@ -34,7 +34,8 @@ jobs:
           # image ever drops one of them.
           # ffmpeg (with libx264 and libx265): formats/h264/rh264_lossless_test
           # and formats/h265/rh265_lossless_test build their corpora and
-          # their reference decodes with it.
+          # their reference decodes with it; with libmp3lame,
+          # formats/mp3/rmp3_frame_test its streams.
           if dpkg -s build-essential zlib1g-dev clang ffmpeg >/dev/null 2>&1; then
             echo "All packages already present on runner image; skipping apt."
             exit 0
@@ -159,6 +160,12 @@ jobs:
             rh264_lossless_test
             rh264_lossless_test_nothreads
             rh264_lossless_test_volatile
+            # The hardware path's sequencing against a checking backend.
+            rh264_hw_test
+            # rmp3's frame-at-a-time API against its pull API.
+            rmp3_frame_test
+            # raac_last_size over units followed by more.
+            raac_size_test
             rh265_lossless_test
             rh265_lossless_test_nothreads
             rh265_lossless_test_volatile
@@ -284,6 +291,20 @@ jobs:
             # The HDR video blits: PQ and HLG to linear scRGB against
             # double-precision references, and HLG tone-mapped as HDR.
             image_hdr_blit_test
+            # PSP movies demultiplexed from program streams built for it,
+            # fed whole, a byte at a time and in odd chunks.
+            rpsmf_test
+            # ATRAC3 against a reference decoder's output for crafted
+            # stereo and joint stereo streams, then bad frames and
+            # garbage.
+            ratrac3_test
+            # ATRAC3plus against a reference decoder's output for a
+            # stereo stream (tones, gain points, swap and negate masks)
+            # and a mono one, then bad frames and garbage.
+            ratrac3p_test
+            # Animation playback against a scripted stream: order,
+            # pacing, loops, catch-up, the worker's two jobs.
+            video_player_test
           )
 
           # Targets that are built but deliberately not executed, each
@@ -578,6 +599,23 @@ jobs:
 
           TSAN_OPTIONS=halt_on_error=1 ./retro_atomic_test
 
+      - name: Run video_player_test under Clang + ThreadSanitizer, and threadless
+        shell: bash
+        working-directory: libretro-common/samples/formats/video_player
+        run: |
+          # The decode worker hands two jobs back and forth with the
+          # polling thread through atomics alone; the threadless shape
+          # decodes every frame on the polling thread.
+          set -u
+          set -o pipefail
+
+          make clean
+          CC=clang make all SANITIZER=thread
+          TSAN_OPTIONS=halt_on_error=1 ./video_player_test
+          make clean
+          make all THREADS=0 SANITIZER=address,undefined
+          ./video_player_test
+
       - name: Run rtime_localtime_test under Clang + ThreadSanitizer
         shell: bash
         working-directory: libretro-common/samples/time/rtime_localtime_test
@@ -643,6 +681,18 @@ jobs:
           CC=clang make all SANITIZER=thread
 
           TSAN_OPTIONS=halt_on_error=1 ./mpsc_stack_test
+
+      - name: Run retro_spsc_test on the POSIX shm mirror
+        shell: bash
+        working-directory: libretro-common/samples/queues/retro_spsc_test
+        run: |
+          # Linux mirrors a ring through memfd; macOS and the BSDs take
+          # the POSIX shm path, which this builds here so it runs on
+          # every push, under ASan.
+          set -eu
+          make clean
+          make all CC="gcc -DRETRO_SPSC_MIRROR_SHM" SANITIZER=address,undefined
+          ./retro_spsc_test
 
       - name: Run retro_spsc_test under Clang + ThreadSanitizer
         shell: bash

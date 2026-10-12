@@ -172,6 +172,8 @@ static inline MTLRegion MTLRegionMake2D(NSUInteger x, NSUInteger y, NSUInteger w
 @property (readonly) NSString *label;
 @end
 @protocol MTLComputePipelineState <NSObject>
+@property (readonly) NSUInteger maxTotalThreadsPerThreadgroup;
+@property (readonly) NSUInteger threadExecutionWidth;
 @end
 @protocol MTLSamplerState <NSObject>
 @end
@@ -210,9 +212,19 @@ static inline MTLRegion MTLRegionMake2D(NSUInteger x, NSUInteger y, NSUInteger w
 - (void)setComputePipelineState:(id<MTLComputePipelineState>)s;
 - (void)setBuffer:(id<MTLBuffer>)b offset:(NSUInteger)o atIndex:(NSUInteger)i;
 - (void)setTexture:(id<MTLTexture>)t atIndex:(NSUInteger)i;
+- (void)setBytes:(const void *)b length:(NSUInteger)l atIndex:(NSUInteger)i;
 - (void)dispatchThreadgroups:(MTLSize)g threadsPerThreadgroup:(MTLSize)t;
 @end
+typedef NS_ENUM(NSUInteger, MTLCommandBufferStatus) {
+   MTLCommandBufferStatusNotEnqueued = 0,
+   MTLCommandBufferStatusEnqueued    = 1,
+   MTLCommandBufferStatusCommitted   = 2,
+   MTLCommandBufferStatusScheduled   = 3,
+   MTLCommandBufferStatusCompleted   = 4,
+   MTLCommandBufferStatusError       = 5
+};
 @protocol MTLCommandBuffer <NSObject>
+@property (readonly) MTLCommandBufferStatus status;
 - (id<MTLRenderCommandEncoder>)renderCommandEncoderWithDescriptor:(id)d;
 - (id<MTLBlitCommandEncoder>)blitCommandEncoder;
 - (id<MTLComputeCommandEncoder>)computeCommandEncoder;

@@ -401,11 +401,28 @@ bool video_driver_supports_texture_format(int fmt)
       && (fmt == TEXTURE_GPU_FORMAT_RGBA16F || fmt == TEXTURE_GPU_FORMAT_SCRGB);
 }
 
+/* As the frontend fits an image, from this stub's own answers */
+bool video_driver_texture_fit(struct texture_image *ti)
+{
+   if (ti->pix10 && !video_driver_supports_texture_format(TEXTURE_GPU_FORMAT_RGB10A2))
+      image_texture_narrow_10bit(ti);
+   return !ti->fp16
+      || video_driver_supports_texture_format(TEXTURE_GPU_FORMAT_RGBA16F);
+}
+
 /* No driver lends upload memory here: every slot stays the surface's. */
 void *video_driver_texture_lend(uintptr_t id, unsigned slot, size_t pitch)
 {
    (void)id; (void)slot; (void)pitch;
    return NULL;
+}
+
+/* No device to import into: REFUSED */
+int video_driver_texture_import(uintptr_t *id, const void *frame,
+      int filter)
+{
+   (void)id; (void)frame; (void)filter;
+   return 0;
 }
 
 bool video_driver_texture_lend_ready(uintptr_t id, unsigned slot)

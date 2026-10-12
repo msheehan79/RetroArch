@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include <retro_miscellaneous.h>
+#include <formats/image_yuv_blit.h>
 
 #include "gfx_surface.h"
 #include "gfx_instrument.h"
@@ -34,24 +35,29 @@ gfx_surface_t *gfx_surface_new(unsigned dims,
 {
    gfx_surface_t *s;
    uint8_t *base;
-   size_t frame_len, i, bpp;
+   size_t frame_len, i;
+   bool planar = (pixfmt & (IMAGE_PIXFMT_I420 | IMAGE_PIXFMT_NV12)) != 0;
 
-   bpp = GFX_SURFACE_PIXFMT_BPP(pixfmt);
+   /* Bounded at four bytes a pixel for every format: the widest
+    * single-plane one short of FP32, and what a planar frame is
+    * converted into. */
    if (     !VIDEO_SCALE_W(dims) || !VIDEO_SCALE_H(dims)
          || !num_slots || num_slots > GFX_SURFACE_MAX_SLOTS
          || !pixfmt || (pixfmt & (pixfmt - 1))
-         || pixfmt > GFX_SURFACE_PIXFMT_GX_RGBA8
-         || (size_t)VIDEO_SCALE_W(dims) > ((SIZE_MAX - GFX_SURFACE_SLOT_ALIGN)
-               / bpp) / VIDEO_SCALE_H(dims))
+         || (pixfmt > IMAGE_PIXFMT_GX_RGBA8 && !planar)
+         || (size_t)VIDEO_SCALE_W(dims) > ((SIZE_MAX / 4
+               - GFX_SURFACE_SLOT_ALIGN) / 4) / VIDEO_SCALE_H(dims))
       return NULL;
 
-   frame_len = (VIDEO_SCALE_AREA(dims) * bpp
+   frame_len = (IMAGE_PIXFMT_FRAME_SIZE(pixfmt, (size_t)VIDEO_SCALE_W(dims),
+            (size_t)VIDEO_SCALE_H(dims))
          + GFX_SURFACE_SLOT_ALIGN - 1) & ~(size_t)(GFX_SURFACE_SLOT_ALIGN - 1);
-   if (frame_len > (SIZE_MAX - sizeof(*s) - GFX_SURFACE_SLOT_ALIGN) / num_slots)
+   if (frame_len > (SIZE_MAX / 2 - sizeof(*s) - GFX_SURFACE_SLOT_ALIGN)
+         / num_slots)
       return NULL;
 
-   if (!(s = (gfx_surface_t*)calloc(1,
-         sizeof(*s) + GFX_SURFACE_SLOT_ALIGN + frame_len * num_slots)))
+   if (!(s = (gfx_surface_t*)calloc(1, sizeof(*s)
+         + GFX_SURFACE_SLOT_ALIGN + frame_len * num_slots)))
       return NULL;
 
    base = (uint8_t*)(s + 1);
@@ -72,7 +78,8 @@ gfx_surface_t *gfx_surface_new(unsigned dims,
    s->fmt        = GFX_SURFACE_FMT_NONE;
    s->can_update = video_driver_texture_can_update() ? 1 : 0;
    GFX_INSTR_INC(GFX_INSTR_SURFACE_NEW);
-   GFX_INSTR_ADD(GFX_INSTR_SURFACE_BYTES, (int)(frame_len * num_slots));
+   GFX_INSTR_ADD(GFX_INSTR_SURFACE_BYTES,
+         (int)(frame_len * num_slots));
    return s;
 }
 
@@ -93,28 +100,28 @@ bool gfx_surface_query_requirements(unsigned width,
     * (TEXTURE_GPU_FORMAT_SCRGB), which it does only while the output
     * is HDR: anywhere else the composite treats a texture as SDR, and
     * a linear texel would be encoded a second time. */
-   req->formats    = GFX_SURFACE_PIXFMT_8888;
+   req->formats    = IMAGE_PIXFMT_8888;
    /* The texture path's own answer, not whether the context presents
     * 10-bit core frames (GFX_CTX_FLAGS_SCREEN_10BPC_SOURCE): the two
     * are set by different code and need not agree. */
    if (video_driver_supports_texture_format(TEXTURE_GPU_FORMAT_RGB10A2))
-      req->formats |= GFX_SURFACE_PIXFMT_2101010;
+      req->formats |= IMAGE_PIXFMT_2101010;
    if (     video_driver_supports_texture_format(TEXTURE_GPU_FORMAT_RGBA16F)
          && video_driver_supports_texture_format(TEXTURE_GPU_FORMAT_SCRGB))
-      req->formats |= GFX_SURFACE_PIXFMT_FP16;
-   if (req->formats & GFX_SURFACE_PIXFMT_FP16)
-      req->preferred = GFX_SURFACE_PIXFMT_FP16;
-   else if (req->formats & GFX_SURFACE_PIXFMT_2101010)
-      req->preferred = GFX_SURFACE_PIXFMT_2101010;
+      req->formats |= IMAGE_PIXFMT_FP16;
+   if (req->formats & IMAGE_PIXFMT_FP16)
+      req->preferred = IMAGE_PIXFMT_FP16;
+   else if (req->formats & IMAGE_PIXFMT_2101010)
+      req->preferred = IMAGE_PIXFMT_2101010;
    else
-      req->preferred = GFX_SURFACE_PIXFMT_8888;
-   if ((size_t)width > ((size_t)-1) / GFX_SURFACE_PIXFMT_BPP(req->preferred))
+      req->preferred = IMAGE_PIXFMT_8888;
+   if ((size_t)width > ((size_t)-1) / IMAGE_PIXFMT_BPP(req->preferred))
       return false;
    req->can_update = video_driver_texture_can_update();
    /* Every upload path in the tree takes tightly packed rows; the
     * alignment is what the GL paths set (glPixelStorei) and what the
     * others are happy with. */
-   req->pitch      = (size_t)width * GFX_SURFACE_PIXFMT_BPP(req->preferred);
+   req->pitch      = (size_t)width * IMAGE_PIXFMT_BPP(req->preferred);
    req->align      = 4;
    return true;
 }
@@ -162,6 +169,25 @@ gfx_surface_t *gfx_surface_new_still(enum texture_filter_type filter)
    return s;
 }
 
+gfx_surface_t *gfx_surface_new_import(unsigned dims,
+      enum texture_filter_type filter, gfx_surface_release_t release,
+      void *user)
+{
+   gfx_surface_t *s;
+   if (!VIDEO_SCALE_W(dims) || !VIDEO_SCALE_H(dims))
+      return NULL;
+   if (!(s = (gfx_surface_t*)calloc(1, sizeof(*s))))
+      return NULL;
+   s->dims     = dims;
+   s->filter   = filter;
+   s->fmt      = GFX_SURFACE_FMT_NONE;
+   s->release  = release;
+   s->user     = user;
+   s->imported = 1;
+   GFX_INSTR_INC(GFX_INSTR_SURFACE_NEW);
+   return s;
+}
+
 /* A decoded image a still was given, pixels and descriptor */
 static void gfx_surface_image_free(void *payload)
 {
@@ -173,7 +199,7 @@ static void gfx_surface_image_free(void *payload)
 /* Whether a 2101010 frame has to be narrowed for the driver up. */
 static bool gfx_surface_must_narrow(uint32_t pixfmt)
 {
-   return pixfmt == GFX_SURFACE_PIXFMT_2101010
+   return pixfmt == IMAGE_PIXFMT_2101010
       && !video_driver_supports_texture_format(TEXTURE_GPU_FORMAT_RGB10A2);
 }
 
@@ -192,13 +218,14 @@ static bool gfx_surface_prepare(gfx_surface_t *s, const void *pixels,
    s->img.height        = VIDEO_SCALE_H(s->dims);
    s->img.supports_rgba = rgba;
    s->img.compressed    = NULL;
+   s->img.planar        = NULL;
    s->img.fp16          = false;
    switch (pixfmt)
    {
-      case GFX_SURFACE_PIXFMT_8888:
+      case IMAGE_PIXFMT_8888:
          s->img.pix10   = false;
          break;
-      case GFX_SURFACE_PIXFMT_FP16:
+      case IMAGE_PIXFMT_FP16:
          /* Half floats have no narrower form here: the driver takes
           * them as they are or the submit fails. */
          if (!video_driver_supports_texture_format(TEXTURE_GPU_FORMAT_RGBA16F))
@@ -207,7 +234,7 @@ static bool gfx_surface_prepare(gfx_surface_t *s, const void *pixels,
          s->img.fp16    = true;
          *fmt = 4;
          return true;
-      case GFX_SURFACE_PIXFMT_2101010:
+      case IMAGE_PIXFMT_2101010:
          s->img.pix10   = true;
          if (gfx_surface_must_narrow(pixfmt))
          {
@@ -269,9 +296,11 @@ static void gfx_surface_lend(gfx_surface_t *s, unsigned slot)
    size_t pitch;
    void *mem, *spare;
    if (     slot >= s->num_slots || (s->lent & (1u << slot))
-         || !s->handle || !s->can_update)
+         || !s->handle || !s->can_update
+         /* the driver's upload memory is laid out as one plane */
+         || GFX_SURFACE_IS_PLANAR(s))
       return;
-   pitch = (size_t)VIDEO_SCALE_W(s->dims) * GFX_SURFACE_PIXFMT_BPP(s->pixfmt);
+   pitch = (size_t)VIDEO_SCALE_W(s->dims) * IMAGE_PIXFMT_BPP(s->pixfmt);
    if (s->num_slots >= 2)
    {
       if ((mem = video_driver_texture_lend(s->handle, slot, pitch)))
@@ -381,7 +410,18 @@ static void gfx_surface_done(void *user, uintptr_t handle)
    s->inflight      = 0;
    s->dropped       = 0;
 
-   if (s->node.kind == VIDEO_THREAD_ASYNC_LOAD)
+   if (s->node.kind == VIDEO_THREAD_ASYNC_IMPORT)
+   {
+      /* Refused or dropped alike: the frame was not taken */
+      if (handle && s->node.made)
+         s->handle = handle;
+      if (!handle || s->node.dropped)
+      {
+         GFX_INSTR_INC(GFX_INSTR_SUBMIT_DROPPED);
+         s->dropped = 1;
+      }
+   }
+   else if (s->node.kind == VIDEO_THREAD_ASYNC_LOAD)
    {
       if (handle)
       {
@@ -443,6 +483,7 @@ static void gfx_surface_done(void *user, uintptr_t handle)
          return;
       if (s->handle)
          video_driver_texture_unload(&s->handle);
+      free(s->rgb);
       free(s);
       return;
    }
@@ -481,7 +522,7 @@ static enum gfx_surface_submit_result gfx_surface_submit_img(
       s->node.lend        = 0;
       s->node.lent_idx[0] = s->node.lent_idx[1] = -1;
       s->node.lent_mem[0] = s->node.lent_mem[1] = NULL;
-      if (!need_load && s->num_slots)
+      if (!need_load && s->num_slots && !GFX_SURFACE_IS_PLANAR(s))
       {
          if (s->num_slots >= 2)
             s->node.lend = (slot < 2 && !(s->lent & (1u << slot)))
@@ -511,6 +552,124 @@ static enum gfx_surface_submit_result gfx_surface_submit_img(
    return gfx_surface_upload_sync(s, fmt);
 }
 
+/* s->img for an upload of the planar frame @p: the planes as they lie
+ * for a driver that converts them itself, else converted once into
+ * s->rgb in the order @rgba names. */
+static bool gfx_surface_planar(gfx_surface_t *s,
+      const gfx_surface_planes_t *src, bool rgba, uint8_t *fmt)
+{
+   gfx_surface_planes_t vu;
+   const gfx_surface_planes_t *p = src;
+   unsigned w = VIDEO_SCALE_W(s->dims);
+   unsigned h = VIDEO_SCALE_H(s->dims);
+   if (     !p->planes[0] || !p->planes[1] || !p->planes[2]
+         || !p->chroma_step)
+      return false;
+   /* Cr first: from here on plane 1 is Cb whatever the source */
+   if (s->yuv & IMAGE_YUV_FLAG_VU)
+   {
+      vu            = *src;
+      vu.planes[1]  = src->planes[2];
+      vu.planes[2]  = src->planes[1];
+      vu.strides[1] = src->strides[2];
+      vu.strides[2] = src->strides[1];
+      p             = &vu;
+   }
+   if (video_driver_supports_texture_format(TEXTURE_GPU_FORMAT_YUV420))
+   {
+      unsigned i;
+      for (i = 0; i < 3; i++)
+      {
+         s->planar.planes[i]  = p->planes[i];
+         s->planar.strides[i] = p->strides[i];
+      }
+      s->planar.chroma_step = p->chroma_step;
+      s->planar.yuv         = s->yuv & ~IMAGE_YUV_FLAG_VU;
+      s->img.pixels         = NULL;
+      s->img.width          = w;
+      s->img.height         = h;
+      s->img.supports_rgba  = rgba;
+      s->img.compressed     = NULL;
+      s->img.pix10          = false;
+      s->img.fp16           = false;
+      s->img.planar         = &s->planar;
+      *fmt                  = 8;
+      return true;
+   }
+   /* Made on the first frame a driver cannot take as planes */
+   if (!s->rgb && !(s->rgb = (uint32_t*)malloc(VIDEO_SCALE_AREA(s->dims)
+               * sizeof(uint32_t))))
+      return false;
+   image_yuv_420_to_rgb32(s->rgb, w,
+         p->planes[0], p->strides[0],
+         p->planes[1], p->strides[1],
+         p->planes[2], p->strides[2],
+         p->chroma_step, w, h,
+         (s->yuv & ~IMAGE_YUV_FLAG_VU) | (rgba ? IMAGE_YUV_FLAG_RGBA : 0));
+   return gfx_surface_prepare(s, s->rgb, IMAGE_PIXFMT_8888, rgba, false,
+         fmt);
+}
+
+/* The planes of a frame laid out as a planar slot is (gfx_surface_new) */
+static void gfx_surface_planes_of(const gfx_surface_t *s,
+      const void *frame, gfx_surface_planes_t *p)
+{
+   const uint8_t *y = (const uint8_t*)frame;
+   unsigned w       = VIDEO_SCALE_W(s->dims);
+   unsigned cw      = (w + 1) / 2;
+   size_t   csz     = (size_t)cw * ((VIDEO_SCALE_H(s->dims) + 1) / 2);
+   p->planes[0]     = y;
+   p->strides[0]    = w;
+   p->planes[1]     = y + VIDEO_SCALE_AREA(s->dims);
+   if (s->pixfmt == IMAGE_PIXFMT_NV12)
+   {
+      p->planes[2]   = p->planes[1] + 1;
+      p->strides[1]  = p->strides[2] = cw * 2;
+      p->chroma_step = 2;
+   }
+   else
+   {
+      p->planes[2]   = p->planes[1] + csz;
+      p->strides[1]  = p->strides[2] = cw;
+      p->chroma_step = 1;
+   }
+}
+
+/* @p copied into @dst, laid out as a planar slot is */
+static void gfx_surface_planes_copy(const gfx_surface_t *s,
+      const gfx_surface_planes_t *p, void *dst)
+{
+   gfx_surface_planes_t d;
+   unsigned w  = VIDEO_SCALE_W(s->dims);
+   unsigned cw = (w + 1) / 2;
+   unsigned ch = (VIDEO_SCALE_H(s->dims) + 1) / 2;
+   unsigned x, y;
+   gfx_surface_planes_of(s, dst, &d);
+   for (y = 0; y < VIDEO_SCALE_H(s->dims); y++)
+      memcpy((uint8_t*)d.planes[0] + (size_t)y * d.strides[0],
+            p->planes[0] + (size_t)y * p->strides[0], w);
+   for (y = 0; y < ch; y++)
+   {
+      const uint8_t *cb = p->planes[1] + (size_t)y * p->strides[1];
+      const uint8_t *cr = p->planes[2] + (size_t)y * p->strides[2];
+      uint8_t *ob       = (uint8_t*)d.planes[1] + (size_t)y * d.strides[1];
+      uint8_t *oc       = (uint8_t*)d.planes[2] + (size_t)y * d.strides[2];
+      if (p->chroma_step == 1 && d.chroma_step == 1)
+      {
+         memcpy(ob, cb, cw);
+         memcpy(oc, cr, cw);
+      }
+      else if (p->chroma_step == 2 && d.chroma_step == 2 && cr == cb + 1)
+         memcpy(ob, cb, (size_t)cw * 2);
+      else
+         for (x = 0; x < cw; x++)
+         {
+            ob[x * d.chroma_step] = cb[x * p->chroma_step];
+            oc[x * d.chroma_step] = cr[x * p->chroma_step];
+         }
+   }
+}
+
 static void gfx_surface_count(enum gfx_surface_submit_result r)
 {
    GFX_INSTR_INC(r == GFX_SURFACE_SUBMIT_QUEUED
@@ -535,6 +694,17 @@ enum gfx_surface_submit_result gfx_surface_submit(gfx_surface_t *s,
    {
       GFX_INSTR_INC(GFX_INSTR_SUBMIT_BUSY);
       return GFX_SURFACE_SUBMIT_BUSY;
+   }
+
+   if (GFX_SURFACE_IS_PLANAR(s))
+   {
+      gfx_surface_planes_t p;
+      gfx_surface_planes_of(s, s->slots[slot], &p);
+      r = gfx_surface_planar(s, &p, rgba, &fmt)
+         ? gfx_surface_submit_img(s, slot, fmt)
+         : GFX_SURFACE_SUBMIT_FAILED;
+      gfx_surface_count(r);
+      return r;
    }
 
    r = gfx_surface_prepare(s, s->slots[slot], s->pixfmt, rgba, true, &fmt)
@@ -565,6 +735,13 @@ enum gfx_surface_submit_result gfx_surface_submit_pixels(gfx_surface_t *s,
       return GFX_SURFACE_SUBMIT_BUSY;
    }
 
+   if (GFX_SURFACE_IS_PLANAR(s))
+   {
+      gfx_surface_planes_t p;
+      gfx_surface_planes_of(s, pixels, &p);
+      return gfx_surface_submit_planes(s, &p, rgba);
+   }
+
    /* The caller's buffer does not outlive this call for the video
     * thread's purposes, and is not the surface's to narrow; a slot is
     * both. One copy, the size of a frame, against a wait of up to a
@@ -585,12 +762,60 @@ enum gfx_surface_submit_result gfx_surface_submit_pixels(gfx_surface_t *s,
       }
       GFX_INSTR_INC(GFX_INSTR_SUBMIT_COPY);
       memcpy(s->slots[0], pixels,
-            VIDEO_SCALE_AREA(s->dims) * GFX_SURFACE_PIXFMT_BPP(s->pixfmt));
+            VIDEO_SCALE_AREA(s->dims) * IMAGE_PIXFMT_BPP(s->pixfmt));
       return gfx_surface_submit(s, 0, rgba);
    }
 
    r = gfx_surface_prepare(s, pixels, s->pixfmt, rgba, false, &fmt)
       ? gfx_surface_upload_sync(s, fmt)
+      : GFX_SURFACE_SUBMIT_FAILED;
+   gfx_surface_count(r);
+   return r;
+}
+
+void gfx_surface_set_yuv(gfx_surface_t *s, unsigned flags)
+{
+   if (s && GFX_SURFACE_IS_PLANAR(s))
+      s->yuv = (uint8_t)(flags & (IMAGE_YUV_FLAG_VU
+            | IMAGE_YUV_FLAG_FULL_RANGE | IMAGE_YUV_FLAG_BT709));
+}
+
+enum gfx_surface_submit_result gfx_surface_submit_planes(gfx_surface_t *s,
+      const gfx_surface_planes_t *p, bool rgba)
+{
+   enum gfx_surface_submit_result r;
+   uint8_t fmt;
+
+   if (!s || !GFX_SURFACE_IS_PLANAR(s) || !p)
+   {
+      GFX_INSTR_INC(GFX_INSTR_SUBMIT_FAILED);
+      return GFX_SURFACE_SUBMIT_FAILED;
+   }
+   /* The last converted frame is still on its way up */
+   if (s->inflight)
+   {
+      GFX_INSTR_INC(GFX_INSTR_SUBMIT_BUSY);
+      return GFX_SURFACE_SUBMIT_BUSY;
+   }
+#ifdef HAVE_THREADS
+   /* The video thread reads planes after this returns, and these are
+    * the caller's: into slot 0 with them. A conversion needs no copy,
+    * its result being the surface's. */
+   if (     video_driver_thread_wrapper_active()
+         && video_driver_supports_texture_format(TEXTURE_GPU_FORMAT_YUV420))
+   {
+      if (!gfx_surface_slot_writable(s, 0))
+      {
+         GFX_INSTR_INC(GFX_INSTR_SUBMIT_BUSY);
+         return GFX_SURFACE_SUBMIT_BUSY;
+      }
+      GFX_INSTR_INC(GFX_INSTR_SUBMIT_COPY);
+      gfx_surface_planes_copy(s, p, s->slots[0]);
+      return gfx_surface_submit(s, 0, rgba);
+   }
+#endif
+   r = gfx_surface_planar(s, p, rgba, &fmt)
+      ? gfx_surface_submit_img(s, 0, fmt)
       : GFX_SURFACE_SUBMIT_FAILED;
    gfx_surface_count(r);
    return r;
@@ -657,7 +882,58 @@ void gfx_surface_free(gfx_surface_t *s)
    /* Its producers are gone by now: a retired texture goes too */
    if (s->retired_handle)
       video_driver_texture_unload(&s->retired_handle);
+   free(s->rgb);
    free(s);
+}
+
+enum gfx_surface_submit_result gfx_surface_submit_import(gfx_surface_t *s,
+      const video_frame_import_t *frame)
+{
+   enum gfx_surface_submit_result r = GFX_SURFACE_SUBMIT_FAILED;
+   enum video_texture_update u;
+
+   if (!s || !s->imported || !frame || frame->dims != s->dims)
+   {
+      gfx_surface_count(r);
+      return r;
+   }
+   if (s->inflight)
+   {
+      GFX_INSTR_INC(GFX_INSTR_SUBMIT_BUSY);
+      return GFX_SURFACE_SUBMIT_BUSY;
+   }
+   s->import = *frame;
+#ifdef HAVE_THREADS
+   if (video_driver_thread_wrapper_active())
+   {
+      s->node.kind        = VIDEO_THREAD_ASYNC_IMPORT;
+      s->node.img         = &s->import;
+      s->node.handle      = s->handle;
+      s->node.filter      = s->filter;
+      s->node.done        = gfx_surface_done;
+      s->node.user        = s;
+      s->node.release     = NULL;
+      s->node.dropped     = 0;
+      s->node.made        = 0;
+      s->node.lend        = 0;
+      s->node.lent_idx[0] = s->node.lent_idx[1] = -1;
+      s->node.lent_mem[0] = s->node.lent_mem[1] = NULL;
+      if (video_thread_async_post(&s->node))
+      {
+         s->inflight      = 1;
+         s->inflight_slot = 0;
+         r                = GFX_SURFACE_SUBMIT_QUEUED;
+         gfx_surface_count(r);
+         return r;
+      }
+   }
+#endif
+   u = video_driver_texture_import(&s->handle, &s->import, s->filter);
+   r = (u == VIDEO_TEXTURE_UPDATE_DONE) ? GFX_SURFACE_SUBMIT_DONE
+     : (u == VIDEO_TEXTURE_UPDATE_DROPPED) ? GFX_SURFACE_SUBMIT_DROPPED
+     : GFX_SURFACE_SUBMIT_FAILED;
+   gfx_surface_count(r);
+   return r;
 }
 
 bool gfx_surface_submit_image(gfx_surface_t *s, struct texture_image *img)
@@ -685,17 +961,12 @@ bool gfx_surface_submit_image(gfx_surface_t *s, struct texture_image *img)
       s->fmt = GFX_SURFACE_FMT_NONE;
    s->dims = VIDEO_SCALE_PACK(img->width, img->height);
 
-   /* Half floats have no narrower form: a driver that cannot sample
-    * them takes no still from this image. A 10-bit image for a driver
-    * that cannot is narrowed here, where it is ours to rewrite. */
-   if (     img->fp16
-         && !video_driver_supports_texture_format(TEXTURE_GPU_FORMAT_RGBA16F))
+   /* Fitted here, where the image is ours to rewrite */
+   if (!video_driver_texture_fit(img))
    {
       gfx_surface_image_free(img);
       return false;
    }
-   if (img->pix10 && gfx_surface_must_narrow(GFX_SURFACE_PIXFMT_2101010))
-      image_texture_narrow_10bit(img);
 
 #ifdef HAVE_THREADS
    if (     img->pixels && !img->compressed
@@ -708,9 +979,9 @@ bool gfx_surface_submit_image(gfx_surface_t *s, struct texture_image *img)
       src.pixels       = img->pixels;
       src.payload      = img;
       src.payload_free = gfx_surface_image_free;
-      src.pixfmt       = img->fp16  ? GFX_SURFACE_PIXFMT_FP16
-                       : img->pix10 ? GFX_SURFACE_PIXFMT_2101010
-                                    : GFX_SURFACE_PIXFMT_8888;
+      src.pixfmt       = img->fp16  ? IMAGE_PIXFMT_FP16
+                       : img->pix10 ? IMAGE_PIXFMT_2101010
+                                    : IMAGE_PIXFMT_8888;
       src.rgba         = img->supports_rgba;
       r                = gfx_surface_submit_external(s, &src,
             s->release, s->user);
@@ -746,18 +1017,17 @@ gfx_surface_t *gfx_surface_still(gfx_surface_t **slot,
    return *slot;
 }
 
-/* What a still's decode is asked for: the order the caller named,
- * 10-bit where the driver samples it, a compressed payload as it lies
- * in the file */
-static void gfx_surface_request(image_texture_request_t *req,
-      bool supports_rgba)
+void gfx_surface_image_request(image_texture_request_t *req,
+      bool rgba, unsigned flags)
 {
    gfx_surface_requirements_t want;
-   req->rgba            = supports_rgba;
-   req->want_10bit      = gfx_surface_query_requirements(0, &want)
-      && (want.formats & GFX_SURFACE_PIXFMT_2101010);
-   req->want_fp16       = false;
-   req->want_compressed = true;
+   uint32_t formats = gfx_surface_query_requirements(0, &want)
+      ? want.formats : IMAGE_PIXFMT_8888;
+   req->rgba            = rgba;
+   req->want_10bit      = (formats & IMAGE_PIXFMT_2101010) ? true : false;
+   req->want_fp16       = (flags & GFX_SURFACE_REQ_HDR)
+      && (formats & IMAGE_PIXFMT_FP16);
+   req->want_compressed = (flags & GFX_SURFACE_REQ_COMPRESSED) ? true : false;
 }
 
 bool gfx_surface_submit_buffer(gfx_surface_t *s,
@@ -770,7 +1040,7 @@ bool gfx_surface_submit_buffer(gfx_surface_t *s,
       return false;
    if (!(img = (struct texture_image*)calloc(1, sizeof(*img))))
       return false;
-   gfx_surface_request(&req, supports_rgba);
+   gfx_surface_image_request(&req, supports_rgba, GFX_SURFACE_REQ_COMPRESSED);
    if (!image_texture_load_buffer_request(img, type, buf, len, &req,
             NULL, NULL))
    {
@@ -790,6 +1060,7 @@ bool gfx_surface_take_image(gfx_surface_t *s, struct texture_image *img)
    *own            = *img;
    img->pixels     = NULL;
    img->compressed = NULL;
+   own->planar     = NULL;
    return gfx_surface_submit_image(s, own);
 }
 
@@ -802,7 +1073,7 @@ bool gfx_surface_submit_file(gfx_surface_t *s, const char *path,
       return false;
    if (!(img = (struct texture_image*)calloc(1, sizeof(*img))))
       return false;
-   gfx_surface_request(&req, supports_rgba);
+   gfx_surface_image_request(&req, supports_rgba, GFX_SURFACE_REQ_COMPRESSED);
    if (!image_texture_load_request(img, path, &req, NULL, NULL))
    {
       free(img);
@@ -825,7 +1096,7 @@ unsigned gfx_surface_submit_files(gfx_surface_t *const *slots,
    if (!slots || !paths)
       return 0;
 
-   gfx_surface_request(&req, supports_rgba);
+   gfx_surface_image_request(&req, supports_rgba, GFX_SURFACE_REQ_COMPRESSED);
 
    for (first = 0; first < n; first += GFX_SURFACE_DECODE_BATCH)
    {
@@ -930,7 +1201,8 @@ static void gfx_surface_decoded(retro_task_t *task, void *task_data,
             video_driver_texture_unload(&s->handle);
          if (s->retired_handle)
             video_driver_texture_unload(&s->retired_handle);
-         free(s);
+         free(s->rgb);
+      free(s);
       }
       return;
    }

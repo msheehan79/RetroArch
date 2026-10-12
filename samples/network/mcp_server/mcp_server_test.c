@@ -6,10 +6,16 @@
  * thread: each request is sent, then the server polled until it has
  * answered and closed.  Covered: the protocol handshake, the tool list
  * and its hints, tool calls answered at once and later, the JSON-RPC
- * errors, a later answer carrying an image (SCREENSHOT's), the HTTP gate (method, path, Origin, the bearer token the
- * server will not start without), a body
- * larger than the server takes, a request arriving in pieces, and a
- * waiting request answered when the server is torn down.
+ * errors, the parameters a tool declares and the line they are put
+ * back into, a later answer carrying an image (SCREENSHOT's), the flag
+ * that leaves a command out of the tool list, the HTTP gate (method,
+ * path, Origin, the bearer token the server will not start without), a
+ * body larger than the server takes, a request arriving in pieces, and
+ * a waiting request answered when the server is torn down.
+ *
+ * Whether a reply is a failure is the command's own word (command_t's
+ * error), not something read out of the text: a path that holds ERROR
+ * is no error, and a failure whose text holds none still is one.
  *
  * Builds with gcc/clang on Linux and with mingw-w64 (run under Wine):
  * only libretro-common's sockets are used. */
@@ -47,7 +53,20 @@ static bool act_wipe(command_t *cmd, const char *arg)
 static bool act_fail(command_t *cmd, const char *arg)
 { (void)cmd; (void)arg; return false; }
 static bool act_bad(command_t *cmd, const char *arg)
-{ (void)arg; cmd->replier(cmd, "BAD ERROR no such thing\n", 24); return false; }
+{
+   (void)arg;
+   cmd->error = true;
+   cmd->replier(cmd, "BAD ERROR no such thing\n", 24);
+   return false;
+}
+/* fails, and its text says nothing about it */
+static bool act_quiet_fail(command_t *cmd, const char *arg)
+{
+   (void)arg;
+   cmd->error = true;
+   cmd->replier(cmd, "nothing to save\n", 16);
+   return false;
+}
 /* answers after it returns, as SCREENSHOT does */
 static bool act_later(command_t *cmd, const char *arg)
 {
@@ -57,14 +76,42 @@ static bool act_later(command_t *cmd, const char *arg)
    return later_dest != NULL;
 }
 
-static const struct cmd_action_map test_actions[] = {
-   { "PING",  act_ping,  "No argument", "Answer PONG.",       CMD_INFO_READ_ONLY },
-   { "WIPE",  act_wipe,  "<what>",      "Wipe something.",    CMD_INFO_DESTRUCTIVE },
-   { "FAIL",  act_fail,  "No argument", "Fail.",              0 },
-   { "BAD",   act_bad,   "No argument", "Reply an error.",    0 },
-   { "LATER", act_later, "No argument", "Answer on a later frame.", 0 },
+/* "WIPE <what>", and "JOIN <a>|<b> [n]" for the separators and the
+ * types: a lead of its own, an optional parameter, an integer, and a
+ * set the schema offers as an enum. */
+static const struct cmd_param test_params_wipe[] = {
+   { "what", "What to wipe.", CMD_PARAM_STRING, true, NULL, NULL, NULL },
+   { NULL }
 };
-static const struct cmd_map test_hotkeys[] = {
+static const struct cmd_param test_params_join[] = {
+   { "a", "The first.", CMD_PARAM_STRING, true, NULL, NULL, NULL },
+   { "b", "The second.", CMD_PARAM_STRING, true, "|", NULL, NULL },
+   { "n", "How many.", CMD_PARAM_INT, false, NULL, NULL, "0" },
+   { "mode", "Which way.", CMD_PARAM_STRING, false, NULL, "fast|slow", NULL },
+   { NULL }
+};
+
+/* answers with the line it was given, so the test can see how the
+ * named arguments were put back together */
+static bool act_join(command_t *cmd, const char *arg)
+{
+   char reply[256];
+   size_t len = (size_t)snprintf(reply, sizeof(reply), "JOIN[%s]\n",
+         arg ? arg : "");
+   cmd->replier(cmd, reply, len);
+   return true;
+}
+
+static struct cmd_action_map test_actions[] = {
+   { "PING",  act_ping,  "No argument", "Answer PONG.",       CMD_INFO_READ_ONLY, NULL },
+   { "WIPE",  act_wipe,  "<what>",      "Wipe something.",    CMD_INFO_DESTRUCTIVE, test_params_wipe },
+   { "FAIL",  act_fail,  "No argument", "Fail.",              0, NULL },
+   { "BAD",   act_bad,   "No argument", "Reply an error.",    0, NULL },
+   { "LATER", act_later, "No argument", "Answer on a later frame.", 0, NULL },
+   { "QUIET", act_quiet_fail, "No argument", "Fail without saying ERROR.", 0, NULL },
+   { "JOIN",  act_join,  "<a>|<b> [n]", "Echo the line it was given.", 0, test_params_join },
+};
+static struct cmd_map test_hotkeys[] = {
    { "PAUSE_TOGGLE", 1, "Pause or resume.", 0 },
 };
 
@@ -78,13 +125,20 @@ bool command_interfaces_held(void) { return false; }
 bool command_run(command_t *handle, const char *name, const char *arg)
 {
    size_t i;
+   /* as command.c does: the last command's failure is not this one's */
+   handle->error = false;
    for (i = 0; i < sizeof(test_actions) / sizeof(test_actions[0]); i++)
       if (!strcmp(test_actions[i].str, name))
          return test_actions[i].action(handle, arg);
    for (i = 0; i < sizeof(test_hotkeys) / sizeof(test_hotkeys[0]); i++)
       if (!strcmp(test_hotkeys[i].str, name))
       {
+         char   reply[64];
+         size_t len;
          handle->state[test_hotkeys[i].id] = true;
+         len = (size_t)snprintf(reply, sizeof(reply), "%s pressed\n", name);
+         if (handle->structured)
+            handle->replier(handle, reply, len);
          return true;
       }
    return false;
@@ -130,6 +184,13 @@ static int collect(command_t *cmd, int fd, char *out, size_t cap,
       cmd->poll(cmd);
       if (++polls == 3 && deferred_reply && later_dest)
       {
+         /* "ERR:" marks the answer a failure, as a deferred reply
+          * carrying one does */
+         if (!strncmp(deferred_reply, "ERR:", 4))
+         {
+            later_cmd->error = true;
+            deferred_reply  += 4;
+         }
          /* "IMAGE:<path>" answers with a picture and the path, as a
           * screenshot does */
          if (!strncmp(deferred_reply, "IMAGE:", 6))
@@ -269,8 +330,23 @@ int main(void)
             && strstr(p, "\"readOnlyHint\":true") < w);
       check("a destructive command is hinted destructive",
             w && strstr(w, "\"destructiveHint\":true"));
-      check("a command taking an argument requires it",
-            w && strstr(w, "\"required\":[\"argument\"]"));
+      check("a command taking an argument requires it by name",
+            w && strstr(w, "\"required\":[\"what\"]"));
+   }
+   {
+      const char *j = strstr(out, "\"name\":\"JOIN\"");
+      check("every parameter is a property of its own",
+            j && strstr(j, "\"a\":{\"type\":\"string\"")
+            && strstr(j, "\"b\":{\"type\":\"string\"")
+            && strstr(j, "\"n\":{\"type\":\"integer\""));
+      check("only the needed ones are required",
+            j && strstr(j, "\"required\":[\"a\",\"b\"]"));
+      check("a parameter with a set of values offers them as an enum",
+            j && strstr(j, "\"enum\":[\"fast\",\"slow\"]"));
+      check("a command taking nothing has no properties",
+            strstr(out, "\"name\":\"PING\"")
+            && strstr(strstr(out, "\"name\":\"PING\""),
+                  "\"properties\":{}"));
    }
 
    printf("tools/call\n");
@@ -283,16 +359,21 @@ int main(void)
    st = post(cmd, PORT_OPEN, NULL, call("BAD", NULL), out, sizeof(out), NULL);
    check("an error reply is an error",
          st == 200 && strstr(out, "BAD ERROR") && strstr(out, "\"isError\":true"));
+   st = post(cmd, PORT_OPEN, NULL, call("QUIET", NULL), out, sizeof(out), NULL);
+   check("a failure whose text says nothing is still an error",
+         st == 200 && strstr(out, "nothing to save")
+         && strstr(out, "\"isError\":true"));
    st = post(cmd, PORT_OPEN, NULL, call("PAUSE_TOGGLE", NULL), out, sizeof(out), NULL);
-   check("a hotkey is pressed and answers Done",
-         st == 200 && cmd->state[1] && strstr(out, "Done."));
+   check("a hotkey is pressed and reports the press",
+         st == 200 && cmd->state[1] && strstr(out, "PAUSE_TOGGLE pressed")
+         && strstr(out, "\"isError\":false"));
    st = post(cmd, PORT_OPEN, NULL, call("LATER", NULL), out, sizeof(out),
          "/home/me/screenshots/My ERROR Game-251004.png");
    check("a later answer arrives, and a path naming ERROR is no error",
          st == 200 && strstr(out, "My ERROR Game")
          && strstr(out, "\"isError\":false"));
    st = post(cmd, PORT_OPEN, NULL, call("LATER", NULL), out, sizeof(out),
-         "LATER ERROR could not");
+         "ERR:LATER ERROR could not");
    check("a later error answer is an error",
          st == 200 && strstr(out, "\"isError\":true"));
 
@@ -305,6 +386,129 @@ int main(void)
          && strstr(out, "\"mimeType\":\"image/png\"")
          && strstr(out, "Game-251004.png")
          && strstr(out, "\"isError\":false"));
+
+   printf("parameters\n");
+   st = post(cmd, PORT_OPEN, NULL,
+         call("WIPE", "{\"what\":\"\"}"), out, sizeof(out), NULL);
+   check("an explicit empty required string is present",
+         st == 200 && strstr(out, "\"isError\":false"));
+   st = post(cmd, PORT_OPEN, NULL,
+         call("JOIN", "{\"a\":\"\",\"b\":\"two\"}"),
+         out, sizeof(out), NULL);
+   check("an empty first operand keeps the next separator",
+         st == 200 && strstr(out, "JOIN[|two 0]"));
+   st = post(cmd, PORT_OPEN, NULL,
+         call("JOIN", "{\"a\":\"one\",\"b\":\"\",\"mode\":\"\"}"),
+         out, sizeof(out), NULL);
+   check("empty later operands retain their positions",
+         st == 200 && strstr(out, "JOIN[one| 0 ]"));
+   st = post(cmd, PORT_OPEN, NULL,
+         call("JOIN", "{\"a\":\"one\",\"b\":\"two\"}"),
+         out, sizeof(out), NULL);
+   check("named arguments are joined as the table says",
+         st == 200 && strstr(out, "JOIN[one|two 0]"));
+   st = post(cmd, PORT_OPEN, NULL,
+         call("JOIN", "{\"a\":\"one\",\"b\":\"two\",\"n\":7}"),
+         out, sizeof(out), NULL);
+   check("an integer arrives as its digits",
+         st == 200 && strstr(out, "JOIN[one|two 7]"));
+   {
+      static const struct {
+         const char *number;
+         const char *line;
+      } cases[] = {
+         { "7.0", "JOIN[one|two 7]" },
+         { "7e0", "JOIN[one|two 7]" },
+         { "7e1", "JOIN[one|two 70]" },
+         { "700e-2", "JOIN[one|two 7]" },
+         { "0.07e2", "JOIN[one|two 7]" },
+         { "-7.0", "JOIN[one|two -7]" },
+         { "-0.0001e4", "JOIN[one|two -1]" },
+         { "-0.0", "JOIN[one|two 0]" },
+         { "0e999999999999999999", "JOIN[one|two 0]" },
+         { "0e-999999999999999999", "JOIN[one|two 0]" },
+         { "9007199254740993.0", "JOIN[one|two 9007199254740993]" },
+         { "1.2300e+2", "JOIN[one|two 123]" }
+      };
+      static const char *invalid[] = {
+         "2.5", "7e-1", "-0.0001e3", "\"7\"",
+         "1e999999999999999999", "1e-999999999999999999"
+      };
+      unsigned i;
+      char args[256], label[128];
+      for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+      {
+         snprintf(args, sizeof(args),
+               "{\"a\":\"one\",\"b\":\"two\",\"n\":%s}", cases[i].number);
+         st = post(cmd, PORT_OPEN, NULL, call("JOIN", args),
+               out, sizeof(out), NULL);
+         snprintf(label, sizeof(label), "integer %s is normalized exactly",
+               cases[i].number);
+         check(label, st == 200 && strstr(out, cases[i].line));
+      }
+      for (i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++)
+      {
+         snprintf(args, sizeof(args),
+               "{\"a\":\"one\",\"b\":\"two\",\"n\":%s}", invalid[i]);
+         st = post(cmd, PORT_OPEN, NULL, call("JOIN", args),
+               out, sizeof(out), NULL);
+         snprintf(label, sizeof(label), "invalid integer %s is rejected",
+               invalid[i]);
+         check(label, st == 200 && strstr(out, "-32602")
+               && strstr(out, "Invalid integer") && !strstr(out, "JOIN["));
+      }
+   }
+   st = post(cmd, PORT_OPEN, NULL,
+         call("JOIN", "{\"b\":\"two\",\"a\":\"one\",\"n\":7}"),
+         out, sizeof(out), NULL);
+   check("the table's order is used, not the client's",
+         st == 200 && strstr(out, "JOIN[one|two 7]"));
+   st = post(cmd, PORT_OPEN, NULL,
+         call("JOIN", "{\"a\":\"one\",\"b\":\"two\",\"mode\":\"fast\"}"),
+         out, sizeof(out), NULL);
+   check("one left out stands in with its default, if it has one",
+         st == 200 && strstr(out, "JOIN[one|two 0 fast]"));
+   st = post(cmd, PORT_OPEN, NULL,
+         call("JOIN", "{\"a\":\"one\"}"), out, sizeof(out), NULL);
+   check("a required one left out is invalid params (-32602)",
+         strstr(out, "-32602") && strstr(out, "\\\"b\\\""));
+   st = post(cmd, PORT_OPEN, NULL,
+         call("JOIN", "{\"argument\":\"one|two 7\"}"), out, sizeof(out), NULL);
+   check("the single argument older clients send still works",
+         st == 200 && strstr(out, "JOIN[one|two 7]"));
+
+   printf("commands that are not tools\n");
+   /* The flag is what leaves a command out, so the same two the list
+    * above carried are flagged and then let be again. They are the
+    * first of each table, which is where a skip would take the comma
+    * placement with it. */
+   test_actions[0].flags |= CMD_INFO_NO_TOOL;            /* PING */
+   test_hotkeys[0].flags |= CMD_INFO_NO_TOOL;            /* PAUSE_TOGGLE */
+   st = post(cmd, PORT_OPEN, NULL,
+         "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"tools/list\"}",
+         out, sizeof(out), NULL);
+   check("a flagged command is left out of the tool list",
+         st == 200 && !strstr(out, "\"name\":\"PING\"")
+         && !strstr(out, "\"name\":\"PAUSE_TOGGLE\""));
+   check("the tools around it are still listed",
+         strstr(out, "\"name\":\"WIPE\"") && strstr(out, "\"name\":\"LATER\""));
+   check("the list is still valid JSON", json_valid(body_of(out)));
+   st = post(cmd, PORT_OPEN, NULL, call("PING", NULL), out, sizeof(out), NULL);
+   check("calling one is invalid params (-32602)",
+         strstr(out, "-32602") != NULL);
+
+   test_actions[0].flags &= ~CMD_INFO_NO_TOOL;
+   test_hotkeys[0].flags &= ~CMD_INFO_NO_TOOL;
+   st = post(cmd, PORT_OPEN, NULL,
+         "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"tools/list\"}",
+         out, sizeof(out), NULL);
+   check("and are listed again once it is gone",
+         st == 200 && json_valid(body_of(out))
+         && strstr(out, "\"name\":\"PING\"")
+         && strstr(out, "\"name\":\"PAUSE_TOGGLE\""));
+   check("and callable again",
+         post(cmd, PORT_OPEN, NULL, call("PING", NULL), out, sizeof(out), NULL)
+            == 200 && strstr(out, "PONG"));
 
    printf("JSON-RPC errors\n");
    st = post(cmd, PORT_OPEN, NULL, call("NO_SUCH_TOOL", NULL), out, sizeof(out), NULL);

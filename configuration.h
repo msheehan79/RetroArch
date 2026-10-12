@@ -292,7 +292,9 @@ typedef struct settings
       unsigned video_openxr_refresh_rate;
       unsigned video_openxr_controllers;
       unsigned video_openxr_laser;
+      unsigned video_openxr_placement;
       unsigned video_fse_negotiation;
+      unsigned video_hw_decode;
       unsigned screen_orientation;
       unsigned video_msg_bgcolor_red;
       unsigned video_msg_bgcolor_green;
@@ -449,6 +451,10 @@ typedef struct settings
       unsigned cpu_scaling_mode;
       unsigned cpu_min_freq;
       unsigned cpu_max_freq;
+#endif
+#ifdef HAVE_LAKKA_SWITCH
+      /* enum r2p_payload_kind; paired with reboot_payload_name */
+      unsigned reboot_payload_kind;
 #endif
 
 #ifdef HAVE_MIST
@@ -639,6 +645,7 @@ typedef struct settings
       /* Video */
       bool video_fullscreen;
       bool video_windowed_fullscreen;
+      bool video_dxgi_present;
       bool video_vsync;
       bool video_adaptive_vsync;
       bool video_gl_direct_spirv;
@@ -713,6 +720,7 @@ typedef struct settings
       bool audio_headphone_virtual_surround;
       bool audio_sink_rate_estimation;
       bool audio_threaded_pipeline;
+      bool audio_pipeline_fill_cap;
       bool audio_thread_priority;
       bool audio_rate_control;
       bool audio_fastforward_mute;
@@ -1136,6 +1144,10 @@ typedef struct settings
       bool switch_oc;
       bool switch_cec;
       bool bluetooth_ertm_disable;
+      /* When an update is staged, reboot back into the running
+       * Lakka entry instead of the selected payload so the
+       * initramfs installs it. */
+      bool reboot_force_self_on_update;
 #endif
 #ifdef HAVE_LAKKA
       bool ssh_enable;
@@ -1254,6 +1266,9 @@ typedef struct settings
 #ifdef HAVE_LAKKA
       char cpu_main_gov[32];
       char cpu_menu_gov[32];
+#endif
+#ifdef HAVE_LAKKA_SWITCH
+      char reboot_payload_name[64]; /* R2P_NAME_MAXLEN */
 #endif
 #ifdef HAVE_MICROPHONE
       char microphone_driver[32];

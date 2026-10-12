@@ -1,6 +1,8 @@
 # record_ffmpeg end to end: frames and audio pushed from this thread,
 # taken by the driver's encoder thread, decoded back and checked.
 
+include ../../sample_objdir.mk
+
 CORE_DIR          := ../../..
 LIBRETRO_COMM_DIR := $(CORE_DIR)/libretro-common
 
@@ -43,7 +45,7 @@ SOURCES_C := \
 	$(LIBRETRO_COMM_DIR)/audio/resampler/drivers/nearest_resampler.c \
 	$(LIBRETRO_COMM_DIR)/memmap/memalign.c
 
-OBJS      := $(SOURCES_C:.c=.o)
+OBJS      := $(call sample_objs,$(SOURCES_C:.c=.o))
 
 FF_CFLAGS := $(shell pkg-config --cflags libavcodec libavformat libavutil libswscale libswresample 2>/dev/null)
 FF_LIBS   := $(shell pkg-config --libs   libavcodec libavformat libavutil libswscale libswresample 2>/dev/null)
@@ -52,6 +54,12 @@ INCDIRS   := -I$(LIBRETRO_COMM_DIR)/include -I$(CORE_DIR) -I$(CORE_DIR)/deps
 CFLAGS   += -Wall $(INCDIRS) $(FF_CFLAGS)
 CFLAGS   += -DRARCH_INTERNAL -DHAVE_FFMPEG -DHAVE_THREADS -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64
 LDFLAGS  += $(FF_LIBS) -lm -lpthread
+
+# PLAIN_RING=1 builds the lane where the video ring cannot be mirrored.
+ifneq ($(PLAIN_RING),)
+CFLAGS  += -DPLAIN_RING
+LDFLAGS += -Wl,--wrap=retro_spsc_init_mirrored
+endif
 
 ifneq ($(SANITIZER),)
 CFLAGS  += -fsanitize=$(SANITIZER) -fno-omit-frame-pointer -g
@@ -68,7 +76,12 @@ $(TARGET): $(OBJS)
 %.o: %.c
 	$(CC) $(CFLAGS) -std=gnu99 -c -o $@ $<
 
+$(SAMPLE_OBJDIR)/%.o: $$(call sample_src,$$*).c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -std=gnu99 -c -o $@ $<
+
 clean:
+	rm -rf $(SAMPLE_OBJDIR)
 	rm -f $(TARGET) $(OBJS) ffmpeg_pipeline_test.mkv
 
 .PHONY: clean

@@ -179,11 +179,26 @@ static void expect(LONG x, LONG y, const char *what)
       printf("   ok   %s: (%ld, %ld)\n", what, (long)x, (long)y);
 }
 
+static void button_report(USHORT flags, unsigned expected)
+{
+   RAWMOUSE m;
+   memset(&m, 0, sizeof(m));
+   m.usButtonFlags = flags;
+   winraw_update_mouse_state(wr, &g_mice[0], &m);
+   winraw_poll(wr);
+   if (wr->mice[0].flags != expected)
+   {
+      fprintf(stderr, "FAIL buttons: got %u, want %u\n", wr->mice[0].flags, expected);
+      failures++;
+   }
+}
+
 int main(void)
 {
    static const LONG pos[][2] = {
       { 0, 0 }, { 1, 2 }, { 640, 360 }, { 7679, 4319 }, { 12, 4319 } };
    unsigned i;
+   uint32_t cursor_pos;
 
    printf("winraw absolute position:\n");
    wr        = (winraw_input_t*)calloc(1, sizeof(*wr));
@@ -222,6 +237,36 @@ int main(void)
    /* And the next poll takes the report that landed. */
    winraw_poll(wr);
    expect(3000, 4000, "the next poll");
+
+   report(12, 34);
+   retro_atomic_store_release_int(&g_mice[0].pos_pending, 1);
+   winraw_poll(wr);
+   cursor_pos = wr->mice[0].pos;
+   winraw_poll(wr);
+   if (wr->mice[0].pos != cursor_pos
+         || retro_atomic_load_acquire_int(&g_mice[0].abs_pending))
+   {
+      printf("   FAIL cursor priority left a stale absolute report\n");
+      failures++;
+   }
+
+   button_report(RI_MOUSE_LEFT_BUTTON_DOWN | RI_MOUSE_RIGHT_BUTTON_DOWN,
+         WRAW_MOUSE_FLG_BTN_L | WRAW_MOUSE_FLG_BTN_R);
+   button_report(RI_MOUSE_LEFT_BUTTON_UP | RI_MOUSE_BUTTON_4_DOWN,
+         WRAW_MOUSE_FLG_BTN_R | WRAW_MOUSE_FLG_BTN_B4);
+   button_report(RI_MOUSE_RIGHT_BUTTON_UP | RI_MOUSE_BUTTON_4_UP, 0);
+   g_win32_flags |= WIN32_CMN_FLAG_SWAP_MOUSE_BTNS;
+   button_report(RI_MOUSE_LEFT_BUTTON_DOWN, WRAW_MOUSE_FLG_BTN_R);
+   button_report(RI_MOUSE_LEFT_BUTTON_UP | RI_MOUSE_RIGHT_BUTTON_DOWN,
+         WRAW_MOUSE_FLG_BTN_L);
+   g_win32_flags &= ~WIN32_CMN_FLAG_SWAP_MOUSE_BTNS;
+   retro_atomic_store_release_int(&winraw_focus_flag, 0);
+   button_report(RI_MOUSE_MIDDLE_BUTTON_DOWN, 0);
+   retro_atomic_store_release_int(&winraw_focus_flag, 1);
+   button_report(0, 0);
+   button_report(RI_MOUSE_LEFT_BUTTON_DOWN | RI_MOUSE_LEFT_BUTTON_UP,
+         WRAW_MOUSE_FLG_BTN_L);
+   button_report(RI_MOUSE_LEFT_BUTTON_UP, 0);
 
    if (failures)
    {

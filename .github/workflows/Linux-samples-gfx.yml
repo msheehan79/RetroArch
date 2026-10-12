@@ -87,6 +87,55 @@ jobs:
           python3 tools/texture_image_init_check.py --selftest
           python3 tools/texture_image_init_check.py
 
+  slang-rect:
+    name: Presets read frames where they lie
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Install dependencies
+        timeout-minutes: 10
+        run: |
+          set -eu
+          pkgs="build-essential libegl-dev libgl-dev libegl-mesa0 libgl1-mesa-dri"
+          pkgs="$pkgs gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 wine64"
+          for i in 1 2 3; do
+            sudo timeout 90 apt-get update -y \
+              -o Acquire::Retries=3 -o Acquire::http::Timeout=30 && break
+            sleep 10
+          done
+          sudo apt-get install -y -qq \
+            -o Acquire::Retries=3 -o Acquire::http::Timeout=30 $pkgs
+
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Build and run slang_rect_test (ASan + UBSan, llvmpipe)
+        shell: bash
+        working-directory: samples/gfx/slang_rect
+        run: |
+          set -eu
+          # gfx/drivers_shader/slang_rect.c rewrites a preset's stage
+          # to read its frame inside a larger texture. Each test shader,
+          # sampled each way, comes back rewritten, left alone or
+          # refused as it should and cross-compiles; and drawn by Mesa,
+          # every rewritten stage reads the frame bit for bit as the
+          # stage it was reads a texture of its own.
+          make clean all SANITIZER=address,undefined
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+             timeout 600 make check CHECK_ARGS=--require-gl
+          make clean
+
+      - name: Build and run slang_rect_test (mingw-w64, Wine)
+        shell: bash
+        working-directory: samples/gfx/slang_rect
+        run: |
+          set -eu
+          make clean all CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++ \
+             LDFLAGS=-static
+          WINEDEBUG=-all timeout 300 wine ./slang_rect_test.exe
+          make clean
+
   samples-gfx:
     name: Build and run samples/gfx
     runs-on: ubuntu-latest
@@ -248,6 +297,7 @@ jobs:
              for f in gfx/video_thread_wrapper.c \
                       gfx/font_driver.c \
                       gfx/gfx_thumbnail.c \
+                      libretro-common/formats/video_player.c \
                       libretro-common/queues/task_queue.c; do
                 gcc -std=gnu99 -O2 -Wall -Werror $INC $EXTRA $DEF \
                    "-DRETRO_ATOMIC_FORCE_$backend" -c "$f" -o /dev/null
@@ -379,6 +429,25 @@ jobs:
           test -x vulkan_texture_size_test
           timeout 60 ./vulkan_texture_size_test
           echo "[pass] vulkan_texture_size_test"
+
+      - name: Build and run gl2_pbo_readback_test (plain, ASan + UBSan)
+        shell: bash
+        working-directory: samples/gfx/gl2_pbo_readback
+        run: |
+          set -eu
+          sudo apt-get install -y -qq libgl-dev
+          # gfx/drivers/gl2.c's PBO readback ring against a scripted
+          # GL: a slot is read only once the fence placed after its
+          # readback has signalled, and never waited on in the map. A
+          # read that maps a pending slot, waits in glClientWaitSync
+          # or calls glFinish fails the run; teardown must delete
+          # every fence it issued.
+          make clean check
+          echo "[pass] gl2_pbo_readback_test"
+          make clean all SANITIZER=address,undefined
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
+             timeout 60 ./gl2_pbo_readback_test
+          echo "[pass] gl2_pbo_readback_test (ASan)"
 
       - name: Build and run slang_texture_index_bounds_test (ASan)
         shell: bash
@@ -1048,6 +1117,42 @@ jobs:
           make clean all SANITIZER=thread
           TSAN_OPTIONS=halt_on_error=1 timeout 300 ./run.sh
           echo "[pass] dbus_screensaver_test"
+
+      - name: D3D8 resource cleanup (Linux and mingw + Wine)
+        shell: bash
+        run: |
+          set -eu
+          make -C samples/gfx/d3d8_cleanup clean check SANITIZER=address,undefined
+          make -C samples/gfx/d3d8_cleanup clean check CC=x86_64-w64-mingw32-gcc EXE=.exe RUNNER=wine
+          make -C samples/gfx/d3d8_cleanup clean
+
+      - name: D3D11/12 shader feedback lifecycle (Linux and mingw + Wine)
+        shell: bash
+        run: |
+          set -eu
+          make -C samples/gfx/d3d_feedback clean check SANITIZER=address,undefined
+          make -C samples/gfx/d3d_feedback clean check CC=x86_64-w64-mingw32-gcc EXE=.exe RUNNER=wine
+          make -C samples/gfx/d3d_feedback clean
+
+      - name: D3D12 mipmap generation (Linux and mingw + Wine)
+        shell: bash
+        run: |
+          set -eu
+          make -C samples/gfx/d3d12_mipmaps clean check SANITIZER=address,undefined
+          make -C samples/gfx/d3d12_mipmaps clean check CC=x86_64-w64-mingw32-gcc EXE=.exe RUNNER=wine
+          make -C samples/gfx/d3d12_mipmaps clean
+
+      - name: D3D11 video decode backend (Linux and mingw + Wine)
+        shell: bash
+        run: |
+          set -eu
+          # rh264's DXVA backend: the buffers it writes, byte by byte
+          # and against dxva.h, and the backend itself on a D3D11 that
+          # records what it is told. The GPU oracle builds here and
+          # skips; it runs on a Windows machine with a video decoder.
+          make -C samples/gfx/d3d11_video_decode clean check SANITIZER=address,undefined
+          make -C samples/gfx/d3d11_video_decode clean check CC=x86_64-w64-mingw32-gcc EXE=.exe RUNNER=wine
+          make -C samples/gfx/d3d11_video_decode clean
 
       - name: D3D11 hardware ring under threaded video (mingw + Wine, headless)
         shell: bash
@@ -1801,6 +1906,7 @@ jobs:
           UBSAN_OPTIONS=print_stacktrace=1 timeout 300 \
              ./preview_audio_oracle_test fixtures/trailing_small.mp4 fixtures/trailing_large.mp4
           echo "[pass] preview_audio_oracle_test (ASan)"
+          ./preview_audio_feed_test fixtures/audio_large_packet.m4a
           # clean keeps fixtures/ by design; regenerate anyway so the
           # step cannot silently run against an empty glob.
           make clean all SANITIZER=thread

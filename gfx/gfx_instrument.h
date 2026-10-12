@@ -51,7 +51,6 @@ enum gfx_instrument_counter
 {
    /* Texture lifetime, whichever driver is up */
    GFX_INSTR_TEX_LOAD = 0,      /* video_driver_texture_load        */
-   GFX_INSTR_TEX_LOAD_ASYNC,    /* ..._load_async, posted           */
    GFX_INSTR_TEX_UPDATE,        /* ..._texture_update, in place     */
    GFX_INSTR_TEX_UPDATE_REFUSED,/* driver declined an update        */
    GFX_INSTR_TEX_UPDATE_DROPPED,/* ..took it, uploaded nothing      */
@@ -59,7 +58,6 @@ enum gfx_instrument_counter
 
    /* The threaded wrapper's texture edge */
    GFX_INSTR_ASYNC_POST,        /* nodes handed to the video thread */
-   GFX_INSTR_ASYNC_POST_ALLOC,  /* ..of which allocated a node      */
    GFX_INSTR_ASYNC_DONE,        /* completions delivered            */
    GFX_INSTR_WRAPPER_CMD,       /* synchronous commands, round trip */
 
@@ -97,6 +95,8 @@ enum gfx_instrument_counter
    GFX_INSTR_FRAME_TEX_CREATE,  /* frame textures (re)created       */
    GFX_INSTR_FRAME_COPY_HOST,   /* frames copied by the CPU          */
    GFX_INSTR_FRAME_LENT_WINDOW, /* frames read straight out of a loan*/
+   GFX_INSTR_FRAME_MEM,         /* frames copied out of the threaded
+                                   wrapper's buffer on the GPU      */
    /* The threaded wrapper's hardware ring (Vulkan) */
    GFX_INSTR_HW_DROP,           /* frames taken back or replaced     */
    GFX_INSTR_HW_DROP_SUBMIT,    /* ..queue submissions they cost     */

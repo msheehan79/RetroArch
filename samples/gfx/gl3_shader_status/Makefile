@@ -1,3 +1,5 @@
+include ../../sample_objdir.mk
+
 TARGET       := gl3_shader_status_test
 CHAIN_TARGET := gl3_chain_alloc_test
 
@@ -5,10 +7,13 @@ REPO_ROOT         := ../../..
 LIBRETRO_COMM_DIR := $(REPO_ROOT)/libretro-common
 
 # The real gfx/drivers_shader/shader_gl3.c, with GL entry points through
-# the real glsym table the test points at its own mocks, and SPIRV-Cross
-# and the rest of the frontend stubbed in stubs.c.
+# the real glsym table the test points at its own mocks, the real
+# slang_rect.c it rewrites stages with, and SPIRV-Cross and the rest of
+# the frontend stubbed in stubs.c.
 COMMON  := stubs.c \
+           $(REPO_ROOT)/gfx/drivers_shader/slang_rect.c \
            spvc_stubs.c \
+           $(REPO_ROOT)/gfx/drivers_shader/slang_rect.c \
            $(LIBRETRO_COMM_DIR)/glsym/glsym_gl.c \
            $(LIBRETRO_COMM_DIR)/compat/compat_strl.c \
            $(LIBRETRO_COMM_DIR)/string/stdstring.c \
@@ -41,8 +46,8 @@ ifneq ($(SANITIZER),)
    LDFLAGS := -fsanitize=$(SANITIZER) $(LDFLAGS)
 endif
 
-OBJS       := $(SOURCES:.c=.o)
-CHAIN_OBJS := $(CHAIN_SOURCES:.c=.o)
+OBJS       := $(call sample_objs,$(SOURCES:.c=.o))
+CHAIN_OBJS := $(call sample_objs,$(CHAIN_SOURCES:.c=.o))
 
 all: $(TARGET) $(CHAIN_TARGET)
 
@@ -57,11 +62,16 @@ gl3_chain_alloc_test.o: $(REPO_ROOT)/gfx/drivers_shader/shader_gl3.c
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+$(SAMPLE_OBJDIR)/%.o: $$(call sample_src,$$*).c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
 check: $(TARGET) $(CHAIN_TARGET)
 	./$(TARGET)
 	./$(CHAIN_TARGET)
 
 clean:
+	rm -rf $(SAMPLE_OBJDIR)
 	rm -f $(OBJS) $(CHAIN_OBJS) $(TARGET) $(TARGET).exe \
 	      $(CHAIN_TARGET) $(CHAIN_TARGET).exe
 

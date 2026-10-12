@@ -47,10 +47,7 @@
 #include "../drivers_keyboard/keyboard_event_android.h"
 #include "android_kbd_route.h"
 #ifdef HAVE_OPENXR
-#include "openxr_input.h"
-#ifdef HAVE_VULKAN
-#include "../../gfx/drivers_context/android_vk_openxr.h"
-#endif
+#include "../common/input_openxr.h"
 #endif
 #include "android_key_state.h"
 #include "android_stylus_map.h"
@@ -828,11 +825,11 @@ static void android_input_poll_main_cmd(void)
 
       case APP_CMD_INIT_WINDOW:
          android_lifecycle_window_set(&android_app->lc, msg.arg);
-#if defined(HAVE_OPENXR) && defined(HAVE_VULKAN)
-         /* The XR context keeps its session across window recreation,
-          * so a new window must not tear it down. Asked of the context
-          * driver by name: input code takes nothing from video state. */
-         if (!android_vk_openxr_active())
+#ifdef HAVE_OPENXR
+         /* A headset's own context keeps its session across window
+          * recreation, so a new window must not tear it down. Asked of
+          * the context driver. */
+         if (!video_context_driver_headset_inline())
             android_app->reinitRequested = 1;
 #else
          android_app->reinitRequested = 1;
@@ -859,20 +856,24 @@ static void android_input_poll_main_cmd(void)
          if (!hold_ack)
             android_lifecycle_set_state(&android_app->lc, cmd);
 #ifdef HAVE_OPENXR
-         if (cmd == APP_CMD_PAUSE)
+         /* A headset's own context has no window to bring back. */
+         if (video_context_driver_headset_inline())
          {
-            android_state_flush_pending = true;
-            android_keypress_vibrate_pending = false;
-            if (hold_ack)
-               android_state_ack_cmd = APP_CMD_PAUSE;
+            if (cmd == APP_CMD_PAUSE)
+            {
+               android_state_flush_pending = true;
+               android_keypress_vibrate_pending = false;
+               if (hold_ack)
+                  android_state_ack_cmd = APP_CMD_PAUSE;
+            }
+            else
+            {
+               android_state_flush_pending = false;
+               android_state_flushed = false;
+               android_state_ack_cmd = -1;
+            }
+            break;
          }
-         else
-         {
-            android_state_flush_pending = false;
-            android_state_flushed = false;
-            android_state_ack_cmd = -1;
-         }
-         break;
 #endif
          /* RESUME/START can arrive before INIT_WINDOW. In that case,
           * wait for INIT_WINDOW rather than falling back to a full
@@ -1841,7 +1842,8 @@ static INLINE void android_input_poll_event_type_keyboard(
 {
    int keydown           = (AKeyEvent_getAction(event)
          == AKEY_EVENT_ACTION_DOWN);
-   unsigned keyboardcode = input_keymaps_translate_keysym_to_rk(keycode);
+   int keyboard_keycode  = android_keycode_for_keyboard(keycode);
+   unsigned keyboardcode = input_keymaps_translate_keysym_to_rk(keyboard_keycode);
    /* Set keyboard modifier based on shift,ctrl and alt state */
    uint16_t mod          = 0;
    int meta              = AKeyEvent_getMetaState(event);
@@ -1867,7 +1869,7 @@ static INLINE void android_input_poll_event_type_keyboard(
     * symbols, and yields 0 for modifier/lock keys so they no longer leak
     * into menu text fields as '?'. */
    character = android_keycode_to_unicode(
-         AInputEvent_getDeviceId(event), keycode, meta);
+         AInputEvent_getDeviceId(event), keyboard_keycode, meta);
 
    /* Fall back to the raw keysym for the plain ASCII range when the
     * platform could not resolve a character (e.g. JNI unavailable).
@@ -2677,9 +2679,9 @@ static void android_input_poll_input_default(android_input_t *android)
                {
 #ifdef HAVE_OPENXR
                   /* XR controllers deliver input through OpenXR actions;
-                   * window motion events would double up while a session
-                   * is live. */
-                  if (!openxr_input_session_active())
+                   * window motion events would double up while the
+                   * headset's controllers are set up. */
+                  if (!input_openxr_active())
 #endif
                   android_input_poll_event_type_motion(android, event,
                         port, source);

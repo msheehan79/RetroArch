@@ -19,6 +19,9 @@
 #include <stdint.h>
 
 #include "glslang_util.h"
+/* Names the reflection table below needs in every build, with or
+ * without the compiler. */
+#include "slang_rect.h"
 #if defined(HAVE_GLSLANG)
 #include "slang_cache.h"
 #endif
@@ -89,7 +92,10 @@ static const char *semantic_uniform_names[] = {
    "Gyroscope",
    "Accelerometer",
    "AccelerometerRest",
-   "SwapCount"
+   "SwapCount",
+   SLANG_RECT_NAME_RECT,
+   SLANG_RECT_NAME_CLAMP,
+   SLANG_RECT_NAME_TEXELS
 };
 
 static bool slang_reflect(
@@ -1460,6 +1466,42 @@ bool slang_process(
    if (!*pass->alias && output.meta.name[0])
       strlcpy(pass->alias, output.meta.name, sizeof(pass->alias) - 1);
 
+   /* Every pass samples the frame as the first does; one with the
+    * filter unspecified as the smooth setting the driver gives. */
+   out->frame_in_place = false;
+   out->frame_unspec   = false;
+   out->frame_smooth   = semantics_map->frame_smooth;
+   if (semantics_map->uniforms[SLANG_SEMANTIC_ORIGINAL_RECT])
+   {
+      enum slang_rect_result res;
+      enum slang_rect_wrap   wrap   = SLANG_RECT_WRAP_BORDER;
+      unsigned               filter = shader_info->pass[0].filter;
+      if (filter == RARCH_FILTER_UNSPEC)
+         filter = semantics_map->frame_smooth
+            ? RARCH_FILTER_LINEAR : RARCH_FILTER_NEAREST;
+      switch (shader_info->pass[0].wrap)
+      {
+         case RARCH_WRAP_EDGE:
+            wrap = SLANG_RECT_WRAP_EDGE;
+            break;
+         case RARCH_WRAP_REPEAT:
+            wrap = SLANG_RECT_WRAP_REPEAT;
+            break;
+         case RARCH_WRAP_MIRRORED_REPEAT:
+            wrap = SLANG_RECT_WRAP_MIRROR;
+            break;
+         default:
+            break;
+      }
+      res = slang_rect_remap_pass(
+            &output.vertex, &output.vertex_len,
+            &output.fragment, &output.fragment_len,
+            pass_number == 0, filter == RARCH_FILTER_LINEAR, wrap);
+      out->frame_in_place = res != SLANG_RECT_UNSUPPORTED;
+      out->frame_unspec   = res == SLANG_RECT_REWRITTEN
+         && shader_info->pass[0].filter == RARCH_FILTER_UNSPEC;
+   }
+
    out->format          = output.meta.rt_format;
    out->explicit_format = (output.meta.rt_format != SLANG_FORMAT_UNKNOWN);
 
@@ -1858,6 +1900,12 @@ static bool validate_type_for_semantic(spvc_type type, enum slang_semantic sem)
       case SLANG_SEMANTIC_ACCELEROMETER_REST:
          return spvc_type_get_basetype(type) == SPVC_BASETYPE_FP32
             &&  spvc_type_get_vector_size(type)  == 3
+            &&  spvc_type_get_columns(type)  == 1;
+      case SLANG_SEMANTIC_ORIGINAL_RECT:
+      case SLANG_SEMANTIC_ORIGINAL_CLAMP:
+      case SLANG_SEMANTIC_ORIGINAL_TEXELS:
+         return spvc_type_get_basetype(type) == SPVC_BASETYPE_FP32
+            &&  spvc_type_get_vector_size(type)  == 4
             &&  spvc_type_get_columns(type)  == 1;
          /* float */
       case SLANG_SEMANTIC_FLOAT_PARAMETER:

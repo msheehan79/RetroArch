@@ -31,6 +31,7 @@
 #endif
 
 #include "../video_record.h"
+#include "../gfx_instrument.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <math.h>
@@ -97,6 +98,17 @@ static bool gl2_core_context_is_mains(gl2_t *gl);
 
 #ifdef HAVE_OPENXR
 #include "../drivers_context/gl_android_openxr.h"
+#endif
+
+/* Views are drawn with programs of their own */
+#ifdef HAVE_GLSL
+#define GL2_VIEWS
+#endif
+/* Desktop headset output, never built with the Quest's. */
+#if defined(HAVE_OPENXR_GL) && !defined(ANDROID)
+#define HAVE_GL2_XR
+#include "../common/gl_openxr.h"
+#include "../video_xr.h"
 #endif
 
 #ifndef GL_UNSIGNED_INT_8_8_8_8_REV
@@ -344,6 +356,13 @@ static GLuint gl2_linear_program(gl2_t *gl);
 
 #endif
 
+/* Sync objects for the threaded wrapper's hardware ring and the PBO
+ * readback: the same condition the driver's own fence path compiles
+ * under. GLES builds finish instead. */
+#if defined(HAVE_GL_SYNC) && !defined(HAVE_OPENGLES)
+#define GL2_HW_RING_SYNC 1
+#endif
+
 #define GL_RASTER_FONT_EMIT(c, vx, vy) \
    font_vertex[     2 * (6 * i + c) + 0] = (x + (delta_x + off_x + vx * width) * scale) * inv_win_width; \
    font_vertex[     2 * (6 * i + c) + 1] = (y + (delta_y - off_y - vy * height) * scale) * inv_win_height; \
@@ -366,6 +385,7 @@ typedef struct __GLsync *GLsync;
 
 /* Forward declaration for lazy init in read_viewport */
 static bool gl2_init_pbo_readback(gl2_t *gl);
+static void gl2_free_pbo_readback(gl2_t *gl);
 
 #if defined(HAVE_PSGL)
 #define gl2_fb_texture_2d(a, b, c, d, e) glFramebufferTexture2DOES(a, b, c, d, e)
@@ -643,12 +663,27 @@ static void *gfx_display_gl2_get_default_mvp(void *data)
    return &gl->mvp_no_rot;
 }
 
+/* Straight alpha. Into the transparent UI layer, alpha accumulates as
+ * coverage, so the layer composites as the UI drawn directly would. */
+static void gl2_blend_alpha(const gl2_t *gl)
+{
+#ifdef GL2_VIEWS
+   if (gl->views.ui_pass)
+   {
+      glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,
+            GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+      return;
+   }
+#endif
+   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+}
+
 static void gfx_display_gl2_blend_begin(void *data)
 {
    gl2_t             *gl          = (gl2_t*)data;
 
    glEnable(GL_BLEND);
-   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+   gl2_blend_alpha(gl);
 
    gl->shader->use(gl, gl->shader_data, VIDEO_SHADER_STOCK_BLEND,
          true);
@@ -850,7 +885,7 @@ static void gfx_display_gl2_draw_pipeline(
          glBlendFunc(GL_DST_COLOR, GL_ONE);
          break;
       default:
-         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+         gl2_blend_alpha(gl);
          break;
    }
 
@@ -1009,7 +1044,7 @@ static bool gfx_display_gl2_mesh_draw(void *data, unsigned video_dims,
    /* Meshes are drawn blended, as every driver draws them */
    blend = glIsEnabled(GL_BLEND);
    glEnable(GL_BLEND);
-   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+   gl2_blend_alpha(gl);
 
    drawn = gl_glsl_draw_mesh(gl->shader_data,
          gl->meshes[slot].vbo, gl->meshes[slot].ibo,
@@ -1361,7 +1396,7 @@ static void gl2_raster_font_setup_viewport(
    gl2_set_viewport(gl, dims, full_screen, true);
 
    glEnable(GL_BLEND);
-   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+   gl2_blend_alpha(gl);
    glBlendEquation(GL_FUNC_ADD);
 
    glBindTexture(GL_TEXTURE_2D, font->tex);
@@ -1713,15 +1748,9 @@ static void gl2_set_viewport(gl2_t *gl,
       bool force_full, bool allow_rotate)
 {
    gl->vp.full_dims   = dims;
-#ifdef HAVE_OPENXR
-   if (gl_android_openxr_stereo_active())
-   {
-      gl->vp.pos  = VIDEO_POS_PACK(0, 0);
-      gl->vp.dims = dims;
-   }
-   else
-#endif
-   video_driver_update_viewport(&gl->vp, force_full,
+   /* Views place themselves in the whole window, which a GPU
+    * screenshot then reads. */
+   video_driver_update_viewport(&gl->vp, force_full || gl->views.active,
          (gl->flags & GL2_FLAG_KEEP_ASPECT) ? true : false, false);
 
    glViewport(VIDEO_POS_X(gl->vp.pos), VIDEO_POS_Y(gl->vp.pos), VIDEO_SCALE_W(gl->vp.dims), VIDEO_SCALE_H(gl->vp.dims));
@@ -2567,6 +2596,20 @@ static bool gl2_read_pbo(gl2_t *gl, uint8_t *buffer, bool bgrx)
    if (!gl->pbo_readback_valid[gl->pbo_readback_index])
       return false;
 
+#ifdef GL2_HW_RING_SYNC
+   /* Four frames behind is usually done; when the GPU is further back
+    * than that the frame is left for the next readback rather than
+    * waited on in the map. */
+   if (gl->pbo_readback_sync[gl->pbo_readback_index])
+   {
+      GLsync sync = (GLsync)gl->pbo_readback_sync[gl->pbo_readback_index];
+      if (glClientWaitSync(sync, 0, 0) == GL_TIMEOUT_EXPIRED)
+         return false;
+      glDeleteSync(sync);
+      gl->pbo_readback_sync[gl->pbo_readback_index] = NULL;
+   }
+#endif
+
    gl->pbo_readback_valid[gl->pbo_readback_index] = false;
    glBindBuffer(GL_PIXEL_PACK_BUFFER,
          gl->pbo_readback[gl->pbo_readback_index]);
@@ -2653,8 +2696,7 @@ static bool gl2_renderchain_read_viewport(
          /* Tear down old PBO resources before reinitializing */
          if (gl->flags & GL2_FLAG_PBO_READBACK_ENABLE)
          {
-            glDeleteBuffers(4, gl->pbo_readback);
-            scaler_ctx_gen_reset(&gl->pbo_readback_scaler);
+            gl2_free_pbo_readback(gl);
          }
          gl->flags |= GL2_FLAG_PBO_READBACK_ENABLE;
          if (gl2_init_pbo_readback(gl))
@@ -2812,12 +2854,34 @@ static void gl2_renderchain_copy_frame(
       }
       else if (gl->flags & GL2_FLAG_HAVE_UNPACK_ROW_LENGTH)
       {
+         const GLvoid *data_buf = frame;
+#ifdef HAVE_GL_FRAME_MEM
+         /* As on the desktop: a frame in frame memory is read out of
+          * it by the GL */
+         int fm_slot            = -1;
+         size_t off             = 0;
+         size_t extent          = height ? (size_t)(height - 1) * pitch
+            + (size_t)width * gl->base_size : 0;
+         if ((fm_slot = gl_frame_mem_bind(gl->frame_mem, frame,
+                     extent, &off)) >= 0)
+            data_buf            = (const GLvoid*)off;
+#endif
+         /* Rows are pitch bytes apart, whatever the width */
+         glPixelStorei(GL_UNPACK_ALIGNMENT, gl2_get_alignment(pitch));
          glPixelStorei(GL_UNPACK_ROW_LENGTH, pitch / gl->base_size);
          glTexSubImage2D(GL_TEXTURE_2D,
                0, 0, 0, width, height, gl->texture_type,
-               gl->texture_fmt, frame);
+               gl->texture_fmt, data_buf);
 
          glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+#ifdef HAVE_GL_FRAME_MEM
+         gl_sw_fb_pushed(&gl->sw_fb, fm_slot);
+         if (fm_slot >= 0)
+         {
+            GFX_INSTR_INC(GFX_INSTR_FRAME_MEM);
+            gl_frame_mem_unbind(gl->frame_mem, fm_slot);
+         }
+#endif
       }
       else
       {
@@ -2849,6 +2913,9 @@ static void gl2_renderchain_copy_frame(
 #else
    {
       const GLvoid *data_buf = frame;
+#ifdef HAVE_GL_FRAME_MEM
+      int fm_slot            = -1;
+#endif
       glPixelStorei(GL_UNPACK_ALIGNMENT, gl2_get_alignment(pitch));
 
       if (gl->base_size == 2 && (!(gl->flags & GL2_FLAG_HAVE_ES2_COMPAT)))
@@ -2868,13 +2935,36 @@ static void gl2_renderchain_copy_frame(
          data_buf = gl->conv_buffer;
       }
       else
+      {
          glPixelStorei(GL_UNPACK_ROW_LENGTH, pitch / gl->base_size);
+#ifdef HAVE_GL_FRAME_MEM
+         /* A frame in one of the threaded wrapper's buffers is read out
+          * of it by the GL, the upload queued rather than copied here */
+         {
+            size_t off    = 0;
+            size_t extent = height ? (size_t)(height - 1) * pitch
+               + (size_t)width * gl->base_size : 0;
+            fm_slot       = gl_frame_mem_bind(gl->frame_mem, frame,
+                  extent, &off);
+            if (fm_slot >= 0)
+               data_buf   = (const GLvoid*)off;
+         }
+#endif
+      }
 
       glTexSubImage2D(GL_TEXTURE_2D,
             0, 0, 0, width, height, gl->texture_type,
             gl->texture_fmt, data_buf);
 
       glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+#ifdef HAVE_GL_FRAME_MEM
+      gl_sw_fb_pushed(&gl->sw_fb, fm_slot);
+      if (fm_slot >= 0)
+      {
+         GFX_INSTR_INC(GFX_INSTR_FRAME_MEM);
+         gl_frame_mem_unbind(gl->frame_mem, fm_slot);
+      }
+#endif
    }
 #endif
 }
@@ -3275,7 +3365,9 @@ static void gl2_render_overlay(gl2_t *gl)
 
    glEnable(GL_BLEND);
 
-   if (gl->flags & GL2_FLAG_OVERLAY_FULLSCREEN)
+   /* Views place themselves in the whole window, and so does the
+    * overlay, as the input side hit-tests it. */
+   if ((gl->flags & GL2_FLAG_OVERLAY_FULLSCREEN) || gl->views.active)
       glViewport(0, 0, width, height);
 
    /* Ensure that we reset the attrib array. */
@@ -3301,7 +3393,7 @@ static void gl2_render_overlay(gl2_t *gl)
    gl->coords.tex_coord = gl->tex_info.coord;
    gl->coords.color     = gl->white_color_ptr;
    gl->coords.vertices  = 4;
-   if (gl->flags & GL2_FLAG_OVERLAY_FULLSCREEN)
+   if ((gl->flags & GL2_FLAG_OVERLAY_FULLSCREEN) || gl->views.active)
       glViewport(VIDEO_POS_X(gl->vp.pos), VIDEO_POS_Y(gl->vp.pos), VIDEO_SCALE_W(gl->vp.dims), VIDEO_SCALE_H(gl->vp.dims));
 }
 #endif
@@ -3471,6 +3563,7 @@ static bool gl2_shader_init(gl2_t *gl, const gfx_ctx_driver_t *ctx_driver,
    {
       gl->shader                     = init_data.shader;
       gl->shader_data                = init_data.shader_data;
+      gl->views.preset               = shader_path && *shader_path;
       return true;
    }
 
@@ -3512,12 +3605,6 @@ static bool gl2_core_context_is_mains(gl2_t *gl)
 
 
 /* --- the threaded wrapper's hardware ring ------------------------------ */
-
-/* Sync objects for the ring: the same condition the driver's own fence
- * path compiles under. GLES builds finish instead. */
-#if defined(HAVE_GL_SYNC) && !defined(HAVE_OPENGLES)
-#define GL2_HW_RING_SYNC 1
-#endif
 
 /* The core's context, current on the caller - the main thread. The
  * context driver created it shared with this thread's at init, with
@@ -3724,9 +3811,10 @@ static void gl2_set_video_mode(void *data, unsigned dims,
       bool fullscreen)
 {
    gl2_t               *gl = (gl2_t*)data;
-   if (gl->ctx_driver->set_video_mode)
-      gl->ctx_driver->set_video_mode(gl->ctx_data,
-            dims, fullscreen);
+   if (     !gl->ctx_driver->set_video_mode
+         || !gl->ctx_driver->set_video_mode(gl->ctx_data,
+            dims, fullscreen))
+      video_driver_modify_disp_flags(VIDEO_FLAG_DRIVER_REINIT, 0);
 }
 
 static void gl2_update_input_size(gl2_t *gl, unsigned width,
@@ -4021,10 +4109,26 @@ static INLINE void gl2_draw_texture(gl2_t *gl)
    gl->shader->set_mvp(gl->shader_data, &gl->mvp_no_rot);
 
    glEnable(GL_BLEND);
+   if (gl->views.ui_pass)
+      gl2_blend_alpha(gl);
 
    if (gl->flags & GL2_FLAG_MENU_TEXTURE_FULLSCREEN)
    {
       glViewport(0, 0, width, height);
+      glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+      glViewport(VIDEO_POS_X(gl->vp.pos), VIDEO_POS_Y(gl->vp.pos), VIDEO_SCALE_W(gl->vp.dims), VIDEO_SCALE_H(gl->vp.dims));
+   }
+   else if (gl->views.active)
+   {
+      /* gl->vp is the whole window while views draw, so fit the menu
+       * to this pass's target here. */
+      struct video_viewport vp;
+      memset(&vp, 0, sizeof(vp));
+      vp.full_dims = gl->video_dims;
+      video_driver_update_viewport(&vp, false,
+            (gl->flags & GL2_FLAG_KEEP_ASPECT) ? true : false, false);
+      glViewport(VIDEO_POS_X(vp.pos), VIDEO_POS_Y(vp.pos),
+            VIDEO_SCALE_W(vp.dims), VIDEO_SCALE_H(vp.dims));
       glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
       glViewport(VIDEO_POS_X(gl->vp.pos), VIDEO_POS_Y(gl->vp.pos), VIDEO_SCALE_W(gl->vp.dims), VIDEO_SCALE_H(gl->vp.dims));
    }
@@ -4051,8 +4155,7 @@ static void gl2_record_readback(gl2_t *gl, bool skip_in_menu)
 
    if (!(gl->flags & GL2_FLAG_GPU_RECORDING))
    {
-      glDeleteBuffers(4, gl->pbo_readback);
-      scaler_ctx_gen_reset(&gl->pbo_readback_scaler);
+      gl2_free_pbo_readback(gl);
       gl->flags &= ~GL2_FLAG_PBO_READBACK_ENABLE;
    }
 #ifdef HAVE_MENU
@@ -4078,8 +4181,7 @@ static void gl2_pbo_async_readback(gl2_t *gl)
    if ((unsigned)gl->pbo_readback_scaler.in_width != VIDEO_SCALE_W(gl->vp.dims)
          || (unsigned)gl->pbo_readback_scaler.in_height != VIDEO_SCALE_H(gl->vp.dims))
    {
-      glDeleteBuffers(4, gl->pbo_readback);
-      scaler_ctx_gen_reset(&gl->pbo_readback_scaler);
+      gl2_free_pbo_readback(gl);
       if (!gl2_init_pbo_readback(gl))
       {
          gl->flags &= ~GL2_FLAG_PBO_READBACK_ENABLE;
@@ -4091,12 +4193,22 @@ static void gl2_pbo_async_readback(gl2_t *gl)
    gl2_renderchain_bind_pbo(
          gl->pbo_readback[gl->pbo_readback_index]);
    gl->pbo_readback_valid[gl->pbo_readback_index] = true;
-   gl->pbo_readback_index = (gl->pbo_readback_index + 1) & 3;
 
    gl2_renderchain_readback(gl, gl->renderchain_data,
          gl2_get_alignment(VIDEO_SCALE_W(gl->vp.dims) * sizeof(uint32_t)),
          fmt, type, NULL);
    gl2_renderchain_unbind_pbo();
+
+#ifdef GL2_HW_RING_SYNC
+   if (gl->flags & GL2_FLAG_HAVE_SYNC)
+   {
+      if (gl->pbo_readback_sync[gl->pbo_readback_index])
+         glDeleteSync((GLsync)gl->pbo_readback_sync[gl->pbo_readback_index]);
+      gl->pbo_readback_sync[gl->pbo_readback_index] =
+            (void*)glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+   }
+#endif
+   gl->pbo_readback_index = (gl->pbo_readback_index + 1) & 3;
 }
 
 /* GLSL 1.20 scRGB encode: mirror of the glcore / hdr_sm5 SDR branch
@@ -4756,6 +4868,1055 @@ static retro_time_t gl2_get_last_present_time(void *data)
    return 0;
 }
 
+#if (defined(HAVE_OPENXR) && defined(ANDROID) && defined(HAVE_OPENGLES3)) \
+   || defined(HAVE_GL2_XR)
+/* A tracked map's eyes, each its rectangle of the core's frame drawn
+ * with the stock shader and no chain into dst's images from their
+ * origin, at the left eye's size within dims, shrunk if larger, as
+ * Vulkan draws them. Sampled, so any format gl2 draws will do; each
+ * image is cleared whole, as the compositor may read past the
+ * rectangle. The framebuffer to draw through is bound. */
+static void gl2_xr_draw_eye_images(gl2_t *gl,
+      const video_frame_info_t *video_info, const uint32_t *dst,
+      unsigned dims, unsigned *width, unsigned *height)
+{
+   unsigned e;
+   GLfloat coords[8];
+   const video_views_map_t *map = &video_info->views;
+   int l                        = video_info->headset_eye[0];
+   int r                        = video_info->headset_eye[1];
+   float tex_w                  = gl->tex_info.tex_size[0];
+   float tex_h                  = gl->tex_info.tex_size[1];
+   float frame_h                = gl->tex_info.input_size[1];
+   bool bottom_left             = (gl->vertex_ptr == vertexes);
+   unsigned w = MIN(map->views[l].width,  VIDEO_SCALE_W(dims));
+   unsigned h = MIN(map->views[l].height, VIDEO_SCALE_H(dims));
+
+   glBindTexture(GL_TEXTURE_2D, gl->tex_info.tex);
+   glDisable(GL_BLEND);
+   glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+   glViewport(0, 0, w, h);
+
+   gl->coords.vertex    = vertexes;
+   gl->coords.tex_coord = coords;
+   gl->coords.color     = gl->white_color_ptr;
+   gl->coords.vertices  = 4;
+   gl->shader->use(gl, gl->shader_data, VIDEO_SHADER_STOCK_BLEND, true);
+   gl->shader->set_mvp(gl->shader_data, &gl->mvp_no_rot);
+
+   for (e = 0; e < 2; e++)
+   {
+      const struct retro_video_view *v = &map->views[e ? r : l];
+      bool scaled = (v->width != w || v->height != h);
+      /* Scaled, the filter stays off the next rectangle's texels. */
+      float in    = scaled ? 0.5f : 0.0f;
+      float s0    = ((float)v->x + in) / tex_w;
+      float s1    = ((float)(v->x + v->width) - in) / tex_w;
+      float t0, t1;   /* the rows shown at the image's bottom and top */
+      GLint filter = scaled ? GL_LINEAR : GL_NEAREST;
+
+      if (bottom_left)
+      {
+         t0 = (frame_h - (float)(v->y + v->height) + in) / tex_h;
+         t1 = (frame_h - (float)v->y - in) / tex_h;
+      }
+      else
+      {
+         t0 = ((float)(v->y + v->height) - in) / tex_h;
+         t1 = ((float)v->y + in) / tex_h;
+      }
+      coords[0] = s0;
+      coords[1] = t0;
+      coords[2] = s1;
+      coords[3] = t0;
+      coords[4] = s0;
+      coords[5] = t1;
+      coords[6] = s1;
+      coords[7] = t1;
+
+      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+            GL_TEXTURE_2D, (GLuint)dst[e], 0);
+      glClear(GL_COLOR_BUFFER_BIT);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+      gl->shader->set_coords(gl->shader_data, &gl->coords);
+      glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+   }
+
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, gl->tex_min_filter);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, gl->tex_mag_filter);
+   gl->coords.vertex    = gl->vertex_ptr;
+   gl->coords.tex_coord = gl->tex_info.coord;
+   glViewport(VIDEO_POS_X(gl->vp.pos), VIDEO_POS_Y(gl->vp.pos), VIDEO_SCALE_W(gl->vp.dims), VIDEO_SCALE_H(gl->vp.dims));
+   *width  = w;
+   *height = h;
+}
+#endif
+
+#if defined(HAVE_OPENXR) && defined(ANDROID) && defined(HAVE_OPENGLES3)
+static void gl2_viewport_info(void *data, struct video_viewport *vp);
+
+static void gl2_xr_draw_eyes(gl2_t *gl, const video_frame_info_t *video_info)
+{
+   unsigned dims, w, h;
+   uint32_t dst[2];
+   const video_views_map_t *map = &video_info->views;
+   int l                        = video_info->headset_eye[0];
+   int r                        = video_info->headset_eye[1];
+
+   if (     l < 0 || r < 0
+         || l >= (int)map->num_views || r >= (int)map->num_views
+         || !gl_android_openxr_eye_targets(dst, &dims))
+      return;
+   if (!gl->xr_fbo)
+      glGenFramebuffers(1, &gl->xr_fbo);
+   glBindFramebuffer(GL_FRAMEBUFFER, gl->xr_fbo);
+   glDisable(GL_SCISSOR_TEST);
+   gl2_xr_draw_eye_images(gl, video_info, dst, dims, &w, &h);
+   glBindFramebuffer(GL_FRAMEBUFFER, 0);
+   gl_android_openxr_eyes_drawn(w, h);
+}
+
+static float gl2_get_headset_refresh(void *data, float *rates,
+      unsigned cap, unsigned *count)
+{
+   (void)data;
+   return gl_android_openxr_refresh(rates, cap, count);
+}
+#endif
+
+#ifdef HAVE_GL2_XR
+static void gl2_viewport_info(void *data, struct video_viewport *vp);
+
+/* Desktop headset output: the window as a screen in the room, or an
+ * untracked map's screens cut from it, and a tracked map's eyes as a
+ * projection, through gl_openxr's shared textures. The Quest's group
+ * above is its own: neither is built with the other. */
+typedef struct gl2_desktop_xr
+{
+   gl_openxr_t *host;
+   video_xr_quad_set_t set;
+   /* Where each slot's layers lie in the window, from its top left. */
+   video_views_rect_t rects[VIDEO_XR_MAX_SLOTS][2];
+   /* The slots the headset has an image for. */
+   bool published[VIDEO_XR_MAX_SLOTS];
+   GLuint fbo;
+   /* The core's last frame size: a repeat brings none. */
+   unsigned frame_dims;
+   unsigned recenter;
+   /* The headset paces frames, so the window presents without
+    * waiting; window_interval is what the window was asked for. */
+   int window_interval;
+   bool paced;
+   /* The headset was given a projection to show. */
+   bool proj_shown;
+   bool recenter_seen;
+   bool hdr_warned;
+} gl2_desktop_xr_t;
+
+/* Whether the map names two tracked eyes. */
+static bool gl2_desktop_xr_tracked(const video_frame_info_t *video_info)
+{
+   int l = video_info->headset_eye[0];
+   int r = video_info->headset_eye[1];
+   return l >= 0 && r >= 0
+      && l < (int)video_info->views.num_views
+      && r < (int)video_info->views.num_views;
+}
+
+/* Whether the projection can take the tracked eyes, as glcore's: at a
+ * size the runtime has not refused, and on a repeat only once it has
+ * them, or on a software repeat while none is shown, if the views the
+ * frame was drawn from still hold. Otherwise the window stays. */
+static bool gl2_desktop_xr_projection_ok(const gl2_t *gl, bool new_frame,
+      bool kept_frame)
+{
+   const gl2_desktop_xr_t *xr = gl->desktop_xr;
+   unsigned dims              = gl_openxr_eye_dims(xr->host);
+   return dims
+      && gl_openxr_slot_refused(xr->host, OPENXR_PROJECTION_SLOT) != dims
+      && (   new_frame || xr->proj_shown
+          || (kept_frame && gl_openxr_has_given(xr->host)));
+}
+
+/* A tracked map's eyes into the projection slot, a layer each, with
+ * the poses the core was given. */
+static bool gl2_desktop_xr_draw_eyes(gl2_t *gl,
+      const video_frame_info_t *video_info)
+{
+   unsigned w, h;
+   uint32_t dst[2];
+   openxr_projection_t p;
+   gl2_desktop_xr_t *xr = gl->desktop_xr;
+   unsigned dims        = gl_openxr_eye_dims(xr->host);
+
+   if (     !dims
+         || gl->tex_info.tex_size[0] <= 0.0f
+         || gl->tex_info.tex_size[1] <= 0.0f
+         || !gl_openxr_slot_target(xr->host, OPENXR_PROJECTION_SLOT, dims,
+            2, dst))
+      return false;
+   glBindFramebuffer(GL_FRAMEBUFFER, xr->fbo);
+   gl2_xr_draw_eye_images(gl, video_info, dst, dims, &w, &h);
+   gl_openxr_projection(xr->host, w, h, &p);
+   gl_openxr_slot_publish(xr->host, OPENXR_PROJECTION_SLOT, NULL, &p);
+   xr->proj_shown = true;
+   return true;
+}
+
+/* This frame's quads and where each is cut from the window: the window
+ * whole while the menu is open, without a map or while a tracked map's
+ * eyes are not the projection's, an untracked map's screens otherwise,
+ * and nothing while the eyes fill the headset. vp: where the window
+ * drew the frame; map: the frame has one that fits it. */
+static void gl2_desktop_xr_plan(gl2_t *gl,
+      const video_frame_info_t *video_info, const video_viewport_t *vp,
+      bool map, bool eyes)
+{
+   video_xr_params_t p;
+   gl2_desktop_xr_t *xr = gl->desktop_xr;
+   bool menu            = false;
+#ifdef HAVE_MENU
+   menu = (video_info->menu_st_flags & MENU_ST_FLAG_ALIVE) ? true : false;
+#endif
+
+   memset(&p, 0, sizeof(p));
+   if (!eyes || menu)
+   {
+      p.map           = map ? &video_info->views : NULL;
+      p.frame_dims    = gl->video_dims;
+      video_xr_pose_identity(&p.anchor);
+      p.distance      = video_info->headset_distance;
+      p.width         = video_info->headset_width;
+      p.px_per_rad    = gl_openxr_pixels_per_radian(xr->host);
+      p.max_dim       = gl_openxr_max_dim(xr->host);
+      p.screen_layout = video_info->screen_layout;
+      p.rotation      = gl->rotation / 90;
+      p.swap_eyes     = video_info->stereo_swap_eyes;
+      p.window        = true;
+   }
+   /* With no width, an empty set: the eyes are all there is. */
+   video_xr_place_window(&p, menu,
+         map && gl2_desktop_xr_tracked(video_info), vp, xr->frame_dims,
+         &xr->set, xr->rects);
+}
+
+/* The plan's rectangles out of the window's back buffer, which is
+ * bottom up, into each slot's textures, scaled to the slot's size; what
+ * lies past the window stays black. A slot the plan leaves out shows
+ * nothing more: at once, or with eyes once the projection shows. */
+static void gl2_desktop_xr_draw(gl2_t *gl, bool eyes)
+{
+   unsigned s, l;
+   gl2_desktop_xr_t *xr = gl->desktop_xr;
+   GLint full_h         = (GLint)VIDEO_SCALE_H(gl->video_dims);
+
+   glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+   for (s = 0; s < VIDEO_XR_MAX_SLOTS; s++)
+   {
+      uint32_t tex[2];
+      const video_xr_slot_t *plan = &xr->set.slots[s];
+      if (!plan->dims)
+      {
+         if (xr->published[s])
+         {
+            if (eyes)
+               gl_openxr_slot_yield(xr->host, s);
+            else
+               gl_openxr_slot_forget(xr->host, s);
+         }
+         xr->published[s] = false;
+         continue;
+      }
+      if (     gl_openxr_slot_refused(xr->host, s) == plan->dims
+            || !gl_openxr_slot_target(xr->host, s, plan->dims, plan->layers,
+               tex))
+         continue;
+      gl2_renderchain_bind_backbuffer();
+      glBindFramebuffer(GL_DRAW_FRAMEBUFFER, xr->fbo);
+      for (l = 0; l < plan->layers; l++)
+      {
+         const video_views_rect_t *r = &xr->rects[s][l];
+         GLint x = VIDEO_POS_X(r->pos);
+         GLint y = full_h - VIDEO_POS_Y(r->pos) - (GLint)VIDEO_SCALE_H(r->dims);
+         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+               GL_TEXTURE_2D, (GLuint)tex[l], 0);
+         glClear(GL_COLOR_BUFFER_BIT);
+         glBlitFramebuffer(x, y, x + (GLint)VIDEO_SCALE_W(r->dims),
+               y + (GLint)VIDEO_SCALE_H(r->dims), 0, 0,
+               (GLint)VIDEO_SCALE_W(plan->dims),
+               (GLint)VIDEO_SCALE_H(plan->dims),
+               GL_COLOR_BUFFER_BIT, GL_LINEAR);
+      }
+      gl_openxr_slot_publish(xr->host, s, &xr->set, NULL);
+      xr->published[s] = true;
+   }
+}
+
+/* Whether the headset shows this frame: a session it can see, its pixel
+ * density measured, and no HDR output, whose window is not what the
+ * headset's images hold. */
+static bool gl2_desktop_xr_ready(gl2_t *gl)
+{
+   unsigned s;
+   gl2_desktop_xr_t *xr = gl->desktop_xr;
+   if (     !gl_openxr_should_draw(xr->host)
+         || gl_openxr_pixels_per_radian(xr->host) <= 0.0f)
+      return false;
+   if (!gl->scrgb.active)
+      return true;
+   if (!xr->hdr_warned)
+   {
+      RARCH_WARN("[OpenXR] The headset shows nothing while HDR output is on.\n");
+      xr->hdr_warned = true;
+   }
+   /* Nothing, rather than its last frame. */
+   for (s = 0; s < VIDEO_XR_MAX_SLOTS; s++)
+   {
+      if (xr->published[s])
+         gl_openxr_slot_forget(xr->host, s);
+      xr->published[s] = false;
+   }
+   if (xr->proj_shown)
+      gl_openxr_slot_forget(xr->host, OPENXR_PROJECTION_SLOT);
+   xr->proj_shown = false;
+   return false;
+}
+
+/* While the headset paces the core, the window presents without
+ * waiting, and each core frame waits for the headset instead. */
+static void gl2_desktop_xr_pace_setup(gl2_t *gl,
+      const video_frame_info_t *video_info)
+{
+   gl2_desktop_xr_t *xr = gl->desktop_xr;
+   bool paced           = video_info->headset_interval != 0;
+   gl_openxr_set_pacing(xr->host, video_info->headset_interval);
+   gl_openxr_request_rate(xr->host, video_info->headset_request_hz);
+   if (paced == xr->paced)
+      return;
+   xr->paced = paced;
+   if (gl->ctx_driver->swap_interval)
+   {
+      int interval = paced ? 0 : xr->window_interval;
+      gl->ctx_driver->swap_interval(gl->ctx_data, interval);
+      gl2_present_vsynced = (interval != 0);
+   }
+   RARCH_LOG("[GL] Headset pacing %s.\n", paced
+         ? "on: the window presents without waiting" : "off");
+}
+
+/* The window this frame drew, before it is swapped, to the headset:
+ * what it shows of it, and a tracked map's eyes from the core's frame.
+ * frame: a core frame came, of dims; vp: where the window drew it. The
+ * window's framebuffer, scissor and blending are as they were. */
+static void gl2_desktop_xr_frame(gl2_t *gl,
+      const video_frame_info_t *video_info, bool frame, unsigned dims,
+      const video_viewport_t *vp)
+{
+   bool map, eyes;
+   GLboolean scissor, blend;
+   gl2_desktop_xr_t *xr = gl->desktop_xr;
+   bool new_frame       = frame && !video_info->frame_repeat;
+
+   /* A recenter request since the last frame, and where the screens are
+    * kept, go to the headset's frame. */
+   if (xr->recenter_seen && xr->recenter != video_info->headset_recenter)
+      gl_openxr_request_recenter(xr->host);
+   xr->recenter      = video_info->headset_recenter;
+   xr->recenter_seen = true;
+   gl_openxr_set_placement(xr->host, video_info->headset_placement);
+   gl2_desktop_xr_pace_setup(gl, video_info);
+   if (frame && dims)
+      xr->frame_dims = dims;
+   /* Views kept across a reinit drew only the frame a repeat shows. */
+   if (new_frame)
+      gl_openxr_new_frame(xr->host);
+   else
+      gl_openxr_place_kept(xr->host);
+   if (!gl2_desktop_xr_ready(gl))
+      return;
+
+   /* The map was checked against the core's frame; threaded video can
+    * crop it, and then the window is all there is to show. */
+   map  = video_views_fit_frame(&video_info->views, xr->frame_dims);
+   eyes = map && gl2_desktop_xr_tracked(video_info)
+      && gl2_desktop_xr_projection_ok(gl, new_frame, frame);
+   if (!xr->fbo)
+      glGenFramebuffers(1, &xr->fbo);
+   /* Neither the blits nor the clears are to be clipped. */
+   scissor = glIsEnabled(GL_SCISSOR_TEST);
+   blend   = glIsEnabled(GL_BLEND);
+   glDisable(GL_SCISSOR_TEST);
+   gl2_desktop_xr_plan(gl, video_info, vp, map, eyes);
+   gl2_desktop_xr_draw(gl, eyes);
+   /* A repeat draws the eyes only for a projection not shown yet, with
+    * the poses that drew them. Without eyes the projection goes, in
+    * order behind the window that takes its place; a repeat may be a
+    * video-thread redraw, which names no eyes. */
+   if (eyes && (new_frame || !xr->proj_shown))
+      gl2_desktop_xr_draw_eyes(gl, video_info);
+   else if (xr->proj_shown && !eyes && !video_info->frame_repeat)
+   {
+      gl_openxr_slot_forget(xr->host, OPENXR_PROJECTION_SLOT);
+      xr->proj_shown = false;
+   }
+
+   /* An attachment held would keep a replaced texture alive. */
+   glBindFramebuffer(GL_FRAMEBUFFER, xr->fbo);
+   glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+         GL_TEXTURE_2D, 0, 0);
+   gl2_renderchain_bind_backbuffer();
+   if (scissor)
+      glEnable(GL_SCISSOR_TEST);
+   if (blend)
+      glEnable(GL_BLEND);
+}
+
+/* Headset output from a context in the window's share group, when the
+ * setting is on and the context can do what it takes; the window as
+ * ever otherwise. The window's context is current. */
+static void gl2_desktop_xr_start(gl2_t *gl)
+{
+   gl2_desktop_xr_t *xr;
+   settings_t *settings = config_get_ptr();
+   if (!settings->bools.video_openxr_enable)
+      return;
+   /* The window's rectangles are scaled into the headset's images. */
+   if (     !(gl->flags & GL2_FLAG_HAVE_FBO)
+         || !(   gl->version_major >= 3
+              || gl_query_extension("ARB_framebuffer_object")))
+   {
+      RARCH_WARN("[OpenXR] This GL context has no framebuffer blits; no headset output.\n");
+      return;
+   }
+   if (!(xr = (gl2_desktop_xr_t*)calloc(1, sizeof(*xr))))
+      return;
+   if (     !(xr->host = gl_openxr_new(gl->ctx_driver, gl->ctx_data))
+         || !gl_openxr_start(xr->host))
+   {
+      gl_openxr_free(xr->host);
+      free(xr);
+      return;
+   }
+   /* With HDR output the headset is shown nothing: no HMD either. */
+   gl_openxr_set_hidden(xr->host, gl->scrgb.active);
+   gl->desktop_xr = xr;
+}
+
+/* Before the core's context and the window's: the XR thread stops and
+ * its context goes. The window's context is current. */
+static void gl2_desktop_xr_free(gl2_t *gl)
+{
+   gl2_desktop_xr_t *xr = gl->desktop_xr;
+   if (!xr)
+      return;
+   if (xr->fbo)
+      glDeleteFramebuffers(1, &xr->fbo);
+   gl_openxr_free(xr->host);
+   free(xr);
+   gl->desktop_xr = NULL;
+}
+
+/* The XR thread stops before the core destroys its context. */
+static void gl2_desktop_xr_context_destroying(void *data)
+{
+   gl2_t *gl = (gl2_t*)data;
+   if (gl && gl->desktop_xr)
+      gl_openxr_stop_thread(gl->desktop_xr->host);
+}
+
+static float gl2_desktop_xr_refresh(void *data, float *rates, unsigned cap,
+      unsigned *count)
+{
+   gl2_t *gl = (gl2_t*)data;
+   *count    = 0;
+   if (!gl || !gl->desktop_xr || !gl_openxr_alive(gl->desktop_xr->host))
+      return 0.0f;
+   *count = gl_openxr_refresh_rates(gl->desktop_xr->host, rates, cap);
+   return gl_openxr_refresh_rate(gl->desktop_xr->host);
+}
+#endif /* HAVE_GL2_XR */
+
+/* The buffers the frame textures are sized by, at side x side: as init
+ * sizes them, with an extra row on the clear's source */
+static bool gl2_frame_buffers_grow(gl2_t *gl, unsigned side)
+{
+   void *empty_buf = calloc((size_t)side * (side + 1), sizeof(uint32_t));
+   void *conv_buf  = calloc((size_t)side * side, sizeof(uint32_t));
+   if (!empty_buf || !conv_buf)
+   {
+      free(empty_buf);
+      free(conv_buf);
+      return false;
+   }
+   free(gl->empty_buf);
+   free(gl->conv_buffer);
+   gl->empty_buf   = empty_buf;
+   gl->conv_buffer = conv_buf;
+   gl->tex_dims    = VIDEO_SCALE_PACK(side, side);
+   return true;
+}
+
+/* The frame textures made again at tex_dims, with the render chain's
+ * passes around them */
+static void gl2_frame_textures_remake(gl2_t *gl)
+{
+   if (gl->flags & GL2_FLAG_FBO_INITED)
+      gl2_renderchain_deinit_fbo(gl,
+            (gl2_renderchain_data_t*)gl->renderchain_data);
+   glDeleteTextures(gl->textures, gl->texture);
+   gl->tex_index = 0;
+   gl2_init_textures(gl);
+   gl2_init_textures_data(gl);
+   gl2_renderchain_init(gl,
+         (gl2_renderchain_data_t*)gl->renderchain_data);
+}
+
+/* A software frame past the textures - a core past the geometry it
+ * declared - has them made again large enough, as glcore does: an
+ * upload past a texture's edge fills none of it. */
+static void gl2_frame_fit_textures(gl2_t *gl, unsigned width,
+      unsigned height)
+{
+   GLint max_size = 0;
+   unsigned side;
+   if (     (width  <= VIDEO_SCALE_W(gl->tex_dims)
+         &&  height <= VIDEO_SCALE_H(gl->tex_dims))
+         || (gl->flags & (GL2_FLAG_HW_RENDER_USE
+               | GL2_FLAG_SHARED_CONTEXT_USE)))
+      return;
+   side = next_pow2(MAX(width, height));
+   glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_size);
+   if (side > (unsigned)max_size || !gl2_frame_buffers_grow(gl, side))
+      return;
+   gl2_frame_textures_remake(gl);
+   RARCH_LOG("[GL] A %ux%u frame is past the textures: made again at "
+         "%ux%u.\n", width, height, side, side);
+}
+
+#ifdef GL2_VIEWS
+/* What a frame's placement draws read */
+struct gl2_views_draw
+{
+   const video_frame_info_t *video_info;
+   unsigned target_height;
+};
+
+static void gl2_views_draw_direct(gl2_t *gl,
+      const struct gl2_views_draw *d, unsigned view,
+      const video_views_rect_t *dst, const video_views_rect_t *cut);
+static bool gl2_views_target_make(gl2_t *gl, struct gl2_views_fbo *t,
+      unsigned dims);
+static bool gl2_views_target_retire(gl2_t *gl, struct gl2_views_fbo *t);
+
+/* The views compositor, with these calls bound in. Views are drawn
+ * straight from the frame, so their chain is the driver itself, never
+ * drawn. */
+#define VV_FN(name)                     gl2_vv_##name
+#define VV_DRV                          gl2_t
+#define VV_CHAIN                        void
+#define VV_CREATE_STOCK(drv)            ((void*)(drv))
+#define VV_SYNC_PARAMS(drv, c)          ((void)0)
+#define VV_DRAW                         struct gl2_views_draw
+#define VV_DIRECT(p, d, v, r, c)        gl2_views_draw_direct(p, d, v, r, c)
+#define VV_PASS(p, d, f, r, c, a)       ((void)0)
+#define VV_TARGET                       struct gl2_views_fbo
+#define VV_TARGET_MAKE(drv, t, dims)    gl2_views_target_make(drv, t, dims)
+#define VV_TARGET_RETIRE(drv, t)        gl2_views_target_retire(drv, t)
+#define VV_ROWS_UP
+#include "../video_views_draw.h"
+
+/* Views: not with HDR output or an HDR10 source, nor while a headset
+ * shows the frame, or without their programs */
+static bool gl2_views_allowed(const gl2_t *gl)
+{
+   return !gl->views.failed && !gl->scrgb.active
+      && !gl->video_info.source_hdr10
+#ifdef HAVE_GL2_XR
+      && !(gl->desktop_xr && gl_openxr_alive(gl->desktop_xr->host))
+#endif
+#ifdef HAVE_OPENXR
+      && !gl_android_openxr_active()
+#endif
+      ;
+}
+
+static void gl2_views_publish(gl2_t *gl)
+{
+   retro_atomic_store_release_int(&gl->views.allowed,
+         gl2_views_allowed(gl) ? 1 : 0);
+}
+
+/* Rect: the part of the texture drawn. Clamp: its first and last texel
+ * centres, so filtering stops at its edge as at a texture's. The canvas
+ * holds the left eye on its left half, the right eye on its right;
+ * anaglyph is Dubois' least-squares red/cyan, interlaced takes even rows
+ * from the left half, odd from the right. The UI layer is
+ * premultiplied. */
+static const char gl2_views_vert_src[] =
+   "attribute vec2 Pos;\n"
+   "attribute vec2 Tex;\n"
+   "uniform mat4 uMVP;\n"
+   "varying vec2 vTex;\n"
+   "void main()\n"
+   "{\n"
+   "   gl_Position = uMVP * vec4(Pos, 0.0, 1.0);\n"
+   "   vTex = Tex;\n"
+   "}\n";
+
+static const char gl2_views_frag_head[] =
+   "#ifdef GL_ES\n"
+   "#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
+   "precision highp float;\n"
+   "#else\n"
+   "precision mediump float;\n"
+   "#endif\n"
+   "#endif\n"
+   "uniform sampler2D uTex;\n"
+   "varying vec2 vTex;\n";
+
+static const char gl2_views_rect_src[] =
+   "uniform vec4 uClamp;\n"
+   "void main()\n"
+   "{\n"
+   "   gl_FragColor = vec4(texture2D(uTex,\n"
+   "         clamp(vTex, uClamp.xy, uClamp.zw)).rgb, 1.0);\n"
+   "}\n";
+
+static const char gl2_views_layer_src[] =
+   "void main()\n"
+   "{\n"
+   "   gl_FragColor = texture2D(uTex, vTex);\n"
+   "}\n";
+
+/* In two: C89 only guarantees 509 characters a literal. */
+static const char gl2_views_anaglyph_src[] =
+   "void main()\n"
+   "{\n"
+   "   vec2 uv = vec2(vTex.x * 0.5, vTex.y);\n"
+   "   vec3 l  = texture2D(uTex, uv).rgb;\n"
+   "   vec3 r  = texture2D(uTex, uv + vec2(0.5, 0.0)).rgb;\n";
+
+static const char gl2_views_anaglyph_src2[] =
+   "   vec3 c  = vec3(\n"
+   "         dot(l, vec3( 0.456100,  0.500484,  0.176381))\n"
+   "       + dot(r, vec3(-0.0434706, -0.0879388, -0.00155529)),\n"
+   "         dot(l, vec3(-0.0400822, -0.0378246, -0.0157589))\n"
+   "       + dot(r, vec3( 0.378476,   0.73364,   -0.0184503)),\n"
+   "         dot(l, vec3(-0.0152161, -0.0205971, -0.00546856))\n"
+   "       + dot(r, vec3(-0.0721527, -0.112961,   1.2264)));\n"
+   "   gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);\n"
+   "}\n";
+
+static const char gl2_views_interlaced_src[] =
+   "uniform float uHeight;\n"
+   "void main()\n"
+   "{\n"
+   "   float row = floor(vTex.y * uHeight);\n"
+   "   gl_FragColor = vec4(texture2D(uTex, vec2(vTex.x * 0.5\n"
+   "         + 0.5 * mod(row, 2.0), vTex.y)).rgb, 1.0);\n"
+   "}\n";
+
+/* A core context takes GLSL 1.50 */
+static const char gl2_views_vert_core[] =
+   "#version 150\n"
+   "#define attribute in\n"
+   "#define varying out\n";
+
+static const char gl2_views_frag_core[] =
+   "#version 150\n"
+   "#define varying in\n"
+   "#define texture2D texture\n"
+   "#define gl_FragColor FragColor\n"
+   "out vec4 FragColor;\n";
+
+static bool gl2_views_program(gl2_t *gl, struct gl2_views_prog *p,
+      const char *frag, const char *frag2)
+{
+   GLint status = 0;
+   GLuint vs, fs;
+   const char *src[4];
+   bool core = (gl->flags & GL2_FLAG_CORE_CONTEXT_IN_USE) ? true : false;
+
+   src[0] = core ? gl2_views_vert_core : "";
+   src[1] = gl2_views_vert_src;
+   if (!(vs = gl2_scrgb_compile_stage(GL_VERTEX_SHADER, src, 2)))
+      return false;
+   src[0] = core ? gl2_views_frag_core : "";
+   src[1] = gl2_views_frag_head;
+   src[2] = frag;
+   src[3] = frag2;
+   if (!(fs = gl2_scrgb_compile_stage(GL_FRAGMENT_SHADER, src, 4)))
+   {
+      glDeleteShader(vs);
+      return false;
+   }
+   p->prog = glCreateProgram();
+   glAttachShader(p->prog, vs);
+   glAttachShader(p->prog, fs);
+   glBindAttribLocation(p->prog, 0, "Pos");
+   glBindAttribLocation(p->prog, 1, "Tex");
+   glLinkProgram(p->prog);
+   glDeleteShader(vs);
+   glDeleteShader(fs);
+   glGetProgramiv(p->prog, GL_LINK_STATUS, &status);
+   if (!status)
+   {
+      glDeleteProgram(p->prog);
+      p->prog = 0;
+      return false;
+   }
+   p->loc_mvp    = glGetUniformLocation(p->prog, "uMVP");
+   p->loc_tex    = glGetUniformLocation(p->prog, "uTex");
+   p->loc_clamp  = glGetUniformLocation(p->prog, "uClamp");
+   p->loc_height = glGetUniformLocation(p->prog, "uHeight");
+   return true;
+}
+
+static bool gl2_views_target_retire(gl2_t *gl, struct gl2_views_fbo *t)
+{
+   (void)gl;
+   if (t->fbo)
+      gl2_delete_fb(1, &t->fbo);
+   if (t->tex)
+      glDeleteTextures(1, &t->tex);
+   t->fbo = 0;
+   t->tex = 0;
+   return true;
+}
+
+static void gl2_views_release(gl2_t *gl)
+{
+   if (gl->views.rect.prog)
+      glDeleteProgram(gl->views.rect.prog);
+   if (gl->views.layer.prog)
+      glDeleteProgram(gl->views.layer.prog);
+   if (gl->views.anaglyph.prog)
+      glDeleteProgram(gl->views.anaglyph.prog);
+   if (gl->views.interlaced.prog)
+      glDeleteProgram(gl->views.interlaced.prog);
+   if (gl->views.vbo)
+      glDeleteBuffers(1, &gl->views.vbo);
+   gl->views.rect.prog       = 0;
+   gl->views.layer.prog      = 0;
+   gl->views.anaglyph.prog   = 0;
+   gl->views.interlaced.prog = 0;
+   gl->views.vbo             = 0;
+   gl2_vv_target_drop(gl, &gl->views.canvas_target, &gl->views.canvas);
+   gl2_vv_target_drop(gl, &gl->views.ui_target, &gl->views.ui);
+}
+
+/* The programs views draw with, made on first use: most sessions never
+ * draw views. Without them the frame is drawn whole. */
+static void gl2_views_init(gl2_t *gl)
+{
+   gl->views.tried = true;
+#if defined(glCreateShader) && defined(glCreateProgram)
+   if (!glCreateShader || !glCreateProgram)
+   {
+      gl->views.failed = true;
+      return;
+   }
+#endif
+   glGenBuffers(1, &gl->views.vbo);
+   if (     gl->views.vbo
+         && gl2_views_program(gl, &gl->views.rect, gl2_views_rect_src, "")
+         && gl2_views_program(gl, &gl->views.layer, gl2_views_layer_src,
+            "")
+         && gl2_views_program(gl, &gl->views.anaglyph,
+            gl2_views_anaglyph_src, gl2_views_anaglyph_src2)
+         && gl2_views_program(gl, &gl->views.interlaced,
+            gl2_views_interlaced_src, ""))
+      return;
+   RARCH_WARN("[GL] Views can't be drawn: their shaders failed.\n");
+   gl2_views_release(gl);
+   gl->views.failed = true;
+}
+
+/* An FBO with an RGBA texture sized dims */
+static bool gl2_views_target_make(gl2_t *gl, struct gl2_views_fbo *t,
+      unsigned dims)
+{
+   GLint max_size = 0;
+   bool ok        = false;
+   unsigned w     = VIDEO_SCALE_W(dims);
+   unsigned h     = VIDEO_SCALE_H(dims);
+   glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_size);
+   if (     (gl->flags & GL2_FLAG_HAVE_FBO)
+         && w <= (unsigned)max_size && h <= (unsigned)max_size)
+   {
+      gl2_gen_fb(1, &t->fbo);
+      glGenTextures(1, &t->tex);
+      glBindTexture(GL_TEXTURE_2D, t->tex);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA,
+            GL_UNSIGNED_BYTE, NULL);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+      glBindTexture(GL_TEXTURE_2D, 0);
+      gl2_bind_fb(t->fbo);
+      gl2_fb_texture_2d(RARCH_GL_FRAMEBUFFER, RARCH_GL_COLOR_ATTACHMENT0,
+            GL_TEXTURE_2D, t->tex, 0);
+      ok = gl2_check_fb_status(RARCH_GL_FRAMEBUFFER)
+         == RARCH_GL_FRAMEBUFFER_COMPLETE;
+      gl2_renderchain_bind_backbuffer();
+   }
+   if (!ok)
+   {
+      RARCH_WARN("[GL] Views can't draw into a %ux%u image. "
+            "Drawing without it.\n", w, h);
+      gl2_views_target_retire(gl, t);
+   }
+   return ok;
+}
+
+/* A top-left rectangle as GL's x, y, width and height in a
+ * target_height-high target */
+static void gl2_views_gl_rect(const video_views_rect_t *r,
+      unsigned target_height, GLint *out)
+{
+   out[0] = VIDEO_POS_X(r->pos);
+   out[1] = (GLint)target_height
+      - (VIDEO_POS_Y(r->pos) + (GLint)VIDEO_SCALE_H(r->dims));
+   out[2] = (GLint)VIDEO_SCALE_W(r->dims);
+   out[3] = (GLint)VIDEO_SCALE_H(r->dims);
+}
+
+/* Draws the unit quad with p and mvp, sampling tex over tex_coords */
+static void gl2_views_quad(gl2_t *gl, const struct gl2_views_prog *p,
+      const math_matrix_4x4 *mvp, const GLfloat *tex_coords)
+{
+   unsigned k;
+   GLfloat data[16];
+   for (k = 0; k < 4; k++)
+   {
+      data[k * 4 + 0] = vertexes[k * 2 + 0];
+      data[k * 4 + 1] = vertexes[k * 2 + 1];
+      data[k * 4 + 2] = tex_coords[k * 2 + 0];
+      data[k * 4 + 3] = tex_coords[k * 2 + 1];
+   }
+   glUseProgram(p->prog);
+   if (p->loc_mvp >= 0)
+      glUniformMatrix4fv(p->loc_mvp, 1, GL_FALSE, mvp->data);
+   if (p->loc_tex >= 0)
+      glUniform1i(p->loc_tex, 0);
+   glBindBuffer(GL_ARRAY_BUFFER, gl->views.vbo);
+   glBufferData(GL_ARRAY_BUFFER, sizeof(data), data, GL_STREAM_DRAW);
+   glEnableVertexAttribArray(0);
+   glEnableVertexAttribArray(1);
+   glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat),
+         (const GLvoid*)0);
+   glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat),
+         (const GLvoid*)(2 * sizeof(GLfloat)));
+   glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+   glDisableVertexAttribArray(0);
+   glDisableVertexAttribArray(1);
+   glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
+/* View @view of the frame over @dst, cut to @cut, as the stock shader
+ * draws the frame: the same texels, the same filter, stopping at the
+ * view's edge as at a texture's. */
+static void gl2_views_draw_direct(gl2_t *gl,
+      const struct gl2_views_draw *d, unsigned view,
+      const video_views_rect_t *dst, const video_views_rect_t *cut)
+{
+   GLint vp[4], sc[4];
+   GLfloat coords[8];
+   const struct retro_video_view *v = &d->video_info->views.views[view];
+   float tw      = gl->tex_info.tex_size[0];
+   float th      = gl->tex_info.tex_size[1];
+   float frame_h = gl->tex_info.input_size[1];
+   float s0      = (float)v->x / tw;
+   float s1      = (float)(v->x + v->width) / tw;
+   float t0, t1; /* the rows at the view's bottom and top */
+
+   /* A hardware frame's rows count from its bottom */
+   if (gl->vertex_ptr == vertexes)
+   {
+      t0 = (frame_h - (float)(v->y + v->height)) / th;
+      t1 = (frame_h - (float)v->y) / th;
+   }
+   else
+   {
+      t0 = (float)(v->y + v->height) / th;
+      t1 = (float)v->y / th;
+   }
+   coords[0] = s0;
+   coords[1] = t0;
+   coords[2] = s1;
+   coords[3] = t0;
+   coords[4] = s0;
+   coords[5] = t1;
+   coords[6] = s1;
+   coords[7] = t1;
+
+   gl2_views_gl_rect(dst, d->target_height, vp);
+   gl2_views_gl_rect(cut, d->target_height, sc);
+   glViewport(vp[0], vp[1], vp[2], vp[3]);
+   glScissor(sc[0], sc[1], sc[2], sc[3]);
+   glUseProgram(gl->views.rect.prog);
+   if (gl->views.rect.loc_clamp >= 0)
+      glUniform4f(gl->views.rect.loc_clamp,
+            s0 + 0.5f / tw, MIN(t0, t1) + 0.5f / th,
+            s1 - 0.5f / tw, MAX(t0, t1) - 0.5f / th);
+   gl2_views_quad(gl, &gl->views.rect, &gl->mvp, coords);
+}
+
+/* Whether this frame draws its views, with each drawn view's chain
+ * picked; in *blend whether they draw into the canvas. */
+static bool gl2_views_setup(gl2_t *gl, const video_frame_info_t *video_info,
+      const void *frame, bool *blend, void **chains)
+{
+   video_views_rect_t rects[RETRO_VIDEO_VIEWS_MAX];
+   bool views;
+   const video_views_layout_t *layout = &video_info->views_layout;
+   bool offscreen = video_info->views.num_views && layout->offscreen;
+
+   if (video_info->views.num_views && !gl->views.tried)
+      gl2_views_init(gl);
+   /* Anaglyph and interlaced draw both eyes into the canvas, or without
+    * one only the left eye's area into the window. */
+   *blend = offscreen && !gl->views.failed
+      && gl2_vv_target_ensure(gl, &gl->views.canvas_target,
+            &gl->views.canvas, layout->canvas_dims);
+   /* A real frame without the blend modes frees the canvas. */
+   if (frame && !offscreen)
+      gl2_vv_target_drop(gl, &gl->views.canvas_target, &gl->views.canvas);
+   /* The frame drawn whole for a preset or one of its FBO passes. */
+   views = video_info->views.num_views
+      && gl2_views_allowed(gl)
+      && !gl->views.preset
+      && !(gl->flags & GL2_FLAG_FBO_INITED)
+      && video_views_fit_frame(&video_info->views, VIDEO_SCALE_PACK(
+               (unsigned)gl->tex_info.input_size[0],
+               (unsigned)gl->tex_info.input_size[1]))
+      && gl2_vv_pick_chains(gl, &gl->views.chains, &video_info->views,
+            layout, true, *blend || !layout->offscreen,
+            *blend ? layout->canvas_dims : video_info->dims, chains, rects);
+   *blend = views && *blend;
+   if (views && !gl->views.direct_seen)
+   {
+      gl->views.direct_seen = true;
+      RARCH_LOG("[GL] Views drawn straight from the frame.\n");
+   }
+   return views;
+}
+
+/* Draws the frame's views into the back buffer, sized dims, or with
+ * blend into the canvas, whose halves one pass then blends into the
+ * back buffer. */
+static void gl2_views_render(gl2_t *gl,
+      const video_frame_info_t *video_info, void *const *chains, bool blend)
+{
+   struct gl2_views_draw d;
+   const video_views_layout_t *layout = &video_info->views_layout;
+   unsigned dims                      = video_info->dims;
+   unsigned target_dims               = blend ? layout->canvas_dims : dims;
+
+   if (blend)
+      gl2_bind_fb(gl->views.canvas.fbo);
+   else
+      gl2_renderchain_bind_backbuffer();
+   glDisable(GL_BLEND);
+   glDisable(GL_SCISSOR_TEST);
+   glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+   glClear(GL_COLOR_BUFFER_BIT);
+   glEnable(GL_SCISSOR_TEST);
+   glActiveTexture(GL_TEXTURE0);
+   glBindTexture(GL_TEXTURE_2D, gl->tex_info.tex);
+
+   d.video_info    = video_info;
+   d.target_height = VIDEO_SCALE_H(target_dims);
+   gl2_vv_draw_placements(gl, &d, layout, chains,
+         blend || !layout->offscreen, target_dims, true, blend);
+   glDisable(GL_SCISSOR_TEST);
+
+   if (blend)
+   {
+      const struct gl2_views_prog *p =
+         (layout->stereo_mode == VIDEO_STEREO_MODE_INTERLACED)
+         ? &gl->views.interlaced : &gl->views.anaglyph;
+      gl2_renderchain_bind_backbuffer();
+      glViewport(0, 0, VIDEO_SCALE_W(dims), VIDEO_SCALE_H(dims));
+      glBindTexture(GL_TEXTURE_2D, gl->views.canvas.tex);
+      glUseProgram(p->prog);
+      if (p->loc_height >= 0)
+         glUniform1f(p->loc_height,
+               (float)VIDEO_SCALE_H(layout->canvas_dims));
+      gl2_views_quad(gl, p, &gl->mvp_no_rot, tex_coords);
+   }
+
+   /* The frame's program, as the frame's own draw leaves it */
+   gl->shader->use(gl, gl->shader_data, 1, true);
+   glBindTexture(GL_TEXTURE_2D, gl->tex_info.tex);
+   /* What follows, a non-fullscreen overlay for one, draws in the
+    * current viewport. */
+   glViewport(VIDEO_POS_X(gl->vp.pos), VIDEO_POS_Y(gl->vp.pos),
+         VIDEO_SCALE_W(gl->vp.dims), VIDEO_SCALE_H(gl->vp.dims));
+}
+
+/* Moves UI drawing into the UI layer, laid out at one eye's size */
+static void gl2_views_ui_begin(gl2_t *gl, video_frame_info_t *video_info)
+{
+   const video_views_layout_t *layout = &video_info->views_layout;
+   /* Only full side by side places it unscaled. */
+   GLint filter = (layout->stereo_mode == VIDEO_STEREO_MODE_SBS_FULL)
+      ? GL_NEAREST : GL_LINEAR;
+
+   glBindTexture(GL_TEXTURE_2D, gl->views.ui.tex);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+   glBindTexture(GL_TEXTURE_2D, 0);
+
+   gl2_bind_fb(gl->views.ui.fbo);
+   glDisable(GL_SCISSOR_TEST);
+   glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+   glClear(GL_COLOR_BUFFER_BIT);
+
+   /* Menus and widgets size from video_info->dims, fonts from
+    * video_dims. */
+   video_views_ui_enter(&gl->views.saved, &video_info->dims,
+         &gl->video_dims, layout->ui_dims);
+   gl->views.ui_pass = true;
+   gl2_set_viewport(gl, video_info->dims, true, true);
+}
+
+/* Back onto the back buffer, and the UI layer into each eye's area. It
+ * was drawn over transparent black, so its colour is premultiplied. */
+static void gl2_views_ui_end(gl2_t *gl, video_frame_info_t *video_info)
+{
+   unsigned a;
+   const video_views_layout_t *layout = &video_info->views_layout;
+
+   gl->views.ui_pass = false;
+   video_views_ui_leave(&gl->views.saved, &video_info->dims,
+         &gl->video_dims);
+
+   gl2_renderchain_bind_backbuffer();
+   glDisable(GL_SCISSOR_TEST);
+   glEnable(GL_BLEND);
+   glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+   glBlendEquation(GL_FUNC_ADD);
+   glBindTexture(GL_TEXTURE_2D, gl->views.ui.tex);
+   for (a = 0; a < layout->num_areas; a++)
+   {
+      GLint vp[4];
+      gl2_views_gl_rect(&layout->areas[a],
+            VIDEO_SCALE_H(video_info->dims), vp);
+      glViewport(vp[0], vp[1], vp[2], vp[3]);
+      gl2_views_quad(gl, &gl->views.layer, &gl->mvp_no_rot, tex_coords);
+   }
+   glUseProgram(0);
+   glDisable(GL_BLEND);
+   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+   glBindTexture(GL_TEXTURE_2D, gl->tex_info.tex);
+   /* gl->vp is the window again, for the readbacks after. */
+   gl2_set_viewport(gl, video_info->dims, false, true);
+}
+#endif
+
 static bool gl2_frame(void *data, const void *frame,
       unsigned dims,
       uint64_t frame_count,
@@ -4786,6 +5947,17 @@ static bool gl2_frame(void *data, const void *frame,
 #endif
    bool overlay_behind_menu            = video_info->overlay_behind_menu;
    bool video_scale_integer            = video_info->scale_integer;
+   bool views_per_eye                  = false;
+#ifdef GL2_VIEWS
+   void *view_chains[RETRO_VIDEO_VIEWS_MAX];
+   bool views                          = false;
+   bool views_blend                    = false;
+   bool views_ui                       = false;
+#endif
+#if (defined(HAVE_OPENXR) && defined(ANDROID) && defined(HAVE_OPENGLES3)) \
+   || defined(HAVE_GL2_XR)
+   video_viewport_t xr_vp;
+#endif
 
    if (!gl)
       return false;
@@ -4859,6 +6031,9 @@ static bool gl2_frame(void *data, const void *frame,
    /* Apparently the viewport is lost each frame, thanks Apple. */
    gl2_set_viewport(gl, VIDEO_SCALE_PACK(width, height), false, true);
 #endif
+
+   if (frame && !(gl->flags & GL2_FLAG_HW_RENDER_FBO_INIT))
+      gl2_frame_fit_textures(gl, frame_width, frame_height);
 
    /* Render to texture in first pass. */
    if (gl->flags & GL2_FLAG_FBO_INITED)
@@ -5021,6 +6196,22 @@ static bool gl2_frame(void *data, const void *frame,
       SET_TEXTURE_COORDS(feedback_info.coord, xamt, yamt);
    }
 
+#ifdef GL2_VIEWS
+   views = gl2_views_setup(gl, video_info, frame, &views_blend, view_chains);
+   /* gl->vp is the whole window while views draw. */
+   if (views != gl->views.active)
+   {
+      gl->views.active = views;
+      gl2_set_viewport(gl, VIDEO_SCALE_PACK(width, height), false, true);
+   }
+   retro_atomic_store_release_int(&gl->views.fallback,
+         (video_info->views.num_views && !views) ? 1 : 0);
+   gl2_views_publish(gl);
+   if (views)
+      gl2_views_render(gl, video_info, view_chains, views_blend);
+   else
+#endif
+   {
    glClear(GL_COLOR_BUFFER_BIT);
 
    params.vp_dims          = gl->out_vp_dims;
@@ -5049,6 +6240,13 @@ static bool gl2_frame(void *data, const void *frame,
             chain,
             frame_count, &gl->tex_info, &feedback_info,
             video_scale_integer);
+   }
+
+#if (defined(HAVE_OPENXR) && defined(ANDROID) && defined(HAVE_OPENGLES3)) \
+   || defined(HAVE_GL2_XR)
+   /* Where the frame is, before the UI sets viewports of its own. */
+   gl2_viewport_info(gl, &xr_vp);
+#endif
 
 #ifdef __EMSCRIPTEN__
    /* Workaround for a chromium-specific bug */
@@ -5079,9 +6277,40 @@ static bool gl2_frame(void *data, const void *frame,
          gl2_record_readback(gl, false);
    }
 
+#ifdef GL2_VIEWS
+   /* As the main thread laid the UI out, also in a frame drawn whole:
+    * it lays out later frames whole once it reads the fallback. */
+   views_per_eye = video_views_ui_per_eye(&video_info->views,
+         &video_info->views_layout, gl2_views_allowed(gl));
+   /* A real frame without it frees the UI layer. */
+   if (frame && !views_per_eye)
+      gl2_vv_target_drop(gl, &gl->views.ui_target, &gl->views.ui);
+   /* Drawn and composited only when there is UI; overlays are hidden.
+    * No directive inside the macro's arguments: MSVC's preprocessor
+    * takes it as tokens. */
+#ifdef HAVE_GFX_WIDGETS
+   views_ui = VIDEO_VIEWS_UI_WANTED(views_per_eye,
+         (gl->flags & GL2_FLAG_MENU_TEXTURE_ENABLE), msg, statistics_show,
+         widgets_active && gfx_widgets_visible(video_info))
+#else
+   views_ui = VIDEO_VIEWS_UI_WANTED(views_per_eye,
+         (gl->flags & GL2_FLAG_MENU_TEXTURE_ENABLE), msg, statistics_show,
+         false)
+#endif
+      && gl2_vv_target_ensure(gl, &gl->views.ui_target, &gl->views.ui,
+            video_info->views_layout.ui_dims);
+#endif
+
+   /* Touch overlays would straddle both eyes. */
 #ifdef HAVE_OVERLAY
-   if ((gl->flags & GL2_FLAG_OVERLAY_ENABLE) && overlay_behind_menu)
+   if (     (gl->flags & GL2_FLAG_OVERLAY_ENABLE) && overlay_behind_menu
+         && !views_per_eye)
       gl2_render_overlay(gl);
+#endif
+
+#ifdef GL2_VIEWS
+   if (views_ui)
+      gl2_views_ui_begin(gl, video_info);
 #endif
 
 #if defined(HAVE_MENU)
@@ -5101,7 +6330,8 @@ static bool gl2_frame(void *data, const void *frame,
 #endif
 
 #ifdef HAVE_OVERLAY
-   if ((gl->flags & GL2_FLAG_OVERLAY_ENABLE) && !overlay_behind_menu)
+   if (     (gl->flags & GL2_FLAG_OVERLAY_ENABLE) && !overlay_behind_menu
+         && !views_per_eye)
       gl2_render_overlay(gl);
 #endif
 
@@ -5112,6 +6342,11 @@ static bool gl2_frame(void *data, const void *frame,
 
    if (msg && *msg)
       font_driver_render_msg(gl, msg, strlen(msg), NULL, NULL);
+
+#ifdef GL2_VIEWS
+   if (views_ui)
+      gl2_views_ui_end(gl, video_info);
+#endif
 
    if (gl->ctx_driver->update_window_title)
       gl->ctx_driver->update_window_title(gl->ctx_data);
@@ -5248,6 +6483,37 @@ static bool gl2_frame(void *data, const void *frame,
       gl->retained_dark  = 0;
    }
 
+#if defined(HAVE_OPENXR) && defined(ANDROID) && defined(HAVE_OPENGLES3)
+   gl_android_openxr_recenter(video_info->headset_recenter);
+   gl_android_openxr_set_placement(video_info->headset_placement,
+         video_info->headset_distance, video_info->headset_width);
+   gl_android_openxr_set_pacing(video_info->input_driver_nonblock_state
+         ? 0 : video_info->headset_interval, video_info->headset_request_hz);
+   gl_android_openxr_set_views(&video_info->views, dims, &xr_vp,
+         gl->rotation / 90, video_info->screen_layout,
+         video_info->stereo_swap_eyes);
+   if (gl_android_openxr_active())
+   {
+      bool new_frame = frame && !video_info->frame_repeat;
+      /* Views kept across a reinit drew only the frame a repeat shows. */
+      if (new_frame)
+         gl_android_openxr_new_frame();
+      else
+         gl_android_openxr_place_kept();
+      /* A dupe's image was drawn from older poses than the core's last:
+       * a repeat that carries a software frame draws its eyes only while
+       * none are shown, with the views that frame was drawn from. */
+      if (new_frame || (frame && gl_android_openxr_repeat_eyes()))
+         gl2_xr_draw_eyes(gl, video_info);
+   }
+#endif
+#ifdef HAVE_GL2_XR
+   /* The back buffer is what the window shows until the swap. Not from
+    * the BFI light dupes, which would only copy the same image. */
+   if (gl->desktop_xr && !(gl->flags & GL2_FLAG_FRAME_DUPE_LOCK))
+      gl2_desktop_xr_frame(gl, video_info, frame != NULL, dims, &xr_vp);
+#endif
+
     gl2_hw_ring_drawn(gl);
     gl2_present_wait = 0;
     if (gl->ctx_driver->swap_buffers)
@@ -5267,6 +6533,10 @@ static bool gl2_frame(void *data, const void *frame,
          && !video_info->input_driver_nonblock_state
          && !video_info->runloop_is_slowmotion
          && !video_info->runloop_is_paused
+#ifdef HAVE_OPENXR
+         /* Each would end another headset frame. */
+         && !gl_android_openxr_active()
+#endif
          && !(gl->flags & GL2_FLAG_MENU_TEXTURE_ENABLE))
    {
       unsigned n;
@@ -5331,6 +6601,19 @@ static bool gl2_frame(void *data, const void *frame,
       gl2_renderchain_fence_iterate(gl, chain,
             hard_sync_frames);
    }
+
+#ifdef HAVE_GL2_XR
+   /* In place of the window's vsync: once a core frame, never under
+    * fast-forward. */
+   if (     gl->desktop_xr && gl->desktop_xr->paced
+         && !(gl->flags & GL2_FLAG_FRAME_DUPE_LOCK))
+   {
+      if (input_driver_nonblock_state)
+         gl_openxr_pace_skip(gl->desktop_xr->host);
+      else
+         gl_openxr_pace_wait(gl->desktop_xr->host);
+   }
+#endif
 
 #ifndef HAVE_OPENGLES
    if (gl->flags & GL2_FLAG_CORE_CONTEXT_IN_USE)
@@ -5414,6 +6697,9 @@ static void gl2_free(void *data)
 
    if (gl->flags & GL2_FLAG_SHARED_CONTEXT_USE)
       gl->ctx_driver->bind_hw_render(gl->ctx_data, false);
+#ifdef HAVE_GL2_XR
+   gl2_desktop_xr_free(gl);
+#endif
 
    if (gl->flags & GL2_FLAG_HAVE_SYNC)
       gl2_renderchain_fence_free(gl,
@@ -5424,14 +6710,28 @@ static void gl2_free(void *data)
    gl->shader->deinit(gl->shader_data);
 
    gl2_scrgb_deinit(gl);
+#ifdef GL2_VIEWS
+   gl2_views_release(gl);
+#endif
+#ifdef HAVE_GL_PLANAR
+   gl_planar_free(&gl->planar);
+#endif
 #if !defined(HAVE_OPENGLES) && !defined(HAVE_PSGL)
    gl2_fp16_forget_all();
 #endif
 #ifdef HAVE_GL_TEXTURE_LEND
    gl_texture_lend_free(&gl->lend);
 #endif
+#ifdef HAVE_GL_FRAME_MEM
+   gl_sw_fb_free(gl->frame_mem, &gl->sw_fb);
+   gl_frame_mem_destroy(&gl->frame_mem);
+#endif
 
    glDeleteTextures(gl->textures, gl->texture);
+#if defined(HAVE_OPENXR) && defined(ANDROID) && defined(HAVE_OPENGLES3)
+   if (gl->xr_fbo)
+      glDeleteFramebuffers(1, &gl->xr_fbo);
+#endif
 
 #if defined(HAVE_MENU)
    if (gl->menu_texture)
@@ -5458,8 +6758,7 @@ static void gl2_free(void *data)
 
    if (gl->flags & GL2_FLAG_PBO_READBACK_ENABLE)
    {
-      glDeleteBuffers(4, gl->pbo_readback);
-      scaler_ctx_gen_reset(&gl->pbo_readback_scaler);
+      gl2_free_pbo_readback(gl);
    }
 
 #ifndef HAVE_OPENGLES
@@ -5504,6 +6803,15 @@ static void gl2_set_nonblock_state(
          interval               = swap_interval;
       if (interval == 1 && adaptive_vsync_enabled)
          interval = -1;
+#ifdef HAVE_GL2_XR
+      /* Kept for when the headset stops pacing. */
+      if (gl->desktop_xr)
+      {
+         gl->desktop_xr->window_interval = interval;
+         if (gl->desktop_xr->paced)
+            interval = 0;
+      }
+#endif
       gl->ctx_driver->swap_interval(gl->ctx_data, interval);
       gl2_present_vsynced = (interval != 0);
    }
@@ -5654,6 +6962,26 @@ static INLINE void gl2_set_texture_fmts(gl2_t *gl, bool rgb32)
 #endif
 }
 
+static void gl2_pbo_readback_free_syncs(gl2_t *gl)
+{
+#ifdef GL2_HW_RING_SYNC
+   int i;
+   for (i = 0; i < 4; i++)
+   {
+      if (gl->pbo_readback_sync[i])
+         glDeleteSync((GLsync)gl->pbo_readback_sync[i]);
+      gl->pbo_readback_sync[i] = NULL;
+   }
+#endif
+}
+
+static void gl2_free_pbo_readback(gl2_t *gl)
+{
+   gl2_pbo_readback_free_syncs(gl);
+   glDeleteBuffers(4, gl->pbo_readback);
+   scaler_ctx_gen_reset(&gl->pbo_readback_scaler);
+}
+
 static bool gl2_init_pbo_readback(gl2_t *gl)
 {
 #if !defined(HAVE_OPENGLES2) && !defined(HAVE_PSGL)
@@ -5661,6 +6989,7 @@ static bool gl2_init_pbo_readback(gl2_t *gl)
 
    gl->pbo_readback_index = 0;
    memset(gl->pbo_readback_valid, 0, sizeof(gl->pbo_readback_valid));
+   gl2_pbo_readback_free_syncs(gl);
    glGenBuffers(4, gl->pbo_readback);
 
    for (i = 0; i < 4; i++)
@@ -6381,6 +7710,12 @@ static void *gl2_init(const video_info_t *video)
       goto error;
    }
 
+#ifdef HAVE_GL2_XR
+   gl2_desktop_xr_start(gl);
+   if (gl->desktop_xr)
+      gl->desktop_xr->window_interval = interval;
+#endif
+
    /* Init leaves the core's context current for context_reset on this
     * thread; when the wrapper's ring will drive the core, the main
     * thread takes that context itself and this one must not hold it. */
@@ -6569,6 +7904,7 @@ static bool gl2_set_shader(void *data,
 
       gl->shader       = init_data.shader;
       gl->shader_data  = init_data.shader_data;
+      gl->views.preset = false;
 
       RARCH_WARN("[GL] Failed to set multipass shader. Falling back to stock.\n");
 
@@ -6577,6 +7913,7 @@ static bool gl2_set_shader(void *data,
 
    gl->shader       = init_data.shader;
    gl->shader_data  = init_data.shader_data;
+   gl->views.preset = path && *path;
 
    gl2_update_tex_filter_frame(gl, video_smooth);
 
@@ -6683,8 +8020,7 @@ static bool gl2_record_read(void *data, uint8_t *buffer)
    {
       if (gl->flags & GL2_FLAG_PBO_READBACK_ENABLE)
       {
-         glDeleteBuffers(4, gl->pbo_readback);
-         scaler_ctx_gen_reset(&gl->pbo_readback_scaler);
+         gl2_free_pbo_readback(gl);
       }
       gl->flags |= GL2_FLAG_PBO_READBACK_ENABLE;
       if (!gl2_init_pbo_readback(gl))
@@ -6909,7 +8245,7 @@ static void gl2_load_texture_fp16(GLuint id,
 #endif
 
 static void video_texture_load_gl2(
-      struct texture_image *ti,
+      const struct texture_image *ti,
       enum texture_filter_type filter_type,
       uintptr_t *idptr)
 {
@@ -6948,6 +8284,26 @@ static void video_texture_load_gl2(
          ti ? ti->pix10 : false);
 }
 
+/* A texture of @ti: a planar frame converted on the GPU, anything else
+ * uploaded as it is */
+static void gl2_texture_load(gl2_t *gl, const struct texture_image *ti,
+      enum texture_filter_type filter_type, uintptr_t *id)
+{
+   *id = 0;
+   if (ti->planar)
+   {
+#ifdef HAVE_GL_PLANAR
+      if (gl)
+         *id = gl_planar_load(&gl->planar, ti,
+               filter_type != TEXTURE_FILTER_NEAREST
+               && filter_type != TEXTURE_FILTER_MIPMAP_NEAREST,
+               (gl->flags & GL2_FLAG_CORE_CONTEXT_IN_USE) != 0);
+#endif
+      return;
+   }
+   video_texture_load_gl2(ti, filter_type, id);
+}
+
 #ifdef HAVE_THREADS
 typedef struct
 {
@@ -6967,7 +8323,7 @@ static uintptr_t video_texture_load_wrap_gl2_mipmap(void *data)
       gl->ctx_driver->make_current(false);
 
    if (image)
-      video_texture_load_gl2((struct texture_image*)image,
+      gl2_texture_load(gl, (struct texture_image*)image,
             TEXTURE_FILTER_MIPMAP_LINEAR, &id);
    return (int)id;
 }
@@ -6983,7 +8339,7 @@ static uintptr_t video_texture_load_wrap_gl2(void *data)
       gl->ctx_driver->make_current(false);
 
    if (image)
-      video_texture_load_gl2((struct texture_image*)image,
+      gl2_texture_load(gl, (struct texture_image*)image,
             TEXTURE_FILTER_LINEAR, &id);
    return (int)id;
 }
@@ -7005,6 +8361,10 @@ static uintptr_t video_texture_unload_wrap_gl2(void *data)
 #ifdef HAVE_GL_TEXTURE_LEND
    if (gl)
       gl_texture_lend_forget(&gl->lend, glid);
+#endif
+#ifdef HAVE_GL_PLANAR
+   if (gl)
+      gl_planar_forget(&gl->planar, glid);
 #endif
    glDeleteTextures(1, &glid);
    return 0;
@@ -7038,7 +8398,8 @@ static uintptr_t gl2_load_texture(void *video_data, void *data,
    }
 #endif
 
-   video_texture_load_gl2((struct texture_image*)data, filter_type, &id);
+   gl2_texture_load((gl2_t*)video_data, (struct texture_image*)data,
+         filter_type, &id);
    return id;
 }
 
@@ -7071,6 +8432,10 @@ static void gl2_unload_texture(void *data,
    if (data)
       gl_texture_lend_forget(&((gl2_t*)data)->lend, glid);
 #endif
+#ifdef HAVE_GL_PLANAR
+   if (data)
+      gl_planar_forget(&((gl2_t*)data)->planar, glid);
+#endif
    glDeleteTextures(1, &glid);
 }
 
@@ -7085,6 +8450,16 @@ static enum video_texture_update gl2_update_texture_internal(gl2_t *gl,
    const void *pixels = ti->pixels;
 #ifdef HAVE_GL_TEXTURE_LEND
    int lent           = -1;
+#endif
+   if (ti->planar)
+   {
+#ifdef HAVE_GL_PLANAR
+      if (gl && gl_planar_update(&gl->planar, (unsigned)id, ti))
+         return VIDEO_TEXTURE_UPDATE_DONE;
+#endif
+      return VIDEO_TEXTURE_UPDATE_REFUSED;
+   }
+#ifdef HAVE_GL_TEXTURE_LEND
    /* A lent slot holding the frame: uploaded from its buffer */
    if (gl && gl->lend
          && (lent = gl_texture_lend_bind(gl->lend, (unsigned)id, pixels)) != -1)
@@ -7133,7 +8508,7 @@ static uintptr_t video_texture_update_wrap_gl2(void *data)
 static enum video_texture_update gl2_update_texture(void *video_data,
       uintptr_t id, const struct texture_image *ti, bool threaded)
 {
-   if (!id || !ti || !ti->pixels)
+   if (!id || !ti || (!ti->pixels && !ti->planar))
       return VIDEO_TEXTURE_UPDATE_REFUSED;
 #if !defined(HAVE_OPENGLES) && !defined(HAVE_PSGL)
    /* Half floats only into half-float storage, and only there: the
@@ -7179,9 +8554,110 @@ static bool gl2_texture_lend_ready(void *data, uintptr_t id,
 }
 #endif
 
+#ifdef HAVE_GL_FRAME_MEM
+/* Whether gl2_renderchain_copy_frame uploads a software frame out of
+ * frame memory as it is, rather than the CPU reading it first (to
+ * convert it, repack it, or hand it to an EGL image): memory the GL
+ * may map write-combined is for the GL to read. */
+static bool gl2_frame_mem_uploads(gl2_t *gl)
+{
+   if (gl->flags & GL2_FLAG_HW_RENDER_USE)
+      return false;
+#if defined(HAVE_OPENGLES)
+   if (     (video_driver_get_disp_flags() & VIDEO_FLAG_USE_RGBA)
+         && gl->base_size == 4)
+      return false;
+   if (!(gl->flags & GL2_FLAG_HAVE_UNPACK_ROW_LENGTH))
+      return false;
+#if defined(HAVE_EGL)
+   if (     gl->renderchain_data
+         && (((gl2_renderchain_data_t*)gl->renderchain_data)->flags
+            & GL2_CHAIN_FLAG_EGL_IMAGES))
+      return false;
+#endif
+#else
+   if (gl->base_size == 2 && !(gl->flags & GL2_FLAG_HAVE_ES2_COMPAT))
+      return false;
+#endif
+   return true;
+}
+
+/* The threaded wrapper's frame buffers, on the context's thread: a
+ * frame pushed from one is uploaded out of it by the GL
+ * (gl2_renderchain_copy_frame). Not for a hardware core, nor where
+ * the upload does not read it as it is. */
+static void *gl2_frame_mem_alloc(void *data, size_t size, uintptr_t *id,
+      bool *cached, unsigned *pitch_align)
+{
+   gl2_t *gl = (gl2_t*)data;
+   if (!gl || !gl2_frame_mem_uploads(gl))
+      return NULL;
+   /* Where the GL puts a persistent mapping is its own choice */
+   *cached      = false;
+   *pitch_align = 4;
+   return gl_frame_mem_alloc(&gl->frame_mem, size, id);
+}
+
+/* The frame lent to the core, unthreaded: frame memory the GL uploads
+ * the pushed frame out of (gl2_renderchain_copy_frame), where that
+ * upload reads it as it is (gl2_frame_mem_uploads). Not to a core that
+ * reads its frame, since the GL may keep a persistent mapping
+ * write-combined. */
+static bool gl2_get_current_software_framebuffer(void *data,
+      struct retro_framebuffer *fb)
+{
+   gl2_t   *gl = (gl2_t*)data;
+   void    *p;
+   if (     !gl || !fb || !gl2_frame_mem_uploads(gl)
+         || (fb->access_flags & RETRO_MEMORY_ACCESS_READ))
+      return false;
+   /* Remade at a new size: the cached frame may name the old ones */
+   if (!gl_sw_fb_fits(&gl->sw_fb, fb->width, fb->height, gl->base_size))
+      video_driver_cached_frame_retire();
+   if (!(p = gl_sw_fb_lend(&gl->frame_mem, &gl->sw_fb,
+               fb->width, fb->height, gl->base_size)))
+      return false;
+   fb->data         = p;
+   fb->pitch        = (size_t)fb->width * gl->base_size;
+   fb->format       = (gl->base_size == 4)
+      ? RETRO_PIXEL_FORMAT_XRGB8888 : RETRO_PIXEL_FORMAT_RGB565;
+   fb->memory_flags = 0;
+   return true;
+}
+
+static bool gl2_frame_mem_ready(void *data, uintptr_t id)
+{
+   gl2_t *gl = (gl2_t*)data;
+   return !gl || gl_frame_mem_ready(gl->frame_mem, id);
+}
+
+static void gl2_frame_mem_free(void *data, uintptr_t id)
+{
+   gl2_t *gl = (gl2_t*)data;
+   if (gl)
+      gl_frame_mem_free(gl->frame_mem, id);
+}
+#endif
+
+#ifdef GL2_VIEWS
+static void gl2_set_view_count(void *data, unsigned count)
+{
+   unsigned i;
+   gl2_t *gl = (gl2_t*)data;
+   if (!gl)
+      return;
+   gl->views.chains.count = MIN(count, RETRO_VIDEO_VIEWS_MAX);
+   for (i = gl->views.chains.count; i < RETRO_VIDEO_VIEWS_MAX; i++)
+      gl->views.chains.stock[i] = NULL;
+}
+#endif
+
 static uint32_t gl2_get_flags(void *data)
 {
    uint32_t flags = 0;
+#ifdef GL2_VIEWS
+   gl2_t *gl2     = (gl2_t*)data;
+#endif
 #if !defined(HAVE_OPENGLES) && !defined(HAVE_PSGL)
    gl2_t *gl      = (gl2_t*)data;
 
@@ -7194,6 +8670,24 @@ static uint32_t gl2_get_flags(void *data)
     * claim capabilities. */
    if (gl && gl->scrgb.active)
       BIT32_SET(flags, GFX_CTX_FLAGS_SCREEN_10BPC_SOURCE);
+#endif
+#ifdef HAVE_GL2_XR
+   /* While a headset shows it, as the Quest's context says: gl2 draws
+    * the frame whole in the window, so touch, overlays and the UI follow
+    * it; the headset shows a tracked map's eyes from the frame's views,
+    * and an untracked map's screens from the window. */
+   if (     gl && gl->desktop_xr && !gl->scrgb.active
+         && gl_openxr_alive(gl->desktop_xr->host))
+   {
+      BIT32_SET(flags, GFX_CTX_FLAGS_VIDEO_VIEWS);
+      BIT32_SET(flags, GFX_CTX_FLAGS_VIDEO_VIEWS_FALLBACK);
+   }
+#endif
+#ifdef GL2_VIEWS
+   if (gl2 && retro_atomic_load_acquire_int(&gl2->views.allowed))
+      BIT32_SET(flags, GFX_CTX_FLAGS_VIDEO_VIEWS);
+   if (gl2 && retro_atomic_load_acquire_int(&gl2->views.fallback))
+      BIT32_SET(flags, GFX_CTX_FLAGS_VIDEO_VIEWS_FALLBACK);
 #endif
 
    BIT32_SET(flags, GFX_CTX_FLAGS_HARD_SYNC);
@@ -7245,6 +8739,14 @@ static bool gl2_supports_texture_format(void *data,
    const gl2_t *gl = (const gl2_t*)data;
    switch (fmt)
    {
+      /* Converted by a draw into a framebuffer (gl_planar_load) */
+      case TEXTURE_GPU_FORMAT_YUV420:
+#ifdef HAVE_GL_PLANAR
+         return gl && (gl->flags & GL2_FLAG_HAVE_FBO)
+            && GL_PLANAR_OK(&gl->planar);
+#else
+         return false;
+#endif
       /* Both answers are fixed at init */
       case TEXTURE_GPU_FORMAT_RGBA16F:
          return gl && gl->fp16_textures;
@@ -7384,20 +8886,8 @@ static bool gl2_set_frame_format(void *data, bool rgb32,
    side = RARCH_SCALE_BASE * input_scale;
    if (side > VIDEO_SCALE_W(gl->tex_dims))
    {
-      /* As init sizes them: an extra row on the clear's source */
-      void *empty_buf = calloc((size_t)side * (side + 1), sizeof(uint32_t));
-      void *conv_buf  = calloc((size_t)side * side, sizeof(uint32_t));
-      if (!empty_buf || !conv_buf)
-      {
-         free(empty_buf);
-         free(conv_buf);
+      if (!gl2_frame_buffers_grow(gl, side))
          return false;
-      }
-      free(gl->empty_buf);
-      free(gl->conv_buffer);
-      gl->empty_buf               = empty_buf;
-      gl->conv_buffer             = conv_buf;
-      gl->tex_dims                = VIDEO_SCALE_PACK(side, side);
       gl->video_info.input_scale  = input_scale;
    }
    else if (rgb32 == gl->video_info.rgb32)
@@ -7405,16 +8895,7 @@ static bool gl2_set_frame_format(void *data, bool rgb32,
 
    gl->video_info.rgb32 = rgb32;
    gl2_set_texture_fmts(gl, rgb32);
-
-   if (gl->flags & GL2_FLAG_FBO_INITED)
-      gl2_renderchain_deinit_fbo(gl,
-            (gl2_renderchain_data_t*)gl->renderchain_data);
-   glDeleteTextures(gl->textures, gl->texture);
-   gl->tex_index = 0;
-   gl2_init_textures(gl);
-   gl2_init_textures_data(gl);
-   gl2_renderchain_init(gl,
-         (gl2_renderchain_data_t*)gl->renderchain_data);
+   gl2_frame_textures_remake(gl);
    return true;
 }
 
@@ -7438,7 +8919,11 @@ static const video_poke_interface_t gl2_poke_interface = {
    gl2_show_mouse,
    NULL, /* grab_mouse_toggle */
    gl2_get_current_shader,
+#ifdef HAVE_GL_FRAME_MEM
+   gl2_get_current_software_framebuffer,
+#else
    NULL, /* get_current_software_framebuffer */
+#endif
    NULL, /* get_hw_render_interface */
    NULL, /* set_hdr_menu_nits */
    NULL, /* set_hdr_paper_white_nits */
@@ -7469,10 +8954,32 @@ static const video_poke_interface_t gl2_poke_interface = {
    NULL, /* texture_lend_ready */
 #endif
    gl2_get_last_present_wait,
+#ifdef GL2_VIEWS
+   gl2_set_view_count,
+#else
    NULL, /* set_view_count */
+#endif
+#ifdef HAVE_GL2_XR
+   gl2_desktop_xr_context_destroying,
+   gl2_desktop_xr_refresh,
+#else
    NULL, /* hw_context_destroying */
+#if defined(HAVE_OPENXR) && defined(ANDROID) && defined(HAVE_OPENGLES3)
+   gl2_get_headset_refresh,
+#else
    NULL, /* get_headset_refresh */
-   gl2_set_frame_format
+#endif
+#endif
+   gl2_set_frame_format,
+#ifdef HAVE_GL_FRAME_MEM
+   gl2_frame_mem_alloc,
+   gl2_frame_mem_ready,
+   gl2_frame_mem_free
+#else
+   NULL, /* frame_mem_alloc */
+   NULL, /* frame_mem_ready */
+   NULL  /* frame_mem_free */
+#endif
 };
 
 static void gl2_get_poke_interface(void *data,
@@ -7620,31 +9127,22 @@ static bool gl2_read_viewport_hdr(void *data, uint16_t *buffer,
 }
 
 #ifdef HAVE_OPENXR
-static unsigned gl2_get_video_views_status(void *data)
-{
-   (void)data;
-#if defined(ANDROID)
-   if (gl_android_openxr_is_session_ready())
-      return RETRO_VIDEO_VIEWS_STATUS_HMD | RETRO_VIDEO_VIEWS_STATUS_STEREO;
-#endif
-   return 0;
-}
-
 static bool gl2_set_vr_content_info(void *data,
       const video_vr_content_info_t *info)
 {
-   (void)data;
+#ifdef HAVE_GL2_XR
+   /* Tracked content is drawn from the map by the headset's host. */
+   gl2_t *gl = (gl2_t*)data;
+   (void)info;
+   return gl && gl->desktop_xr;
+#else
    /* VR is only available while the OpenXR context owns a live session;
     * on the flat fallback context it must be reported unavailable. */
-   if (!gl_android_openxr_is_session_ready())
-      return false;
-   return true;
-}
-
-static bool gl2_get_vr_frame_state(void *data, struct retro_vr_frame_state *out)
-{
+   bool live = gl_android_openxr_active();
    (void)data;
-   return gl_android_openxr_get_eye_state(out->eyes);
+   gl_android_openxr_set_stereo(live && info && info->stereo_native);
+   return live;
+#endif
 }
 #endif
 
@@ -7689,9 +9187,7 @@ video_driver_t video_gl2 = {
    gl2_read_viewport_hdr,
    &gl2_raster_font,
 #ifdef HAVE_OPENXR
-   gl2_get_vr_frame_state,
    gl2_set_vr_content_info,
-   gl2_get_video_views_status,
 #endif
    gl2_read_viewport_bgrx
 };

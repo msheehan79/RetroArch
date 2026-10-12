@@ -42,6 +42,7 @@
 #endif
 
 #include "../../configuration.h"
+#include "../../driver.h"
 #include "../../dynamic.h"
 #include "../../retroarch.h"
 #include "../../verbosity.h"
@@ -50,6 +51,9 @@
 #include "../common/win32_common.h"
 
 #include "../common/vulkan_common.h"
+#ifndef __WINRT__
+#include "../common/win_vulkan_dxgi.h"
+#endif
 
 typedef struct gfx_ctx_w_vk_data
 {
@@ -68,7 +72,7 @@ static void gfx_ctx_w_vk_swap_interval(void *data, int interval)
    if (win32_vk_interval != interval)
    {
       win32_vk_interval = interval;
-      if (win32_vk.swapchain)
+      if (vulkan_has_swapchain(&win32_vk))
          win32_vk.flags |= VK_DATA_FLAG_NEED_NEW_SWAPCHAIN;
    }
 }
@@ -100,8 +104,9 @@ static void gfx_ctx_w_vk_check_window(void *data, bool *quit,
          && (g_win32_resize_width  == VIDEO_SCALE_W(*dims))
          && (g_win32_resize_height == VIDEO_SCALE_H(*dims)))
    {
+      int reinit_flags = DRIVER_VIDEO_AND_INPUT_MASK;
       g_win32_refresh_rate = settings->floats.video_refresh_rate;
-      command_event(CMD_EVENT_REINIT, NULL);
+      command_event(CMD_EVENT_REINIT, &reinit_flags);
    }
 }
 
@@ -113,10 +118,12 @@ static bool gfx_ctx_w_vk_presentable(void *data)
     * has neither IsIconic nor an HWND - see the wgl context for the
     * detail; the swapchain check below still applies there. */
 #ifndef __WINRT__
-   if (IsIconic(win32_get_window()))
+   if (IsIconic(win32_get_window())
+         || (win32_vk.dxgi_presenter && !ra_vulkan_dxgi_presentable(
+               (ra_vulkan_dxgi_t *)win32_vk.dxgi_presenter)))
       return false;
 #endif
-   return win32_vk.swapchain != VK_NULL_HANDLE;
+   return vulkan_has_swapchain(&win32_vk);
 }
 
 static void gfx_ctx_w_vk_swap_buffers(void *data)
@@ -128,7 +135,7 @@ static void gfx_ctx_w_vk_swap_buffers(void *data)
        * create is retried in vulkan_acquire_next_image() below, which
        * throttles that path itself. Nothing to present and nothing to
        * wait for here. */
-      if (win32_vk.swapchain != VK_NULL_HANDLE)
+      if (vulkan_has_swapchain(&win32_vk))
          vulkan_present(&win32_vk, win32_vk.context.current_swapchain_index);
    }
    vulkan_acquire_next_image(&win32_vk);
@@ -218,14 +225,40 @@ static bool gfx_ctx_w_vk_set_video_mode(void *data,
       unsigned dims,
       bool fullscreen)
 {
-   /* With a window already up this is a fullscreen toggle on it: the
-    * window is restyled where it stands, and the swapchain follows
-    * when the resize reaches check_window, as for any resize. Where
-    * that is refused - exclusive fullscreen - this goes on as it
-    * always has. */
-   if (     win32_get_window()
-         && win32_window_set_fullscreen(dims, fullscreen))
+   if (win32_get_window() && win32_vk.vk_surface != VK_NULL_HANDLE)
    {
+      settings_t *settings = config_get_ptr();
+      bool exclusive      = !settings->bools.video_windowed_fullscreen;
+      bool fullscreen_changed = fullscreen
+         != ((win32_vk.flags & VK_DATA_FLAG_FULLSCREEN) != 0);
+      bool recreate       = (exclusive && fullscreen_changed
+            && !win32_vk.context.swapchain_external)
+         || win32_vk.fse_acquired;
+      if (recreate && win32_vk.mailbox.swapchain != VK_NULL_HANDLE)
+         return false;
+      if (win32_vk.fse_acquired)
+      {
+         VkResult res;
+         if (!win32_vk.fse_release)
+            return false;
+         res = ((PFN_vkReleaseFullScreenExclusiveModeEXT)win32_vk.fse_release)(
+               win32_vk.context.device, win32_vk.swapchain);
+         if (res != VK_SUCCESS && res != VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT)
+            return false;
+         win32_vk.fse_acquired = false;
+      }
+      if (exclusive)
+      {
+         if (!win32_window_set_fullscreen_exclusive(dims, fullscreen))
+            return false;
+      }
+      else if (!win32_window_set_fullscreen(dims, fullscreen))
+         return false;
+      if (recreate)
+      {
+         win32_vk.context.flags |= VK_CTX_FLAG_INVALID_SWAPCHAIN;
+         win32_vk.flags |= VK_DATA_FLAG_NEED_NEW_SWAPCHAIN;
+      }
       if (fullscreen)
          win32_vk.flags |=  VK_DATA_FLAG_FULLSCREEN;
       else
@@ -297,7 +330,12 @@ static uint32_t gfx_ctx_w_vk_get_flags(void *data)
     * so that a toggle restarts the drivers as it used to, should it
     * need telling apart from something else. */
    if (win32_fullscreen_in_place())
+   {
       BIT32_SET(flags, GFX_CTX_FLAGS_FULLSCREEN_IN_PLACE);
+      BIT32_SET(flags, GFX_CTX_FLAGS_WINDOW_RESIZE_IN_PLACE);
+      if (win32_vk.mailbox.swapchain == VK_NULL_HANDLE)
+         BIT32_SET(flags, GFX_CTX_FLAGS_FULLSCREEN_EXCLUSIVE_IN_PLACE);
+   }
 
 #if defined(HAVE_SLANG) && defined(HAVE_SPIRV_CROSS)
    BIT32_SET(flags, GFX_CTX_FLAGS_SHADERS_SLANG);

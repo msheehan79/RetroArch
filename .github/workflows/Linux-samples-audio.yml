@@ -614,10 +614,15 @@ jobs:
           # thread's callbacks and its writer takes no mainloop lock;
           # ALSA is run once as the device reports
           # itself and once told it cannot pause, the fallback from
-          # snd_pcm_pause to snd_pcm_drop.
+          # snd_pcm_pause to snd_pcm_drop. With the threaded pipeline a
+          # plug PCM opens for mmap and lends its buffer; a plug over a
+          # file plugin reads the lent bytes back.
           export XDG_RUNTIME_DIR=/tmp/xdg
           mkdir -p "$XDG_RUNTIME_DIR/pulse"
-          printf 'pcm.nullpcm { type null }\n' > "$HOME/.asoundrc"
+          printf '%s\n' 'pcm.nullpcm { type null }' \
+            'pcm.plugnull { type plug slave.pcm "nullpcm" }' \
+            'pcm.filenull { type file slave.pcm "nullpcm" file "/tmp/ra_live_drivers_lend.raw" format raw }' \
+            'pcm.plugfile { type plug slave.pcm "filenull" }' > "$HOME/.asoundrc"
           pulseaudio --daemonize=no --exit-idle-time=-1 --disallow-exit -n \
             -L "module-null-sink sink_name=nullsink rate=48000 channels=2" \
             -L "module-native-protocol-unix auth-anonymous=1 socket=$XDG_RUNTIME_DIR/pulse/native" \
@@ -895,6 +900,30 @@ jobs:
              ./coreaudio_ring_test
           echo "[pass] coreaudio_ring_test (ASan)"
 
+      - name: Build and run sdl_lost_wakeup_test (the SDL2 driver against SDL's dummy device)
+        shell: bash
+        working-directory: samples/audio/sdl_lost_wakeup
+        run: |
+          set -eu
+          # The producer's waits and the capture parks are measured; the
+          # lend pair is asserted: whole-frame spans, published to a
+          # device that pulls them, refused while stopped.
+          make clean && make -j$(nproc) all SANITIZER=address,undefined
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
+             SDL_AUDIODRIVER=dummy timeout 300 ./sdl_lost_wakeup_test 1
+          echo "[pass] sdl_lost_wakeup_test (ASan)"
+
+      - name: Build and run coreaudio_write_test (the shipping writer, lend included, on stubs)
+        shell: bash
+        working-directory: samples/audio/coreaudio_write
+        run: |
+          set -eu
+          # run.py lifts the writer, the render callback and the lend
+          # pair out of audio/drivers/coreaudio.c and drives them on a
+          # simulated device clock; no Apple framework is involved.
+          python3 run.py
+          echo "[pass] coreaudio_write_test"
+
       - name: Build and run asio_clock_test (ASan + UBSan)
         shell: bash
         working-directory: samples/audio/asio_clock
@@ -989,6 +1018,18 @@ jobs:
           make clean all
           WINEDEBUG=-all timeout 120 make check
           echo "[pass] wdmks_loop_test (wine)"
+
+      - name: Check MMDevice notification targets on both thread backends
+        shell: bash
+        working-directory: samples/audio/mmdevice_notification
+        run: |
+          set -eu
+          for threads in 0 1; do
+            make clean check THREADS=$threads SANITIZER=address,undefined
+            make clean all THREADS=$threads CC=x86_64-w64-mingw32-gcc LDFLAGS=-static
+            WINEDEBUG=-all wine ./mmdevice_notification_test.exe
+          done
+          make clean
 
       - name: Build and run wasapi_exclusive_pacing_test (ASan + UBSan, then TSan)
         shell: bash
@@ -1179,12 +1220,61 @@ jobs:
           # the integer front pair exists only behind its hint.
           make -j$(nproc) check SANITIZER=address,undefined
 
+      - name: Build and run unity_identity_test (plain, ASan + UBSan)
+        working-directory: samples/audio/unity_identity
+        run: |
+          # The unity passthrough end to end: an s16 batch at a pinned
+          # ratio of 1.0 reaches an s16 device with zero conversions,
+          # counted through linker wraps; the fallbacks still convert.
+          make -j$(nproc) check
+          make clean
+          make -j$(nproc) check SANITIZER=address,undefined
+
+      - name: Build and run lend_write_test (plain, ASan + UBSan)
+        working-directory: samples/audio/lend_write
+        run: |
+          # The driver lend pair: the pipeline produces its output in
+          # the driver's own buffer, bit-identical to the written
+          # stream, with write() never called while a lend is live.
+          make -j$(nproc) check
+          make clean
+          make -j$(nproc) check SANITIZER=address,undefined
+
       - name: Build and run extra-channel capacity test (ASan + UBSan)
         working-directory: samples/audio/extra_capacity
         run: |
           make -j$(nproc) check SANITIZER=address,undefined
           make clean
           make -j$(nproc) check SIMD_MASK=RESAMPLER_SIMD_SSE SANITIZER=address,undefined
+
+      - name: Build and run the pipeline fill cap lane (plain)
+        shell: bash
+        working-directory: samples/audio/pipeline_clocked
+        run: |
+          set -eu
+          # The threaded pipeline against a device that drains on a
+          # clock, with Audio Sync the only thing pacing the core: the
+          # ring sits full and every publish waits behind it. With
+          # audio_pipeline_fill_cap the queue has to come down to the
+          # device's buffer and no more than a publish past it, where a
+          # blocking inline write leaves it, without the device running
+          # dry. With Audio Sync off it has to take the queue down too,
+          # with a core up to a frame late not reaching the device as
+          # silence. And display-paced with Audio Sync on, rate control
+          # has to hold the queue where the frame-synchronous path
+          # holds it. With audio the only clock, rate control has to
+          # leave the ratio alone, inline and threaded, and still hold
+          # the fill when a present blocks behind the runloop's back.
+          # Plain, not sanitized: it is the clock that is measured,
+          # and a sanitizer's slowdown is a host that starves the
+          # consumer whatever the cap does. Underruns with the cap are
+          # retried, since a host that takes the consumer off its core
+          # shows the same with the cap off; only a cap that never runs
+          # clean fails.
+          make clean && make -j$(nproc)
+          test -x pipeline_clocked_test
+          PACED_ONLY=1 timeout 600 ./pipeline_clocked_test 3
+          echo "[pass] pipeline_clocked_test (fill cap)"
 
       - name: Build and run resampler option tests (C89, ASan + UBSan)
         working-directory: samples/audio/resampler_options

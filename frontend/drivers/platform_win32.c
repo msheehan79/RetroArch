@@ -1359,6 +1359,12 @@ static void frontend_win32_env_get(int *argc, char *argv[],
 #endif
 }
 
+/* Not in older SDKs */
+#define RARCH_QUICK_EDIT_MODE 0x0040
+#define RARCH_EXTENDED_FLAGS  0x0080
+
+typedef HWND (WINAPI *get_console_window_t)(void);
+
 static void frontend_win32_attach_console(void)
 {
 #ifdef _WIN32
@@ -1389,8 +1395,37 @@ static void frontend_win32_attach_console(void)
 
    if (need_stdout || need_stderr)
    {
-      if (!AttachConsole(ATTACH_PARENT_PROCESS))
-         AllocConsole();
+      HWND fg = GetForegroundWindow();
+      if (!AttachConsole(ATTACH_PARENT_PROCESS) && AllocConsole())
+      {
+         /* A selection in the window would block every log write */
+         DWORD mode, pid = 0;
+         HMODULE kernel32 = GetModuleHandleA("kernel32.dll");
+         get_console_window_t get_window = kernel32
+            ? (get_console_window_t)GetProcAddress(kernel32,
+                  "GetConsoleWindow")
+            : NULL;
+         HWND con = get_window ? get_window() : NULL;
+         HANDLE in = CreateFileA("CONIN$", GENERIC_READ | GENERIC_WRITE,
+               FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
+               0, NULL);
+         if (in != INVALID_HANDLE_VALUE)
+         {
+            if (GetConsoleMode(in, &mode))
+               SetConsoleMode(in, (mode & ~RARCH_QUICK_EDIT_MODE)
+                     | RARCH_EXTENDED_FLAGS);
+            CloseHandle(in);
+         }
+
+         /* Behind the other windows, the focus back on ours */
+         if (con)
+            SetWindowPos(con, HWND_BOTTOM, 0, 0, 0, 0,
+                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+         if (fg)
+            GetWindowThreadProcessId(fg, &pid);
+         if (pid == GetCurrentProcessId())
+            SetForegroundWindow(fg);
+      }
 
       SetConsoleTitle("Log Console");
 

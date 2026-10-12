@@ -30,6 +30,7 @@
 #include <math.h>
 
 #include "../common/gl3_defines.h"
+#include "../gfx_instrument.h"
 #include "../common/gl_common.h"
 #include "../common/rgba16_pack.h"
 
@@ -59,6 +60,13 @@
 
 #include "../font_driver.h"
 #include "../../record/record_driver.h"
+
+/* Headset output: the slang chains draw its screens. */
+#if defined(HAVE_OPENXR_GL) && defined(HAVE_SLANG)
+#define HAVE_GL3_XR
+#include "../common/gl_openxr.h"
+#include "../video_xr.h"
+#endif
 
 #ifdef HAVE_GLSL
 #include "../drivers_shader/shader_glsl.h"
@@ -94,6 +102,13 @@ struct gl3_streamed_texture
    unsigned dims;
 };
 
+/* A render target views draw into: a texture and its framebuffer */
+struct gl3_views_fbo
+{
+   GLuint fbo;
+   GLuint tex;
+};
+
 typedef struct gl3
 {
    const gfx_ctx_driver_t *ctx_driver;
@@ -109,29 +124,25 @@ typedef struct gl3
     * shader, the preset they came from, and each view's copy of its
     * rectangle of the frame. count is what set_view_count last asked
     * for; copied has a bit per view whose texture holds a copy;
-    * copy_failed is the frame format a copy failed for, or 0. The
+    * copy_failed is the frame format a blit failed for, or 0;
+    * copy_image is whether glCopyImageSubData copies instead. The
     * canvas holds both eyes for anaglyph and interlaced, the UI layer
     * the UI drawn once for both eyes. */
    struct
    {
-      gl3_filter_chain_t *chains[RETRO_VIDEO_VIEWS_MAX];
-      gl3_filter_chain_t *stock[RETRO_VIDEO_VIEWS_MAX];
+      video_views_chains_t chains;
       GLuint tex[RETRO_VIDEO_VIEWS_MAX];
       unsigned tex_dims[RETRO_VIDEO_VIEWS_MAX];
       GLenum tex_format[RETRO_VIDEO_VIEWS_MAX];
       bool tex_swizzle[RETRO_VIDEO_VIEWS_MAX];
       GLuint read_fbo;
       GLuint draw_fbo;
-      GLuint canvas_fbo;
-      GLuint canvas_tex;
-      unsigned canvas_dims;
-      GLuint ui_fbo;
-      GLuint ui_tex;
-      unsigned ui_dims;
-      unsigned saved_dims;
-      unsigned saved_video_dims;
+      struct gl3_views_fbo canvas;
+      struct gl3_views_fbo ui;
+      video_views_target_t canvas_target;
+      video_views_target_t ui_target;
+      video_views_ui_dims_t saved;
       char preset[PATH_MAX_LENGTH];
-      unsigned count;
       unsigned copied;
       GLenum copy_failed;
       /* Whether views may be drawn, for get_flags on the main thread:
@@ -143,10 +154,59 @@ typedef struct gl3
       bool stock_failed;
       /* The stereo blend programs were asked for. */
       bool blend_tried;
+      /* Views have been drawn straight from the frame, and their
+       * presets have read it where it lies. */
+      bool direct_seen;
+      bool in_place_seen;
       bool active;
       /* Drawing into the UI layer. */
       bool ui_pass;
+      bool copy_image;
    } views;
+#ifdef HAVE_GL3_XR
+   /* Headset output: the host, and the headset's own chains, one per
+    * view and one for the whole frame, drawn from the views' copies, as
+    * views.chains and views.stock are the window's: every headset image
+    * is its chain's first draw at the image's size. */
+   struct
+   {
+      gl_openxr_t *host;
+      gl3_filter_chain_t *chains[RETRO_VIDEO_VIEWS_MAX];
+      gl3_filter_chain_t *stock[RETRO_VIDEO_VIEWS_MAX];
+      /* The stock chains' form for a source larger than its image. */
+      gl3_filter_chain_t *shrink[RETRO_VIDEO_VIEWS_MAX];
+      gl3_filter_chain_t *frame_chain;
+      gl3_filter_chain_t *frame_stock;
+      gl3_filter_chain_t *frame_shrink;
+      video_xr_quad_set_t set;
+      /* Each slot as it was last published: a repeat draws a slot again
+       * only when its quads moved. */
+      struct
+      {
+         video_xr_slot_t info;
+         video_xr_quad_t quads[4];
+         unsigned num_quads;
+         bool published;
+      } shown[VIDEO_XR_MAX_SLOTS];
+      /* The window's projection for the frame, which the headset's
+       * screens are drawn with. */
+      float mvp[16];
+      GLuint fbo;
+      unsigned recenter;
+      /* The eyes' samplers, nearest and linear. */
+      GLuint samplers[2];
+      /* The headset paces frames, so the window presents without
+       * waiting; window_interval is what the window was asked for. */
+      int window_interval;
+      bool paced;
+      /* The headset was given a projection to show. */
+      bool proj_shown;
+      bool recenter_seen;
+      bool hdr_warned;
+      bool stock_failed;
+      bool shrink_failed;
+   } xr;
+#endif
    GLuint *overlay_tex;
    float *overlay_vertex_coord;
    float *overlay_tex_coord;
@@ -211,6 +271,15 @@ typedef struct gl3
       GLuint alpha_blend_linear;
       struct gl3_buffer_locations alpha_blend_linear_loc;
       bool   alpha_blend_linear_tried;
+      /* stock_rect.frag, made the first time the stock chain would draw
+       * a view or a padded frame: with its nearest and linear samplers,
+       * it draws them straight from the frame's texture. */
+      GLuint stock_rect;
+      GLuint stock_rect_samplers[2];
+      struct gl3_buffer_locations stock_rect_loc;
+      bool   stock_rect_tried;
+      /* A padded frame has been drawn straight from its texture. */
+      bool   stock_rect_frame_seen;
 #ifdef HAVE_SHADERPIPELINE
       struct gl3_buffer_locations ribbon_loc;
       struct gl3_buffer_locations ribbon_simple_loc;
@@ -317,6 +386,13 @@ typedef struct gl3
 #ifdef HAVE_GL_TEXTURE_LEND
    gl_texture_lend_t *lend;
 #endif
+#ifdef HAVE_GL_FRAME_MEM
+   gl_frame_mem_t *frame_mem;
+   gl_sw_fb_t sw_fb;
+#endif
+#ifdef HAVE_GL_PLANAR
+   gl_planar_t planar;
+#endif
 
    bool pbo_readback_valid[GL_CORE_NUM_PBOS];
    bool menu_texture_rgb32;
@@ -375,7 +451,47 @@ static void gl3_set_viewport(gl3_t *gl,
 #ifdef HAVE_SLANG
 static void gl3_views_free_chains(gl3_t *gl, unsigned first);
 static void gl3_views_free_copies(gl3_t *gl, unsigned first);
-static void gl3_views_free_target(GLuint *fbo, GLuint *tex, unsigned *dims);
+/* What a frame's placement draws read */
+struct gl3_views_draw
+{
+   const video_frame_info_t *video_info;
+   const struct gl3_filter_chain_texture *src;
+   const float *mvp;
+   GLuint target;
+   unsigned target_height;
+   bool bottom_up;
+};
+
+static void *gl3_views_create_stock(gl3_t *gl);
+static void gl3_views_sync_params(gl3_t *gl, gl3_filter_chain_t *fc);
+static void gl3_views_draw_direct(gl3_t *gl,
+      const struct gl3_views_draw *d, unsigned view,
+      const video_views_rect_t *dst, const video_views_rect_t *cut);
+static void gl3_views_draw_pass(gl3_t *gl, const struct gl3_views_draw *d,
+      gl3_filter_chain_t *fc, const video_views_rect_t *dst,
+      const video_views_rect_t *cut, bool again);
+static bool gl3_views_target_make(gl3_t *gl, struct gl3_views_fbo *t,
+      unsigned dims);
+static bool gl3_views_target_retire(gl3_t *gl, struct gl3_views_fbo *t);
+
+/* The views compositor, with the calls below bound in */
+#define VV_FN(name)                     gl3_vv_##name
+#define VV_DRV                          gl3_t
+#define VV_CHAIN                        gl3_filter_chain_t
+#define VV_CREATE_STOCK(drv)            gl3_views_create_stock(drv)
+#define VV_SYNC_PARAMS(drv, c)          gl3_views_sync_params(drv, c)
+#define VV_DRAW                         struct gl3_views_draw
+#define VV_DIRECT(p, d, v, r, c)        gl3_views_draw_direct(p, d, v, r, c)
+#define VV_PASS(p, d, f, r, c, a)       gl3_views_draw_pass(p, d, f, r, c, a)
+#define VV_TARGET                       struct gl3_views_fbo
+#define VV_TARGET_MAKE(drv, t, dims)    gl3_views_target_make(drv, t, dims)
+#define VV_TARGET_RETIRE(drv, t)        gl3_views_target_retire(drv, t)
+#define VV_ROWS_UP
+#include "../video_views_draw.h"
+#endif
+#ifdef HAVE_GL3_XR
+static void gl3_xr_start(gl3_t *gl);
+static void gl3_xr_free(gl3_t *gl);
 #endif
 
 /* Straight alpha. Into the transparent UI layer, alpha accumulates as
@@ -408,6 +524,11 @@ static void gl3_publish_flags(gl3_t *gl)
          gl->scrgb.active ? 1 : 0);
    retro_atomic_store_release_int(&gl->views.allowed,
          gl3_views_allowed(gl) ? 1 : 0);
+#endif
+#ifdef HAVE_GL3_XR
+   /* With HDR output the headset is shown nothing: no HMD either. */
+   if (gl->xr.host)
+      gl_openxr_set_hidden(gl->xr.host, !gl3_views_allowed(gl));
 #endif
 }
 
@@ -472,21 +593,25 @@ void gl3_framebuffer_copy_partial(
       GLint flat_ubo_vertex,
       unsigned size_width, unsigned size_height,
       GLuint image,
-      float rx, float ry)
+      float ox, float oy, float rx, float ry)
 {
    GLuint vbo;
-   /* C89: an aggregate initializer must be constant, and rx/ry are
-    * not; the four corners are set after declaration. */
+   /* C89: an aggregate initializer must be constant, and the corners'
+    * texture coordinates are not; they are set after declaration. */
    float quad_data[16] = {
       0.0f, 0.0f, 0.0f, 0.0f,
       1.0f, 0.0f, 0.0f, 0.0f,
       0.0f, 1.0f, 0.0f, 0.0f,
       1.0f, 1.0f, 0.0f, 0.0f,
    };
-   quad_data[6]  = rx;
-   quad_data[11] = ry;
-   quad_data[14] = rx;
-   quad_data[15] = ry;
+   quad_data[2]  = ox;
+   quad_data[3]  = oy;
+   quad_data[6]  = ox + rx;
+   quad_data[7]  = oy;
+   quad_data[10] = ox;
+   quad_data[11] = oy + ry;
+   quad_data[14] = ox + rx;
+   quad_data[15] = oy + ry;
 
    glBindFramebuffer(GL_FRAMEBUFFER, fb_id);
    glActiveTexture(GL_TEXTURE2);
@@ -2233,10 +2358,8 @@ static void gl3_destroy_resources(gl3_t *gl)
       glDeleteFramebuffers(1, &gl->views.draw_fbo);
    gl->views.read_fbo = 0;
    gl->views.draw_fbo = 0;
-   gl3_views_free_target(&gl->views.canvas_fbo, &gl->views.canvas_tex,
-         &gl->views.canvas_dims);
-   gl3_views_free_target(&gl->views.ui_fbo, &gl->views.ui_tex,
-         &gl->views.ui_dims);
+   gl3_vv_target_drop(gl, &gl->views.canvas_target, &gl->views.canvas);
+   gl3_vv_target_drop(gl, &gl->views.ui_target, &gl->views.ui);
 #endif
 
    if (gl->chain.shader)
@@ -2322,7 +2445,17 @@ static void gl3_destroy_resources(gl3_t *gl)
       glDeleteProgram(gl->pipelines.stereo_interlaced);
       gl->pipelines.stereo_interlaced = 0;
    }
-   gl->views.blend_tried = false;
+   if (gl->pipelines.stock_rect)
+   {
+      glDeleteProgram(gl->pipelines.stock_rect);
+      gl->pipelines.stock_rect = 0;
+   }
+   if (gl->pipelines.stock_rect_samplers[0])
+      glDeleteSamplers(2, gl->pipelines.stock_rect_samplers);
+   gl->pipelines.stock_rect_samplers[0] = 0;
+   gl->pipelines.stock_rect_samplers[1] = 0;
+   gl->pipelines.stock_rect_tried       = false;
+   gl->views.blend_tried                = false;
    if (gl->scrgb.fbo)
    {
       glDeleteFramebuffers(1, &gl->scrgb.fbo);
@@ -2935,16 +3068,44 @@ static bool gl3_init_default_filter_chain(gl3_t *gl)
 static void gl3_views_free_chains(gl3_t *gl, unsigned first)
 {
    unsigned i;
+   video_views_chains_t *set = &gl->views.chains;
    for (i = first; i < RETRO_VIDEO_VIEWS_MAX; i++)
    {
-      if (gl->views.chains[i])
-         gl3_filter_chain_free(gl->views.chains[i]);
-      if (gl->views.stock[i])
-         gl3_filter_chain_free(gl->views.stock[i]);
-      gl->views.chains[i] = NULL;
-      gl->views.stock[i]  = NULL;
+      if (set->preset[i])
+         gl3_filter_chain_free((gl3_filter_chain_t*)set->preset[i]);
+      if (set->stock[i])
+         gl3_filter_chain_free((gl3_filter_chain_t*)set->stock[i]);
+      set->preset[i] = NULL;
+      set->stock[i]  = NULL;
+#ifdef HAVE_GL3_XR
+      if (gl->xr.chains[i])
+         gl3_filter_chain_free(gl->xr.chains[i]);
+      if (gl->xr.stock[i])
+         gl3_filter_chain_free(gl->xr.stock[i]);
+      if (gl->xr.shrink[i])
+         gl3_filter_chain_free(gl->xr.shrink[i]);
+      gl->xr.chains[i] = NULL;
+      gl->xr.stock[i]  = NULL;
+      gl->xr.shrink[i] = NULL;
+#endif
    }
-   gl->views.stock_failed = false;
+#ifdef HAVE_GL3_XR
+   if (!first)
+   {
+      if (gl->xr.frame_chain)
+         gl3_filter_chain_free(gl->xr.frame_chain);
+      if (gl->xr.frame_stock)
+         gl3_filter_chain_free(gl->xr.frame_stock);
+      if (gl->xr.frame_shrink)
+         gl3_filter_chain_free(gl->xr.frame_shrink);
+      gl->xr.frame_chain  = NULL;
+      gl->xr.frame_stock  = NULL;
+      gl->xr.frame_shrink = NULL;
+   }
+   gl->xr.stock_failed  = false;
+   gl->xr.shrink_failed = false;
+#endif
+   set->stock_failed = false;
    gl->views.copy_failed  = 0;
 }
 
@@ -2968,20 +3129,43 @@ static void gl3_views_free_copies(gl3_t *gl, unsigned first)
 static void gl3_views_build_chains(gl3_t *gl)
 {
    unsigned i;
+   video_views_chains_t *set;
    if (!*gl->views.preset)
       return;
-   for (i = 0; i < gl->views.count; i++)
+   set = &gl->views.chains;
+   for (i = 0; i < set->count; i++)
    {
-      if (gl->views.chains[i])
+      if (set->preset[i])
          continue;
-      gl->views.chains[i] = gl3_filter_chain_create_from_preset(
+      /* A view is a rectangle of the frame: read where it lies. */
+      set->preset[i] = gl3_filter_chain_create_from_preset(
             gl->views.preset, gl->video_info.smooth
             ? GLSLANG_FILTER_CHAIN_LINEAR
-            : GLSLANG_FILTER_CHAIN_NEAREST);
-      if (!gl->views.chains[i])
+            : GLSLANG_FILTER_CHAIN_NEAREST, true);
+      if (!set->preset[i])
          RARCH_ERR("[GLCore] Failed to create view %u's preset: \"%s\".\n",
                i, gl->views.preset);
    }
+#ifdef HAVE_GL3_XR
+   /* With a headset, its own: one per view and one for the whole frame,
+    * drawn from copies. */
+   if (!gl->xr.host)
+      return;
+   for (i = 0; i <= gl->views.chains.count; i++)
+   {
+      gl3_filter_chain_t **chain = (i < gl->views.chains.count)
+         ? &gl->xr.chains[i] : &gl->xr.frame_chain;
+      if (*chain)
+         continue;
+      *chain = gl3_filter_chain_create_from_preset(gl->views.preset,
+            gl->video_info.smooth
+            ? GLSLANG_FILTER_CHAIN_LINEAR
+            : GLSLANG_FILTER_CHAIN_NEAREST, false);
+      if (!*chain)
+         RARCH_ERR("[OpenXR] Failed to create the headset's preset: \"%s\".\n",
+               gl->views.preset);
+   }
+#endif
 }
 
 /* The view chains follow the main chain's preset; NULL or empty for
@@ -3002,7 +3186,8 @@ static bool gl3_init_filter_chain_preset(gl3_t *gl, const char *shader_path)
          shader_path,
          gl->video_info.smooth
          ? GLSLANG_FILTER_CHAIN_LINEAR
-         : GLSLANG_FILTER_CHAIN_NEAREST);
+         : GLSLANG_FILTER_CHAIN_NEAREST,
+         (gl->flags & GL3_FLAG_HW_RENDER_ENABLE) != 0);
 
    if (!gl->filter_chain)
    {
@@ -3723,6 +3908,9 @@ static void *gl3_init(const video_info_t *video)
          interval = -1;
       gl->ctx_driver->swap_interval(gl->ctx_data, interval);
    }
+#ifdef HAVE_GL3_XR
+   gl->xr.window_interval = interval;
+#endif
    gl->present_vsynced = (interval != 0);
 
    win_dims   = video->dims;
@@ -3806,6 +3994,15 @@ static void *gl3_init(const video_info_t *video)
 
    if (version && *version)
       gl3_parse_version(version, &gl->version_major, &gl->version_minor);
+
+#if !defined(HAVE_OPENGLES3) && !defined(HAVE_OPENGLES)
+   gl->views.copy_image = glCopyImageSubData
+      && (gl->version_major > 4
+         || (gl->version_major == 4 && gl->version_minor >= 3)
+         || gl_query_extension("ARB_copy_image"));
+#endif
+   RARCH_LOG("[GLCore] Views copied by %s.\n", gl->views.copy_image
+         ? "glCopyImageSubData" : "framebuffer blits");
 
    video_driver_set_gpu_api_version_string(version);
 
@@ -3903,6 +4100,9 @@ static void *gl3_init(const video_info_t *video)
       glBindTexture(GL_TEXTURE_2D, 0);
    }
    gl3_publish_flags(gl);
+#ifdef HAVE_GL3_XR
+   gl3_xr_start(gl);
+#endif
 
    if (     (gl->flags & GL3_FLAG_USE_SHARED_CONTEXT)
          && !gl3_core_context_is_mains(gl))
@@ -4159,10 +4359,20 @@ static void gl3_free(void *data)
 
    if (gl->flags & GL3_FLAG_USE_SHARED_CONTEXT)
       gl->ctx_driver->bind_hw_render(gl->ctx_data, false);
+#ifdef HAVE_GL3_XR
+   gl3_xr_free(gl);
+#endif
    gl3_destroy_resources(gl);
+#ifdef HAVE_GL_PLANAR
+   gl_planar_free(&gl->planar);
+#endif
    gl3_fp16_forget_all();
 #ifdef HAVE_GL_TEXTURE_LEND
    gl_texture_lend_free(&gl->lend);
+#endif
+#ifdef HAVE_GL_FRAME_MEM
+   gl_sw_fb_free(gl->frame_mem, &gl->sw_fb);
+   gl_frame_mem_destroy(&gl->frame_mem);
 #endif
    if (gl->ctx_driver && gl->ctx_driver->destroy)
       gl->ctx_driver->destroy(gl->ctx_data);
@@ -4228,6 +4438,12 @@ static void gl3_set_nonblock_state(void *data, bool state,
    {
       if (adaptive_vsync_enabled && interval == 1)
          interval = -1;
+#ifdef HAVE_GL3_XR
+      /* Kept for when the headset stops pacing. */
+      gl->xr.window_interval = interval;
+      if (gl->xr.paced)
+         interval = 0;
+#endif
       gl->ctx_driver->swap_interval(gl->ctx_data, interval);
    }
    gl->present_vsynced = (interval != 0);
@@ -4282,6 +4498,7 @@ static bool gl3_shader_load_begin(void *data,
    ds->new_chain = gl3_filter_chain_create_deferred(
          deferred->preset_path,
          ds->filter,
+         (gl->flags & GL3_FLAG_HW_RENDER_ENABLE) != 0,
          &deferred->total_passes);
 
    if (     (gl->flags & GL3_FLAG_USE_SHARED_CONTEXT)
@@ -4738,6 +4955,9 @@ static void gl3_update_cpu_texture(gl3_t *gl,
 {
    unsigned width  = VIDEO_SCALE_W(dims);
    unsigned height = VIDEO_SCALE_H(dims);
+#ifdef HAVE_GL_FRAME_MEM
+   int fm_slot     = -1;
+#endif
    if (gl->chain.active)
    {
       /* The input texture is expected to be square with a power of 2 size when not using Slang */
@@ -4777,7 +4997,22 @@ static void gl3_update_cpu_texture(gl3_t *gl,
    else
       glBindTexture(GL_TEXTURE_2D, streamed->tex);
 
+#ifdef HAVE_GL_FRAME_MEM
+   /* A frame in one of the threaded wrapper's buffers is read out of it
+    * by the GL, the upload queued rather than copied here */
+   {
+      size_t bpp    = (gl->video_info.rgb32 || gl->video_info.source_10bit)
+         ? 4 : 2;
+      size_t extent = height ? (size_t)(height - 1) * pitch
+         + (size_t)width * bpp : 0;
+      size_t off    = 0;
+      fm_slot       = gl_frame_mem_bind(gl->frame_mem, frame, extent, &off);
+      if (fm_slot >= 0)
+         frame      = (const void*)off;
+   }
+#else
    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+#endif
    if (gl->video_info.source_10bit)
    {
       /* Packed 2-10-10-10, one word per pixel like the 8-bit path. */
@@ -4801,6 +5036,14 @@ static void gl3_update_cpu_texture(gl3_t *gl,
       glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
                       width, height, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, frame);
    }
+#ifdef HAVE_GL_FRAME_MEM
+   gl_sw_fb_pushed(&gl->sw_fb, fm_slot);
+   if (fm_slot >= 0)
+   {
+      GFX_INSTR_INC(GFX_INSTR_FRAME_MEM);
+      gl_frame_mem_unbind(gl->frame_mem, fm_slot);
+   }
+#endif
 }
 
 #ifdef HAVE_SLANG
@@ -5338,67 +5581,85 @@ static void gl3_hw_ring_drawn(gl3_t *gl)
 }
 
 #ifdef HAVE_SLANG
-/* For each view drawn into a target of size dims (all_areas false:
- * the left eye's area only), its chain and the rectangle its first draw
- * uses, which its offscreen passes are sized for; a NULL chain for a
- * view not drawn. False when views can't be drawn this frame. Preset
- * chains come from gl3_views_build_chains() only. */
-static bool gl3_views_prepare(gl3_t *gl,
-      const video_frame_info_t *video_info, bool all_areas, unsigned dims,
-      gl3_filter_chain_t **chains, video_views_rect_t *rects)
+static void *gl3_views_create_stock(gl3_t *gl)
 {
-   unsigned i, j;
-   const video_views_layout_t *layout = &video_info->views_layout;
-   struct video_shader *live          = NULL;
-   bool stock = !video_info->shader_active
-      || !gl->filter_chain
-      || gl->filter_chain == gl->filter_chain_default;
-   gl3_filter_chain_t **set = stock ? gl->views.stock : gl->views.chains;
-
-   for (i = 0; i < RETRO_VIDEO_VIEWS_MAX; i++)
-      chains[i] = NULL;
-   if (!gl3_views_allowed(gl))
-      return false;
-   /* Parameter edits land in the main chain's preset. */
-   if (!stock)
-      live = gl3_filter_chain_get_preset(gl->filter_chain);
-
-   for (i = 0; i < video_info->views.num_views; i++)
-   {
-      struct video_shader *preset;
-      if (!video_views_first_drawn(layout, i, all_areas, dims, &rects[i]))
-         continue;
-      /* A threaded frame queued before the count shrank: the driver
-       * keeps no chain past the count. */
-      if (i >= gl->views.count)
-         return false;
-      if (!set[i] && stock && !gl->views.stock_failed)
-      {
-         set[i] = gl3_filter_chain_create_default(gl->video_info.smooth
-               ? GLSLANG_FILTER_CHAIN_LINEAR
-               : GLSLANG_FILTER_CHAIN_NEAREST);
-         gl->views.stock_failed = !set[i];
-      }
-      if (!set[i])
-         return false;
-      chains[i] = set[i];
-
-      preset    = gl3_filter_chain_get_preset(set[i]);
-      if (live && preset && preset->num_parameters == live->num_parameters)
-         for (j = 0; j < live->num_parameters; j++)
-            preset->parameters[j].current = live->parameters[j].current;
-   }
-   return true;
+   return gl3_filter_chain_create_default(gl->video_info.smooth
+         ? GLSLANG_FILTER_CHAIN_LINEAR : GLSLANG_FILTER_CHAIN_NEAREST);
 }
 
-/* Blits each drawn view's rectangle out of the frame's texture into its
- * own. A blit copies raw texels: a view keeps the frame's orientation,
- * and a view of a red/blue-swapped upload samples with the same
- * swizzle. False when a view can't be copied, as RGB565 can't where it
- * isn't renderable. */
-static bool gl3_views_copy(gl3_t *gl, const video_frame_info_t *video_info,
-      gl3_filter_chain_t **chains,
-      const struct gl3_filter_chain_texture *src,
+/* Parameter edits land in the main chain's preset. */
+static void gl3_views_sync_params(gl3_t *gl, gl3_filter_chain_t *fc)
+{
+   unsigned j;
+   struct video_shader *live   = gl3_filter_chain_get_preset(gl->filter_chain);
+   struct video_shader *preset = gl3_filter_chain_get_preset(fc);
+   if (live && preset && preset->num_parameters == live->num_parameters)
+      for (j = 0; j < live->num_parameters; j++)
+         preset->parameters[j].current = live->parameters[j].current;
+}
+
+/* Each drawn view's chain, as pick_chains (video_views_draw.h), and in
+ * *stock whether they are the stock chains. Preset chains come from
+ * gl3_views_build_chains() only. */
+static bool gl3_views_prepare(gl3_t *gl,
+      const video_frame_info_t *video_info, bool all_areas, unsigned dims,
+      gl3_filter_chain_t **chains, video_views_rect_t *rects, bool *stock)
+{
+   unsigned i;
+   *stock = !video_info->shader_active
+      || !gl->filter_chain
+      || gl->filter_chain == gl->filter_chain_default;
+   if (     gl3_views_allowed(gl)
+         && gl3_vv_pick_chains(gl, &gl->views.chains, &video_info->views,
+            &video_info->views_layout, *stock, all_areas, dims, chains,
+            rects))
+      return true;
+   for (i = 0; i < RETRO_VIDEO_VIEWS_MAX; i++)
+      chains[i] = NULL;
+   return false;
+}
+
+/* Gives view i a texture of its rectangle's size in format. */
+static void gl3_views_tex(gl3_t *gl, unsigned i,
+      const struct retro_video_view *v, GLenum format, bool swizzle)
+{
+   unsigned dims = VIDEO_SCALE_PACK(v->width, v->height);
+   if (     gl->views.tex[i]
+         && gl->views.tex_dims[i]    == dims
+         && gl->views.tex_format[i]  == format
+         && gl->views.tex_swizzle[i] == swizzle)
+      return;
+   if (gl->views.tex[i])
+      glDeleteTextures(1, &gl->views.tex[i]);
+   glGenTextures(1, &gl->views.tex[i]);
+   glBindTexture(GL_TEXTURE_2D, gl->views.tex[i]);
+   glTexStorage2D(GL_TEXTURE_2D, 1, format, v->width, v->height);
+   if (swizzle)
+   {
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_BLUE);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
+   }
+   glBindTexture(GL_TEXTURE_2D, 0);
+   gl->views.tex_dims[i]    = dims;
+   gl->views.tex_format[i]  = format;
+   gl->views.tex_swizzle[i] = swizzle;
+}
+
+/* The texture row of a view's first row: the frame's rows count from
+ * its top, or for a bottom-up hardware frame from its bottom. */
+static GLint gl3_views_src_y(const struct gl3_filter_chain_texture *src,
+      const struct retro_video_view *v, bool bottom_up)
+{
+   return bottom_up
+      ? (GLint)(VIDEO_SCALE_H(src->dims) - (v->y + v->height))
+      : (GLint)v->y;
+}
+
+/* gl3_views_copy() by framebuffer blits, which need both textures
+ * renderable: false when a view can't be copied, as RGB565 can't where
+ * it isn't renderable. */
+static bool gl3_views_blit(gl3_t *gl, const video_frame_info_t *video_info,
+      unsigned which, const struct gl3_filter_chain_texture *src,
       bool bottom_up, bool swizzle)
 {
    unsigned i;
@@ -5425,30 +5686,10 @@ static bool gl3_views_copy(gl3_t *gl, const video_frame_info_t *video_info,
    {
       GLint sy;
       const struct retro_video_view *v = &video_info->views.views[i];
-      unsigned dims                    = VIDEO_SCALE_PACK(v->width, v->height);
 
-      if (!chains[i])
+      if (!(which & (1u << i)))
          continue;
-      if (     !gl->views.tex[i]
-            || gl->views.tex_dims[i]    != dims
-            || gl->views.tex_format[i]  != src->format
-            || gl->views.tex_swizzle[i] != swizzle)
-      {
-         if (gl->views.tex[i])
-            glDeleteTextures(1, &gl->views.tex[i]);
-         glGenTextures(1, &gl->views.tex[i]);
-         glBindTexture(GL_TEXTURE_2D, gl->views.tex[i]);
-         glTexStorage2D(GL_TEXTURE_2D, 1, src->format, v->width, v->height);
-         if (swizzle)
-         {
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_BLUE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
-         }
-         glBindTexture(GL_TEXTURE_2D, 0);
-         gl->views.tex_dims[i]    = dims;
-         gl->views.tex_format[i]  = src->format;
-         gl->views.tex_swizzle[i] = swizzle;
-      }
+      gl3_views_tex(gl, i, v, src->format, swizzle);
 
       glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
             GL_TEXTURE_2D, gl->views.tex[i], 0);
@@ -5458,11 +5699,7 @@ static bool gl3_views_copy(gl3_t *gl, const video_frame_info_t *video_info,
          ok = false;
          break;
       }
-      /* The frame's rows count from its top, or for a bottom-up
-       * hardware frame from its bottom. */
-      sy = bottom_up
-         ? (GLint)(VIDEO_SCALE_H(src->dims) - (v->y + v->height))
-         : (GLint)v->y;
+      sy = gl3_views_src_y(src, v, bottom_up);
       glBlitFramebuffer((GLint)v->x, sy,
             (GLint)(v->x + v->width), sy + (GLint)v->height,
             0, 0, (GLint)v->width, (GLint)v->height,
@@ -5487,66 +5724,86 @@ static bool gl3_views_copy(gl3_t *gl, const video_frame_info_t *video_info,
    return ok;
 }
 
-static void gl3_views_free_target(GLuint *fbo, GLuint *tex, unsigned *dims)
+/* Copies each view in which, a bit a view, out of the frame's texture
+ * into its own. Either way raw texels are copied: a view keeps the frame's
+ * orientation, and a view of a red/blue-swapped upload samples with the
+ * same swizzle. glCopyImageSubData needs neither texture renderable;
+ * without it views are blitted. False when a view can't be copied. */
+static bool gl3_views_copy(gl3_t *gl, const video_frame_info_t *video_info,
+      unsigned which, const struct gl3_filter_chain_texture *src,
+      bool bottom_up, bool swizzle)
 {
-   if (*fbo)
-      glDeleteFramebuffers(1, fbo);
-   if (*tex)
-      glDeleteTextures(1, tex);
-   *fbo  = 0;
-   *tex  = 0;
-   *dims = 0;
+#if !defined(HAVE_OPENGLES3) && !defined(HAVE_OPENGLES)
+   if (gl->views.copy_image)
+   {
+      unsigned i;
+      unsigned copied = 0;
+      for (i = 0; i < video_info->views.num_views; i++)
+      {
+         const struct retro_video_view *v = &video_info->views.views[i];
+         if (!(which & (1u << i)))
+            continue;
+         gl3_views_tex(gl, i, v, src->format, swizzle);
+         glCopyImageSubData(src->image, GL_TEXTURE_2D, 0,
+               (GLint)v->x, gl3_views_src_y(src, v, bottom_up), 0,
+               gl->views.tex[i], GL_TEXTURE_2D, 0, 0, 0, 0,
+               (GLsizei)v->width, (GLsizei)v->height, 1);
+         copied |= 1u << i;
+      }
+      gl->views.copied = copied;
+      return true;
+   }
+#endif
+   return gl3_views_blit(gl, video_info, which, src, bottom_up, swizzle);
 }
 
-/* An FBO with an RGBA8 texture sized dims, remade when the size
- * changes. GL keeps a deleted texture alive for commands that still use
- * it. A size that failed stays in *tex_dims with no texture, so it isn't
- * retried every frame. */
-static bool gl3_views_target(GLuint *fbo, GLuint *tex, unsigned *tex_dims,
+/* A texture and framebuffer let go. GL keeps a deleted texture alive
+ * for commands that still use it. */
+static bool gl3_views_target_retire(gl3_t *gl, struct gl3_views_fbo *t)
+{
+   (void)gl;
+   if (t->fbo)
+      glDeleteFramebuffers(1, &t->fbo);
+   if (t->tex)
+      glDeleteTextures(1, &t->tex);
+   t->fbo = 0;
+   t->tex = 0;
+   return true;
+}
+
+/* An FBO with an RGBA8 texture sized dims. */
+static bool gl3_views_target_make(gl3_t *gl, struct gl3_views_fbo *t,
       unsigned dims)
 {
-   GLint max_size = 0;
-   bool ok        = false;
-   unsigned w     = VIDEO_SCALE_W(dims);
-   unsigned h     = VIDEO_SCALE_H(dims);
-   if (*tex_dims == dims)
-      return *tex != 0;
-   if (*tex)
-      glDeleteTextures(1, tex);
-   *tex      = 0;
-   *tex_dims = dims;
+   GLint max_size          = 0;
+   bool ok                 = false;
+   unsigned w              = VIDEO_SCALE_W(dims);
+   unsigned h              = VIDEO_SCALE_H(dims);
    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_size);
-   if (w && h && w <= (unsigned)max_size && h <= (unsigned)max_size)
+   if (w <= (unsigned)max_size && h <= (unsigned)max_size)
    {
-      if (!*fbo)
-         glGenFramebuffers(1, fbo);
-      glGenTextures(1, tex);
-      glBindTexture(GL_TEXTURE_2D, *tex);
+      glGenFramebuffers(1, &t->fbo);
+      glGenTextures(1, &t->tex);
+      glBindTexture(GL_TEXTURE_2D, t->tex);
       glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, w, h);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
       glBindTexture(GL_TEXTURE_2D, 0);
-      glBindFramebuffer(GL_FRAMEBUFFER, *fbo);
+      glBindFramebuffer(GL_FRAMEBUFFER, t->fbo);
       glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-            GL_TEXTURE_2D, *tex, 0);
+            GL_TEXTURE_2D, t->tex, 0);
       ok = glCheckFramebufferStatus(GL_FRAMEBUFFER)
          == GL_FRAMEBUFFER_COMPLETE;
       glBindFramebuffer(GL_FRAMEBUFFER, 0);
    }
    if (!ok)
    {
-      if (w && h)
-         RARCH_WARN("[GLCore] Views can't draw into a %ux%u image. "
-               "Drawing without it.\n", w, h);
+      RARCH_WARN("[GLCore] Views can't draw into a %ux%u image. "
+            "Drawing without it.\n", w, h);
       /* Its attachment would keep a deleted texture's storage alive. */
-      if (*fbo)
-         glDeleteFramebuffers(1, fbo);
-      if (*tex)
-         glDeleteTextures(1, tex);
-      *fbo = 0;
-      *tex = 0;
+      gl3_views_target_retire(gl, t);
    }
    return ok;
 }
@@ -5578,16 +5835,74 @@ static void gl3_views_init_blend(gl3_t *gl)
          &gl->pipelines.stereo_interlaced_loc, true);
 }
 
+/* The program and samplers that draw a rectangle of a texture as the
+ * stock chain would draw a texture of its own. Without them views and
+ * padded frames are copied for the chain. */
+static void gl3_stock_rect_init(gl3_t *gl)
+{
+   unsigned i;
+   static const uint32_t alpha_blend_vert[] =
+#include "vulkan_shaders/alpha_blend.vert.inc"
+      ;
+
+   static const uint32_t stock_rect_frag[] =
+#include "vulkan_shaders/stock_rect.frag.inc"
+      ;
+
+   gl->pipelines.stock_rect_tried = true;
+   gl->pipelines.stock_rect       = gl3_cross_compile_program(
+         alpha_blend_vert, sizeof(alpha_blend_vert),
+         stock_rect_frag, sizeof(stock_rect_frag),
+         &gl->pipelines.stock_rect_loc, true);
+   if (!gl->pipelines.stock_rect)
+   {
+      RARCH_WARN("[GLCore] Views and padded frames are copied for the "
+            "stock chain.\n");
+      return;
+   }
+   glGenSamplers(2, gl->pipelines.stock_rect_samplers);
+   for (i = 0; i < 2; i++)
+   {
+      GLint filter = i ? GL_LINEAR : GL_NEAREST;
+      GLuint smp   = gl->pipelines.stock_rect_samplers[i];
+      glSamplerParameteri(smp, GL_TEXTURE_MIN_FILTER, filter);
+      glSamplerParameteri(smp, GL_TEXTURE_MAG_FILTER, filter);
+      glSamplerParameteri(smp, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+      glSamplerParameteri(smp, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+   }
+}
+
+/* Whether the stock chain's draws can be made straight from the
+ * frame's texture: not for a rolling scanline, which the chain's final
+ * pass draws. */
+static bool gl3_stock_rect_ready(gl3_t *gl,
+      const video_frame_info_t *video_info)
+{
+   if (video_info->shader_subframes > 1 && video_info->scan_subframes)
+      return false;
+   if (!gl->pipelines.stock_rect_tried)
+      gl3_stock_rect_init(gl);
+   return gl->pipelines.stock_rect != 0;
+}
+
 /* Whether this frame draws its views, with their chains picked and
  * each drawn view's rectangle copied, by this frame or for a repeat by
- * the last; and in *blend whether they draw into the canvas. */
+ * the last; in *blend whether they draw into the canvas, in *direct
+ * whether the stock chains' views draw straight from texture instead,
+ * and in *in_place whether the preset's chains read each view where it
+ * lies in the frame: either way with no copy. */
+/* xr_views, a bit a view: the views the headset draws, from copies, so
+ * those are copied too and none is read in place. */
 static bool gl3_views_setup(gl3_t *gl, const video_frame_info_t *video_info,
       const void *frame, const struct gl3_filter_chain_texture *texture,
-      unsigned dims, bool *blend,
-      gl3_filter_chain_t **chains, video_views_rect_t *rects)
+      unsigned dims, bool *blend, bool *direct, bool *in_place,
+      gl3_filter_chain_t **chains, video_views_rect_t *rects,
+      unsigned xr_views)
 {
    unsigned i;
    bool views;
+   unsigned copies = 0;
+   bool stock                         = false;
    const video_views_layout_t *layout = &video_info->views_layout;
    bool offscreen = video_info->views.num_views && layout->offscreen;
    bool hw        = (gl->flags & GL3_FLAG_HW_RENDER_ENABLE) ? true : false;
@@ -5598,37 +5913,63 @@ static bool gl3_views_setup(gl3_t *gl, const video_frame_info_t *video_info,
     * one only the left eye's area into the window. */
    *blend = offscreen
       && gl->pipelines.stereo_anaglyph && gl->pipelines.stereo_interlaced
-      && gl3_views_target(&gl->views.canvas_fbo, &gl->views.canvas_tex,
-            &gl->views.canvas_dims, layout->canvas_dims);
+      && gl3_vv_target_ensure(gl, &gl->views.canvas_target,
+            &gl->views.canvas, layout->canvas_dims);
    /* A real frame without the blend modes frees the canvas. Not one
     * whose views are off: the canvas is made before the checks that
     * turn them off, so it would be remade every such frame. */
    if (frame && !offscreen)
-      gl3_views_free_target(&gl->views.canvas_fbo, &gl->views.canvas_tex,
-            &gl->views.canvas_dims);
+      gl3_vv_target_drop(gl, &gl->views.canvas_target, &gl->views.canvas);
    views = video_info->views.num_views
       && gl3_views_prepare(gl, video_info, *blend || !layout->offscreen,
-            *blend ? layout->canvas_dims : dims, chains, rects);
+            *blend ? layout->canvas_dims : dims, chains, rects, &stock);
+   *direct = views && stock && texture->image && !xr_views
+      && gl3_stock_rect_ready(gl, video_info);
+   *in_place = views && !*direct && texture->image && !xr_views;
+   for (i = 0; *in_place && i < video_info->views.num_views; i++)
+      if (chains[i] && !gl3_filter_chain_reads_in_place(chains[i]))
+         *in_place = false;
    /* The map was checked against the core's frame; threaded video can
-    * crop it. */
-   if (     views && frame
+    * crop it. A repeat read in place reads the frame again. */
+   if (     views && (frame || *direct || *in_place)
          && !video_views_fit_frame(&video_info->views, texture->dims))
       views = false;
 
-   if (views && frame)
-      views = gl3_views_copy(gl, video_info, chains, texture,
-            hw && (gl->flags & GL3_FLAG_HW_RENDER_BOTTOM_LEFT),
-            !hw && (gl->video_info.rgb32 || gl->video_info.source_10bit));
-   else if (views)
+   for (i = 0; i < RETRO_VIDEO_VIEWS_MAX; i++)
+      if (chains[i])
+         copies |= 1u << i;
+   copies |= xr_views;
+   if (views && !*direct && !*in_place)
    {
-      for (i = 0; i < video_info->views.num_views; i++)
-         if (chains[i] && !(gl->views.copied & (1u << i)))
-            views = false;
+      if (frame)
+         views = gl3_views_copy(gl, video_info, copies, texture,
+               hw && (gl->flags & GL3_FLAG_HW_RENDER_BOTTOM_LEFT),
+               !hw && (gl->video_info.rgb32 || gl->video_info.source_10bit));
+      else
+         for (i = 0; i < video_info->views.num_views; i++)
+            if (chains[i] && !(gl->views.copied & (1u << i)))
+               views = false;
    }
-   /* A later repeat must not draw copies this frame outdates. */
-   if (frame && !views)
+   /* A later repeat must not draw copies this frame outdates, and
+    * views read in place keep none. */
+   if (frame && (!views || *direct || *in_place))
       gl->views.copied = 0;
-   *blend = views && *blend;
+   if (frame && views && *in_place)
+      gl3_views_free_copies(gl, 0);
+   *blend    = views && *blend;
+   *direct   = views && *direct;
+   *in_place = views && *in_place;
+   if (*direct && !gl->views.direct_seen)
+   {
+      gl->views.direct_seen = true;
+      RARCH_LOG("[GLCore] Views drawn straight from the frame.\n");
+   }
+   if (*in_place && !gl->views.in_place_seen)
+   {
+      gl->views.in_place_seen = true;
+      RARCH_LOG("[GLCore] Views' presets read the frame where it "
+            "lies.\n");
+   }
    return views;
 }
 
@@ -5659,44 +6000,51 @@ static void gl3_views_quad(gl3_t *gl, GLuint prog,
    glBindTexture(GL_TEXTURE_2D, 0);
 }
 
-/* Moves UI drawing into the UI layer, laid out at one eye's size. */
-static void gl3_views_ui_begin(gl3_t *gl, video_frame_info_t *video_info)
+/* Moves UI drawing into the UI layer, laid out at ui_dims: one eye's
+ * size, or for a headset the window's. */
+static void gl3_views_ui_begin(gl3_t *gl, video_frame_info_t *video_info,
+      unsigned ui_dims)
 {
    const video_views_layout_t *layout = &video_info->views_layout;
-   /* Only full side by side places it unscaled. */
-   GLint filter = (layout->stereo_mode == VIDEO_STEREO_MODE_SBS_FULL)
+   /* Only full side by side places it unscaled; the headset scales its
+    * own copy. */
+   GLint filter = (   layout->stereo_mode == VIDEO_STEREO_MODE_SBS_FULL
+                   && ui_dims == layout->ui_dims)
       ? GL_NEAREST : GL_LINEAR;
 
-   glBindTexture(GL_TEXTURE_2D, gl->views.ui_tex);
+   glBindTexture(GL_TEXTURE_2D, gl->views.ui.tex);
    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
    glBindTexture(GL_TEXTURE_2D, 0);
 
-   glBindFramebuffer(GL_FRAMEBUFFER, gl->views.ui_fbo);
+   glBindFramebuffer(GL_FRAMEBUFFER, gl->views.ui.fbo);
    glDisable(GL_SCISSOR_TEST);
    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
    glClear(GL_COLOR_BUFFER_BIT);
 
    /* Menus and widgets size from video_info->dims, fonts from
     * video_dims. */
-   gl->views.saved_dims       = video_info->dims;
-   gl->views.saved_video_dims = gl->video_dims;
-   video_info->dims           = layout->ui_dims;
-   gl->video_dims             = layout->ui_dims;
-   gl->views.ui_pass          = true;
+   video_views_ui_enter(&gl->views.saved, &video_info->dims,
+         &gl->video_dims, ui_dims);
+   gl->views.ui_pass = true;
    gl3_set_viewport(gl, video_info->dims, true, true);
 }
 
-/* Back onto the frame target, and the UI layer into each eye's area. It
- * was drawn over transparent black, so its colour is premultiplied. */
-static void gl3_views_ui_end(gl3_t *gl, video_frame_info_t *video_info)
+/* Back onto the frame target, and the UI layer into each eye's area, or
+ * with whole over the window. It was drawn over transparent black, so
+ * its colour is premultiplied. */
+static void gl3_views_ui_end(gl3_t *gl, video_frame_info_t *video_info,
+      bool whole)
 {
    unsigned a;
+   video_views_rect_t window;
    const video_views_layout_t *layout = &video_info->views_layout;
+   const video_views_rect_t *areas    = layout->areas;
+   unsigned num_areas                 = layout->num_areas;
 
    gl->views.ui_pass = false;
-   video_info->dims  = gl->views.saved_dims;
-   gl->video_dims    = gl->views.saved_video_dims;
+   video_views_ui_leave(&gl->views.saved, &video_info->dims,
+         &gl->video_dims);
 
    glBindFramebuffer(GL_FRAMEBUFFER,
          gl3_frame_target_fbo(gl, video_info->dims));
@@ -5704,33 +6052,137 @@ static void gl3_views_ui_end(gl3_t *gl, video_frame_info_t *video_info)
    glEnable(GL_BLEND);
    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
    glBlendEquation(GL_FUNC_ADD);
-   for (a = 0; a < layout->num_areas; a++)
+   if (whole)
+   {
+      window.pos  = 0;
+      window.dims = video_info->dims;
+      areas       = &window;
+      num_areas   = 1;
+   }
+   for (a = 0; a < num_areas; a++)
    {
       struct gl3_viewport vp;
-      gl3_views_vp(&layout->areas[a], VIDEO_SCALE_H(video_info->dims),
-            &vp);
+      gl3_views_vp(&areas[a], VIDEO_SCALE_H(video_info->dims), &vp);
       glViewport(VIDEO_POS_X(vp.pos), VIDEO_POS_Y(vp.pos),
             VIDEO_SCALE_W(vp.dims), VIDEO_SCALE_H(vp.dims));
       gl3_views_quad(gl, gl->pipelines.alpha_blend,
-            &gl->pipelines.alpha_blend_loc, gl->views.ui_tex);
+            &gl->pipelines.alpha_blend_loc, gl->views.ui.tex);
    }
    glDisable(GL_BLEND);
    /* gl->vp is the window again, for the readbacks after. */
    gl3_set_viewport(gl, video_info->dims, false, true);
 }
 
+/* Draws rectangle v of the frame's texture src over vp, cut to cut, as
+ * the stock chain draws a copy of it: the same texels, the same filter,
+ * stopping at the rectangle's edge as at a texture's. */
+static void gl3_stock_rect_draw(gl3_t *gl,
+      const struct gl3_filter_chain_texture *src,
+      const struct retro_video_view *v, bool bottom_up,
+      const struct gl3_viewport *vp, const struct gl3_viewport *cut,
+      const float *mvp)
+{
+   static const float white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+   unsigned k;
+   float vbo_data[32];
+   /* The fragment UBO: the mvp, then the first and last texel
+    * centres. */
+   float ubo[20];
+   float tw = (float)VIDEO_SCALE_W(src->padded_dims);
+   float th = (float)VIDEO_SCALE_H(src->padded_dims);
+   float u0 = (float)v->x / tw;
+   float u1 = (float)(v->x + v->width) / tw;
+   float v0 = (float)gl3_views_src_y(src, v, bottom_up) / th;
+   float v1 = v0 + (float)v->height / th;
+
+   for (k = 0; k < 4; k++)
+   {
+      float *d = &vbo_data[k * 8];
+      d[0]     = (float)(k & 1);
+      d[1]     = (float)(k >> 1);
+      d[2]     = (k & 1)  ? u1 : u0;
+      d[3]     = (k >> 1) ? v1 : v0;
+      memcpy(&d[4], white, sizeof(white));
+   }
+   memcpy(ubo, mvp, 16 * sizeof(float));
+   ubo[16] = u0 + 0.5f / tw;
+   ubo[17] = v0 + 0.5f / th;
+   ubo[18] = u1 - 0.5f / tw;
+   ubo[19] = v1 - 0.5f / th;
+
+   glViewport(VIDEO_POS_X(vp->pos), VIDEO_POS_Y(vp->pos),
+         VIDEO_SCALE_W(vp->dims), VIDEO_SCALE_H(vp->dims));
+   glEnable(GL_SCISSOR_TEST);
+   glScissor(VIDEO_POS_X(cut->pos), VIDEO_POS_Y(cut->pos),
+         VIDEO_SCALE_W(cut->dims), VIDEO_SCALE_H(cut->dims));
+   glDisable(GL_BLEND);
+   glDisable(GL_CULL_FACE);
+   glDisable(GL_DEPTH_TEST);
+#if !defined(HAVE_OPENGLES)
+   glDisable(GL_FRAMEBUFFER_SRGB);
+#endif
+   glActiveTexture(GL_TEXTURE0 + 1);
+   glBindTexture(GL_TEXTURE_2D, src->image);
+   glBindSampler(1,
+         gl->pipelines.stock_rect_samplers[gl->video_info.smooth ? 1 : 0]);
+   glUseProgram(gl->pipelines.stock_rect);
+   if (gl->pipelines.stock_rect_loc.flat_ubo_fragment >= 0)
+      glUniform4fv(gl->pipelines.stock_rect_loc.flat_ubo_fragment, 5, ubo);
+   gl3_draw_textured_quad(gl, gl->pipelines.stock_rect,
+         &gl->pipelines.stock_rect_loc, mvp, vbo_data);
+   glBindSampler(1, 0);
+   glBindTexture(GL_TEXTURE_2D, 0);
+   glDisable(GL_SCISSOR_TEST);
+}
+
+/* A placement straight from the frame, as the stock chain draws it */
+static void gl3_views_draw_direct(gl3_t *gl,
+      const struct gl3_views_draw *d, unsigned view,
+      const video_views_rect_t *dst, const video_views_rect_t *cut)
+{
+   struct gl3_viewport vp, sc;
+   gl3_views_vp(dst, d->target_height, &vp);
+   gl3_views_vp(cut, d->target_height, &sc);
+   glBindFramebuffer(GL_FRAMEBUFFER, d->target);
+   gl3_stock_rect_draw(gl, d->src, &d->video_info->views.views[view],
+         d->bottom_up, &vp, &sc, d->mvp);
+}
+
+/* A placement through its view's chain */
+static void gl3_views_draw_pass(gl3_t *gl, const struct gl3_views_draw *d,
+      gl3_filter_chain_t *fc, const video_views_rect_t *dst,
+      const video_views_rect_t *cut, bool again)
+{
+   struct gl3_viewport vp, sc;
+   (void)gl;
+   gl3_views_vp(dst, d->target_height, &vp);
+   gl3_views_vp(cut, d->target_height, &sc);
+   /* Each final pass leaves framebuffer 0 bound. */
+   glBindFramebuffer(GL_FRAMEBUFFER, d->target);
+   gl3_filter_chain_set_scissor(fc, &sc);
+   if (again)
+      gl3_filter_chain_build_viewport_pass_again(fc, &vp, d->mvp);
+   else
+      gl3_filter_chain_build_viewport_pass(fc, &vp, d->mvp);
+   gl3_filter_chain_set_scissor(fc, NULL);
+}
+
 /* Shades every drawn view and draws its placements into the frame
  * target, sized dims, or with blend into the canvas, whose halves one
  * pass then blends into the frame target. A view placed twice runs its
- * final pass again, without a second feedback swap. */
+ * final pass again, without a second feedback swap. With direct, views
+ * draw straight from src, a bottom_up frame or not; with in_place their
+ * chains read them there. */
 static void gl3_views_render(gl3_t *gl,
       const video_frame_info_t *video_info,
       gl3_filter_chain_t **chains, const video_views_rect_t *rects,
-      bool blend, unsigned dims)
+      bool blend, unsigned dims,
+      const struct gl3_filter_chain_texture *src, bool bottom_up,
+      bool direct, bool in_place)
 {
    unsigned i;
    GLuint target;
-   bool drawn[RETRO_VIDEO_VIEWS_MAX];
+   struct gl3_views_draw d;
    const video_views_layout_t *layout = &video_info->views_layout;
    /* View textures keep the frame's orientation, so its mvp. */
    const float *mvp = (gl->flags & GL3_FLAG_HW_RENDER_BOTTOM_LEFT)
@@ -5742,60 +6194,47 @@ static void gl3_views_render(gl3_t *gl,
    {
       struct gl3_filter_chain_texture tex;
       struct gl3_viewport vp;
-      if (!chains[i])
+      if (!chains[i] || direct)
          continue;
-      tex.image         = gl->views.tex[i];
-      tex.dims          = gl->views.tex_dims[i];
-      tex.padded_dims   = tex.dims;
-      tex.format        = gl->views.tex_format[i];
+      if (in_place)
+      {
+         const struct retro_video_view *v = &video_info->views.views[i];
+         tex.image       = src->image;
+         tex.dims        = VIDEO_SCALE_PACK(v->width, v->height);
+         tex.padded_dims = src->padded_dims ? src->padded_dims : src->dims;
+         tex.origin      = VIDEO_SCALE_PACK(v->x,
+               (unsigned)gl3_views_src_y(src, v, bottom_up));
+         tex.format      = src->format;
+      }
+      else
+      {
+         tex.image       = gl->views.tex[i];
+         tex.dims        = gl->views.tex_dims[i];
+         tex.padded_dims = tex.dims;
+         tex.origin      = 0;
+         tex.format      = gl->views.tex_format[i];
+      }
       gl3_filter_chain_set_input_texture(chains[i], &tex);
       gl3_views_vp(&rects[i], target_height, &vp);
       gl3_filter_chain_build_offscreen_passes(chains[i], &vp);
    }
 
-   target = blend ? gl->views.canvas_fbo : gl3_frame_target_fbo(gl, dims);
+   target = blend ? gl->views.canvas.fbo : gl3_frame_target_fbo(gl, dims);
    glBindFramebuffer(GL_FRAMEBUFFER, target);
    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
    glClear(GL_COLOR_BUFFER_BIT);
 
-   memset(drawn, 0, sizeof(drawn));
-   for (i = 0; i < layout->num_placements; i++)
-   {
-      struct gl3_viewport vp, cut;
-      video_views_rect_t r, shown;
-      const video_views_placement_t *p = &layout->placements[i];
-      if (     (layout->offscreen && !blend && p->area != 0)
-            || !chains[p->view]
-            || !video_views_visible(layout, p, target_dims, &shown))
-         continue;
-      r = p->dst;
-      /* The interlaced shader counts texture rows, which run from the
-       * bottom in GL: with an even height the bottom row is an odd one
-       * from the top, so the eyes change halves. */
-      if (     blend && layout->stereo_mode == VIDEO_STEREO_MODE_INTERLACED
-            && !(target_height & 1))
-      {
-         int half = (int)(VIDEO_SCALE_W(target_dims) / 2);
-         int move = (p->area == 0) ? half : -half;
-         VIDEO_POS_PUT_X(r.pos,     VIDEO_POS_X(r.pos)     + move);
-         VIDEO_POS_PUT_X(shown.pos, VIDEO_POS_X(shown.pos) + move);
-      }
-      gl3_views_vp(&r, target_height, &vp);
-      gl3_views_vp(&shown, target_height, &cut);
-      /* Each final pass leaves framebuffer 0 bound. */
-      glBindFramebuffer(GL_FRAMEBUFFER, target);
-      gl3_filter_chain_set_scissor(chains[p->view], &cut);
-      if (drawn[p->view])
-         gl3_filter_chain_build_viewport_pass_again(chains[p->view],
-               &vp, mvp);
-      else
-         gl3_filter_chain_build_viewport_pass(chains[p->view], &vp, mvp);
-      gl3_filter_chain_set_scissor(chains[p->view], NULL);
-      drawn[p->view] = true;
-   }
+   d.video_info    = video_info;
+   d.src           = src;
+   d.mvp           = mvp;
+   d.target        = target;
+   d.target_height = target_height;
+   d.bottom_up     = bottom_up;
+   gl3_vv_draw_placements(gl, &d, layout, chains,
+         blend || !layout->offscreen, target_dims, direct, blend);
 
    for (i = 0; i < video_info->views.num_views; i++)
-      if (chains[i])
+      if (chains[i] && !direct)
          gl3_filter_chain_end_frame(chains[i]);
 
    if (blend)
@@ -5805,10 +6244,10 @@ static void gl3_views_render(gl3_t *gl,
       glDisable(GL_BLEND);
       if (layout->stereo_mode == VIDEO_STEREO_MODE_INTERLACED)
          gl3_views_quad(gl, gl->pipelines.stereo_interlaced,
-               &gl->pipelines.stereo_interlaced_loc, gl->views.canvas_tex);
+               &gl->pipelines.stereo_interlaced_loc, gl->views.canvas.tex);
       else
          gl3_views_quad(gl, gl->pipelines.stereo_anaglyph,
-               &gl->pipelines.stereo_anaglyph_loc, gl->views.canvas_tex);
+               &gl->pipelines.stereo_anaglyph_loc, gl->views.canvas.tex);
    }
 
    /* What follows, a non-fullscreen overlay for one, draws in the
@@ -5817,6 +6256,538 @@ static void gl3_views_render(gl3_t *gl,
          VIDEO_SCALE_W(gl->vp.dims), VIDEO_SCALE_H(gl->vp.dims));
 }
 #endif /* HAVE_SLANG */
+
+#ifdef HAVE_GL3_XR
+/* Whether the headset's screens are drawn by its stock chains. */
+static bool gl3_xr_stock(const gl3_t *gl,
+      const video_frame_info_t *video_info)
+{
+   return !video_info->shader_active
+      || !gl->filter_chain
+      || gl->filter_chain == gl->filter_chain_default;
+}
+
+/* The stock chain's form for a source larger than its image, for a view
+ * or, when view is negative, the whole frame. Made on first use, as the
+ * stock chains are; NULL if it can't be. */
+static gl3_filter_chain_t *gl3_xr_shrink_chain(gl3_t *gl, int view)
+{
+   gl3_filter_chain_t **chain = (view >= 0)
+      ? &gl->xr.shrink[view] : &gl->xr.frame_shrink;
+   if (*chain || gl->xr.shrink_failed)
+      return *chain;
+   if (!(*chain = gl3_filter_chain_create_shrink()))
+   {
+      gl->xr.shrink_failed = true;
+      RARCH_ERR("[OpenXR] Failed to create the headset's shrinking chain.\n");
+   }
+   return *chain;
+}
+
+/* The headset's chain for a view, or for the whole frame when view is
+ * negative, from the set the window uses this frame; NULL if none.
+ * shrink: the source is larger than its image, which the stock chain
+ * then draws smoothly. */
+static gl3_filter_chain_t *gl3_xr_chain(gl3_t *gl,
+      const video_frame_info_t *video_info, int view, bool shrink)
+{
+   unsigned j;
+   struct video_shader *live;
+   struct video_shader *preset;
+   gl3_filter_chain_t **chain;
+   gl3_filter_chain_t *shrinking;
+   bool stock = gl3_xr_stock(gl, video_info);
+
+   /* A threaded frame queued before the count shrank. */
+   if (view >= (int)gl->views.chains.count)
+      return NULL;
+   if (stock && shrink && (shrinking = gl3_xr_shrink_chain(gl, view)))
+      return shrinking;
+   if (view >= 0)
+      chain = stock ? &gl->xr.stock[view] : &gl->xr.chains[view];
+   else
+      chain = stock ? &gl->xr.frame_stock : &gl->xr.frame_chain;
+   if (!*chain && stock && !gl->xr.stock_failed)
+   {
+      *chain = gl3_filter_chain_create_default(gl->video_info.smooth
+            ? GLSLANG_FILTER_CHAIN_LINEAR
+            : GLSLANG_FILTER_CHAIN_NEAREST);
+      gl->xr.stock_failed = !*chain;
+   }
+   if (!*chain || stock)
+      return *chain;
+   /* Parameter edits land in the main chain's preset. */
+   live   = gl3_filter_chain_get_preset(gl->filter_chain);
+   preset = gl3_filter_chain_get_preset(*chain);
+   if (live && preset && preset->num_parameters == live->num_parameters)
+      for (j = 0; j < live->num_parameters; j++)
+         preset->parameters[j].current = live->parameters[j].current;
+   return *chain;
+}
+
+/* A headset chain's state for this frame, as the window's chains get. */
+static void gl3_xr_chain_frame(gl3_t *gl, gl3_filter_chain_t *fc,
+      const video_frame_info_t *video_info, uint64_t frame_count,
+      float core_aspect)
+{
+   uint32_t rot = gl->rotation_raw;
+   gl3_filter_chain_set_frame_count(fc, frame_count);
+   gl3_filter_chain_set_swap_count(fc, video_info->swap_count);
+#ifdef HAVE_REWIND
+   gl3_filter_chain_set_frame_direction(fc,
+         state_manager_frame_is_reversed() ? -1 : 1);
+#else
+   gl3_filter_chain_set_frame_direction(fc, 1);
+#endif
+   gl3_filter_chain_set_frame_time_delta(fc,
+         (uint32_t)video_driver_get_frame_time_delta_usec());
+   gl3_filter_chain_set_original_fps(fc, video_driver_get_original_fps());
+   gl3_filter_chain_set_rotation(fc, rot);
+   gl3_filter_chain_set_core_aspect(fc, core_aspect);
+   gl3_filter_chain_set_core_aspect_rot(fc,
+         (rot == 1 || rot == 3) ? 1.0f / core_aspect : core_aspect);
+   /* The headset shows each core frame once. */
+   gl3_filter_chain_set_shader_subframes(fc, 1);
+   gl3_filter_chain_set_current_shader_subframe(fc, 1);
+}
+
+/* The screens the tracked eyes are on, which the projection shows. */
+static unsigned gl3_xr_eye_screens(const video_frame_info_t *video_info)
+{
+   const video_views_map_t *map = &video_info->views;
+   int l                        = video_info->headset_eye[0];
+   int r                        = video_info->headset_eye[1];
+   if (     l < 0 || r < 0
+         || l >= (int)map->num_views || r >= (int)map->num_views)
+      return 0;
+   return (1u << map->views[l].screen) | (1u << map->views[r].screen);
+}
+
+/* Whether the projection can take the tracked eyes: at a size the
+ * runtime has not refused, and on a repeat only once it has them, or on
+ * a software repeat while none is shown, if the views the frame was
+ * drawn from still hold. Otherwise their screen stays a quad. */
+static bool gl3_xr_projection_ok(const gl3_t *gl, bool new_frame,
+      bool kept_frame)
+{
+   unsigned dims = gl_openxr_eye_dims(gl->xr.host);
+   return dims
+      && gl_openxr_slot_refused(gl->xr.host, OPENXR_PROJECTION_SLOT) != dims
+      && (   new_frame || gl->xr.proj_shown
+          || (kept_frame && gl_openxr_has_given(gl->xr.host)));
+}
+
+/* This frame's quads: the views' screens, or the whole frame at
+ * frame_dims' shape from a source of src_dims, and the UI when ui_dims
+ * is set; eyes: the tracked eyes' screen is the projection's. */
+static void gl3_xr_plan(gl3_t *gl, const video_frame_info_t *video_info,
+      bool views, bool eyes, unsigned frame_dims, unsigned src_dims,
+      unsigned ui_dims)
+{
+   video_xr_params_t p;
+   gl_openxr_t *xr = gl->xr.host;
+
+   memset(&p, 0, sizeof(p));
+   p.map           = views ? &video_info->views : NULL;
+   if (VIDEO_SCALE_H(frame_dims))
+      p.frame_aspect = (float)VIDEO_SCALE_W(frame_dims)
+         / (float)VIDEO_SCALE_H(frame_dims);
+   p.frame_dims    = src_dims;
+   video_xr_pose_identity(&p.anchor);
+   p.distance      = video_info->headset_distance;
+   p.width         = video_info->headset_width;
+   p.px_per_rad    = gl_openxr_pixels_per_radian(xr);
+   p.max_dim       = gl_openxr_max_dim(xr);
+   p.screen_layout = video_info->screen_layout;
+   p.rotation      = gl->rotation_raw;
+   p.ui_dims       = ui_dims;
+   p.swap_eyes     = video_info->stereo_swap_eyes;
+   p.stock         = gl3_xr_stock(gl, video_info);
+   if (views && eyes)
+      p.skip_screens = gl3_xr_eye_screens(video_info);
+   video_xr_place(&p, &gl->xr.set);
+}
+
+/* Whether slot s's plan this frame is what it last published. */
+static bool gl3_xr_same(const gl3_t *gl, unsigned s)
+{
+   unsigned i;
+   unsigned n = 0;
+   const video_xr_quad_set_t *set = &gl->xr.set;
+   if (memcmp(&set->slots[s], &gl->xr.shown[s].info, sizeof(set->slots[s])))
+      return false;
+   for (i = 0; i < set->num_quads; i++)
+      if (set->quads[i].slot == s)
+      {
+         if (     n >= gl->xr.shown[s].num_quads
+               || memcmp(&set->quads[i], &gl->xr.shown[s].quads[n],
+                  sizeof(set->quads[i])))
+            return false;
+         n++;
+      }
+   return n == gl->xr.shown[s].num_quads;
+}
+
+static void gl3_xr_keep(gl3_t *gl, unsigned s)
+{
+   unsigned i;
+   const video_xr_quad_set_t *set = &gl->xr.set;
+   gl->xr.shown[s].info      = set->slots[s];
+   gl->xr.shown[s].num_quads = 0;
+   for (i = 0; i < set->num_quads; i++)
+      if (set->quads[i].slot == s && gl->xr.shown[s].num_quads < 4)
+         gl->xr.shown[s].quads[gl->xr.shown[s].num_quads++] =
+            set->quads[i];
+   gl->xr.shown[s].published = true;
+}
+
+/* Slot s shows nothing from now on: a menu that comes back must not
+ * show the last one's image. yield: the tracked eyes take its place,
+ * and it shows until they do. */
+static void gl3_xr_forget(gl3_t *gl, unsigned s, bool yield)
+{
+   if (!gl->xr.shown[s].published)
+      return;
+   if (yield)
+      gl_openxr_slot_yield(gl->xr.host, s);
+   else
+      gl_openxr_slot_forget(gl->xr.host, s);
+   memset(&gl->xr.shown[s], 0, sizeof(gl->xr.shown[s]));
+}
+
+/* Each layer of a screen slot drawn whole into tex by its view's
+ * headset chain or the whole frame's: its passes at the image's size. */
+static void gl3_xr_draw_screen(gl3_t *gl, unsigned s, const uint32_t *tex,
+      gl3_filter_chain_t **chains, gl3_filter_chain_t *frame_chain,
+      const struct gl3_filter_chain_texture *frame_tex)
+{
+   unsigned l;
+   struct gl3_viewport vp;
+   const video_xr_slot_t *plan = &gl->xr.set.slots[s];
+
+   vp.pos  = 0;
+   vp.dims = plan->dims;
+   for (l = 0; l < plan->layers; l++)
+   {
+      struct gl3_filter_chain_texture in;
+      int v                    = plan->view[l];
+      gl3_filter_chain_t *chain = (v >= 0) ? chains[v] : frame_chain;
+
+      if (v >= 0)
+      {
+         in.image       = gl->views.tex[v];
+         in.dims        = gl->views.tex_dims[v];
+         in.padded_dims = in.dims;
+         in.origin      = 0;
+         in.format      = gl->views.tex_format[v];
+      }
+      else
+         in = *frame_tex;
+      if (chain)
+      {
+         gl3_filter_chain_set_input_texture(chain, &in);
+         gl3_filter_chain_build_offscreen_passes(chain, &vp);
+      }
+      /* Every layer is drawn again, so what the texture held goes. */
+      glBindFramebuffer(GL_FRAMEBUFFER, gl->xr.fbo);
+      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+            GL_TEXTURE_2D, tex[l], 0);
+      glViewport(0, 0, VIDEO_SCALE_W(plan->dims), VIDEO_SCALE_H(plan->dims));
+      glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+      glClear(GL_COLOR_BUFFER_BIT);
+      if (chain)
+      {
+         gl3_filter_chain_build_viewport_pass(chain, &vp, gl->xr.mvp);
+         gl3_filter_chain_end_frame(chain);
+      }
+   }
+}
+
+/* The UI layer this frame drew, into the menu slot's tex: copied at the
+ * slot's size, else drawn scaled; either way its premultiplied colour
+ * stays as it is. */
+static void gl3_xr_copy_ui(gl3_t *gl, unsigned s, GLuint tex,
+      unsigned ui_dims)
+{
+   unsigned dims = gl->xr.set.slots[s].dims;
+   if (dims == ui_dims && gl->views.copy_image)
+   {
+      glCopyImageSubData(gl->views.ui.tex, GL_TEXTURE_2D, 0, 0, 0, 0,
+            tex, GL_TEXTURE_2D, 0, 0, 0, 0, (GLsizei)VIDEO_SCALE_W(dims),
+            (GLsizei)VIDEO_SCALE_H(dims), 1);
+      return;
+   }
+   glBindFramebuffer(GL_FRAMEBUFFER, gl->xr.fbo);
+   glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+         GL_TEXTURE_2D, tex, 0);
+   glViewport(0, 0, VIDEO_SCALE_W(dims), VIDEO_SCALE_H(dims));
+   glDisable(GL_BLEND);
+   glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+   glClear(GL_COLOR_BUFFER_BIT);
+   gl3_views_quad(gl, gl->pipelines.alpha_blend,
+         &gl->pipelines.alpha_blend_loc, gl->views.ui.tex);
+}
+
+/* The tracked eyes into the projection slot, a layer each, with no
+ * chain: each from its image's origin at its own size, shrunk if it is
+ * larger, the right way up, with the poses the core was given. The
+ * views were copied out of this frame or an earlier one. */
+static bool gl3_xr_draw_projection(gl3_t *gl,
+      const video_frame_info_t *video_info)
+{
+   static const float vbo_data[32] = {
+      0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f,
+      1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f,
+      0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f,
+      1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f,
+   };
+   unsigned e, w, h;
+   uint32_t tex[2];
+   openxr_projection_t p;
+   const unsigned s                  = OPENXR_PROJECTION_SLOT;
+   gl_openxr_t *xr                   = gl->xr.host;
+   unsigned dims                     = gl_openxr_eye_dims(xr);
+   const struct retro_video_view *rv =
+      &video_info->views.views[video_info->headset_eye[0]];
+   /* View copies keep the frame's orientation. */
+   const float *mvp = (gl->flags & GL3_FLAG_HW_RENDER_BOTTOM_LEFT)
+      ? gl->mvp_no_rot.data : gl->mvp_no_rot_yflip.data;
+
+   for (e = 0; e < 2; e++)
+      if (!(gl->views.copied & (1u << video_info->headset_eye[e])))
+         return false;
+   if (!dims || !gl_openxr_slot_target(xr, s, dims, 2, tex))
+      return false;
+   if (!gl->xr.samplers[0])
+   {
+      glGenSamplers(2, gl->xr.samplers);
+      for (e = 0; e < 2; e++)
+      {
+         GLint f = e ? GL_LINEAR : GL_NEAREST;
+         glSamplerParameteri(gl->xr.samplers[e], GL_TEXTURE_MIN_FILTER, f);
+         glSamplerParameteri(gl->xr.samplers[e], GL_TEXTURE_MAG_FILTER, f);
+         glSamplerParameteri(gl->xr.samplers[e], GL_TEXTURE_WRAP_S,
+               GL_CLAMP_TO_EDGE);
+         glSamplerParameteri(gl->xr.samplers[e], GL_TEXTURE_WRAP_T,
+               GL_CLAMP_TO_EDGE);
+      }
+   }
+
+   w = MIN(rv->width,  VIDEO_SCALE_W(dims));
+   h = MIN(rv->height, VIDEO_SCALE_H(dims));
+   glDisable(GL_BLEND);
+   for (e = 0; e < 2; e++)
+   {
+      glBindFramebuffer(GL_FRAMEBUFFER, gl->xr.fbo);
+      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+            GL_TEXTURE_2D, tex[e], 0);
+      /* Cleared whole: the compositor may read past the rectangle. */
+      glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+      glClear(GL_COLOR_BUFFER_BIT);
+      glViewport(0, 0, w, h);
+      glActiveTexture(GL_TEXTURE0 + 1);
+      glBindTexture(GL_TEXTURE_2D,
+            gl->views.tex[video_info->headset_eye[e]]);
+      glBindSampler(1, gl->xr.samplers[
+            (w == rv->width && h == rv->height) ? 0 : 1]);
+      /* Opaque: the compositor takes no alpha from the eyes. */
+      gl3_draw_textured_quad(gl, gl->pipelines.alpha_blend,
+            &gl->pipelines.alpha_blend_loc, mvp, vbo_data);
+      glBindSampler(1, 0);
+      glBindTexture(GL_TEXTURE_2D, 0);
+   }
+   gl_openxr_projection(xr, w, h, &p);
+   gl_openxr_slot_publish(xr, s, NULL, &p);
+   gl->xr.proj_shown = true;
+   return true;
+}
+
+/* This frame into the headset's slots, after the window drew it: the
+ * screens when a core frame arrived or their quads moved, the UI when
+ * this frame drew any; a slot the plan leaves out is forgotten. The
+ * window's framebuffer, viewport, scissor and blending are as they
+ * were. */
+static void gl3_xr_draw(gl3_t *gl, const video_frame_info_t *video_info,
+      bool new_frame, bool map, bool eyes, gl3_filter_chain_t **chains,
+      gl3_filter_chain_t *frame_chain, gl3_filter_chain_t *frame_shrink,
+      const struct gl3_filter_chain_texture *frame_tex,
+      unsigned frame_dims, unsigned ui_dims)
+{
+   unsigned s;
+   GLint fbo     = 0;
+   GLint vp[4]   = { 0, 0, 0, 0 };
+   GLboolean scissor, blend;
+   gl_openxr_t *xr = gl->xr.host;
+
+   gl3_xr_plan(gl, video_info, map, eyes, frame_dims, frame_tex->dims,
+         ui_dims);
+   if (     frame_shrink
+         && video_xr_shrinks(gl->xr.set.slots[0].dims, frame_tex->dims,
+            gl->rotation_raw))
+      frame_chain = frame_shrink;
+
+   glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &fbo);
+   glGetIntegerv(GL_VIEWPORT, vp);
+   scissor = glIsEnabled(GL_SCISSOR_TEST);
+   blend   = glIsEnabled(GL_BLEND);
+   glDisable(GL_SCISSOR_TEST);
+   if (!gl->xr.fbo)
+      glGenFramebuffers(1, &gl->xr.fbo);
+
+   for (s = 0; s < VIDEO_XR_MAX_SLOTS; s++)
+   {
+      uint32_t tex[2];
+      const video_xr_slot_t *plan = &gl->xr.set.slots[s];
+      if (!plan->dims)
+      {
+         gl3_xr_forget(gl, s, eyes && map
+               && (gl3_xr_eye_screens(video_info) & (1u << s)));
+         continue;
+      }
+      if (gl_openxr_slot_refused(xr, s) == plan->dims)
+         continue;
+      if (s == VIDEO_XR_MENU_SLOT)
+      {
+         if (!ui_dims)
+            continue;
+      }
+      else if (!new_frame && gl->xr.shown[s].published && gl3_xr_same(gl, s))
+         continue;
+      if (!gl_openxr_slot_target(xr, s, plan->dims, plan->layers, tex))
+         continue;
+      if (s == VIDEO_XR_MENU_SLOT)
+         gl3_xr_copy_ui(gl, s, tex[0], ui_dims);
+      else
+         gl3_xr_draw_screen(gl, s, tex, chains, frame_chain, frame_tex);
+      gl_openxr_slot_publish(xr, s, &gl->xr.set, NULL);
+      gl3_xr_keep(gl, s);
+   }
+   /* A repeat draws the eyes only for a projection not shown yet, with
+    * the poses that drew them. The eyes' screen is a quad again: the
+    * projection goes once it shows, never before. A repeat may be a
+    * video-thread redraw, which names no eyes. */
+   if (eyes && (new_frame || !gl->xr.proj_shown))
+      gl3_xr_draw_projection(gl, video_info);
+   else if (gl->xr.proj_shown && !eyes && !video_info->frame_repeat)
+   {
+      gl_openxr_slot_forget(xr, OPENXR_PROJECTION_SLOT);
+      gl->xr.proj_shown = false;
+   }
+
+   /* An attachment held would keep a replaced texture alive. */
+   glBindFramebuffer(GL_FRAMEBUFFER, gl->xr.fbo);
+   glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+         GL_TEXTURE_2D, 0, 0);
+   glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)fbo);
+   glViewport(vp[0], vp[1], vp[2], vp[3]);
+   if (scissor)
+      glEnable(GL_SCISSOR_TEST);
+   if (blend)
+      glEnable(GL_BLEND);
+   else
+      glDisable(GL_BLEND);
+}
+
+/* While the headset paces the core, the window presents without
+ * waiting, and each core frame waits for the headset instead. */
+static void gl3_xr_pace_setup(gl3_t *gl, const video_frame_info_t *video_info)
+{
+   gl_openxr_t *xr = gl->xr.host;
+   bool paced      = xr && video_info->headset_interval;
+   if (xr)
+   {
+      gl_openxr_set_pacing(xr, video_info->headset_interval);
+      gl_openxr_request_rate(xr, video_info->headset_request_hz);
+   }
+   if (paced == gl->xr.paced)
+      return;
+   gl->xr.paced = paced;
+   if (gl->ctx_driver->swap_interval)
+      gl->ctx_driver->swap_interval(gl->ctx_data,
+            paced ? 0 : gl->xr.window_interval);
+   gl->present_vsynced = !paced && gl->xr.window_interval != 0;
+   RARCH_LOG("[GLCore] Headset pacing %s.\n", paced
+         ? "on: the window presents without waiting" : "off");
+}
+
+/* A recenter request since the last frame, and where the screens are
+ * kept, go to the headset's frame. */
+static void gl3_xr_recenter(gl3_t *gl, const video_frame_info_t *video_info)
+{
+   if (!gl->xr.host)
+      return;
+   if (     gl->xr.recenter_seen
+         && gl->xr.recenter != video_info->headset_recenter)
+      gl_openxr_request_recenter(gl->xr.host);
+   gl->xr.recenter      = video_info->headset_recenter;
+   gl->xr.recenter_seen = true;
+   gl_openxr_set_placement(gl->xr.host, video_info->headset_placement);
+}
+
+/* Whether the headset shows this frame: a session it can see, its pixel
+ * density measured, and no HDR output. */
+static bool gl3_xr_ready(gl3_t *gl)
+{
+   unsigned s;
+   gl_openxr_t *xr = gl->xr.host;
+   if (     !xr
+         || !gl_openxr_should_draw(xr)
+         || gl_openxr_pixels_per_radian(xr) <= 0.0f)
+      return false;
+   if (gl3_views_allowed(gl))
+      return true;
+   if (     (gl->scrgb.active || gl->video_info.source_hdr10)
+         && !gl->xr.hdr_warned)
+   {
+      RARCH_WARN("[OpenXR] The headset shows nothing while HDR output is on.\n");
+      gl->xr.hdr_warned = true;
+   }
+   /* Nothing, rather than its last frame. */
+   for (s = 0; s < VIDEO_XR_MAX_SLOTS; s++)
+      gl3_xr_forget(gl, s, false);
+   if (gl->xr.proj_shown)
+      gl_openxr_slot_forget(xr, OPENXR_PROJECTION_SLOT);
+   gl->xr.proj_shown = false;
+   return false;
+}
+
+/* Headset output from a context in the window's share group, when the
+ * setting is on and the context driver makes one; the window as ever
+ * otherwise. The window's context is current. */
+static void gl3_xr_start(gl3_t *gl)
+{
+   settings_t *settings = config_get_ptr();
+   if (!settings->bools.video_openxr_enable)
+      return;
+   if (!(gl->xr.host = gl_openxr_new(gl->ctx_driver, gl->ctx_data)))
+      return;
+   if (!gl_openxr_start(gl->xr.host))
+   {
+      gl_openxr_free(gl->xr.host);
+      gl->xr.host = NULL;
+      return;
+   }
+   gl_openxr_set_hidden(gl->xr.host, !gl3_views_allowed(gl));
+   /* The presets loaded before the host have no headset chains yet. */
+   gl3_views_build_chains(gl);
+}
+
+/* Before the core's context and the window's: the XR thread stops and
+ * its context goes. The window's context is current. */
+static void gl3_xr_free(gl3_t *gl)
+{
+   if (gl->xr.fbo)
+      glDeleteFramebuffers(1, &gl->xr.fbo);
+   if (gl->xr.samplers[0])
+      glDeleteSamplers(2, gl->xr.samplers);
+   gl->xr.samplers[0] = gl->xr.samplers[1] = 0;
+   gl->xr.fbo         = 0;
+   gl->xr.proj_shown  = false;
+   gl_openxr_free(gl->xr.host);
+   gl->xr.host = NULL;
+   memset(gl->xr.shown, 0, sizeof(gl->xr.shown));
+}
+#endif /* HAVE_GL3_XR */
 
 static bool gl3_frame(void *data, const void *frame,
       unsigned dims,
@@ -5837,7 +6808,21 @@ static bool gl3_frame(void *data, const void *frame,
    unsigned c;
    bool views                              = false;
    bool views_blend                        = false;
+   bool views_direct                       = false;
+   bool views_in_place                     = false;
    bool views_ui                           = false;
+   unsigned ui_layer_dims                  = 0;
+#endif
+#ifdef HAVE_GL3_XR
+   gl3_filter_chain_t *xr_chains[RETRO_VIDEO_VIEWS_MAX];
+   gl3_filter_chain_t *xr_frame            = NULL;
+   gl3_filter_chain_t *xr_frame_shrink     = NULL;
+   bool xr_draw                            = false;
+   bool xr_map                             = false;
+   bool xr_eyes                            = false;
+   unsigned xr_views                       = 0;
+   unsigned xr_frame_dims                  = 0;
+   unsigned xr_ui_dims                     = 0;
 #endif
    bool views_per_eye                      = false;
    gl3_t *gl                               = (gl3_t*)data;
@@ -5877,6 +6862,24 @@ static bool gl3_frame(void *data, const void *frame,
    /* Travels with the frame, for set_texture_frame() to read rather
     * than the setting the menu writes */
    gl->frame_menu_linear_filter = video_info->menu_linear_filter;
+
+#ifdef HAVE_GL3_XR
+   gl3_xr_recenter(gl, video_info);
+   xr_draw = gl3_xr_ready(gl);
+   gl3_xr_pace_setup(gl, video_info);
+   memset(xr_chains, 0, sizeof(xr_chains));
+   /* Views kept across a reinit drew only the frame a repeat shows. */
+   if (gl->xr.host)
+   {
+      if (frame && !video_info->frame_repeat)
+         gl_openxr_new_frame(gl->xr.host);
+      else
+         gl_openxr_place_kept(gl->xr.host);
+   }
+   xr_eyes = xr_draw && gl3_xr_eye_screens(video_info)
+      && gl3_xr_projection_ok(gl, frame && !video_info->frame_repeat,
+            frame != NULL);
+#endif
 
    /* These travel with the frame, so this thread does not read what the
     * main thread writes: the scRGB encode below and gl3_encode_pq_to_sdr()
@@ -6002,6 +7005,7 @@ static bool gl3_frame(void *data, const void *frame,
    texture.image            = 0;
    texture.dims             = streamed->dims;
    texture.padded_dims      = 0;
+   texture.origin           = 0;
    texture.format           = 0;
 
    if (gl->flags & GL3_FLAG_HW_RENDER_ENABLE)
@@ -6033,9 +7037,49 @@ static bool gl3_frame(void *data, const void *frame,
       texture.padded_dims   = streamed->dims;
    }
 
+#ifdef HAVE_GL3_XR
+   /* Each view the headset shows has a chain of its own there. */
+   if (xr_draw && video_info->views.num_views)
+   {
+      unsigned s, l;
+      xr_map = true;
+      gl3_xr_plan(gl, video_info, true, xr_eyes, 0, 0, 0);
+      for (s = 0; s < VIDEO_XR_MAX_SLOTS; s++)
+         for (l = 0; l < gl->xr.set.slots[s].layers; l++)
+         {
+            int v = gl->xr.set.slots[s].view[l];
+            const struct retro_video_view *rv;
+            if (v < 0)
+               continue;
+            /* A view larger than its image is shrunk smoothly. */
+            rv = &video_info->views.views[v];
+            if (!(xr_chains[v] = gl3_xr_chain(gl, video_info, v,
+                        video_xr_shrinks(gl->xr.set.slots[s].dims,
+                           VIDEO_SCALE_PACK(rv->width, rv->height),
+                           gl->rotation_raw))))
+               xr_map = false;
+         }
+   }
+   /* The headset's views and its tracked eyes come from the same
+    * copies. */
+   if (xr_map)
+      for (i = 0; i < RETRO_VIDEO_VIEWS_MAX; i++)
+         if (xr_chains[i])
+            xr_views |= 1u << i;
+   if (xr_eyes)
+      xr_views |= (1u << video_info->headset_eye[0])
+                | (1u << video_info->headset_eye[1]);
+#endif
 #ifdef HAVE_SLANG
    views = gl3_views_setup(gl, video_info, frame, &texture,
-         video_info->dims, &views_blend, view_chains, view_rects);
+         video_info->dims, &views_blend, &views_direct, &views_in_place,
+         view_chains, view_rects,
+#ifdef HAVE_GL3_XR
+         xr_views
+#else
+         0
+#endif
+         );
    /* gl->vp is the whole window while views draw. */
    if (views != gl->views.active)
    {
@@ -6044,6 +7088,41 @@ static bool gl3_frame(void *data, const void *frame,
    }
    retro_atomic_store_release_int(&gl->views.fallback,
          (video_info->views.num_views && !views) ? 1 : 0);
+#endif
+#ifdef HAVE_GL3_XR
+   /* A view only the headset shows waits for a real frame, rather than
+    * one eye drawing from nothing. */
+   if (views && xr_map && !frame)
+      for (i = 0; i < RETRO_VIDEO_VIEWS_MAX; i++)
+         if (xr_chains[i] && !(gl->views.copied & (1u << i)))
+            xr_draw = false;
+   /* Without the window's views the headset shows the whole frame, and
+    * without the screens' map the eyes are in the whole frame. */
+   xr_map  = xr_map && views;
+   xr_eyes = xr_eyes && views && xr_map;
+   if (xr_draw && !xr_map)
+   {
+      memset(xr_chains, 0, sizeof(xr_chains));
+      if (!(xr_frame = gl3_xr_chain(gl, video_info, -1, false)))
+         xr_draw = false;
+      /* Whether the frame is larger than its image is known once
+       * gl3_xr_draw() plans it, so the shrinking form is set up too. */
+      else if (gl3_xr_stock(gl, video_info))
+         xr_frame_shrink = gl3_xr_shrink_chain(gl, -1);
+   }
+   if (xr_draw)
+   {
+      float aspect = video_driver_get_core_aspect();
+      for (i = 0; i < RETRO_VIDEO_VIEWS_MAX; i++)
+         if (xr_chains[i])
+            gl3_xr_chain_frame(gl, xr_chains[i], video_info, frame_count,
+                  (float)video_views_aspect(&video_info->views.views[i]));
+      if (xr_frame)
+         gl3_xr_chain_frame(gl, xr_frame, video_info, frame_count, aspect);
+      if (xr_frame_shrink)
+         gl3_xr_chain_frame(gl, xr_frame_shrink, video_info, frame_count,
+               aspect);
+   }
 #endif
 
    /* No point regenerating mipmaps
@@ -6260,7 +7339,39 @@ static bool gl3_frame(void *data, const void *frame,
 
       if (views)
          gl3_views_render(gl, video_info, view_chains, view_rects,
-               views_blend, video_info->dims);
+               views_blend, video_info->dims, &texture,
+               (gl->flags & GL3_FLAG_HW_RENDER_ENABLE)
+               && (gl->flags & GL3_FLAG_HW_RENDER_BOTTOM_LEFT),
+               views_direct, views_in_place);
+      /* The stock chain would copy a frame out of a larger texture
+       * first; it is drawn straight from it instead. */
+      else if (   filter_chain == gl->filter_chain_default
+               && texture.padded_dims != texture.dims
+               && gl3_stock_rect_ready(gl, video_info))
+      {
+         struct retro_video_view whole;
+         memset(&whole, 0, sizeof(whole));
+         whole.width  = VIDEO_SCALE_W(texture.dims);
+         whole.height = VIDEO_SCALE_H(texture.dims);
+         if (!gl->pipelines.stock_rect_frame_seen)
+         {
+            gl->pipelines.stock_rect_frame_seen = true;
+            RARCH_LOG("[GLCore] Frames drawn straight from the core's "
+                  "texture.\n");
+         }
+         glBindFramebuffer(GL_FRAMEBUFFER,
+               gl3_frame_target_fbo(gl, video_info->dims));
+         glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+         glClear(GL_COLOR_BUFFER_BIT);
+         gl3_stock_rect_draw(gl, &texture, &whole,
+               (gl->flags & GL3_FLAG_HW_RENDER_ENABLE)
+               && (gl->flags & GL3_FLAG_HW_RENDER_BOTTOM_LEFT),
+               &gl->filter_chain_vp, &gl->filter_chain_vp,
+               (gl->flags & GL3_FLAG_HW_RENDER_BOTTOM_LEFT)
+               ? gl->mvp.data
+               : gl->mvp_yflip.data);
+         glBindFramebuffer(GL_FRAMEBUFFER, 0);
+      }
       else
       {
          gl3_filter_chain_set_input_texture(filter_chain, &texture);
@@ -6280,6 +7391,16 @@ static bool gl3_frame(void *data, const void *frame,
       }
    }
 #endif /* HAVE_SLANG */
+
+#ifdef HAVE_GL3_XR
+   /* The menu and UI set their own before the headset draws. */
+   if (xr_draw)
+   {
+      memcpy(gl->xr.mvp, (gl->flags & GL3_FLAG_HW_RENDER_BOTTOM_LEFT)
+            ? gl->mvp.data : gl->mvp_yflip.data, sizeof(gl->xr.mvp));
+      xr_frame_dims = views ? gl->vp.dims : gl->filter_chain_vp.dims;
+   }
+#endif
 
    /* Under scRGB output, re-assert the frame target before any UI
     * draws: chain internals (history / feedback / original-history
@@ -6311,38 +7432,43 @@ static bool gl3_frame(void *data, const void *frame,
 #ifdef HAVE_SLANG
    /* As the main thread laid the UI out, also in a frame drawn whole:
     * it lays out later frames whole once it reads the fallback. */
-   views_per_eye = video_info->views.num_views
-      && video_info->views_layout.ui_per_eye && gl3_views_allowed(gl);
-   /* A real frame without it frees the UI layer. Not one whose layer
-    * failed: that size stays latched. */
-   if (frame && !views_per_eye)
-      gl3_views_free_target(&gl->views.ui_fbo, &gl->views.ui_tex,
-            &gl->views.ui_dims);
-   /* Drawn and composited only when there is UI; overlays are hidden. */
-   views_ui = views_per_eye
-      && (     (gl->flags & GL3_FLAG_MENU_TEXTURE_ENABLE)
-            || (msg && *msg)
-            || statistics_show
-#ifdef HAVE_GFX_WIDGETS
-            || (widgets_active && gfx_widgets_visible(video_info))
+   views_per_eye = video_views_ui_per_eye(&video_info->views,
+         &video_info->views_layout, gl3_views_allowed(gl));
+   ui_layer_dims = views_per_eye ? video_info->views_layout.ui_dims : 0;
+#ifdef HAVE_GL3_XR
+   if (!ui_layer_dims && xr_draw)
+      ui_layer_dims = video_info->dims;
 #endif
-         )
-      && gl3_views_target(&gl->views.ui_fbo,
-            &gl->views.ui_tex, &gl->views.ui_dims,
-            video_info->views_layout.ui_dims);
-   if (views_ui)
-   {
-      gl3_views_ui_begin(gl, video_info);
-      width  = VIDEO_SCALE_W(video_info->views_layout.ui_dims);
-      height = VIDEO_SCALE_H(video_info->views_layout.ui_dims);
-   }
+   /* A failed size stays latched until the layer changes size. */
+   if (frame && !ui_layer_dims)
+      gl3_vv_target_drop(gl, &gl->views.ui_target, &gl->views.ui);
+#ifdef HAVE_GFX_WIDGETS
+   views_ui = VIDEO_VIEWS_UI_WANTED(ui_layer_dims,
+         (gl->flags & GL3_FLAG_MENU_TEXTURE_ENABLE), msg, statistics_show,
+         widgets_active && gfx_widgets_visible(video_info))
+#else
+   views_ui = VIDEO_VIEWS_UI_WANTED(ui_layer_dims,
+         (gl->flags & GL3_FLAG_MENU_TEXTURE_ENABLE), msg, statistics_show, false)
+#endif
+      && gl3_vv_target_ensure(gl, &gl->views.ui_target, &gl->views.ui,
+            ui_layer_dims);
 #endif
 
-   /* Touch overlays would straddle both eyes. */
+   /* Touch overlays would straddle both eyes, and stay out of the UI
+    * layer a headset shows. */
 #ifdef HAVE_OVERLAY
    if (     (gl->flags & GL3_FLAG_OVERLAY_ENABLE) && overlay_behind_menu
          && !views_per_eye)
       gl3_render_overlay(gl, width, height);
+#endif
+
+#ifdef HAVE_SLANG
+   if (views_ui)
+   {
+      gl3_views_ui_begin(gl, video_info, ui_layer_dims);
+      width  = VIDEO_SCALE_W(ui_layer_dims);
+      height = VIDEO_SCALE_H(ui_layer_dims);
+   }
 #endif
 
 #if defined(HAVE_MENU)
@@ -6362,7 +7488,11 @@ static bool gl3_frame(void *data, const void *frame,
 
 #ifdef HAVE_OVERLAY
    if (     (gl->flags & GL3_FLAG_OVERLAY_ENABLE) && !overlay_behind_menu
-         && !views_per_eye)
+         && !views_per_eye
+#ifdef HAVE_SLANG
+         && !views_ui
+#endif
+         )
       gl3_render_overlay(gl, width, height);
 #endif
 
@@ -6377,10 +7507,18 @@ static bool gl3_frame(void *data, const void *frame,
 #ifdef HAVE_SLANG
    if (views_ui)
    {
-      gl3_views_ui_end(gl, video_info);
+      gl3_views_ui_end(gl, video_info, !views_per_eye);
       width  = VIDEO_SCALE_W(video_info->dims);
       height = VIDEO_SCALE_H(video_info->dims);
+#ifdef HAVE_GL3_XR
+      xr_ui_dims = ui_layer_dims;
+#endif
    }
+#ifdef HAVE_OVERLAY
+   if (     (gl->flags & GL3_FLAG_OVERLAY_ENABLE) && !overlay_behind_menu
+         && !views_per_eye && views_ui)
+      gl3_render_overlay(gl, width, height);
+#endif
 #endif
 
    /* scRGB output: everything above rendered into the SDR offscreen;
@@ -6538,6 +7676,13 @@ static bool gl3_frame(void *data, const void *frame,
    else if (!video_info->record_game_only || gl->scrgb.active)
       gl3_record_readback(gl, !video_info->record_game_only);
 
+#ifdef HAVE_GL3_XR
+   if (xr_draw)
+      gl3_xr_draw(gl, video_info, frame && !video_info->frame_repeat,
+            xr_map, xr_eyes, xr_chains, xr_frame, xr_frame_shrink, &texture,
+            xr_frame_dims, xr_ui_dims);
+#endif
+
    gl3_hw_ring_drawn(gl);
    gl->present_wait = 0;
    if (gl->ctx_driver->swap_buffers)
@@ -6643,6 +7788,18 @@ static bool gl3_frame(void *data, const void *frame,
        )
       gl3_fence_iterate(gl, hard_sync_frames);
 
+#ifdef HAVE_GL3_XR
+   /* In place of the window's vsync: once a core frame, never under
+    * fast-forward. */
+   if (gl->xr.paced && !(gl->flags & GL3_FLAG_FRAME_DUPE_LOCK))
+   {
+      if (input_driver_nonblock_state)
+         gl_openxr_pace_skip(gl->xr.host);
+      else
+         gl_openxr_pace_wait(gl->xr.host);
+   }
+#endif
+
    glBindVertexArray(0);
    /* Not under the ring: the core's context is current on the main
     * thread, and this one has no business taking it. */
@@ -6726,6 +7883,25 @@ static struct video_shader *gl3_get_current_shader(void *data)
    return NULL;
 }
 
+/* A texture of @ti: a planar frame converted on the GPU, anything else
+ * uploaded as it is */
+static void gl3_texture_load(gl3_t *gl, const struct texture_image *ti,
+      enum texture_filter_type filter_type, GLuint *id)
+{
+   *id = 0;
+   if (ti->planar)
+   {
+#ifdef HAVE_GL_PLANAR
+      if (gl)
+         *id = gl_planar_load(&gl->planar, ti,
+               filter_type != TEXTURE_FILTER_NEAREST
+               && filter_type != TEXTURE_FILTER_MIPMAP_NEAREST, true);
+#endif
+      return;
+   }
+   video_texture_load_gl3(ti, filter_type, id);
+}
+
 #ifdef HAVE_THREADS
 typedef struct
 {
@@ -6745,7 +7921,7 @@ static uintptr_t video_texture_load_wrap_gl3_mipmap(void *data)
       gl->ctx_driver->make_current(false);
 
    if (image)
-      video_texture_load_gl3((struct texture_image*)image,
+      gl3_texture_load(gl, (struct texture_image*)image,
             TEXTURE_FILTER_MIPMAP_LINEAR, &id);
    return (int)id;
 }
@@ -6761,7 +7937,7 @@ static uintptr_t video_texture_load_wrap_gl3(void *data)
       gl->ctx_driver->make_current(false);
 
    if (image)
-      video_texture_load_gl3((struct texture_image*)image,
+      gl3_texture_load(gl, (struct texture_image*)image,
             TEXTURE_FILTER_LINEAR, &id);
    return (int)id;
 }
@@ -6781,6 +7957,10 @@ static uintptr_t video_texture_unload_wrap_gl3(void *data)
 #ifdef HAVE_GL_TEXTURE_LEND
    if (gl)
       gl_texture_lend_forget(&gl->lend, glid);
+#endif
+#ifdef HAVE_GL_PLANAR
+   if (gl)
+      gl_planar_forget(&gl->planar, glid);
 #endif
    glDeleteTextures(1, &glid);
    return 0;
@@ -6814,7 +7994,8 @@ static uintptr_t gl3_load_texture(void *video_data, void *data,
    }
 #endif
 
-   video_texture_load_gl3((struct texture_image*)data, filter_type, &id);
+   gl3_texture_load((gl3_t*)video_data, (struct texture_image*)data,
+         filter_type, &id);
    return id;
 }
 
@@ -6827,6 +8008,14 @@ static enum video_texture_update gl3_update_texture_internal(gl3_t *gl,
 {
    const void *pixels = ti->pixels;
    int lent           = -1;
+   if (ti->planar)
+   {
+#ifdef HAVE_GL_PLANAR
+      if (gl && gl_planar_update(&gl->planar, (unsigned)id, ti))
+         return VIDEO_TEXTURE_UPDATE_DONE;
+#endif
+      return VIDEO_TEXTURE_UPDATE_REFUSED;
+   }
 #ifdef HAVE_GL_TEXTURE_LEND
    /* A lent slot holding the frame: uploaded from its buffer */
    if (gl && gl->lend
@@ -6870,7 +8059,7 @@ static uintptr_t video_texture_update_wrap_gl3(void *data)
 static enum video_texture_update gl3_update_texture(void *video_data,
       uintptr_t id, const struct texture_image *ti, bool threaded)
 {
-   if (!id || !ti || !ti->pixels)
+   if (!id || !ti || (!ti->pixels && !ti->planar))
       return VIDEO_TEXTURE_UPDATE_REFUSED;
 
 #ifdef HAVE_THREADS
@@ -6905,6 +8094,66 @@ static bool gl3_texture_lend_ready(void *data, uintptr_t id,
 }
 #endif
 
+#ifdef HAVE_GL_FRAME_MEM
+/* The threaded wrapper's frame buffers, on the context's thread: a
+ * frame pushed from one is uploaded out of it by the GL
+ * (gl3_update_cpu_texture). Not for a hardware core, whose frames are
+ * its own. */
+static void *gl3_frame_mem_alloc(void *data, size_t size, uintptr_t *id,
+      bool *cached, unsigned *pitch_align)
+{
+   gl3_t *gl = (gl3_t*)data;
+   if (!gl || (gl->flags & GL3_FLAG_HW_RENDER_ENABLE))
+      return NULL;
+   /* Where the GL puts a persistent mapping is its own choice */
+   *cached      = false;
+   *pitch_align = 4;
+   return gl_frame_mem_alloc(&gl->frame_mem, size, id);
+}
+
+/* The frame lent to the core, unthreaded: frame memory the GL uploads
+ * the pushed frame out of (gl3_update_cpu_texture). Not to a core that
+ * reads its frame, since the GL may keep a persistent mapping
+ * write-combined, nor for a hardware core. */
+static bool gl3_get_current_software_framebuffer(void *data,
+      struct retro_framebuffer *fb)
+{
+   gl3_t   *gl = (gl3_t*)data;
+   unsigned bpp;
+   void    *p;
+   if (     !gl || !fb || (gl->flags & GL3_FLAG_HW_RENDER_ENABLE)
+         || gl->video_info.source_10bit
+         || (fb->access_flags & RETRO_MEMORY_ACCESS_READ))
+      return false;
+   bpp = gl->video_info.rgb32 ? 4 : 2;
+   /* Remade at a new size: the cached frame may name the old ones */
+   if (!gl_sw_fb_fits(&gl->sw_fb, fb->width, fb->height, bpp))
+      video_driver_cached_frame_retire();
+   if (!(p = gl_sw_fb_lend(&gl->frame_mem, &gl->sw_fb,
+               fb->width, fb->height, bpp)))
+      return false;
+   fb->data         = p;
+   fb->pitch        = (size_t)fb->width * bpp;
+   fb->format       = gl->video_info.rgb32
+      ? RETRO_PIXEL_FORMAT_XRGB8888 : RETRO_PIXEL_FORMAT_RGB565;
+   fb->memory_flags = 0;
+   return true;
+}
+
+static bool gl3_frame_mem_ready(void *data, uintptr_t id)
+{
+   gl3_t *gl = (gl3_t*)data;
+   return !gl || gl_frame_mem_ready(gl->frame_mem, id);
+}
+
+static void gl3_frame_mem_free(void *data, uintptr_t id)
+{
+   gl3_t *gl = (gl3_t*)data;
+   if (gl)
+      gl_frame_mem_free(gl->frame_mem, id);
+}
+#endif
+
 static void gl3_unload_texture(void *data, bool threaded,
       uintptr_t id)
 {
@@ -6932,6 +8181,10 @@ static void gl3_unload_texture(void *data, bool threaded,
    if (data)
       gl_texture_lend_forget(&((gl3_t*)data)->lend, glid);
 #endif
+#ifdef HAVE_GL_PLANAR
+   if (data)
+      gl_planar_forget(&((gl3_t*)data)->planar, glid);
+#endif
    glDeleteTextures(1, &glid);
 }
 
@@ -6939,9 +8192,10 @@ static void gl3_set_video_mode(void *data, unsigned dims,
       bool fullscreen)
 {
    gl3_t *gl = (gl3_t*)data;
-   if (gl->ctx_driver->set_video_mode)
-      gl->ctx_driver->set_video_mode(gl->ctx_data,
-            dims, fullscreen);
+   if (     !gl->ctx_driver->set_video_mode
+         || !gl->ctx_driver->set_video_mode(gl->ctx_data,
+            dims, fullscreen))
+      video_driver_modify_disp_flags(VIDEO_FLAG_DRIVER_REINIT, 0);
 }
 
 static void gl3_show_mouse(void *data, bool state)
@@ -7273,6 +8527,13 @@ static bool gl3_supports_texture_format(void *data,
       /* RGBA16F from half floats is core in GL 3.0 and GLES 3.0. */
       case TEXTURE_GPU_FORMAT_RGBA16F:
          return true;
+      /* Converted by a draw (gl_planar_load) */
+      case TEXTURE_GPU_FORMAT_YUV420:
+#ifdef HAVE_GL_PLANAR
+         return data && GL_PLANAR_OK(&((const gl3_t*)data)->planar);
+#else
+         return false;
+#endif
       /* The linear program shows such a texture as linear scRGB while
        * the backbuffer is scRGB; in SDR there is no linear light. */
       case TEXTURE_GPU_FORMAT_SCRGB:
@@ -7422,9 +8683,9 @@ static void gl3_set_view_count(void *data, unsigned count)
       return;
    if (gl->flags & GL3_FLAG_USE_SHARED_CONTEXT)
       gl->ctx_driver->bind_hw_render(gl->ctx_data, false);
-   gl->views.count = MIN(count, RETRO_VIDEO_VIEWS_MAX);
-   gl3_views_free_chains(gl, gl->views.count);
-   gl3_views_free_copies(gl, gl->views.count);
+   gl->views.chains.count = MIN(count, RETRO_VIDEO_VIEWS_MAX);
+   gl3_views_free_chains(gl, gl->views.chains.count);
+   gl3_views_free_copies(gl, gl->views.chains.count);
    gl3_views_build_chains(gl);
    if (     (gl->flags & GL3_FLAG_USE_SHARED_CONTEXT)
          && !gl3_core_context_is_mains(gl))
@@ -7454,6 +8715,36 @@ static bool gl3_set_frame_format(void *data, bool rgb32,
    return true;
 }
 
+#ifdef HAVE_GL3_XR
+static float gl3_get_headset_refresh(void *data, float *rates, unsigned cap,
+      unsigned *count)
+{
+   gl3_t *gl = (gl3_t*)data;
+   *count    = 0;
+   if (!gl || !gl->xr.host || !gl_openxr_alive(gl->xr.host))
+      return 0.0f;
+   *count = gl_openxr_refresh_rates(gl->xr.host, rates, cap);
+   return gl_openxr_refresh_rate(gl->xr.host);
+}
+
+/* Tracked content is drawn from the map by the headset's host. */
+static bool gl3_set_vr_content_info(void *data,
+      const video_vr_content_info_t *info)
+{
+   gl3_t *gl = (gl3_t*)data;
+   (void)info;
+   return gl && gl->xr.host;
+}
+
+/* The XR thread stops before the core destroys its context. */
+static void gl3_hw_context_destroying(void *data)
+{
+   gl3_t *gl = (gl3_t*)data;
+   if (gl)
+      gl_openxr_stop_thread(gl->xr.host);
+}
+#endif
+
 static const video_poke_interface_t gl3_poke_interface = {
    gl3_get_flags,
    gl3_load_texture,
@@ -7474,7 +8765,11 @@ static const video_poke_interface_t gl3_poke_interface = {
    gl3_show_mouse,
    NULL, /* grab_mouse_toggle */
    gl3_get_current_shader,
+#ifdef HAVE_GL_FRAME_MEM
+   gl3_get_current_software_framebuffer,
+#else
    NULL, /* get_current_software_framebuffer */
+#endif
    NULL, /* get_hw_render_interface */
    NULL, /* set_hdr_menu_nits */
    NULL, /* set_hdr_paper_white_nits */
@@ -7510,9 +8805,23 @@ static const video_poke_interface_t gl3_poke_interface = {
 #else
    NULL, /* set_view_count */
 #endif
+#ifdef HAVE_GL3_XR
+   gl3_hw_context_destroying,
+   gl3_get_headset_refresh,
+#else
    NULL, /* hw_context_destroying */
    NULL, /* get_headset_refresh */
-   gl3_set_frame_format
+#endif
+   gl3_set_frame_format,
+#ifdef HAVE_GL_FRAME_MEM
+   gl3_frame_mem_alloc,
+   gl3_frame_mem_ready,
+   gl3_frame_mem_free
+#else
+   NULL, /* frame_mem_alloc */
+   NULL, /* frame_mem_ready */
+   NULL  /* frame_mem_free */
+#endif
 };
 
 static void gl3_get_poke_interface(void *data,
@@ -7613,9 +8922,11 @@ video_driver_t video_gl3 = {
    gl3_read_viewport_hdr,
    &gl3_raster_font,
 #ifdef HAVE_OPENXR
-   NULL, /* get_vr_frame_state */
+#ifdef HAVE_GL3_XR
+   gl3_set_vr_content_info,
+#else
    NULL, /* set_vr_content_info */
-   NULL, /* get_video_views_status */
+#endif
 #endif
    gl3_read_viewport_bgrx
 };

@@ -56,18 +56,99 @@ and 2025-03-26 for clients that open with `initialize`.
 ## What the tools do
 
 Each command is one tool, named as the command (`GET_STATUS`,
-`SAVE_STATE_SLOT`, `SCREENSHOT`). A command that takes an argument has a
-single string parameter, `argument`, written as the command expects it:
-`SAVE_STATE_SLOT` takes a slot number, `LOAD_CONTENT` takes
-`<core path>|<content path>`. The tool's result is what the command
-answers; commands that answer nothing report `Done.`.
+`SAVE_STATE_SLOT`, `SCREENSHOT`). Its parameters are named, typed and
+marked needed or not, so a client is told what to send rather than
+having to write the command's own line by hand:
+
+```json
+{ "name": "LOAD_CONTENT",
+  "arguments": { "core": "/path/to/core.so", "content": "/games/a.rom" } }
+```
+
+`SAVE_STATE_SLOT` takes `slot` as a number, `GET_PLAYLIST` takes
+`playlist` and an optional `first`, `SET_OPTION` takes `option` and a
+`state` of `on` or `off` - which the schema gives as the only two values
+it accepts. `tools/list` describes every one of them.
+
+A parameter that is needed and left out is answered before the command
+runs at all, as JSON-RPC invalid params rather than as a tool failure.
+
+The single `argument` string this server took before the parameters
+still works, so a client holding a cached tool list keeps going until it
+reads the new one.
+
+The tool's result is what the command answers; commands that answer
+nothing report `Done.`.
+
+Not every command is a tool. `HELP` and `VERSION` are not, because
+`tools/list` already lists the commands and every answer names the
+server's version, and neither are the toggle hotkeys or
+`GET_CONFIG_PARAM`, whose work `SET_OPTION` and `GET_OPTION` do below.
+All of them are still commands on the network and stdin interfaces.
+
+## Options
+
+A hotkey toggle is of little use to an assistant: `FAST_FORWARD` turns
+fast-forward on or off depending on what it already was, which cannot be
+known without asking. Two tools replace the toggles with something that
+can be asked and told:
+
+- `GET_OPTION [option]` reports every option and its value, name and
+  value tab separated, one per line; with a name, that option's line
+  alone.
+- `SET_OPTION <option> on|off` puts an option in a state. Asking for the
+  state it is already in changes nothing and succeeds, so the same
+  request twice is one change.
+
+Each option is read where its state lives rather than from the setting
+behind it, so `GET_OPTION` reports what is true now and not what was
+configured. Which options a build has depends on what it was built with,
+so `GET_OPTION` with no argument is the list: it covers what is on or off
+(pausing, fast-forward, mute, the menu, the shader, recording), what the
+frontend is doing (the frame count, the state and replay slots, whether
+content is loading), and the configured directories. Some only report,
+and `SET_OPTION` says so for them.
+
+Options take effect at once and report the resulting state. Speed changes
+respect the runloop's pause, netplay, core override and hardcore restrictions.
+An option that cannot change right now is an error. Recording and streaming
+share one recorder; stop the active mode before starting the other.
+
+A hotkey tool that is still a tool answers `<NAME> pressed` for the same
+reason: the press goes out on the next poll, and what it
+changed is read back with `GET_OPTION`.
+
+The running core's own options are `GET_CORE_OPTION` and
+`SET_CORE_OPTION`. With no key, `GET_CORE_OPTION` lists every option as
+key, value and description, tab separated; with a key it gives that
+option's line with the values it takes after a further tab, separated
+by `|`. `SET_CORE_OPTION <key> <value>` takes one of those values and
+answers with the option's line; asking for the value it already has
+changes nothing. Whether a change applies at once or on the next start
+of the content is the core's to say.
+
+`GET_MEMORY_MAP` lists the regions of the core's memory map, one per
+line: the start address `READ_CORE_MEMORY` and `WRITE_CORE_MEMORY` take,
+the length, the select and disconnect masks (hexadecimal), what the
+region holds (`system`, `save`, `video` or `other`), `rw`, `ro`, or
+`none` when nothing backs it, the byte order, and the address space
+name. A region with a select mask answers every address that agrees
+with its start in the selected bits, not only start to start plus
+length.
 
 To find something to play, an assistant lists the playlists with
 `LIST_PLAYLISTS`, reads one with `GET_PLAYLIST` (index, label, content
 path and core path per entry, 200 at a time; `MORE <next>` gives the
-argument for the next page, as in `Nintendo - SNES 200`), and loads an
-entry with `LOAD_CONTENT <core path>|<content path>`. `LIST_CORES` gives
-the installed cores and their paths.
+argument for the next page, as in `Nintendo - SNES.lpl 200`), and loads
+an entry with `LOAD_CONTENT <core path>|<content path>`. `LIST_CORES`
+gives the installed cores and their paths.
+
+Over MCP, `playlist` and `first` are separate parameters, so a name is
+never mistaken for an entry number. On the network and stdin interfaces
+the two share one line, where a trailing number alone is the entry to
+start at: `Atari - 2600` reads there as the playlist `Atari -` from
+entry 2600, while `Atari - 2600.lpl` cannot be read as anything but the
+playlist.
 
 A tool whose work runs over later frames answers once that work is
 through, with what came of it, or with the command's name, `ERROR` and
@@ -85,6 +166,12 @@ the reason:
 - `AI_SERVICE`: one translation of the screen, answered with the
   service's text.
 
+A tool that fails says why, as `<NAME> ERROR <reason>`, and the result
+is marked `isError`. Whether a reply is a failure is the command's own
+word, not something read out of its text: a screenshot path that holds
+`ERROR` - a game named so - is no error, and a failure whose text says
+nothing about one still is.
+
 Work that takes longer than ten seconds, such as a slow load, is
 answered with an error saying so; the work goes on, and `GET_STATUS`
 tells when it is through. A request still waiting for its answer when
@@ -101,10 +188,14 @@ text, so a client can see the screen without reaching the file - or with
 
 Every tool carries hints for the client:
 
-- **read-only**: only reports (`VERSION`, `GET_STATUS`, `READ_CORE_MEMORY`);
+- **read-only**: only reports (`VERSION`, `GET_STATUS`, `READ_CORE_MEMORY`,
+  `GET_MEMORY_MAP`, `GET_CORE_OPTION`);
 - **destructive**: can lose unsaved progress or data, or loads code
   (`QUIT`, `RESET`, `LOAD_STATE_SLOT`, `WRITE_CORE_MEMORY`, `LOAD_CORE`,
   `LOAD_CONTENT`).
+
+`SET_OPTION` is neither: it writes, but only to the options `GET_OPTION`
+lists, and none of them loses progress.
 
 Most clients ask before running a destructive tool. Keep that on.
 

@@ -119,6 +119,15 @@ enum video_fse_negotiation
    VIDEO_FSE_LAST
 };
 
+/* Whether video RetroArch plays itself (previews) is decoded on the
+ * GPU where the driver has a hardware decoder for it. */
+enum video_hw_decode
+{
+   VIDEO_HW_DECODE_OFF = 0,
+   VIDEO_HW_DECODE_AUTO,
+   VIDEO_HW_DECODE_LAST
+};
+
 enum autoswitch_refresh_rate
 {
    AUTOSWITCH_REFRESH_RATE_EXCLUSIVE_FULLSCREEN = 0,
@@ -271,6 +280,11 @@ enum text_alignment
 #define VIDEO_POS_PUT_Y(p, y) ((p) = VIDEO_POS_PACK(VIDEO_POS_X(p), (y)))
 #define VIDEO_POS_ADD(p, dx, dy) \
    ((p) = VIDEO_POS_PACK(VIDEO_POS_X(p) + (dx), VIDEO_POS_Y(p) + (dy)))
+/* The top-down y of an element with origin p and size d on a surface h
+ * tall, whose origin is bottom-up. Signed: an element reaching past the
+ * top comes out negative. */
+#define VIDEO_POS_FLIP_Y(h, p, d) \
+   ((int)(h) - VIDEO_POS_Y(p) - (int)VIDEO_SCALE_H(d))
 
 /* One axis of an origin, leaving the other half as it stands. */
 #define VIDEO_POS_PUT_X(p, x) \
@@ -405,15 +419,18 @@ enum display_flags
    GFX_CTX_FLAGS_VIDEO_VIEWS,
    /* Set while such a driver draws a frame that has a map whole. */
    GFX_CTX_FLAGS_VIDEO_VIEWS_FALLBACK,
-   /* Set by a video driver that also shows a core's views in a headset,
-    * which shows both eyes whatever the stereo mode. */
-   GFX_CTX_FLAGS_VIDEO_VIEWS_HEADSET,
-   /* Set while that headset's session has the runtime's focus. */
-   GFX_CTX_FLAGS_HEADSET_FOCUSED,
    /* Set by a video driver whose GPU recording reads the core's image
     * before the menu, overlays and messages are drawn over it, when
     * Record Game Only is on - in its present output mode. */
-   GFX_CTX_FLAGS_RECORD_GAME_ONLY
+   GFX_CTX_FLAGS_RECORD_GAME_ONLY,
+   /* Exclusive mode can change without restarting the drivers. */
+   GFX_CTX_FLAGS_FULLSCREEN_EXCLUSIVE_IN_PLACE,
+   /* set_video_mode can resize an existing window without restarting video. */
+   GFX_CTX_FLAGS_WINDOW_RESIZE_IN_PLACE,
+   /* Set by a headset's own context driver (the Quest's): the headset is
+    * all it shows, the headset's frames are begun and ended in the video
+    * frame, and the platform's flat context follows it in the list. */
+   GFX_CTX_FLAGS_HEADSET_INLINE
 };
 
 enum shader_uniform_type

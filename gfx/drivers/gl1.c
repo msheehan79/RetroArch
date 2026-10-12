@@ -3015,9 +3015,10 @@ static void gl1_set_video_mode(void *data, unsigned dims,
       bool fullscreen)
 {
    gl1_t               *gl = (gl1_t*)data;
-   if (gl->ctx_driver->set_video_mode)
-      gl->ctx_driver->set_video_mode(gl->ctx_data,
-            dims, fullscreen);
+   if (     !gl->ctx_driver->set_video_mode
+         || !gl->ctx_driver->set_video_mode(gl->ctx_data,
+            dims, fullscreen))
+      video_driver_modify_disp_flags(VIDEO_FLAG_DRIVER_REINIT, 0);
 }
 
 static unsigned gl1_wrap_type_to_enum(enum gfx_wrap_type type)
@@ -3724,9 +3725,7 @@ video_driver_t video_gl1 = {
    gl1_read_viewport_hdr,
    &gl1_raster_font,
 #ifdef HAVE_OPENXR
-   NULL, /* get_vr_frame_state */
    NULL, /* set_vr_content_info */
-   NULL, /* get_video_views_status */
 #endif
    gl1_read_viewport_bgrx
 };

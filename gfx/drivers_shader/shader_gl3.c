@@ -28,6 +28,7 @@
 #include <retro_miscellaneous.h>
 
 #include "slang_process.h"
+#include "slang_rect.h"
 #include "spirv_opengl.h"
 /* The vendored SPIRV-Cross headers end their enumerator lists with a
  * comma, which the C89 lane rejects under -pedantic; they are upstream
@@ -101,7 +102,7 @@ RETRO_BEGIN_DECLS
          GLint flat_ubo_vertex,
          unsigned size_width, unsigned size_height,
          GLuint image,
-         float rx, float ry);
+         float ox, float oy, float rx, float ry);
 
    uint32_t gl3_get_cross_compiler_target_version(void);
 
@@ -832,6 +833,12 @@ struct gl3_common_resources
    GLuint quad_program;
    GLuint quad_vbo;
    gl3_buffer_locations quad_loc;
+
+   /* Frames may come inside a larger texture: passes are built to read
+    * them there, sampling as the first pass samples. */
+   bool frame_rect;
+   bool frame_linear;
+   enum slang_rect_wrap frame_wrap;
 };
 
 /* Every field starts at zero, so a memset covers the whole struct. */
@@ -1144,6 +1151,8 @@ struct gl3_pass
    /* SPIR-V modules carry no name reflection, so glGetUniformLocation()
     * cannot be used to find individual block members. */
    bool spirv_binary;
+   /* Reads the frame in a way only a texture of its own serves. */
+   bool frame_copy;
 };
 
 static const struct gl3_framebuffer * gl3_pass_get_framebuffer(struct gl3_pass *pass);
@@ -1335,11 +1344,27 @@ static void gl3_pass_set_pass_number(struct gl3_pass *pass, unsigned number)
 }
 
 
+/* Has a pass's stages read the frame where it lies, as slang_rect.h
+ * describes; a pass that cannot keeps its stages and needs the frame
+ * copied out. */
+static void gl3_pass_read_frame_in_place(struct gl3_pass *pass)
+{
+   pass->frame_copy = slang_rect_remap_pass(
+         &pass->vertex_shader, &pass->num_vertex_shader,
+         &pass->fragment_shader, &pass->num_fragment_shader,
+         pass->pass_number == 0, pass->common->frame_linear,
+         pass->common->frame_wrap)
+         == SLANG_RECT_UNSUPPORTED;
+}
+
 static bool gl3_pass_build(struct gl3_pass *pass)
 {
    slang_semantic_name_map semantic_map = { 0 };
    unsigned i;
    unsigned j = 0;
+
+   if (pass->common->frame_rect)
+      gl3_pass_read_frame_in_place(pass);
 
    gl3_framebuffer_delete(pass->framebuffer);
    pass->framebuffer          = NULL;
@@ -1347,8 +1372,11 @@ static bool gl3_pass_build(struct gl3_pass *pass)
    pass->framebuffer_feedback = NULL;
 
    if (!pass->final_pass)
-      pass->framebuffer = gl3_framebuffer_new(pass->pass_info.rt_format,
-            pass->pass_info.max_levels);
+   {
+      if (!(pass->framebuffer = gl3_framebuffer_new(
+                  pass->pass_info.rt_format, pass->pass_info.max_levels)))
+         return false;
+   }
 
    for (i = 0; i < pass->num_parameters; i++)
    {
@@ -1663,6 +1691,9 @@ static bool gl3_pass_init_pipeline(struct gl3_pass *pass)
    gl3_pass_reflect_parameter(pass, "Accelerometer", &pass->reflection.semantics[SLANG_SEMANTIC_ACCELEROMETER]);
    gl3_pass_reflect_parameter(pass, "AccelerometerRest", &pass->reflection.semantics[SLANG_SEMANTIC_ACCELEROMETER_REST]);
    gl3_pass_reflect_parameter(pass, "SwapCount", &pass->reflection.semantics[SLANG_SEMANTIC_SWAP_COUNT]);
+   gl3_pass_reflect_parameter(pass, SLANG_RECT_NAME_RECT, &pass->reflection.semantics[SLANG_SEMANTIC_ORIGINAL_RECT]);
+   gl3_pass_reflect_parameter(pass, SLANG_RECT_NAME_CLAMP, &pass->reflection.semantics[SLANG_SEMANTIC_ORIGINAL_CLAMP]);
+   gl3_pass_reflect_parameter(pass, SLANG_RECT_NAME_TEXELS, &pass->reflection.semantics[SLANG_SEMANTIC_ORIGINAL_TEXELS]);
 
    {
       const slang_semantic_meta *g =
@@ -2000,6 +2031,64 @@ static void gl3_pass_build_semantic_vec3(struct gl3_pass *pass, uint8_t *data, e
    }
 }
 
+static void gl3_pass_build_semantic_vec4_values(struct gl3_pass *pass,
+      uint8_t *data, enum slang_semantic semantic, const float *values)
+{
+   slang_semantic_meta *refl = &pass->reflection.semantics[semantic];
+
+   if (data && refl->uniform)
+   {
+      if (refl->location.ubo_vertex >= 0 || refl->location.ubo_fragment >= 0)
+      {
+         if (refl->location.ubo_vertex >= 0)
+            glUniform4fv(refl->location.ubo_vertex, 1, values);
+         if (refl->location.ubo_fragment >= 0)
+            glUniform4fv(refl->location.ubo_fragment, 1, values);
+      }
+      else
+         memcpy(data + refl->ubo_offset, values, 4 * sizeof(float));
+   }
+
+   if (refl->push_constant)
+   {
+      if (refl->location.push_vertex >= 0 || refl->location.push_fragment >= 0)
+      {
+         if (refl->location.push_vertex >= 0)
+            glUniform4fv(refl->location.push_vertex, 1, values);
+         if (refl->location.push_fragment >= 0)
+            glUniform4fv(refl->location.push_fragment, 1, values);
+      }
+      else
+         memcpy(pass->push_constant_buffer + refl->push_constant_offset,
+               values, 4 * sizeof(float));
+   }
+}
+
+/* Where the frame lies in the texture bound for it: the whole of it
+ * unless padded_dims says the texture is larger. */
+static void gl3_pass_build_semantic_frame_rect(struct gl3_pass *pass,
+      uint8_t *buffer, const gl3_filter_chain_texture *frame)
+{
+   float    v[12];
+   unsigned tex_dims = frame->padded_dims ? frame->padded_dims : frame->dims;
+
+   if (     !pass->reflection.semantics[SLANG_SEMANTIC_ORIGINAL_RECT].uniform
+         && !pass->reflection.semantics[SLANG_SEMANTIC_ORIGINAL_RECT].push_constant
+         && !pass->reflection.semantics[SLANG_SEMANTIC_ORIGINAL_CLAMP].uniform
+         && !pass->reflection.semantics[SLANG_SEMANTIC_ORIGINAL_CLAMP].push_constant
+         && !pass->reflection.semantics[SLANG_SEMANTIC_ORIGINAL_TEXELS].uniform
+         && !pass->reflection.semantics[SLANG_SEMANTIC_ORIGINAL_TEXELS].push_constant)
+      return;
+
+   slang_rect_values(v, frame->dims, frame->origin, tex_dims);
+   gl3_pass_build_semantic_vec4_values(pass, buffer,
+         SLANG_SEMANTIC_ORIGINAL_RECT, v);
+   gl3_pass_build_semantic_vec4_values(pass, buffer,
+         SLANG_SEMANTIC_ORIGINAL_CLAMP, v + 4);
+   gl3_pass_build_semantic_vec4_values(pass, buffer,
+         SLANG_SEMANTIC_ORIGINAL_TEXELS, v + 8);
+}
+
 static void gl3_pass_build_semantic_texture(struct gl3_pass *pass, uint8_t *buffer,
       enum slang_texture_semantic semantic, const gl3_texture_t *texture)
 {
@@ -2286,6 +2375,7 @@ static void gl3_pass_build_semantics(struct gl3_pass *pass, uint8_t *buffer,
    }
 
    /* Standard inputs */
+   gl3_pass_build_semantic_frame_rect(pass, buffer, &original->texture);
    gl3_pass_build_semantic_texture(pass, buffer, SLANG_TEXTURE_SEMANTIC_ORIGINAL, original);
    gl3_pass_build_semantic_texture(pass, buffer, SLANG_TEXTURE_SEMANTIC_SOURCE, source);
 
@@ -2567,6 +2657,8 @@ struct gl3_filter_chain
    size_t num_original_history;
    bool require_clear;
    bool alias_initialized;
+   /* Every pass reads a frame where it lies: none is copied out. */
+   bool frame_in_place;
 };
 
 static void gl3_chain_update_history_info(struct gl3_filter_chain *chain);
@@ -3023,6 +3115,50 @@ static void gl3_chain_set_pass_info(struct gl3_filter_chain *chain, unsigned pas
       chain->num_pass_info = pass + 1;
    }
    chain->pass_info[pass] = info;
+
+   /* Every pass samples the frame as the first does. */
+   if (pass == 0)
+   {
+      chain->common.frame_linear =
+         info.source_filter == GLSLANG_FILTER_CHAIN_LINEAR;
+      switch (info.address)
+      {
+         case GLSLANG_FILTER_CHAIN_ADDRESS_REPEAT:
+            chain->common.frame_wrap = SLANG_RECT_WRAP_REPEAT;
+            break;
+         case GLSLANG_FILTER_CHAIN_ADDRESS_MIRRORED_REPEAT:
+            chain->common.frame_wrap = SLANG_RECT_WRAP_MIRROR;
+            break;
+         case GLSLANG_FILTER_CHAIN_ADDRESS_CLAMP_TO_BORDER:
+#ifdef HAVE_OPENGLES3
+            /* address_to_gl() gives edge clamp there. */
+            chain->common.frame_wrap = SLANG_RECT_WRAP_EDGE;
+#else
+            chain->common.frame_wrap = SLANG_RECT_WRAP_BORDER;
+#endif
+            break;
+         case GLSLANG_FILTER_CHAIN_ADDRESS_CLAMP_TO_EDGE:
+         default:
+            chain->common.frame_wrap = SLANG_RECT_WRAP_EDGE;
+            break;
+      }
+   }
+}
+
+/* Whether frames can be read where they lie, once every pass is built
+ * and the history is known: history is copied from the frame on its
+ * own. */
+static void gl3_chain_init_frame_in_place(struct gl3_filter_chain *chain)
+{
+   size_t i;
+   chain->frame_in_place = chain->common.frame_rect
+      && !chain->num_original_history;
+   for (i = 0; i < chain->num_passes && chain->frame_in_place; i++)
+      if (chain->passes[i]->frame_copy)
+         chain->frame_in_place = false;
+   if (chain->frame_in_place)
+      RARCH_LOG("[GLCore] Preset reads frames where the core leaves "
+            "them.\n");
 }
 
 static bool gl3_chain_set_num_passes(struct gl3_filter_chain *chain, unsigned num_passes_)
@@ -3102,6 +3238,7 @@ static bool gl3_chain_init(struct gl3_filter_chain *chain)
    if (!gl3_texture_array_resize(&chain->common.pass_outputs,
             &chain->common.num_pass_outputs, chain->num_passes))
       return false;
+   gl3_chain_init_frame_in_place(chain);
    return true;
 }
 
@@ -3269,8 +3406,8 @@ static bool gl3_chain_compile_full_pass(struct gl3_filter_chain *chain, unsigned
    if (next_pass && next_pass->mipmap)
       p_info.max_levels = ~0u;
 
-   p_info.mip_filter = pass->filter != RARCH_FILTER_NEAREST
-      && p_info.max_levels > 1
+   p_info.mip_filter = p_info.source_filter == GLSLANG_FILTER_CHAIN_LINEAR
+      && pass->mipmap
       ? GLSLANG_FILTER_CHAIN_LINEAR
       : GLSLANG_FILTER_CHAIN_NEAREST;
 
@@ -3388,6 +3525,7 @@ static bool gl3_chain_finalize(struct gl3_filter_chain *chain)
    if (!gl3_texture_array_resize(&chain->common.pass_outputs,
             &chain->common.num_pass_outputs, chain->num_passes))
       return false;
+   gl3_chain_init_frame_in_place(chain);
    return true;
 }
 
@@ -3425,9 +3563,12 @@ static void gl3_chain_set_input_texture(struct gl3_filter_chain *chain, const gl
 {
    chain->input_texture = texture;
 
-   /* Need a copy to remove padding.
-    * GL HW render interface in libretro is kinda garbage now ... */
-   if (chain->input_texture.padded_dims != chain->input_texture.dims)
+   /* A frame inside a larger texture is copied out to one of its own,
+    * unless every pass reads it where it is. */
+   if (     chain->input_texture.padded_dims
+         && (   chain->input_texture.padded_dims != chain->input_texture.dims
+             || chain->input_texture.origin)
+         && !chain->frame_in_place)
    {
       if (!chain->copy_framebuffer)
          chain->copy_framebuffer = gl3_framebuffer_new(texture.format, 1);
@@ -3450,11 +3591,17 @@ static void gl3_chain_set_input_texture(struct gl3_filter_chain *chain, const gl
                VIDEO_SCALE_W(chain->copy_framebuffer->size_dims),
                VIDEO_SCALE_H(chain->copy_framebuffer->size_dims),
                chain->input_texture.image,
+               (float)VIDEO_SCALE_W(chain->input_texture.origin)
+               / VIDEO_SCALE_W(chain->input_texture.padded_dims),
+               (float)VIDEO_SCALE_H(chain->input_texture.origin)
+               / VIDEO_SCALE_H(chain->input_texture.padded_dims),
                (float)VIDEO_SCALE_W(chain->input_texture.dims)
                / VIDEO_SCALE_W(chain->input_texture.padded_dims),
                (float)VIDEO_SCALE_H(chain->input_texture.dims)
                / VIDEO_SCALE_H(chain->input_texture.padded_dims));
-      chain->input_texture.image = chain->copy_framebuffer->image;
+      chain->input_texture.image       = chain->copy_framebuffer->image;
+      chain->input_texture.padded_dims = chain->input_texture.dims;
+      chain->input_texture.origin      = 0;
    }
 }
 
@@ -3666,8 +3813,53 @@ gl3_filter_chain_t *gl3_filter_chain_create_default(
    return chain;
 }
 
+gl3_filter_chain_t *gl3_filter_chain_create_shrink(void)
+{
+   unsigned i;
+   struct gl3_filter_chain_pass_info pass_info;
+   struct gl3_filter_chain *chain = gl3_chain_new(2);
+   if (!chain)
+      return NULL;
+
+   /* A copy at the source's size; max_levels gives its framebuffer
+    * every mip level, which the chain builds after the pass. */
+   pass_info.scale_type_x  = GLSLANG_FILTER_CHAIN_SCALE_ORIGINAL;
+   pass_info.scale_type_y  = GLSLANG_FILTER_CHAIN_SCALE_ORIGINAL;
+   pass_info.scale_x       = 1.0f;
+   pass_info.scale_y       = 1.0f;
+   pass_info.rt_format     = GL_RGBA8;
+   pass_info.source_filter = GLSLANG_FILTER_CHAIN_NEAREST;
+   pass_info.mip_filter    = GLSLANG_FILTER_CHAIN_NEAREST;
+   pass_info.address       = GLSLANG_FILTER_CHAIN_ADDRESS_CLAMP_TO_EDGE;
+   pass_info.max_levels    = ~0u;
+   gl3_chain_set_pass_info(chain, 0, pass_info);
+
+   /* Trilinear from those mips into the viewport. */
+   pass_info.scale_type_x  = GLSLANG_FILTER_CHAIN_SCALE_VIEWPORT;
+   pass_info.scale_type_y  = GLSLANG_FILTER_CHAIN_SCALE_VIEWPORT;
+   pass_info.rt_format     = 0;
+   pass_info.source_filter = GLSLANG_FILTER_CHAIN_LINEAR;
+   pass_info.mip_filter    = GLSLANG_FILTER_CHAIN_LINEAR;
+   pass_info.max_levels    = 0;
+   gl3_chain_set_pass_info(chain, 1, pass_info);
+
+   for (i = 0; i < 2; i++)
+   {
+      gl3_chain_set_shader(chain, i, GL_VERTEX_SHADER,
+            gl3_opaque_vert, sizeof(gl3_opaque_vert) / sizeof(uint32_t));
+      gl3_chain_set_shader(chain, i, GL_FRAGMENT_SHADER,
+            gl3_opaque_frag, sizeof(gl3_opaque_frag) / sizeof(uint32_t));
+   }
+   if (!gl3_chain_init(chain))
+   {
+      gl3_chain_free(chain);
+      return NULL;
+   }
+   return chain;
+}
+
 gl3_filter_chain_t *gl3_filter_chain_create_from_preset(
-      const char *path, glslang_filter_chain_filter filter)
+      const char *path, glslang_filter_chain_filter filter, bool frame_rect)
 {
    size_t j;
    unsigned i;
@@ -3695,6 +3887,7 @@ gl3_filter_chain_t *gl3_filter_chain_create_from_preset(
          gl3_chain_free(chain);
          return NULL;
       }
+   chain->common.frame_rect = frame_rect;
 
    if (      shader->luts
          && !gl3_filter_chain_load_luts(chain, shader))
@@ -3857,7 +4050,8 @@ gl3_filter_chain_t *gl3_filter_chain_create_from_preset(
       if (next_pass && next_pass->mipmap)
          pass_info.max_levels = ~0u;
 
-      pass_info.mip_filter    = pass->filter != RARCH_FILTER_NEAREST && pass_info.max_levels > 1
+      pass_info.mip_filter    = pass_info.source_filter == GLSLANG_FILTER_CHAIN_LINEAR
+         && pass->mipmap
          ? GLSLANG_FILTER_CHAIN_LINEAR
          : GLSLANG_FILTER_CHAIN_NEAREST;
 
@@ -4003,6 +4197,7 @@ gl3_filter_chain_t *gl3_filter_chain_create_from_preset(
 gl3_filter_chain_t *gl3_filter_chain_create_deferred(
       const char *path,
       glslang_filter_chain_filter filter,
+      bool frame_rect,
       unsigned *out_num_passes)
 {
    unsigned i;
@@ -4030,6 +4225,7 @@ gl3_filter_chain_t *gl3_filter_chain_create_deferred(
          gl3_chain_free(chain);
          return NULL;
       }
+   chain->common.frame_rect = frame_rect;
 
    if (      shader->luts
          && !gl3_filter_chain_load_luts(chain, shader))
@@ -4152,6 +4348,11 @@ void gl3_filter_chain_set_input_texture(
       const struct gl3_filter_chain_texture *texture)
 {
    gl3_chain_set_input_texture(chain, *texture);
+}
+
+bool gl3_filter_chain_reads_in_place(gl3_filter_chain_t *chain)
+{
+   return chain->frame_in_place;
 }
 
 void gl3_filter_chain_set_frame_count(

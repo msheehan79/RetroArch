@@ -35,7 +35,10 @@ struct gl3_filter_chain_texture
 {
    GLuint image;
    unsigned dims;        /* VIDEO_SCALE_PACK */
-   unsigned padded_dims; /* VIDEO_SCALE_PACK */
+   /* The texture's size, and where in it the frame starts, when the
+    * frame is not all of it: VIDEO_SCALE_PACK, padded_dims 0 for all. */
+   unsigned padded_dims;
+   unsigned origin;
    GLenum format;
 };
 
@@ -103,6 +106,10 @@ bool gl3_filter_chain_init(gl3_filter_chain_t *chain);
 void gl3_filter_chain_set_input_texture(
       gl3_filter_chain_t *chain,
       const struct gl3_filter_chain_texture *texture);
+
+/* Whether the chain reads a frame where it lies in a larger texture,
+ * rather than copying it out. */
+bool gl3_filter_chain_reads_in_place(gl3_filter_chain_t *chain);
 
 void gl3_filter_chain_set_frame_count(
       gl3_filter_chain_t *chain,
@@ -185,9 +192,15 @@ void gl3_filter_chain_build_viewport_pass_again(
 gl3_filter_chain_t *gl3_filter_chain_create_default(
       enum glslang_filter_chain_filter filter);
 
+gl3_filter_chain_t *gl3_filter_chain_create_shrink(void);
+
+/* @frame_rect: frames may come inside a larger texture (padded_dims);
+ * the passes are built to read them there where the preset allows,
+ * rather than have each copied out. */
 gl3_filter_chain_t *gl3_filter_chain_create_from_preset(
       const char *path,
-      enum glslang_filter_chain_filter filter);
+      enum glslang_filter_chain_filter filter,
+      bool frame_rect);
 
 /**
  * Deferred (per-frame) filter chain creation API.
@@ -211,6 +224,7 @@ struct video_shader *gl3_filter_chain_get_preset(
 gl3_filter_chain_t *gl3_filter_chain_create_deferred(
       const char *path,
       enum glslang_filter_chain_filter filter,
+      bool frame_rect,
       unsigned *out_num_passes);
 
 /**
