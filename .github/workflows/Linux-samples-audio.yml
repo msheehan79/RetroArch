@@ -23,70 +23,41 @@ jobs:
   samples-audio:
     name: Build and run samples/audio
     runs-on: ubuntu-latest
+    env:
+      APT_PKGS: build-essential libasound2-dev libsdl2-dev libopenal-dev libpipewire-0.3-dev libpulse-dev pulseaudio ffmpeg gcc-mingw-w64-x86-64 wine64 ccache
     timeout-minutes: 25
 
     steps:
-      - name: Install dependencies
-        timeout-minutes: 20
-        run: |
-          pkgs="build-essential libasound2-dev libsdl2-dev libopenal-dev libpipewire-0.3-dev libpulse-dev pulseaudio ffmpeg gcc-mingw-w64-x86-64 wine64"
-          if dpkg -s $pkgs >/dev/null 2>&1; then
-            echo "All packages already present on runner image; skipping apt."
-            exit 0
-          fi
-          for i in 1 2 3; do
-            sudo timeout 90 apt-get update -y \
-              -o Acquire::Retries=3 -o Acquire::http::Timeout=30 && break
-            echo "apt-get update failed (attempt $i); retrying in 10s"
-            sleep 10
-          done
-          # Fetch first, under a bound: a download is safe to stop and
-          # resumes, an install is not. A mirror that stalls is left for
-          # the main archive on the next attempt.
-          for i in 1 2 3; do
-            sudo timeout 240 apt-get install -y --download-only \
-              -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
-              $pkgs && break
-            [ $i = 3 ] && exit 1
-            echo "package download failed or stalled (attempt $i); retrying from archive.ubuntu.com"
-            if [ ! -d /etc/apt/ra-orig ]; then
-              sudo mkdir /etc/apt/ra-orig
-              sudo cp -a /etc/apt/sources.list.d /etc/apt/ra-orig/
-              [ ! -f /etc/apt/sources.list ] || sudo cp -a /etc/apt/sources.list /etc/apt/ra-orig/
-            fi
-            for f in /etc/apt/sources.list /etc/apt/sources.list.d/*; do
-              [ -f "$f" ] || continue
-              sudo sed -i -e 's#mirror+file:/etc/apt/apt-mirrors.txt#http://archive.ubuntu.com/ubuntu/#g' \
-                -e 's#http://azure\.archive\.ubuntu\.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' "$f"
-            done
-            # A refresh cut short or refused leaves apt no package lists: it
-            # is retried, without translations or command-not-found data, and
-            # the mirror is put back when the archive will not answer either.
-            upd="-o Acquire::Retries=3 -o Acquire::http::Timeout=30
-              -o Acquire::Languages=none
-              -o Acquire::IndexTargets::deb::CNF::DefaultEnabled=false
-              -o APT::Update::Error-Mode=any"
-            ok=0
-            for j in 1 2; do
-              sudo timeout 120 apt-get update -y $upd && { ok=1; break; }
-            done
-            if [ $ok = 0 ]; then
-              sudo rm -rf /etc/apt/sources.list.d
-              sudo cp -a /etc/apt/ra-orig/sources.list.d /etc/apt/
-              [ ! -f /etc/apt/ra-orig/sources.list ] || sudo cp -a /etc/apt/ra-orig/sources.list /etc/apt/
-              sudo rm -rf /etc/apt/ra-orig
-              sudo timeout 120 apt-get update -y $upd || true
-            fi
-          done
-          sudo apt-get install -y \
-            -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
-            $pkgs
-
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Apt cache key
+        id: apt
+        run: sh .github/workflows/scripts/apt-cache-key.sh "$APT_PKGS"
+
+      - name: Restore apt cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.apt-cache
+          key: ${{ steps.apt.outputs.key }}
+          restore-keys: ${{ steps.apt.outputs.prefix }}
+
+      - name: Install dependencies
+        timeout-minutes: 20
+        run: sh .github/workflows/scripts/apt-install.sh $APT_PKGS
+
+      - name: Save apt cache
+        if: env.APT_CACHE_SAVE == '1'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.apt-cache
+          key: ${{ steps.apt.outputs.key }}
+
+      - name: Link with lld
+        run: sh .github/workflows/scripts/use-lld.sh
+
       - name: Restore ccache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/.ccache
           key: ccache-${{ github.workflow }}-${{ github.job }}-${{ github.sha }}
@@ -96,11 +67,10 @@ jobs:
       - name: Enable ccache
         run: |
           set -eu
-          command -v ccache >/dev/null 2>&1 || sudo apt-get install -y -qq ccache
           export CCACHE_DIR="$HOME/.ccache"
           echo "CCACHE_DIR=$CCACHE_DIR" >> "$GITHUB_ENV"
           echo "/usr/lib/ccache" >> "$GITHUB_PATH"
-          ccache -M 500M
+          ccache -M 250M
           ccache -z
 
       - name: Build and run mixer_lock_test (ASan + UBSan, TSan)
@@ -277,6 +247,24 @@ jobs:
           make clean && make -j$(nproc) all SANITIZER=thread
           TSAN_OPTIONS=halt_on_error=1 timeout 300 ./alsa_lifecycle_test
           echo "[pass] alsa_lifecycle_test (TSan)"
+
+      - name: Build and run alsa_chmap_test (ASan + UBSan)
+        shell: bash
+        working-directory: samples/audio/alsa_chmap
+        run: |
+          set -eu
+          # The shipping ALSA driver against the null PCM, with the
+          # channel map, the channel counts the card takes and writei
+          # scripted via -Wl,--wrap: a card is handed the frontend's
+          # channels in its own order - its map's, or ALSA's FL FR RL
+          # RR FC LFE SL SR without one - by write() and through a lent
+          # mmap span, reports the layout it has, and steps 7.1 down to
+          # 5.1 or quad before stereo. A short writei must not lose the
+          # frame stride.
+          make clean && make -j$(nproc) all SANITIZER=address,undefined
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
+             timeout 120 ./alsa_chmap_test
+          echo "[pass] alsa_chmap_test (ASan)"
 
       - name: Build and run pipeline_stall_test (ASan + UBSan, TSan)
         shell: bash
@@ -557,6 +545,23 @@ jobs:
           make clean && make -j$(nproc) all SANITIZER=address,undefined
           ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 ./audioworklet_test
           echo "[pass] audioworklet_test (ASan)"
+
+      - name: Build and run rwebaudio_test (the web driver's channels, C and JavaScript halves)
+        shell: bash
+        working-directory: samples/audio/rwebaudio
+        run: |
+          set -eu
+          # audio/drivers/rwebaudio.c against a stand-in for its
+          # JavaScript half: frames of the layout the page took go out
+          # one plane per channel, and every byte count is in frames of
+          # that layout. Then emscripten/library_rwebaudio.js itself
+          # under Node with a mock AudioContext: the destination is
+          # widened only past stereo and only as far as its
+          # maxChannelCount allows, and a stereo one is left as it was.
+          make clean && make -j$(nproc) check
+          make clean && make -j$(nproc) all SANITIZER=address,undefined
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 ./rwebaudio_test
+          echo "[pass] rwebaudio_test (ASan)"
 
       - name: Build and run pipewire_write_test (the PipeWire driver's write against its own ring)
         shell: bash
@@ -981,6 +986,7 @@ jobs:
         working-directory: samples/audio/dsound_pump
         run: |
           set -eu
+          . "$GITHUB_WORKSPACE/.github/workflows/scripts/wine-server.sh"
           # audio/drivers/dsound.c end to end on wine's DirectSound, fed
           # by an ALSA null PCM, which plays at real-time pace on a
           # runner with no sound card. Pins that the pump - which now
@@ -990,7 +996,7 @@ jobs:
           # fills silence when the writer stops, and lets free() return
           # at once while it waits.
           printf 'pcm.!default { type null }\nctl.!default { type hw card 0 }\n' > ~/.asoundrc
-          make clean all
+          make clean && make -j$(nproc) all
           WINEDEBUG=-all timeout 300 make check
           echo "[pass] dsound_pump_test (wine)"
 
@@ -999,6 +1005,7 @@ jobs:
         working-directory: samples/audio/wdmks_loop
         run: |
           set -eu
+          . "$GITHUB_WORKSPACE/.github/workflows/scripts/wine-server.sh"
           # audio/drivers/wdmks.c compiled whole, its WaveRT loop driven
           # by hand: the test owns the driver's state, points the
           # position register at a word of its own and moves the
@@ -1015,7 +1022,7 @@ jobs:
           # milliseconds where it reports none; and that gaps in the
           # audio are counted once each, neither a start nor every
           # sample of a pause.
-          make clean all
+          make clean && make -j$(nproc) all
           WINEDEBUG=-all timeout 120 make check
           echo "[pass] wdmks_loop_test (wine)"
 
@@ -1024,9 +1031,10 @@ jobs:
         working-directory: samples/audio/mmdevice_notification
         run: |
           set -eu
+          . "$GITHUB_WORKSPACE/.github/workflows/scripts/wine-server.sh"
           for threads in 0 1; do
             make clean check THREADS=$threads SANITIZER=address,undefined
-            make clean all THREADS=$threads CC=x86_64-w64-mingw32-gcc LDFLAGS=-static
+            make clean THREADS=$threads CC=x86_64-w64-mingw32-gcc LDFLAGS=-static && make -j$(nproc) all THREADS=$threads CC=x86_64-w64-mingw32-gcc LDFLAGS=-static
             WINEDEBUG=-all wine ./mmdevice_notification_test.exe
           done
           make clean
@@ -1171,7 +1179,9 @@ jobs:
       - name: Build and run sinc kernel dispatch test (C89, ASan + UBSan)
         working-directory: samples/audio/sinc_dispatch
         run: |
-          # The SSE-only build must still pick SSE when AVX is requested.
+          # A baseline build carries the AVX and AVX-512 kernels through
+          # per-function targets and runs each one the runner supports
+          # against the scalar kernel; the -mavx build must agree.
           make -j$(nproc) check SANITIZER=address,undefined
           if grep -qw avx /proc/cpuinfo; then
             make clean
@@ -1181,6 +1191,7 @@ jobs:
       - name: Build and run sinc fast-forward test (C89, ASan + UBSan, MinGW)
         working-directory: samples/audio/sinc_fastforward
         run: |
+          . "$GITHUB_WORKSPACE/.github/workflows/scripts/wine-server.sh"
           # Live ratios under the table's design are decimated first:
           # rejection as a table built for that ratio, the nominal path
           # untouched, the output bound, crossfaded stage changes.
@@ -1196,6 +1207,7 @@ jobs:
       - name: Build and run sinc sibling test (C89, ASan + UBSan, MinGW)
         working-directory: samples/audio/sinc_sibling
         run: |
+          . "$GITHUB_WORKSPACE/.github/workflows/scripts/wine-server.sh"
           # Siblings share their parent's tables: a fresh stream either
           # way, own state only, either free order.
           make -j$(nproc) check SANITIZER=address,undefined
@@ -1219,6 +1231,18 @@ jobs:
           # Real init and one batch through each format and transport;
           # the integer front pair exists only behind its hint.
           make -j$(nproc) check SANITIZER=address,undefined
+
+      - name: Build and run pipeline_rate_change_test (ASan + UBSan, mingw)
+        working-directory: samples/audio/pipeline_rate_change
+        run: |
+          . "$GITHUB_WORKSPACE/.github/workflows/scripts/wine-server.sh"
+          # A core rate change taken by the running driver: one device
+          # open, the tone at its pitch on both sides, the ring grown
+          # where the new rate needs it, time stretch refused.
+          make -j$(nproc) check SANITIZER=address,undefined
+          make clean
+          WINEDEBUG=-all timeout 300 make check CC=x86_64-w64-mingw32-gcc \
+            LDFLAGS="-lm -static" RUN="wine ./pipeline_rate_change_test.exe"
 
       - name: Build and run unity_identity_test (plain, ASan + UBSan)
         working-directory: samples/audio/unity_identity
@@ -1289,3 +1313,17 @@ jobs:
           make check SANITIZER=address,undefined
           make clean
           make check SANITIZER=thread
+
+      - name: ccache statistics
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: ccache -sv
+
+      - name: Save ccache
+        # Only master's pushes keep a cache: pull requests restore
+        # master's, so one push does not evict the next one's.
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ github.workflow }}-${{ github.job }}-${{ github.sha }}

@@ -40,6 +40,8 @@ static const char *xdk_joypad_name(unsigned pad)
       "XInput Controller (User 3)",
       "XInput Controller (User 4)"
    };
+   if (pad >= DEFAULT_MAX_PADS)
+      return NULL;
    return XBOX_CONTROLLER_NAMES[pad];
 }
 
@@ -95,7 +97,7 @@ static int32_t xdk_joypad_button_state(
          case RETRO_DEVICE_ID_JOYPAD_Y:
             return (pad->bAnalogButtons[XINPUT_GAMEPAD_X] > XINPUT_GAMEPAD_MAX_CROSSTALK);
          case RETRO_DEVICE_ID_JOYPAD_X:
-            return (pad->bAnalogButtons[XINPUT_GAMEPAD_Y] > XINPUT_GAMEPAD_MAX_CROSSTALK)
+            return (pad->bAnalogButtons[XINPUT_GAMEPAD_Y] > XINPUT_GAMEPAD_MAX_CROSSTALK);
          case RETRO_DEVICE_ID_JOYPAD_START:
                return (pad->wButtons & XINPUT_GAMEPAD_START);
          case RETRO_DEVICE_ID_JOYPAD_SELECT:
@@ -187,10 +189,10 @@ static int16_t xdk_joypad_axis_state(XINPUT_GAMEPAD *pad,
 
 static int16_t xdk_joypad_axis(unsigned port, uint32_t joyaxis)
 {
-   XINPUT_GAMEPAD *pad = &(g_xinput_states[port].xstate.Gamepad);
    if (port >= DEFAULT_MAX_PADS)
       return 0;
-   return xdk_joypad_axis_state(pad, port, joyaxis);
+   return xdk_joypad_axis_state(&g_xinput_states[port].xstate.Gamepad,
+         port, joyaxis);
 }
 
 static int16_t xdk_joypad_state(
@@ -253,7 +255,9 @@ static void xdk_joypad_poll(void)
          if (g_xinput_states[port].id)
             XInputClose(g_xinput_states[port].id);
 
-         g_xinput_states[port].id  = 0;
+         g_xinput_states[port].id        = 0;
+         g_xinput_states[port].connected = false;
+         memset(&g_xinput_states[port].xstate, 0, sizeof(XINPUT_STATE));
 
          input_autoconfigure_disconnect(port, xdk_joypad.ident);
       }
@@ -278,24 +282,23 @@ static void xdk_joypad_poll(void)
       if (!g_xinput_states[port].id)
          continue;
 
-      /* if the controller is removed after
-       * XGetDeviceChanges but before XInputOpen,
-       * the device handle will be NULL. */
-      if (XInputPoll(g_xinput_states[port].id) != ERROR_SUCCESS)
+      /* Unreadable: the handle stays until the pad is removed. */
+      if (     XInputPoll(g_xinput_states[port].id) != ERROR_SUCCESS
+            || XInputGetState(g_xinput_states[port].id,
+               &g_xinput_states[port].xstate) != ERROR_SUCCESS)
+      {
+         g_xinput_states[port].connected = false;
+         memset(&g_xinput_states[port].xstate, 0, sizeof(XINPUT_STATE));
          continue;
+      }
 
-      memset(&g_xinput_states[port], 0, sizeof(xinput_joypad_state));
-
-      g_xinput_states[port].connected = !
-      (XInputGetState(
-         g_xinput_states[port].id
-         , &g_xinput_states[port].xstate) == ERROR_DEVICE_NOT_CONNECTED);
+      g_xinput_states[port].connected = true;
    }
 }
 
 static bool xdk_joypad_query_pad(unsigned pad)
 {
-   return pad < MAX_USERS && g_xinput_states[pad].connected;
+   return pad < DEFAULT_MAX_PADS && g_xinput_states[pad].connected;
 }
 
 static void xdk_joypad_destroy(void)
@@ -303,10 +306,9 @@ static void xdk_joypad_destroy(void)
    int i;
    for (i = 0; i < DEFAULT_MAX_PADS; i++)
    {
-      memset(&g_xinput_states[i], 0, sizeof(xinput_joypad_state));
       if (g_xinput_states[i].id)
          XInputClose(g_xinput_states[i].id);
-      g_xinput_states[i].id  = 0;
+      memset(&g_xinput_states[i], 0, sizeof(xinput_joypad_state));
    }
 }
 

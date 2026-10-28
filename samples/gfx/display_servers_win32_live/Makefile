@@ -14,6 +14,7 @@ CC        := x86_64-w64-mingw32-gcc
 
 SOURCES := display_servers_win32_live_test.c \
            $(REPO_ROOT)/gfx/display_servers/dispserv_win32.c \
+           $(REPO_ROOT)/gfx/gfx_media_display.c \
            $(REPO_ROOT)/gfx/display_servers/win32_modeline_adl.c \
            $(REPO_ROOT)/gfx/display_servers/win32_modeline_ati.c \
            $(REPO_ROOT)/gfx/display_servers/win32_modeline_pstrip.c \
@@ -29,7 +30,7 @@ SOURCES := display_servers_win32_live_test.c \
            $(REPO_ROOT)/libretro-common/features/features_cpu.c \
            $(REPO_ROOT)/libretro-common/time/rtime.c
 
-CFLAGS  += -Wall -std=gnu99 -g -O0 \
+CFLAGS  += -Wall -std=gnu99 -g1 -O0 \
            -DHAVE_MODELINE -DHAVE_THREADS -DRARCH_INTERNAL -DHAVE_MENU \
            -DMODELINE_STANDALONE -include live_log.h \
            -I$(REPO_ROOT) \

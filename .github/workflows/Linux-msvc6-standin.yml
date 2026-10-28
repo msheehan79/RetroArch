@@ -23,20 +23,41 @@ jobs:
   msvc6-standin:
     name: The Visual C++ 6 project's sources, defines and libraries, on mingw held to old C
     runs-on: ubuntu-latest
+    env:
+      APT_PKGS: --no-install-recommends gcc-mingw-w64-i686 g++-mingw-w64-i686 gcc-mingw-w64-x86-64 wine64 pulseaudio xvfb
     timeout-minutes: 20
 
     steps:
-      - name: Install dependencies
-        shell: bash
-        run: |
-          set -eu
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends \
-            gcc-mingw-w64-i686 g++-mingw-w64-i686 \
-            gcc-mingw-w64-x86-64 wine64 pulseaudio xvfb
-
       - name: Checkout
         uses: actions/checkout@v5
+
+      - name: Apt cache key
+        id: apt
+        run: sh .github/workflows/scripts/apt-cache-key.sh "$APT_PKGS"
+
+      - name: Restore apt cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.apt-cache
+          key: ${{ steps.apt.outputs.key }}
+          restore-keys: ${{ steps.apt.outputs.prefix }}
+
+      - name: Install dependencies
+        timeout-minutes: 15
+        run: sh .github/workflows/scripts/apt-install.sh $APT_PKGS
+
+      - name: Save apt cache
+        if: env.APT_CACHE_SAVE == '1'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.apt-cache
+          key: ${{ steps.apt.outputs.key }}
+
+      - name: Link with lld
+        run: sh .github/workflows/scripts/use-lld.sh
+
+      - name: Check the VC8 dialog optimizer workaround
+        run: python3 tools/msvc2005_dialog_check.py
 
       - name: Compile and link what pkg/msvc/msvc-6 builds
         shell: bash
@@ -75,7 +96,7 @@ jobs:
           pactl load-module module-null-sink sink_name=ci >/dev/null
           pactl set-default-sink ci
           WINE=$(command -v wine64 || command -v wine || echo /usr/lib/wine/wine64)
-          make clean all
+          make clean && make -j$(nproc) all
           WINEDEBUG=-all timeout 300 make check WINE="$WINE" | tee waveout.log
           grep -q "PASS waveout_test" waveout.log
           make clean
@@ -95,7 +116,7 @@ jobs:
           # failure here.
           trap 'wineserver -k >/dev/null 2>&1 || true' EXIT
           WINE=$(command -v wine64 || command -v wine || echo /usr/lib/wine/wine64)
-          make clean all
+          make clean && make -j$(nproc) all
           WINEDEBUG=-all timeout 300 make check WINE="$WINE" | tee win32_input.log
           grep -q "PASS win32_input_test" win32_input.log
           if grep -q "^\[skip\]" win32_input.log; then
@@ -119,7 +140,7 @@ jobs:
           # that are not there not asked at every poll.
           trap 'wineserver -k >/dev/null 2>&1 || true' EXIT
           WINE=$(command -v wine64 || command -v wine || echo /usr/lib/wine/wine64)
-          make clean all
+          make clean && make -j$(nproc) all
           WINEDEBUG=-all timeout 300 make check WINE="$WINE" | tee winmm_joypad.log
           grep -q "PASS winmm_joypad_test" winmm_joypad.log
           make clean

@@ -15,6 +15,7 @@ flags   += -std=gnu99
 SOURCES_C := \
 	state_rewind_test.c \
 	$(LIBRETRO_COMM_DIR)/features/features_cpu.c \
+	$(LIBRETRO_COMM_DIR)/memmap/memalign.c \
 	$(LIBRETRO_COMM_DIR)/compat/compat_strl.c
 
 CFLAGS += -Wall $(INCDIRS) -DRARCH_INTERNAL -DHAVE_REWIND -DHAVE_THREADS -DHAVE_CONFIGFILE -DHAVE_MENU -D_GNU_SOURCE
@@ -24,7 +25,7 @@ ifneq ($(SAN),)
    SANITIZER := $(SAN)
 endif
 ifneq ($(SANITIZER),)
-   CFLAGS  := -fsanitize=$(SANITIZER) -fno-omit-frame-pointer -g $(CFLAGS)
+   CFLAGS  := -fsanitize=$(SANITIZER) -fno-omit-frame-pointer -g1 $(CFLAGS)
    LDFLAGS := -fsanitize=$(SANITIZER) $(LDFLAGS)
 endif
 

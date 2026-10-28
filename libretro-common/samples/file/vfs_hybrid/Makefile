@@ -25,7 +25,7 @@ OBJS := $(call sample_objs,$(SOURCES:.c=.o))
 
 # -DHAVE_MMAP so the local branch really produces a mapping; without
 # it the zero-copy check has nothing to assert and only reports a skip.
-CFLAGS += -Wall -pedantic -std=gnu99 -g -DHAVE_MMAP \
+CFLAGS += -Wall -pedantic -std=gnu99 -g1 -DHAVE_MMAP \
 	-I$(LIBRETRO_COMM_DIR)/include
 
 # The wrapper-allocation failure cases exist because that path is
@@ -35,6 +35,8 @@ CFLAGS += -Wall -pedantic -std=gnu99 -g -DHAVE_MMAP \
 # chosen moment. Kept out of the sources themselves - nothing in
 # vfs_hybrid.c knows this is happening.
 LDFLAGS += -Wl,--wrap=calloc
+# and counts the read-ahead hints that reach the local implementation
+LDFLAGS += -Wl,--wrap=retro_vfs_file_prefetch_impl
 
 ifneq ($(SANITIZER),)
    CFLAGS  := -fsanitize=$(SANITIZER) -fno-omit-frame-pointer $(CFLAGS)

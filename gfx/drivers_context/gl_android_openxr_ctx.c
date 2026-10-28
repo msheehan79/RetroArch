@@ -29,6 +29,7 @@
 #include <EGL/eglext.h>
 
 #include <glsym/glsym.h>
+#include <gfx/gl_capabilities.h>
 
 #include <jni.h>
 #include <android/native_activity.h>
@@ -118,6 +119,9 @@ typedef struct gl_android_openxr
    unsigned rotation;
    unsigned screen_layout;
    bool swap_eyes;
+   /* An sRGB swapchain filled with GL_FRAMEBUFFER_SRGB_EXT off around
+    * the copy (EXT_sRGB_write_control). */
+   bool srgb_copy;
 
    EGLDisplay egl_display;
    EGLConfig egl_config;
@@ -295,15 +299,21 @@ static unsigned gl_android_openxr_host_state(void *user)
    return bits;
 }
 
-static bool gl_android_openxr_host_sample(void *user, uint32_t *frame_flags)
+static bool gl_android_openxr_host_sample(void *user, unsigned ahead,
+      uint32_t *frame_flags)
 {
-   return openxr_host_sample(&((gl_android_openxr_t*)user)->host, frame_flags);
+   return openxr_host_sample(&((gl_android_openxr_t*)user)->host, ahead, frame_flags);
 }
 
 static bool gl_android_openxr_host_eye_state(void *user,
-      struct retro_vr_eye_state out[2])
+      struct retro_vr_eye_state out[2], unsigned *token)
 {
-   return openxr_host_eye_state(&((gl_android_openxr_t*)user)->host, out);
+   return openxr_host_eye_state(&((gl_android_openxr_t*)user)->host, out, token);
+}
+
+static void gl_android_openxr_host_give(void *user, unsigned token)
+{
+   openxr_host_give(&((gl_android_openxr_t*)user)->host, token);
 }
 
 static bool gl_android_openxr_host_set_space(void *user,
@@ -317,6 +327,17 @@ static bool gl_android_openxr_host_head_pose(void *user,
       struct retro_vr_head_pose *out)
 {
    return openxr_host_head_pose(&((gl_android_openxr_t*)user)->host, out);
+}
+
+static bool gl_android_openxr_host_locate_hands(void *user)
+{
+   return openxr_host_locate_hands(&((gl_android_openxr_t*)user)->host);
+}
+
+static bool gl_android_openxr_host_controller_poses(void *user,
+      struct retro_vr_controller_poses *out)
+{
+   return openxr_host_controller_poses(&((gl_android_openxr_t*)user)->host, out);
 }
 
 static bool gl_android_openxr_host_eye_size(void *user, unsigned *w,
@@ -337,8 +358,11 @@ static void gl_android_openxr_host_register(gl_android_openxr_t *xr)
    host.state     = gl_android_openxr_host_state;
    host.sample    = gl_android_openxr_host_sample;
    host.eye_state = gl_android_openxr_host_eye_state;
+   host.give      = gl_android_openxr_host_give;
    host.set_space = gl_android_openxr_host_set_space;
    host.head_pose = gl_android_openxr_host_head_pose;
+   host.locate_hands = gl_android_openxr_host_locate_hands;
+   host.controller_poses = gl_android_openxr_host_controller_poses;
    host.eye_size  = gl_android_openxr_host_eye_size;
    host.resume    = gl_android_openxr_host_resume;
    host.user      = xr;
@@ -421,16 +445,23 @@ static bool gl_xr_start(gl_android_openxr_t *xr)
    }
    openxr_host_init(&xr->host, &xr->rt, &xr->session, &xr->frame);
 
-   memset(&binding, 0, sizeof(binding));
    binding.type    = XR_TYPE_GRAPHICS_BINDING_OPENGL_ES_ANDROID_KHR;
+   binding.next    = NULL;
    binding.display = xr->egl_display;
    binding.config  = xr->egl_config;
    binding.context = xr->egl_context;
    if (!openxr_session_create(&xr->session, &binding))
       return false;
    openxr_swapchains_list_formats(&xr->sc);
-   if (!(xr->format = openxr_binding_gles_format(&xr->sc)))
-      return false;
+   {
+      bool write_control = gl_query_extension("GL_EXT_sRGB_write_control");
+      if (!(xr->format = openxr_binding_gles_format(&xr->sc, write_control)))
+         return false;
+      xr->srgb_copy = write_control
+         && xr->format == OPENXR_GLES_SRGB8_ALPHA8;
+      if (xr->srgb_copy)
+         RARCH_LOG("[OpenXR] sRGB swapchain.\n");
+   }
    openxr_frame_session_created(&xr->frame);
    openxr_host_session_created(&xr->host);
 
@@ -584,6 +615,10 @@ static void gl_xr_draw(gl_android_openxr_t *xr)
          &xr->set, rects);
    /* The blits are scissored: whatever gl2 drew last must not clip them. */
    glDisable(GL_SCISSOR_TEST);
+   /* The copy keeps the stored values; the compositor decodes them.
+    * Back on after it: gl2's sRGB passes share this context. */
+   if (xr->srgb_copy)
+      glDisable(OPENXR_GLES_FRAMEBUFFER_SRGB);
    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
    for (s = 0; s < VIDEO_XR_MAX_SLOTS; s++)
    {
@@ -616,6 +651,8 @@ static void gl_xr_draw(gl_android_openxr_t *xr)
       glFlush();
       openxr_slot_release(&xr->sc, s);
    }
+   if (xr->srgb_copy)
+      glEnable(OPENXR_GLES_FRAMEBUFFER_SRGB);
    openxr_frame_publish(&xr->frame, &xr->set);
 }
 
@@ -702,6 +739,9 @@ bool gl_android_openxr_eye_targets(uint32_t tex[2], unsigned *dims)
    tex[0] = xr->images[OPENXR_PROJECTION_SLOT][index[0]][0];
    tex[1] = xr->images[OPENXR_PROJECTION_SLOT][index[1]][1];
    *dims  = d;
+   /* otherwise washed out picture */
+   if (xr->srgb_copy)
+      glDisable(OPENXR_GLES_FRAMEBUFFER_SRGB);
    return true;
 }
 
@@ -710,6 +750,8 @@ void gl_android_openxr_eyes_drawn(unsigned width, unsigned height)
 {
    openxr_projection_t proj;
    gl_android_openxr_t *xr = &gl_xr;
+   if (xr->srgb_copy)
+      glEnable(OPENXR_GLES_FRAMEBUFFER_SRGB);
    /* The compositor reads the images on its own context. */
    glFlush();
    openxr_slot_release(&xr->sc, OPENXR_PROJECTION_SLOT);

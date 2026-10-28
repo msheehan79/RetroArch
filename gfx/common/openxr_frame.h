@@ -25,6 +25,7 @@
 #include <rthreads/retro_eventcount.h>
 
 #include <openxr/openxr.h>
+#include <libretro.h>
 
 #include "openxr_runtime.h"
 #include "openxr_session.h"
@@ -94,6 +95,9 @@ typedef struct openxr_frame
    unsigned (*extra_layers)(void *user, XrTime display_time,
          const XrCompositionLayerBaseHeader **layers, unsigned cap);
    void *extra_user;
+   /* The hands; may be NULL. */
+   bool (*locate_hands)(void *user, XrSpace base, XrTime time,
+         struct retro_vr_controller_poses *out);
    /* The laser's dot the host made for the input's layers, start to
     * stop; the frame loop reads it. */
    XrSwapchain cursor;
@@ -108,22 +112,22 @@ typedef struct openxr_frame
     * frame, no XR thread. */
    bool inline_host;
    bool repeating;                 /* inside openxr_frame_repeat */
-   /* A seqlock over its words like video_driver.c's viewport
-    * parameters: the writer's own copy, the stamp and the words. */
+   /* A latched seqlock over two copies of its words (openxr_frame.c):
+    * the writer's own copy, the stamp and the words. */
    openxr_tracked_t tracked;       /* the frame loop's thread */
    retro_atomic_int_t tracked_seq;
-   retro_atomic_int_t tracked_words[OPENXR_WORDS(openxr_tracked_t)];
+   retro_atomic_int_t tracked_words[2 * OPENXR_WORDS(openxr_tracked_t)];
    /* The screens as each frame submits them, the same way. */
    openxr_screens_t screens;       /* the frame loop's thread */
    retro_atomic_int_t screens_seq;
-   retro_atomic_int_t screens_words[OPENXR_WORDS(openxr_screens_t)];
+   retro_atomic_int_t screens_words[2 * OPENXR_WORDS(openxr_screens_t)];
    /* The drawing thread's quads for the XR thread and the pointer, the
     * same way. */
    retro_atomic_int_t quads_seq;
-   retro_atomic_int_t quads_words[OPENXR_WORDS(video_xr_quad_set_t)];
+   retro_atomic_int_t quads_words[2 * OPENXR_WORDS(video_xr_quad_set_t)];
    /* The drawing thread's projection, the same way. */
    retro_atomic_int_t proj_seq;
-   retro_atomic_int_t proj_words[OPENXR_WORDS(openxr_projection_t)];
+   retro_atomic_int_t proj_words[2 * OPENXR_WORDS(openxr_projection_t)];
    /* Consecutive carried spaces, under the graphics lock. */
    int carry_from;
    int carry_to;
@@ -156,11 +160,18 @@ typedef struct openxr_frame
    unsigned pace_mode;             /* drawing thread: 0, 1 ticks, 2 clock */
    bool tick_late;                 /* drawing thread: warned, no tick since */
    /* XR_FB_display_refresh_rate: the rates the session lists, the one
-    * to ask for (float bits, 0 for none), and the last one asked. */
+    * to ask for (float bits, 0 for none), and requested/applied rates. */
    float rates[VIDEO_HEADSET_MAX_RATES];
    unsigned num_rates;
    retro_atomic_int_t want_rate;
    float asked_rate;               /* XR thread */
+   float requested_rate;           /* XR thread */
+   int64_t rate_retry_usec;        /* XR thread */
+   int64_t perf_retry_usec;        /* XR thread */
+   unsigned perf_applied;         /* CPU/GPU success bits, XR thread */
+   /* XR_EXT_performance_settings: the clocks last asked for this
+    * session, -1 none yet, 0 sustained high, 1 boosted. XR thread. */
+   int asked_perf;
    PFN_xrWaitFrame WaitFrame;
    PFN_xrBeginFrame BeginFrame;
    PFN_xrEndFrame EndFrame;
@@ -176,6 +187,9 @@ typedef struct openxr_input_handles
    XrSession session;
    PFN_xrGetInstanceProcAddr get_proc;
    bool frame_controller;      /* XR_VALVE_frame_controller_interaction */
+   bool palm_pose;             /* XR_EXT_palm_pose */
+   bool hand_tracking;         /* XR_EXT_hand_tracking, hands tracked */
+   bool hand_data_source;      /* XR_EXT_hand_tracking_data_source */
 } openxr_input_handles_t;
 
 typedef struct openxr_input_hooks
@@ -191,6 +205,10 @@ typedef struct openxr_input_hooks
     * the screens. Returns how many were written. */
    unsigned (*frame_layers)(void *user, XrTime display_time,
          const XrCompositionLayerBaseHeader **layers, unsigned cap);
+   /* The two hands' poses and joints in base at time.
+    * False when none could be located. */
+   bool (*locate_hands)(void *user, XrSpace base, XrTime time,
+         struct retro_vr_controller_poses *out);
    void *user;
 } openxr_input_hooks_t;
 
@@ -221,6 +239,8 @@ void openxr_frame_local_changed(openxr_frame_t *f);
 void openxr_frame_clear_quads(openxr_frame_t *f);
 
 XrTime openxr_frame_predicted_time(openxr_frame_t *f);
+bool openxr_frame_locate_hands(openxr_frame_t *f, XrSpace base, XrTime time,
+      struct retro_vr_controller_poses *out);
 float openxr_frame_pixels_per_radian(openxr_frame_t *f);
 float openxr_frame_refresh_rate(openxr_frame_t *f);
 void openxr_frame_set_pacing(openxr_frame_t *f, unsigned interval);

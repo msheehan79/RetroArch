@@ -40,9 +40,12 @@ bool video_views_validate(const struct retro_video_view *views,
    if (!views || num_views > RETRO_VIDEO_VIEWS_MAX)
       return false;
 
-   memset(count_none,  0, sizeof(count_none));
-   memset(count_left,  0, sizeof(count_left));
-   memset(count_right, 0, sizeof(count_right));
+   for (i = 0; i < RETRO_VIDEO_VIEWS_MAX; i++)
+   {
+      count_none [i] = 0;
+      count_left [i] = 0;
+      count_right[i] = 0;
+   }
 
    for (i = 0; i < num_views; i++)
    {
@@ -194,6 +197,30 @@ bool video_views_eye_pair(const video_views_map_t *map, int eyes[2])
    return true;
 }
 
+bool video_views_select_screens(const video_views_map_t *map,
+      unsigned first, unsigned count, video_views_map_t *out,
+      unsigned *index)
+{
+   unsigned i;
+   memset(out, 0, sizeof(*out));
+   if (!map || first >= map->num_screens || !count)
+      return false;
+   if (count > map->num_screens - first)
+      count = map->num_screens - first;
+   for (i = 0; i < map->num_views; i++)
+   {
+      const struct retro_video_view *v = &map->views[i];
+      if (v->screen < first || v->screen - first >= count)
+         continue;
+      index[out->num_views]               = i;
+      out->views[out->num_views]          = *v;
+      out->views[out->num_views++].screen = v->screen - first;
+   }
+   /* Every screen of a validated map has a view. */
+   out->num_screens = count;
+   return out->num_views != 0;
+}
+
 bool video_views_snapshot(const video_views_map_t *map,
       unsigned frame_dims, unsigned out_dims,
       video_views_map_t *out)
@@ -215,7 +242,8 @@ static int video_views_round(double v)
 
 /* Screen rectangles within an area of size cdims, in screen order. */
 static void video_views_fit(const video_views_layout_params_t *p,
-      unsigned cdims, video_views_rect_t *fit)
+      unsigned cdims, unsigned count, unsigned first,
+      video_views_rect_t *fit)
 {
    unsigned s;
    double disp_w[RETRO_VIDEO_VIEWS_MAX];
@@ -226,27 +254,30 @@ static void video_views_fit(const video_views_layout_params_t *p,
    unsigned ch   = VIDEO_SCALE_H(cdims);
    bool vertical = (p->screen_layout != VIDEO_SCREEN_LAYOUT_HORIZONTAL);
 
-   if (map->num_screens == 1 && p->stretch && !p->scale_integer)
+   if (count == 1 && p->stretch && !p->scale_integer)
    {
-      fit[0].pos  = VIDEO_POS_PACK(0, 0);
-      fit[0].dims = cdims;
+      fit[first].pos  = VIDEO_POS_PACK(0, 0);
+      fit[first].dims = cdims;
       return;
    }
 
-   if (map->num_screens == 1 && p->custom_vp && cdims == p->dims)
+   if (count == 1 && p->custom_vp && cdims == p->dims)
    {
-      fit[0] = *p->custom_vp;
+      fit[first] = *p->custom_vp;
       return;
    }
 
    for (s = 0; s < map->num_screens; s++)
    {
-      const struct retro_video_view *v = &map->views[
-         video_views_find(map, s, RETRO_VIDEO_VIEW_EYE_NONE)];
-      double w      = v->width;
-      double h      = v->height;
-      double aspect = video_views_aspect(v);
-      if (map->num_screens == 1 && p->single_aspect > 0.0f)
+      const struct retro_video_view *v;
+      double w, h, aspect;
+      if (p->exclude_screens & (1u << s))
+         continue;
+      v      = &map->views[video_views_find(map, s, RETRO_VIDEO_VIEW_EYE_NONE)];
+      w      = v->width;
+      h      = v->height;
+      aspect = video_views_aspect(v);
+      if (count == 1 && p->single_aspect > 0.0f)
          aspect = p->single_aspect;
       if (p->rotation & 1)
       {
@@ -281,8 +312,11 @@ static void video_views_fit(const video_views_layout_params_t *p,
    {
       double x, y;
       int x0, y0;
-      double w = disp_w[s] * scale;
-      double h = disp_h[s] * scale;
+      double w, h;
+      if (p->exclude_screens & (1u << s))
+         continue;
+      w = disp_w[s] * scale;
+      h = disp_h[s] * scale;
       if (vertical)
       {
          x    = ox + (tw - disp_w[s]) * scale / 2.0;
@@ -324,7 +358,7 @@ static void video_views_place(const video_views_rect_t *r,
 void video_views_layout(const video_views_layout_params_t *p,
       video_views_layout_t *out)
 {
-   unsigned a, s;
+   unsigned a, s, count = 0, first = 0;
    unsigned w, h, cdims;
    video_views_rect_t fit[RETRO_VIDEO_VIEWS_MAX];
    const video_views_map_t *map = p->map;
@@ -333,6 +367,15 @@ void video_views_layout(const video_views_layout_params_t *p,
    w = VIDEO_SCALE_W(p->dims);
    h = VIDEO_SCALE_H(p->dims);
    if (!map || !map->num_views || !w || !h)
+      return;
+
+   for (s = 0; s < map->num_screens; s++)
+      if (!(p->exclude_screens & (1u << s)))
+      {
+         first = s;
+         count++;
+      }
+   if (!count)
       return;
 
    out->stereo_mode   = p->stereo_mode;
@@ -375,7 +418,7 @@ void video_views_layout(const video_views_layout_params_t *p,
          break;
    }
 
-   video_views_fit(p, cdims, fit);
+   video_views_fit(p, cdims, count, first, fit);
 
    for (a = 0; a < out->num_areas; a++)
    {
@@ -384,10 +427,127 @@ void video_views_layout(const video_views_layout_params_t *p,
          eye = RETRO_VIDEO_VIEW_EYE_RIGHT;
       for (s = 0; s < map->num_screens; s++)
       {
-         video_views_placement_t *pl = &out->placements[out->num_placements++];
+         video_views_placement_t *pl;
+         if (p->exclude_screens & (1u << s))
+            continue;
+         pl = &out->placements[out->num_placements++];
          pl->view = (unsigned)video_views_find(map, s, eye);
          pl->area = a;
          video_views_place(&fit[s], cdims, &out->areas[a], &pl->dst);
+      }
+   }
+}
+
+void video_views_touch_publish(video_views_touch_t *t,
+      const video_views_map_t *map, const video_views_layout_t *layout,
+      const unsigned *index, unsigned dims, unsigned frame_dims)
+{
+   unsigned i;
+   retro_atomic_fetch_add_seq_cst_int(&t->seq, 1);
+   t->count = 0;
+   for (i = 0; layout && i < layout->num_placements
+         && i < RETRO_VIDEO_VIEWS_MAX; i++)
+   {
+      t->dst[i] = layout->placements[i].dst;
+      t->src[i] = map->views[index[layout->placements[i].view]];
+      t->count++;
+   }
+   t->dims       = dims;
+   t->frame_dims = frame_dims;
+   retro_atomic_fetch_add_seq_cst_int(&t->seq, 1);
+}
+
+bool video_views_touch_point(video_views_touch_t *t, int x, int y,
+      int16_t *res_x, int16_t *res_y)
+{
+   unsigned i, tries;
+   for (tries = 0; tries < 4; tries++)
+   {
+      long px, py;
+      video_views_rect_t dst[RETRO_VIDEO_VIEWS_MAX];
+      struct retro_video_view src[RETRO_VIDEO_VIEWS_MAX];
+      int seq        = retro_atomic_load_acquire_int(&t->seq);
+      unsigned count = t->count;
+      unsigned dims  = t->dims;
+      unsigned fdims = t->frame_dims;
+      if (seq & 1)
+         continue;
+      memcpy(dst, t->dst, sizeof(dst));
+      memcpy(src, t->src, sizeof(src));
+      /* A full barrier: the copy is read before the count is again */
+      if (retro_atomic_fetch_add_seq_cst_int(&t->seq, 0) != seq)
+         continue;
+      if (     !count || count > RETRO_VIDEO_VIEWS_MAX
+            || !VIDEO_SCALE_W(fdims) || !VIDEO_SCALE_H(fdims))
+         return false;
+      /* The touch in the display's pixels */
+      px     = ((long)x + 0x7fff) * (long)VIDEO_SCALE_W(dims) / 0xfffe;
+      py     = ((long)y + 0x7fff) * (long)VIDEO_SCALE_H(dims) / 0xfffe;
+      *res_x = -0x8000;
+      *res_y = -0x8000;
+      for (i = 0; i < count; i++)
+      {
+         long fx, fy;
+         long dx = VIDEO_POS_X(dst[i].pos);
+         long dy = VIDEO_POS_Y(dst[i].pos);
+         long dw = (long)VIDEO_SCALE_W(dst[i].dims);
+         long dh = (long)VIDEO_SCALE_H(dst[i].dims);
+         if (px < dx || py < dy || px >= dx + dw || py >= dy + dh)
+            continue;
+         /* That point of the view, in the packed frame */
+         fx     = (long)src[i].x + (px - dx) * (long)src[i].width / dw;
+         fy     = (long)src[i].y + (py - dy) * (long)src[i].height / dh;
+         *res_x = (int16_t)(fx * 0xfffe / (long)VIDEO_SCALE_W(fdims)
+               - 0x7fff);
+         *res_y = (int16_t)(fy * 0xfffe / (long)VIDEO_SCALE_H(fdims)
+               - 0x7fff);
+         break;
+      }
+      return true;
+   }
+   return false;
+}
+
+void video_views_blend_xrgb8888(const uint32_t *canvas,
+      size_t canvas_stride, uint32_t *out, size_t out_stride,
+      unsigned dims, unsigned stereo_mode)
+{
+   unsigned x, y;
+   unsigned w = VIDEO_SCALE_W(dims);
+   unsigned h = VIDEO_SCALE_H(dims);
+   for (y = 0; y < h; y++, canvas += canvas_stride, out += out_stride)
+   {
+      const uint32_t *l = canvas;
+      const uint32_t *r = canvas + w;
+      if (stereo_mode == VIDEO_STEREO_MODE_INTERLACED)
+      {
+         memcpy(out, (y & 1) ? r : l, (size_t)w * sizeof(uint32_t));
+         continue;
+      }
+      for (x = 0; x < w; x++)
+      {
+         unsigned k;
+         float c[3];
+         uint32_t px = 0;
+         float lr    = (float)((l[x] >> 16) & 0xff);
+         float lg    = (float)((l[x] >>  8) & 0xff);
+         float lb    = (float)( l[x]        & 0xff);
+         float rr    = (float)((r[x] >> 16) & 0xff);
+         float rg    = (float)((r[x] >>  8) & 0xff);
+         float rb    = (float)( r[x]        & 0xff);
+         c[0] =  0.456100f * lr + 0.500484f * lg + 0.176381f * lb
+               - 0.0434706f * rr - 0.0879388f * rg - 0.00155529f * rb;
+         c[1] = -0.0400822f * lr - 0.0378246f * lg - 0.0157589f * lb
+               + 0.378476f * rr + 0.73364f * rg - 0.0184503f * rb;
+         c[2] = -0.0152161f * lr - 0.0205971f * lg - 0.00546856f * lb
+               - 0.0721527f * rr - 0.112961f * rg + 1.2264f * rb;
+         for (k = 0; k < 3; k++)
+         {
+            int v = (int)(c[k] + 0.5f);
+            v     = (v < 0) ? 0 : (v > 255) ? 255 : v;
+            px    = (px << 8) | (uint32_t)v;
+         }
+         out[x] = px;
       }
    }
 }
@@ -439,6 +599,47 @@ bool video_views_visible(const video_views_layout_t *layout,
    return video_views_cut(&p->dst, VIDEO_POS_X(a->pos), VIDEO_POS_Y(a->pos),
             (int)VIDEO_SCALE_W(a->dims), (int)VIDEO_SCALE_H(a->dims), &r)
       && video_views_clip(&r, dims, out);
+}
+
+void video_views_cut_source(const struct retro_video_view *v,
+      const video_views_rect_t *dst, const video_views_rect_t *cut,
+      video_views_rect_t *out)
+{
+   unsigned long dw = VIDEO_SCALE_W(dst->dims);
+   unsigned long dh = VIDEO_SCALE_H(dst->dims);
+   long dx          = (long)VIDEO_POS_X(cut->pos) - VIDEO_POS_X(dst->pos);
+   long dy          = (long)VIDEO_POS_Y(cut->pos) - VIDEO_POS_Y(dst->pos);
+   unsigned long x0, y0, x1, y1;
+
+   if (!dw || !dh)
+   {
+      out->pos  = VIDEO_POS_PACK(v->x, v->y);
+      out->dims = VIDEO_SCALE_PACK(v->width, v->height);
+      return;
+   }
+   if (dx < 0)
+      dx = 0;
+   if (dy < 0)
+      dy = 0;
+   /* The cut's edges through the scale, kept within the view */
+   x0 = (unsigned long)dx * v->width  / dw;
+   y0 = (unsigned long)dy * v->height / dh;
+   x1 = ((unsigned long)dx + VIDEO_SCALE_W(cut->dims)) * v->width  / dw;
+   y1 = ((unsigned long)dy + VIDEO_SCALE_H(cut->dims)) * v->height / dh;
+   if (x1 > v->width)
+      x1 = v->width;
+   if (y1 > v->height)
+      y1 = v->height;
+   if (x0 >= x1)
+      x0 = x1 ? x1 - 1 : 0;
+   if (y0 >= y1)
+      y0 = y1 ? y1 - 1 : 0;
+   if (x1 <= x0)
+      x1 = x0 + 1;
+   if (y1 <= y0)
+      y1 = y0 + 1;
+   out->pos  = VIDEO_POS_PACK(v->x + x0, v->y + y0);
+   out->dims = VIDEO_SCALE_PACK(x1 - x0, y1 - y0);
 }
 
 bool video_views_first_drawn(const video_views_layout_t *layout,

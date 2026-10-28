@@ -16,10 +16,12 @@
 #ifndef __VIDEO_VIEWS_H
 #define __VIDEO_VIEWS_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include <boolean.h>
 #include <retro_inline.h>
+#include <retro_atomic.h>
 #include <retro_common_api.h>
 #include <libretro.h>
 
@@ -57,6 +59,18 @@ enum video_openxr_laser
    VIDEO_OPENXR_LASER_ALWAYS,
    VIDEO_OPENXR_LASER_OFF,
    VIDEO_OPENXR_LASER_LAST
+};
+
+/* What a core is told the headset shows, cycled by the Headset View
+ * hotkey and never saved: IMMERSIVE reports what the headset can do,
+ * STEREOSCOPIC withholds RETRO_VIDEO_VIEWS_STATUS_HMD, FLAT also
+ * RETRO_VIDEO_VIEWS_STATUS_STEREO. */
+enum video_headset_view
+{
+   VIDEO_HEADSET_VIEW_IMMERSIVE = 0,
+   VIDEO_HEADSET_VIEW_STEREOSCOPIC,
+   VIDEO_HEADSET_VIEW_FLAT,
+   VIDEO_HEADSET_VIEW_LAST
 };
 
 /* video_openxr_placement: where the headset keeps the screens. */
@@ -118,6 +132,15 @@ int video_views_find(const video_views_map_t *map,
  * one RIGHT view, their indices in eyes[0] and eyes[1]; else -1. */
 bool video_views_eye_pair(const video_views_map_t *map, int eyes[2]);
 
+/* The views of screens [@first, @first + @count) of @map as a map of
+ * their own in @out, their screens counted from 0 and in @map's order;
+ * @index[i] is @out's view i's index in @map. For a driver that shows
+ * some screens on one display and the rest on another. False, with
+ * @out emptied, when none of those screens has a view. */
+bool video_views_select_screens(const video_views_map_t *map,
+      unsigned first, unsigned count, video_views_map_t *out,
+      unsigned *index);
+
 /* The map for one frame: a copy scaled from the core's frame size to the
  * size the driver receives. False, with out emptied, when there is no map
  * or it does not fit the frame. */
@@ -158,7 +181,7 @@ typedef struct video_views_layout
 typedef struct video_views_layout_params
 {
    const video_views_map_t *map;
-   /* One-screen maps only. custom_vp is the custom viewport in window
+   /* One included screen only. custom_vp is the custom viewport in window
     * pixels, or NULL; single_aspect is the aspect ratio setting's value,
     * or 0 for the view's own; stretch fills the area instead. */
    const video_views_rect_t *custom_vp;
@@ -167,6 +190,7 @@ typedef struct video_views_layout_params
    unsigned dims;
    unsigned stereo_mode;
    unsigned screen_layout;
+   unsigned exclude_screens;
    unsigned rotation;
    bool swap_eyes;
    bool scale_integer;
@@ -195,6 +219,14 @@ bool video_views_visible(const video_views_layout_t *layout,
       const video_views_placement_t *p, unsigned dims,
       video_views_rect_t *out);
 
+/* The part of view @v that @cut shows, @cut being part of the rectangle
+ * @dst the whole view is scaled to: for a blitter that scales a source
+ * rectangle into a destination one, as video_views_visible cut it. At
+ * least one pixel each way. */
+void video_views_cut_source(const struct retro_video_view *v,
+      const video_views_rect_t *dst, const video_views_rect_t *cut,
+      video_views_rect_t *out);
+
 /* The rectangle of @view's first placement drawn into a target of
  * size @dims, which its shader passes are sized for; all_areas false
  * draws the first area only. False when no placement of the view
@@ -217,6 +249,41 @@ bool video_views_map_point(const video_views_layout_t *layout,
  * or a UI drawn once, leaves the point as it is. */
 void video_views_ui_point(const video_views_layout_t *layout,
       int x, int y, int *res_x, int *res_y);
+
+/* Where touches on a display of a console's own land in the core's
+ * packed frame: the views it shows, written by the video driver and read
+ * by the input driver without a lock, behind a sequence count that is
+ * odd while they change. Zeroed, it holds none. */
+typedef struct video_views_touch
+{
+   video_views_rect_t dst[RETRO_VIDEO_VIEWS_MAX];
+   struct retro_video_view src[RETRO_VIDEO_VIEWS_MAX];
+   unsigned count;
+   unsigned dims;
+   unsigned frame_dims;
+   retro_atomic_int_t seq;
+} video_views_touch_t;
+
+/* @layout's placements, of @map's views through @index (the selection's
+ * to the map's), on a display of size @dims; @frame_dims the packed
+ * frame's. A NULL @layout holds none. */
+void video_views_touch_publish(video_views_touch_t *t,
+      const video_views_map_t *map, const video_views_layout_t *layout,
+      const unsigned *index, unsigned dims, unsigned frame_dims);
+
+/* A touch, -0x7fff to 0x7fff across the display, to the core's pointer
+ * in its packed frame, -0x8000 off the views. False, with @res_x and
+ * @res_y as they were, when the display shows no views. */
+bool video_views_touch_point(video_views_touch_t *t, int x, int y,
+      int16_t *res_x, int16_t *res_y);
+
+/* A canvas's two halves, each of size @dims, into @out for the CPU
+ * drivers, XRGB8888 with strides in pixels: anaglyph by Dubois'
+ * least-squares red/cyan matrices, or interlaced, even rows from the
+ * left half and odd from the right. */
+void video_views_blend_xrgb8888(const uint32_t *canvas,
+      size_t canvas_stride, uint32_t *out, size_t out_stride,
+      unsigned dims, unsigned stereo_mode);
 
 /* ---- The compositor: what drivers that draw views share ----
  * A driver keeps the GPU objects; the decisions are written once, in

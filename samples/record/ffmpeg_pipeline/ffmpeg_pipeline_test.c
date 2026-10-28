@@ -11,7 +11,8 @@
  * when the queues are full, and the drain after the encoder thread
  * is joined.  A frame out of order, torn, or from the wrong slot
  * fails the pixel check.  Every other frame is pushed with a padded
- * pitch, and a PLAIN_RING build has the driver's video ring without
+ * pitch, every other pair has a negative bottom-up pitch, and a
+ * PLAIN_RING build has the driver's video ring without
  * its double mapping, so frames across the wrap take the scratch copy.
  *
  * A second pass runs in drop mode (allow_frame_drop, the smallest
@@ -37,6 +38,7 @@
 #include <stdint.h>
 #include <boolean.h>
 #include <retro_spsc.h>
+#include <rthreads/rthreads.h>
 
 #include "../../../record/record_driver.h"
 #include "../../../record/drivers/record_ffmpeg.h"
@@ -70,19 +72,20 @@ extern unsigned stub_log_level;
 /* Frame n: a solid colour derived from n in the top half, the pattern
  * inverted in the bottom half, so a frame's number can be read back
  * from any pixel and a torn frame (rows from two frames) is caught. */
-static void paint(uint32_t *fb, unsigned stride, unsigned n)
+static void paint(uint32_t *fb, ptrdiff_t stride, unsigned n)
 {
    unsigned x, y;
    uint32_t c = 0xff000000u | ((n * 37u) & 0xffu) << 16
               | ((n * 91u) & 0xffu) << 8 | ((n * 13u) & 0xffu);
    for (y = 0; y < H; y++)
+   {
+      uint32_t *row = fb + (ptrdiff_t)y * stride;
       for (x = 0; x < W; x++)
-         fb[y * stride + x] = (y < H / 2) ? c : (c ^ 0x00ffffffu);
+         row[x] = (y < H / 2) ? c : (c ^ 0x00ffffffu);
+   }
 }
 
-/* Odd frames come with a padded pitch, as cores commonly hand them
- * over, so the driver's row-wise pack into its ring is exercised next
- * to the whole-frame copy. */
+/* Exercise both row packing and whole-frame copies in either orientation. */
 #define PAD 24
 
 static int check_frame(const AVFrame *f, unsigned n)
@@ -171,6 +174,141 @@ static unsigned threads_lowered(void)
 }
 #endif
 
+static unsigned fault_mode, fault_writes, fault_closes;
+static bool fault_closed;
+#if LIBAVFORMAT_VERSION_MAJOR >= 61
+static int fail_write(void *opaque, const uint8_t *buf, int size)
+#else
+static int fail_write(void *opaque, uint8_t *buf, int size)
+#endif
+{
+   (void)opaque; (void)buf; (void)size;
+   fault_writes++;
+   return AVERROR(EIO);
+}
+int __real_av_write_trailer(AVFormatContext *ctx);
+int __wrap_av_write_trailer(AVFormatContext *ctx)
+{
+   int result;
+   if (fault_mode == 1)
+      ctx->pb->write_packet = fail_write;
+   result = __real_av_write_trailer(ctx);
+   if (fault_mode == 3)
+      ctx->pb->error = AVERROR(EIO);
+   return result;
+}
+int __real_avio_closep(AVIOContext **ctx);
+int __wrap_avio_closep(AVIOContext **ctx)
+{
+   int result = __real_avio_closep(ctx);
+   if (fault_mode)
+   {
+      fault_closes++;
+      fault_closed = *ctx == NULL;
+   }
+   return fault_mode == 2 ? AVERROR(EIO) : result;
+}
+
+static unsigned planar_channels, planar_samples;
+static bool planar_mismatch, planar_signal_seen;
+int __real_avcodec_send_frame(AVCodecContext *ctx, const AVFrame *frame);
+int __wrap_avcodec_send_frame(AVCodecContext *ctx, const AVFrame *frame)
+{
+   if (planar_channels && frame && ctx->codec_type == AVMEDIA_TYPE_AUDIO)
+   {
+      unsigned ch, i;
+#if LIBAVUTIL_VERSION_MAJOR >= 57
+      unsigned channels = frame->ch_layout.nb_channels;
+#else
+      unsigned channels = frame->channels;
+#endif
+      if (frame->format != AV_SAMPLE_FMT_FLTP || channels != planar_channels)
+         planar_mismatch = true;
+      else for (ch = 0; ch < planar_channels; ch++)
+      {
+         const float *plane = (const float*)frame->extended_data[ch];
+         if (!plane) { planar_mismatch = true; break; }
+         if (ch == 0 && frame->nb_samples > 0
+               && plane[frame->nb_samples - 1] > 1.0f / 128.0f)
+            planar_signal_seen = true;
+         for (i = 0; i < (unsigned)frame->nb_samples; i++)
+         {
+            float expected = ((const float*)frame->extended_data[0])[i] * (ch + 1);
+            float difference = plane[i] - expected;
+            if (difference < -0.00001f || difference > 0.00001f)
+               planar_mismatch = true;
+         }
+      }
+      planar_samples += frame->nb_samples;
+   }
+   if (!fault_writes
+         && ((frame && fault_mode == 4 && ctx->codec_type == AVMEDIA_TYPE_VIDEO)
+            || (frame && fault_mode == 6 && ctx->codec_type == AVMEDIA_TYPE_AUDIO)
+            || (!frame && fault_mode == 10 && ctx->codec_type == AVMEDIA_TYPE_VIDEO)
+            || (!frame && fault_mode == 11 && ctx->codec_type == AVMEDIA_TYPE_AUDIO)))
+   {
+      fault_writes++;
+      return AVERROR(ENOMEM);
+   }
+   return __real_avcodec_send_frame(ctx, frame);
+}
+int __real_avcodec_receive_packet(AVCodecContext *ctx, AVPacket *pkt);
+int __wrap_avcodec_receive_packet(AVCodecContext *ctx, AVPacket *pkt)
+{
+   if (!fault_writes
+         && ((fault_mode == 8 && ctx->codec_type == AVMEDIA_TYPE_VIDEO)
+            || (fault_mode == 9 && ctx->codec_type == AVMEDIA_TYPE_AUDIO)))
+   {
+      fault_writes++;
+      return AVERROR(ENOMEM);
+   }
+   return __real_avcodec_receive_packet(ctx, pkt);
+}
+int __real_av_interleaved_write_frame(AVFormatContext *ctx, AVPacket *pkt);
+int __wrap_av_interleaved_write_frame(AVFormatContext *ctx, AVPacket *pkt)
+{
+   if (pkt && !fault_writes
+         && ((fault_mode == 5 && ctx->streams[pkt->stream_index]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
+            || (fault_mode == 7 && ctx->streams[pkt->stream_index]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)))
+   {
+      fault_writes++;
+      return AVERROR(EIO);
+   }
+   return __real_av_interleaved_write_frame(ctx, pkt);
+}
+
+static bool drain_oom_requested, drain_oom_armed;
+static uintptr_t producer_thread_id;
+void __real_sthread_join(sthread_t *thread);
+void __wrap_sthread_join(sthread_t *thread)
+{
+   __real_sthread_join(thread);
+   if (drain_oom_requested)
+   {
+      drain_oom_requested = false;
+      drain_oom_armed = true;
+   }
+}
+void *__real_av_malloc(size_t size);
+void *__wrap_av_malloc(size_t size)
+{
+   size_t video_size = 2 * W * H * sizeof(uint32_t);
+   if ((drain_oom_armed
+            && ((fault_mode == 12 && size != video_size)
+               || (fault_mode == 13 && size == video_size)))
+         || (fault_mode >= 14
+            && sthread_get_current_thread_id() != producer_thread_id
+            && !fault_writes
+            && ((fault_mode == 14 && size != video_size)
+               || (fault_mode == 15 && size == video_size))))
+   {
+      drain_oom_armed = false;
+      fault_writes++;
+      return NULL;
+   }
+   return __real_av_malloc(size);
+}
+
 static int run(bool drop)
 {
    struct record_params params;
@@ -181,6 +319,8 @@ static int run(bool drop)
    int16_t   pcm[800 * 2];
    void     *rec;
    unsigned  n;
+   bool finalized;
+   bool producer_failed = false;
 
    memset(&params, 0, sizeof(params));
    params.fps                        = FPS;
@@ -221,22 +361,28 @@ static int run(bool drop)
    memset(pcm, 0, sizeof(pcm));
    for (n = 0; n < FRAMES; n++)
    {
-      if (n & 1)
       {
-         paint(fbp, W + PAD, n);
-         vid.data  = fbp;
-         vid.pitch = (W + PAD) * sizeof(uint32_t);
-      }
-      else
-      {
-         paint(fb, W, n);
-         vid.data  = fb;
-         vid.pitch = W * sizeof(uint32_t);
+         unsigned stride = (n & 1) ? W + PAD : W;
+         uint32_t *pixels = (n & 1) ? fbp : fb;
+         ptrdiff_t step = (ptrdiff_t)stride;
+         if (n & 2)
+         {
+            pixels += (H - 1) * stride;
+            step = -step;
+         }
+         paint(pixels, step, n);
+         vid.data = pixels;
+         vid.pitch = (int)(step * (ptrdiff_t)sizeof(uint32_t));
       }
       vid.dims    = VIDEO_SCALE_PACK(W, H);
       vid.is_dupe = false;
       if (!record_ffmpeg.push_video(rec, &vid))
       {
+         if (fault_mode >= 14)
+         {
+            producer_failed = true;
+            break;
+         }
          fprintf(stderr, "push_video %u failed\n", n);
          return 1;
       }
@@ -244,6 +390,11 @@ static int run(bool drop)
       aud.frames = 800;
       if (!record_ffmpeg.push_audio(rec, &aud))
       {
+         if (fault_mode >= 14)
+         {
+            producer_failed = true;
+            break;
+         }
          fprintf(stderr, "push_audio %u failed\n", n);
          return 1;
       }
@@ -254,10 +405,30 @@ static int run(bool drop)
             " while recording\n", stub_warn_calls, stub_msg_calls);
       return 1;
    }
-   record_ffmpeg.finalize(rec);
+   drain_oom_requested = fault_mode == 12 || fault_mode == 13;
+   finalized = record_ffmpeg.finalize(rec);
    record_ffmpeg.free(rec);
    free(fb);
    free(fbp);
+   if (fault_mode)
+   {
+      remove(OUT);
+      if (finalized || fault_closes != 1 || !fault_closed
+            || (fault_mode >= 14 && !producer_failed)
+            || ((fault_mode == 1 || fault_mode >= 4) && !fault_writes))
+      {
+         fprintf(stderr, "finalize fault %u: success=%d writes=%u closes=%u\n",
+               fault_mode, finalized, fault_writes, fault_closes);
+         return 1;
+      }
+      printf("[pass] finalize fault %u reported failure and closed output\n", fault_mode);
+      return 0;
+   }
+   if (!finalized)
+   {
+      fprintf(stderr, "finalize failed\n");
+      return 1;
+   }
 
    /* Decode it back. */
    {
@@ -472,9 +643,85 @@ bool __wrap_retro_spsc_init_mirrored(retro_spsc_t *q, size_t min_capacity)
 }
 #endif
 
+static int planar_recording(unsigned channels)
+{
+   struct record_params params = {0};
+   struct record_audio_data aud;
+   struct record_video_data vid;
+   int16_t *pcm = (int16_t*)malloc(800 * channels * sizeof(int16_t));
+   uint32_t *pixels = (uint32_t*)calloc(W * H, sizeof(uint32_t));
+   void *rec;
+   unsigned i, ch, n;
+   bool ok = true;
+   if (!pixels || !pcm) { free(pixels); free(pcm); return 1; }
+   params.fps = FPS;
+   params.samplerate = RATE;
+   params.filename = OUT;
+   params.audio_resampler = "sinc";
+   params.out_dims = params.fb_dims = VIDEO_SCALE_PACK(W, H);
+   params.channels = channels;
+   params.video_record_scale_factor = params.video_stream_scale_factor = 1;
+   params.video_record_threads = 1;
+   params.video_fifo_frames = 8;
+   params.aspect_ratio = (float)W / H;
+   params.preset = RECORD_CONFIG_TYPE_RECORDING_MED_QUALITY;
+   params.pix_fmt = FFEMU_PIX_ARGB8888;
+   planar_channels = channels;
+   planar_samples = 0;
+   planar_mismatch = planar_signal_seen = false;
+   rec = record_ffmpeg.init(&params);
+   if (!rec) { free(pixels); free(pcm); planar_channels = 0; return 1; }
+   for (i = 0; i < 800; i++)
+      for (ch = 0; ch < channels; ch++)
+         pcm[i * channels + ch] = (int16_t)((ch + 1) * 512);
+   aud.data = pcm; aud.frames = 800;
+   vid.data = pixels; vid.pitch = W * sizeof(uint32_t);
+   vid.dims = VIDEO_SCALE_PACK(W, H); vid.is_dupe = false;
+   for (n = 0; n < 20; n++)
+      if (!record_ffmpeg.push_video(rec, &vid) || !record_ffmpeg.push_audio(rec, &aud))
+      { ok = false; break; }
+   if (!record_ffmpeg.finalize(rec)) ok = false;
+   record_ffmpeg.free(rec);
+   if (planar_mismatch || !planar_signal_seen || (planar_samples < 15999 || planar_samples > 16001)) ok = false;
+   planar_channels = 0;
+   free(pixels);
+   free(pcm);
+   remove(OUT);
+   if (!ok)
+   {
+      fprintf(stderr, "AAC planar recording: channels=%u samples=%u mismatch=%d\n", channels, planar_samples, planar_mismatch);
+      return 1;
+   }
+   printf("[pass] AAC recording input: %u channels, %u samples per channel, correct planar proportions\n", channels, planar_samples);
+   return 0;
+}
+
+int record_finalize_test_run(void);
+int record_audio_growth_test_run(void);
+int record_video_stride_test_run(void);
+
 int main(void)
 {
+   producer_thread_id = sthread_get_current_thread_id();
+   if (record_video_stride_test_run() || record_audio_growth_test_run()
+         || record_finalize_test_run())
+      return 1;
    if (geometry() || open_only() || run(false) || run(true))
+      return 1;
+   for (fault_mode = 1; fault_mode <= 15; fault_mode++)
+   {
+#ifndef PLAIN_RING
+      if (fault_mode == 13 || fault_mode == 15)
+         continue;
+#endif
+      fault_writes = fault_closes = 0;
+      fault_closed = false;
+      if (run(false))
+         return 1;
+   }
+   fault_mode = 0;
+   if (planar_recording(1) || planar_recording(2)
+         || planar_recording(3) || planar_recording(6))
       return 1;
    printf("ALL OK\n");
    return 0;

@@ -10,12 +10,13 @@ SOURCES := \
 	task_queue_detach_test.c \
 	$(LIBRETRO_COMM_DIR)/queues/task_queue.c \
 	$(LIBRETRO_COMM_DIR)/rthreads/rthreads.c \
+	$(LIBRETRO_COMM_DIR)/compat/compat_strl.c \
 	$(LIBRETRO_COMM_DIR)/features/features_cpu.c \
 	$(LIBRETRO_COMM_DIR)/time/rtime.c
 
 OBJS := $(call sample_objs,$(SOURCES:.c=.o))
 
-CFLAGS  += -Wall -pedantic -std=gnu99 -g -O1 -fno-omit-frame-pointer \
+CFLAGS  += -Wall -pedantic -std=gnu99 -g1 -O1 -fno-omit-frame-pointer \
            -DHAVE_THREADS -I$(LIBRETRO_COMM_DIR)/include
 
 LIBS    += -lpthread

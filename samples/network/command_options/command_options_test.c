@@ -36,11 +36,44 @@ static char reply[1024];
 
 settings_t *config_get_ptr(void) { return &settings; }
 input_driver_state_t *input_state_get_ptr(void) { return &input_st; }
+void input_driver_command_hold(unsigned port, unsigned control,
+      int16_t value)
+{
+   if (control >= 16)
+      input_st.cmd_analog[port][control - 16] = value;
+   else if (value)
+      input_st.cmd_buttons[port] |=  (uint16_t)(1u << control);
+   else
+      input_st.cmd_buttons[port] &= ~(uint16_t)(1u << control);
+   input_st.cmd_input = input_st.cmd_buttons[port]
+      || input_st.cmd_analog[port][0] || input_st.cmd_analog[port][1]
+      || input_st.cmd_analog[port][2] || input_st.cmd_analog[port][3];
+}
+void input_driver_command_release(unsigned port)
+{
+   if (port < MAX_USERS)
+   {
+      input_st.cmd_buttons[port] = 0;
+      memset(input_st.cmd_analog[port], 0, sizeof(input_st.cmd_analog[port]));
+   }
+   else
+   {
+      memset(input_st.cmd_buttons, 0, sizeof(input_st.cmd_buttons));
+      memset(input_st.cmd_analog,  0, sizeof(input_st.cmd_analog));
+   }
+   input_st.cmd_input = false;
+}
+uint16_t input_driver_command_held(unsigned port, int16_t *analog)
+{
+   memcpy(analog, input_st.cmd_analog[port], 4 * sizeof(*analog));
+   return input_st.cmd_buttons[port];
+}
 audio_driver_state_t *audio_state_get_ptr(void) { return &audio_st; }
 video_driver_state_t *video_state_get_ptr(void) { return &video_st; }
 recording_state_t *recording_state_get_ptr(void) { return &rec_st; }
 bool rcheevos_hardcore_active(void) { return hardcore; }
 bool input_driver_mouse_grabbed(void) { return false; }
+unsigned input_driver_command_generation(void) { return 0; }
 bool input_driver_game_focus_enabled(void) { return false; }
 uint64_t video_driver_get_frame_count(void) { return 0; }
 bool core_info_get_current_core(core_info_t **core)
@@ -316,6 +349,64 @@ int main(void)
                "8000\t400000\tff8000\t7f0000\tother\tnone\tbig\t\n"));
       runloop_st->system.mmaps.num_descriptors = 0;
    }
+
+   cmd.error = false;
+   runloop_st->flags = 0;
+   CHECK(!command_run_frames(&cmd, "3"));
+   CHECK(cmd.error && strstr(reply, "no content"));
+   runloop_st->flags = RUNLOOP_FLAG_CORE_RUNNING;
+   CHECK(!command_run_frames(&cmd, "0"));
+   cmd.error = false;
+   reply[0] = '\0';
+   CHECK(command_run_frames(&cmd, "3"));
+   CHECK(!reply[0] && (runloop_st->frame_work & RUNLOOP_WORK_RUN_FRAMES));
+   command_run_frames_tick();
+   command_run_frames_tick();
+   CHECK(!reply[0]);
+   command_run_frames_tick();
+   CHECK(!strcmp(reply, "RUN_FRAMES 3\n") && !cmd.error);
+   CHECK(!(runloop_st->frame_work & RUNLOOP_WORK_RUN_FRAMES));
+   CHECK(command_run_frames(&cmd, "5"));
+   command_run_frames_tick();
+   CHECK(command_run_frames(&cmd, "2"));
+   CHECK(strstr(reply, "RUN_FRAMES ERROR replaced"));
+   cmd.error = false;
+   command_run_frames_tick();
+   command_run_frames_tick();
+   CHECK(!strcmp(reply, "RUN_FRAMES 2\n") && !cmd.error);
+   CHECK(command_run_frames(&cmd, "4"));
+   command_run_frames_cancel("the content was closed");
+   CHECK(cmd.error && strstr(reply, "content was closed"));
+   CHECK(!(runloop_st->frame_work & RUNLOOP_WORK_RUN_FRAMES));
+   runloop_st->flags = 0;
+
+   cmd.error = false;
+   CHECK(command_set_input(&cmd, "2 a 1"));
+   CHECK(!strcmp(reply, "2\ta\tnone\n"));
+   CHECK(input_st.cmd_input && input_st.cmd_buttons[1] == (1u << 8));
+   CHECK(command_set_input(&cmd, "2 right 1"));
+   CHECK(command_set_input(&cmd, "2 left_x -32768"));
+   CHECK(!strcmp(reply, "2\tright a\tleft_x=-32768\n"));
+   CHECK(command_set_input(&cmd, "2 a 0"));
+   CHECK(!strcmp(reply, "2\tright\tleft_x=-32768\n"));
+   CHECK(!command_set_input(&cmd, "2 a 2"));
+   CHECK(cmd.error && strstr(reply, "a takes 1"));
+   cmd.error = false;
+   CHECK(!command_set_input(&cmd, "2 left_x 40000"));
+   CHECK(!command_set_input(&cmd, "2 turbo 1"));
+   CHECK(!command_set_input(&cmd, "0 a 1"));
+   cmd.error = false;
+   CHECK(command_release_input(&cmd, "2"));
+   CHECK(!strcmp(reply, "2\tnone\tnone\n"));
+   CHECK(!input_st.cmd_input && !input_st.cmd_buttons[1]
+         && !input_st.cmd_analog[1][0]);
+   CHECK(command_set_input(&cmd, "1 start 1"));
+   CHECK(command_release_input(&cmd, ""));
+   CHECK(!input_st.cmd_input);
+   hardcore = true;
+   CHECK(!command_set_input(&cmd, "1 start 1"));
+   CHECK(cmd.error && !input_st.cmd_input);
+   hardcore = false;
 
    printf("command_options: %s\n", failures ? "FAIL" : "PASS");
    return failures ? 1 : 0;

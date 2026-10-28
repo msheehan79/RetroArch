@@ -139,6 +139,12 @@ void vulkan_filter_chain_notify_sync_index(vulkan_filter_chain_t *chain,
 
 bool vulkan_filter_chain_init(vulkan_filter_chain_t *chain);
 
+void vulkan_filter_chain_set_passthrough(
+      vulkan_filter_chain_t *chain, unsigned passthrough);
+
+void vulkan_filter_chain_set_source_hdr(
+      vulkan_filter_chain_t *chain, unsigned source_hdr);
+
 void vulkan_filter_chain_set_input_texture(vulkan_filter_chain_t *chain,
       const struct vulkan_filter_chain_texture *texture);
 
@@ -192,6 +198,9 @@ void vulkan_filter_chain_set_core_aspect_rot(vulkan_filter_chain_t *chain,
 #ifdef VULKAN_HDR_SWAPCHAIN
 void vulkan_filter_chain_set_hdr_mode(vulkan_filter_chain_t *chain,
       unsigned hdr_mode);
+
+void vulkan_filter_chain_set_peak_nits(vulkan_filter_chain_t *chain,
+      float peak_nits);
 
 void vulkan_filter_chain_set_paper_white_nits(vulkan_filter_chain_t *chain,
       float paper_white_nits);
@@ -248,16 +257,26 @@ bool vulkan_filter_chain_emits_hdr16(vulkan_filter_chain_t *chain);
 
 /* ---- Deferred (per-frame) filter chain construction ---- */
 
+/* The scheduled count may include a copy step pruned after reflection. */
 vulkan_filter_chain_t *vulkan_filter_chain_create_deferred(
       const struct vulkan_filter_chain_create_info *info,
       const char *path,
       enum glslang_filter_chain_filter filter,
       unsigned *out_num_passes);
 
-bool vulkan_filter_chain_compile_pass(
+/* Pass @pass_index compiled and readied for its pipeline, in pass
+ * order, on one thread at a time. */
+bool vulkan_filter_chain_prepare_pass(
       vulkan_filter_chain_t *chain,
       unsigned pass_index,
       enum glslang_filter_chain_filter filter);
+
+/* The prepared pass's modules and pipeline, on any thread, beside the
+ * preparation of later passes and the pipelines of others; every one
+ * is in before vulkan_filter_chain_finalize(). */
+bool vulkan_filter_chain_build_pipeline(
+      vulkan_filter_chain_t *chain,
+      unsigned pass_index);
 
 bool vulkan_filter_chain_finalize(vulkan_filter_chain_t *chain);
 

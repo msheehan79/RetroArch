@@ -11,9 +11,10 @@ SOURCES := \
 	retro_eventcount_test.c \
 	$(LIBRETRO_COMM_DIR)/rthreads/retro_eventcount.c \
 	$(LIBRETRO_COMM_DIR)/rthreads/rthreads.c \
+	$(LIBRETRO_COMM_DIR)/compat/compat_strl.c \
 	$(LIBRETRO_COMM_DIR)/features/features_cpu.c
 
-CFLAGS  += -Wall -W -std=gnu99 -g -O1 \
+CFLAGS  += -Wall -W -std=gnu99 -g1 -O1 \
            -DHAVE_THREADS -I$(LIBRETRO_COMM_DIR)/include
 LDFLAGS += -lpthread
 # rthreads.c uses clock_gettime + CLOCK_REALTIME on Linux glibc; on
@@ -109,7 +110,11 @@ $(SAMPLE_OBJDIR)/%.o: $$(call sample_src,$$*).c
 $(TARGET): $(OBJS)
 	$(CC) -o $@ $^ $(LDFLAGS)
 
-check: all
+deadline_test: deadline_test.c $(LIBRETRO_COMM_DIR)/rthreads/retro_eventcount.c
+	$(CC) $(CFLAGS) -o $@ deadline_test.c $(filter-out retro_eventcount_test.c $(LIBRETRO_COMM_DIR)/rthreads/retro_eventcount.c,$(SOURCES)) $(LDFLAGS)
+
+check: all deadline_test
+	./deadline_test
 	./$(TARGET)
 	@$(MAKE) -s clean
 	@$(MAKE) -s SCOND=1 $(if $(SANITIZER),SANITIZER=$(SANITIZER))
@@ -134,5 +139,6 @@ clean:
 	      retro_eventcount_test_scond retro_eventcount_test_sem \
 	      retro_eventcount_test_sempool retro_eventcount_test_switch \
 	      retro_eventcount_test_ctr
+	rm -f deadline_test deadline_test.exe
 
 .PHONY: all check clean

@@ -36,23 +36,36 @@ typedef char openxr_seq_fits[
        && OPENXR_WORDS(openxr_projection_t) <= OPENXR_WORDS(video_xr_quad_set_t))
       ? 1 : -1];
 
-/* One writer stamps odd, stores the words, stamps even; a reader that
- * sees the stamp move across its copy starts over. */
+/* A latched seqlock: two copies of the words, one writer, any number
+ * of readers. The writer stamps odd and stores copy 0, stamps even and
+ * stores copy 1; a reader reads the copy the stamp says is not being
+ * stored - copy 1 while it is odd, copy 0 while it is even - so a
+ * writer stopped part way through holds no reader up. A reader starts
+ * over only when the writer has got through a whole copy during its
+ * read, which is the writer going on, never waiting for it. */
+static void openxr_seq_store(retro_atomic_int_t *words,
+      const int *tmp, size_t n)
+{
+   size_t i;
+   for (i = 0; i < n; i++)
+      retro_atomic_store_relaxed_int(&words[i], tmp[i]);
+}
+
 static void openxr_seq_publish(retro_atomic_int_t *seq,
       retro_atomic_int_t *words, const void *src, size_t len)
 {
    int tmp[OPENXR_WORDS(video_xr_quad_set_t)];
    size_t n = (len + sizeof(int) - 1) / sizeof(int);
-   size_t i;
    int s    = retro_atomic_load_relaxed_int(seq);
 
    tmp[n - 1] = 0;
    memcpy(tmp, src, len);
-   retro_atomic_store_release_int(seq, s + 1);
+   retro_atomic_store_release_int(seq, (int)((unsigned)s + 1u));
    retro_atomic_thread_fence_release();
-   for (i = 0; i < n; i++)
-      retro_atomic_store_relaxed_int(&words[i], tmp[i]);
-   retro_atomic_store_release_int(seq, s + 2);
+   openxr_seq_store(words, tmp, n);
+   retro_atomic_store_release_int(seq, (int)((unsigned)s + 2u));
+   retro_atomic_thread_fence_release();
+   openxr_seq_store(words + n, tmp, n);
 }
 
 static void openxr_seq_read(retro_atomic_int_t *seq,
@@ -63,14 +76,11 @@ static void openxr_seq_read(retro_atomic_int_t *seq,
    for (;;)
    {
       size_t i;
-      int s1 = retro_atomic_load_acquire_int(seq);
-      if (s1 & 1)
-      {
-         retro_cpu_relax();
-         continue;
-      }
+      int s1                         = retro_atomic_load_acquire_int(seq);
+      const retro_atomic_int_t *copy = words + ((s1 & 1) ? n : 0);
       for (i = 0; i < n; i++)
-         tmp[i] = retro_atomic_load_relaxed_int(&words[i]);
+         tmp[i] = retro_atomic_load_relaxed_int(
+               (retro_atomic_int_t*)&copy[i]);
       retro_atomic_thread_fence_acquire();
       if (retro_atomic_load_relaxed_int(seq) == s1)
          break;
@@ -106,16 +116,17 @@ static void openxr_frame_measure(openxr_frame_t *f, XrTime time)
    XrViewState vs;
    XrView views[2];
 
-   memset(&li, 0, sizeof(li));
    li.type                  = XR_TYPE_VIEW_LOCATE_INFO;
+   li.next                  = NULL;
    li.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
    li.displayTime           = time;
    li.space                 = f->session->local_space;
-   memset(&vs, 0, sizeof(vs));
-   vs.type                  = XR_TYPE_VIEW_STATE;
-   memset(views, 0, sizeof(views));
+   vs.type = XR_TYPE_VIEW_STATE;
+   vs.next = NULL;
    views[0].type            = XR_TYPE_VIEW;
+   views[0].next            = NULL;
    views[1].type            = XR_TYPE_VIEW;
+   views[1].next            = NULL;
    if (     XR_FAILED(f->session->LocateViews(f->session->session, &li,
                   &vs, 2, &n, views))
          || !n)
@@ -142,7 +153,23 @@ static void openxr_frame_error(openxr_frame_t *f,
       openxr_session_end(f->session, res == XR_ERROR_INSTANCE_LOST);
 }
 
-/* The published quads whose slot has released an image. The caller
+/* The swapchains slot shows and their size and layer count: its own
+ * once released, else those a resize replaced; NULL for none. */
+static const XrSwapchain *openxr_frame_chains(openxr_slot_t *slot,
+      unsigned *dims, unsigned *layers)
+{
+   if (retro_atomic_load_acquire_int(&slot->content))
+   {
+      *dims   = slot->dims;
+      *layers = slot->layers;
+      return slot->swapchains[0] ? slot->swapchains : NULL;
+   }
+   *dims   = slot->old_dims;
+   *layers = (unsigned)retro_atomic_load_acquire_int(&slot->old_layers);
+   return (*layers && slot->old[0]) ? slot->old : NULL;
+}
+
+/* The published quads whose slot shows an image. The caller
  * holds the graphics lock, so no slot changes under it. */
 static unsigned openxr_frame_layers(openxr_frame_t *f,
       XrCompositionLayerQuad *layers,
@@ -156,15 +183,20 @@ static unsigned openxr_frame_layers(openxr_frame_t *f,
    for (i = 0; i < quads.num_quads; i++)
    {
       video_xr_pose_t pose;
+      unsigned dims, count;
+      const XrSwapchain *chains;
       const video_xr_quad_t *q        = &quads.quads[i];
       openxr_slot_t *slot             = &f->sc->slots[q->slot];
       XrCompositionLayerQuad *l       = &layers[n];
-      if (     !slot->swapchains[0] || q->layer >= slot->layers
-            || !retro_atomic_load_acquire_int(&slot->content))
+      if (     !(chains = openxr_frame_chains(slot, &dims, &count))
+            || q->layer >= count)
          continue;
       video_xr_compose(&f->screens.pose, &q->pose, &pose);
-      memset(l, 0, sizeof(*l));
-      l->type          = XR_TYPE_COMPOSITION_LAYER_QUAD;
+      l->type                        = XR_TYPE_COMPOSITION_LAYER_QUAD;
+      l->next                        = NULL;
+      l->subImage.imageRect.offset.x = 0;
+      l->subImage.imageRect.offset.y = 0;
+      l->subImage.imageArrayIndex    = 0;
       /* The UI is drawn over transparent black: premultiplied. */
       l->layerFlags    = (q->kind == VIDEO_XR_QUAD_MENU)
          ? XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT : 0;
@@ -174,9 +206,9 @@ static unsigned openxr_frame_layers(openxr_frame_t *f,
          ? XR_EYE_VISIBILITY_LEFT
          : ((q->eye == VIDEO_XR_EYE_RIGHT)
                ? XR_EYE_VISIBILITY_RIGHT : XR_EYE_VISIBILITY_BOTH);
-      l->subImage.swapchain               = slot->swapchains[q->layer];
-      l->subImage.imageRect.extent.width  = (int32_t)VIDEO_SCALE_W(slot->dims);
-      l->subImage.imageRect.extent.height = (int32_t)VIDEO_SCALE_H(slot->dims);
+      l->subImage.swapchain               = chains[q->layer];
+      l->subImage.imageRect.extent.width  = (int32_t)VIDEO_SCALE_W(dims);
+      l->subImage.imageRect.extent.height = (int32_t)VIDEO_SCALE_H(dims);
       l->pose.orientation.x = pose.orientation.x;
       l->pose.orientation.y = pose.orientation.y;
       l->pose.orientation.z = pose.orientation.z;
@@ -199,35 +231,43 @@ static bool openxr_frame_projection(openxr_frame_t *f,
       XrCompositionLayerProjectionView *views)
 {
    unsigned eye, w, h;
+   unsigned dims             = 0;
+   unsigned count            = 0;
+   const XrSwapchain *chains = NULL;
    openxr_projection_t p;
-   openxr_slot_t *slot = &f->sc->slots[OPENXR_PROJECTION_SLOT];
+   openxr_slot_t *slot       = &f->sc->slots[OPENXR_PROJECTION_SLOT];
    openxr_seq_read(&f->proj_seq, f->proj_words, &p, sizeof(p));
-   if (     !p.active || !slot->swapchains[0] || slot->layers < 2
+   if (     !p.active
+         || !(chains = openxr_frame_chains(slot, &dims, &count))
+         || count < 2
          || !f->session->track_space
          || p.track_seq != retro_atomic_load_acquire_int(
-               &f->session->track_seq)
-         || !retro_atomic_load_acquire_int(&slot->content))
+               &f->session->track_seq))
       return false;
-   w = MIN(p.width,  VIDEO_SCALE_W(slot->dims));
-   h = MIN(p.height, VIDEO_SCALE_H(slot->dims));
+   w = MIN(p.width,  VIDEO_SCALE_W(dims));
+   h = MIN(p.height, VIDEO_SCALE_H(dims));
    if (!w || !h)
       return false;
    for (eye = 0; eye < 2; eye++)
    {
-      memset(&views[eye], 0, sizeof(views[eye]));
       views[eye].type                             =
          XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;
+      views[eye].next                             = NULL;
+      views[eye].subImage.imageRect.offset.x      = 0;
+      views[eye].subImage.imageRect.offset.y      = 0;
+      views[eye].subImage.imageArrayIndex         = 0;
       views[eye].pose                             = p.pose[eye];
       views[eye].fov                              = p.fov[eye];
-      views[eye].subImage.swapchain               = slot->swapchains[eye];
+      views[eye].subImage.swapchain               = chains[eye];
       views[eye].subImage.imageRect.extent.width  = (int32_t)w;
       views[eye].subImage.imageRect.extent.height = (int32_t)h;
    }
-   memset(layer, 0, sizeof(*layer));
-   layer->type      = XR_TYPE_COMPOSITION_LAYER_PROJECTION;
-   layer->space     = f->session->track_space;
-   layer->viewCount = 2;
-   layer->views     = views;
+   layer->type       = XR_TYPE_COMPOSITION_LAYER_PROJECTION;
+   layer->next       = NULL;
+   layer->layerFlags = 0;
+   layer->space      = f->session->track_space;
+   layer->viewCount  = 2;
+   layer->views      = views;
    return true;
 }
 
@@ -239,8 +279,8 @@ static bool openxr_frame_head(openxr_frame_t *f, XrTime time,
    XrSpaceLocationFlags valid = XR_SPACE_LOCATION_ORIENTATION_VALID_BIT
       | XR_SPACE_LOCATION_POSITION_VALID_BIT;
 
-   memset(&loc, 0, sizeof(loc));
    loc.type = XR_TYPE_SPACE_LOCATION;
+   loc.next = NULL;
    if (     XR_FAILED(f->session->LocateSpace(f->session->view_space,
                f->session->local_space, time, &loc))
          || (loc.locationFlags & valid) != valid)
@@ -368,19 +408,90 @@ static void openxr_frame_tick(openxr_frame_t *f)
    openxr_frame_tick_notify(f);
 }
 
-/* The rate the drawing thread wants, asked once a session and value. */
+/* Performance Boost on: CPU boost, GPU sustained high. Off: both at
+ * sustained high, the level a runtime holds when never asked. */
+static void openxr_frame_ask_perf(openxr_frame_t *f)
+{
+   XrResult cpu = XR_SUCCESS, gpu = XR_SUCCESS;
+   retro_time_t now;
+   int want = video_xr_perf_boost() ? 1 : 0;
+   bool changed = want != f->asked_perf;
+   if (     !f->rt->perf_settings
+         || !f->rt->PerfSettingsSetPerformanceLevelEXT)
+      return;
+   if (!want && f->asked_perf < 0)
+   {
+      f->asked_perf = 0;
+      f->perf_applied = 3;
+      return;
+   }
+   if (changed)
+   {
+      f->perf_applied = 0;
+      f->perf_retry_usec = 0;
+   }
+   if (f->perf_applied == 3)
+      return;
+   now = cpu_features_get_time_usec();
+   if (now < f->perf_retry_usec)
+      return;
+   f->asked_perf = want;
+   if (!(f->perf_applied & 1))
+   {
+      cpu = f->rt->PerfSettingsSetPerformanceLevelEXT(f->session->session,
+         XR_PERF_SETTINGS_DOMAIN_CPU_EXT, want
+         ? XR_PERF_SETTINGS_LEVEL_BOOST_EXT
+         : XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT);
+      if (XR_SUCCEEDED(cpu))
+         f->perf_applied |= 1;
+   }
+   if (!(f->perf_applied & 2))
+   {
+      gpu = f->rt->PerfSettingsSetPerformanceLevelEXT(f->session->session,
+         XR_PERF_SETTINGS_DOMAIN_GPU_EXT,
+         XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT);
+      if (XR_SUCCEEDED(gpu))
+         f->perf_applied |= 2;
+   }
+   f->perf_retry_usec = now + 1000000;
+   if (f->perf_applied == 3)
+      RARCH_LOG("[OpenXR] Performance: %s.\n", want
+            ? "CPU boost, GPU sustained high"
+            : "CPU and GPU sustained high");
+   else if (changed)
+      RARCH_WARN("[OpenXR] Performance levels refused (CPU %d, GPU %d).\n",
+            (int)cpu, (int)gpu);
+}
+
+/* The rate the drawing thread wants, retained after runtime acceptance. */
 static void openxr_frame_ask_rate(openxr_frame_t *f)
 {
    XrResult res;
+   retro_time_t now;
    float hz;
+   bool changed;
    int bits = retro_atomic_load_acquire_int(&f->want_rate);
    memcpy(&hz, &bits, sizeof(hz));
-   if (!f->rt->refresh_ext || hz <= 0.0f || hz == f->asked_rate)
+   if (!f->rt->refresh_ext || !f->rt->RequestDisplayRefreshRateFB)
       return;
-   f->asked_rate = hz;
+   changed = hz != f->requested_rate;
+   if (changed)
+   {
+      f->requested_rate = hz;
+      f->rate_retry_usec = 0;
+   }
+   if (hz <= 0.0f || hz == f->asked_rate)
+      return;
+   now = cpu_features_get_time_usec();
+   if (now < f->rate_retry_usec)
+      return;
    res           = f->rt->RequestDisplayRefreshRateFB(f->session->session, hz);
-   RARCH_LOG("[OpenXR] Asked the headset for %.2f Hz (%d).\n", hz,
-         (int)res);
+   if (XR_SUCCEEDED(res))
+      f->asked_rate = hz;
+   f->rate_retry_usec = now + 1000000;
+   if (changed || XR_SUCCEEDED(res))
+      RARCH_LOG("[OpenXR] Asked the headset for %.2f Hz (%d).\n", hz,
+            (int)res);
 }
 
 /* xrWaitFrame and what every headset frame keeps, then xrBeginFrame
@@ -395,10 +506,10 @@ static bool openxr_frame_wait_begin(openxr_frame_t *f,
    XrFrameBeginInfo begin_info;
 
    memset(b, 0, sizeof(*b));
-   memset(&wait_info, 0, sizeof(wait_info));
    wait_info.type = XR_TYPE_FRAME_WAIT_INFO;
-   memset(&state, 0, sizeof(state));
-   state.type     = XR_TYPE_FRAME_STATE;
+   wait_info.next = NULL;
+   state.type = XR_TYPE_FRAME_STATE;
+   state.next = NULL;
    if (XR_FAILED(res = f->WaitFrame(f->session->session, &wait_info, &state)))
    {
       openxr_frame_error(f, "xrWaitFrame", res);
@@ -420,6 +531,7 @@ static bool openxr_frame_wait_begin(openxr_frame_t *f,
             1000000000.0 / (double)f->period.published);
    }
    openxr_frame_ask_rate(f);
+   openxr_frame_ask_perf(f);
    f->tracked.predicted_time = state.predictedDisplayTime;
    /* The world moves at the next core frame, so the screens wait too. */
    if (!f->repeating && retro_atomic_load_acquire_int(&f->recenter))
@@ -439,8 +551,8 @@ static bool openxr_frame_wait_begin(openxr_frame_t *f,
    if (!f->inline_host)
       openxr_frame_tick(f);
 
-   memset(&begin_info, 0, sizeof(begin_info));
    begin_info.type = XR_TYPE_FRAME_BEGIN_INFO;
+   begin_info.next = NULL;
    openxr_session_lock(f->session);
    if (XR_FAILED(res = f->BeginFrame(f->session->session, &begin_info)))
    {
@@ -466,12 +578,14 @@ static uint32_t openxr_frame_fit(const openxr_frame_t *f,
       const XrCompositionLayerBaseHeader **ptrs, uint32_t count,
       uint32_t first, uint32_t end)
 {
-   XrSwapchain menu = f->sc->slots[VIDEO_XR_MENU_SLOT].swapchains[0];
+   XrSwapchain menu     = f->sc->slots[VIDEO_XR_MENU_SLOT].swapchains[0];
+   XrSwapchain menu_old = f->sc->slots[VIDEO_XR_MENU_SLOT].old[0];
    while (count > f->rt->max_layers && end > first)
    {
       const XrCompositionLayerQuad *q =
          (const XrCompositionLayerQuad*)ptrs[--end];
-      if (q->subImage.swapchain == menu)
+      if (     q->subImage.swapchain == menu
+            || q->subImage.swapchain == menu_old)
          continue;
       memmove(&ptrs[end], &ptrs[end + 1],
             (count - end - 1) * sizeof(*ptrs));
@@ -492,8 +606,9 @@ static void openxr_frame_submit(openxr_frame_t *f,
    const XrCompositionLayerBaseHeader *ptrs[1 + VIDEO_XR_MAX_QUADS
       + OPENXR_MAX_EXTRA_LAYERS];
 
-   memset(&end_info, 0, sizeof(end_info));
    end_info.type                 = XR_TYPE_FRAME_END_INFO;
+   end_info.next                 = NULL;
+   end_info.layerCount           = 0;
    end_info.displayTime          = b->display_time;
    end_info.environmentBlendMode = f->rt->blend_mode;
    if (!locked)
@@ -518,6 +633,7 @@ static void openxr_frame_submit(openxr_frame_t *f,
    }
    end_info.layers = end_info.layerCount ? ptrs : NULL;
    res = f->EndFrame(f->session->session, &end_info);
+   openxr_swapchains_drop_old(f->sc);
    openxr_session_unlock(f->session);
    if (XR_FAILED(res))
       openxr_frame_error(f, "xrEndFrame", res);
@@ -669,7 +785,11 @@ void openxr_frame_input_attach(openxr_frame_t *f)
    h.session          = f->session->session;
    h.get_proc         = f->rt->GetInstanceProcAddr;
    h.frame_controller = f->rt->frame_controller;
+   h.palm_pose        = f->rt->palm_pose;
+   h.hand_tracking    = f->rt->hand_tracking;
+   h.hand_data_source = f->rt->hand_data_source;
    f->extra_layers    = in->frame_layers;
+   f->locate_hands    = in->locate_hands;
    f->extra_user      = in->user;
    f->input_attached  = true;
    in->session_created(in->user, &h);
@@ -682,9 +802,21 @@ void openxr_frame_input_detach(openxr_frame_t *f)
       return;
    f->input_attached = false;
    f->extra_layers   = NULL;
+   f->locate_hands   = NULL;
    f->extra_user     = NULL;
    if (in->session_destroying)
       in->session_destroying(in->user);
+}
+
+bool openxr_frame_locate_hands(openxr_frame_t *f, XrSpace base, XrTime time,
+      struct retro_vr_controller_poses *out)
+{
+   if (!f->locate_hands)
+   {
+      memset(out, 0, sizeof(*out));
+      return false;
+   }
+   return f->locate_hands(f->extra_user, base, time, out);
 }
 
 XrSwapchain openxr_frame_cursor(const openxr_frame_t *f)
@@ -701,6 +833,11 @@ bool openxr_frame_start(openxr_frame_t *f)
    f->tick_count    = 0;
    f->tick_interval = 0;
    f->asked_rate    = 0.0f;
+   f->requested_rate = 0.0f;
+   f->rate_retry_usec = 0;
+   f->asked_perf    = -1;
+   f->perf_applied  = 0;
+   f->perf_retry_usec = 0;
    f->frame_failed  = false;
    retro_atomic_store_release_int(&f->thread_started, 0);
    retro_atomic_store_release_int(&f->quit, 0);
@@ -750,6 +887,11 @@ bool openxr_frame_start_inline(openxr_frame_t *f)
    video_xr_period_init(&f->period);
    retro_atomic_store_release_int(&f->period_ns, 0);
    f->asked_rate     = 0.0f;
+   f->requested_rate = 0.0f;
+   f->rate_retry_usec = 0;
+   f->asked_perf     = -1;
+   f->perf_applied   = 0;
+   f->perf_retry_usec = 0;
    f->frame_failed   = false;
    f->pace_anchor_ns = 0;
    f->inline_host    = true;

@@ -13,11 +13,12 @@ SOURCES := \
 	$(LIBRETRO_COMM_DIR)/rthreads/tpool.c \
 	$(LIBRETRO_COMM_DIR)/rthreads/retro_eventcount.c \
 	$(LIBRETRO_COMM_DIR)/rthreads/rthreads.c \
+	$(LIBRETRO_COMM_DIR)/compat/compat_strl.c \
 	$(LIBRETRO_COMM_DIR)/features/features_cpu.c
 
 OBJS := $(call sample_objs,$(SOURCES:.c=.o))
 
-CFLAGS  += -Wall -pedantic -std=gnu99 -g -O2 -I$(LIBRETRO_COMM_DIR)/include
+CFLAGS  += -Wall -pedantic -std=gnu99 -g1 -O2 -I$(LIBRETRO_COMM_DIR)/include
 LDFLAGS += -lpthread
 
 # rthreads.c uses clock_gettime + CLOCK_REALTIME on Linux glibc; on

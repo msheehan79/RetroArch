@@ -13,6 +13,7 @@ SOURCES_C := \
 	gl2_pbo_readback_test.c \
 	stubs.c \
 	$(CORE_DIR)/gfx/common/gl_common.c \
+	$(CORE_DIR)/gfx/video_views.c \
 	$(LIBRETRO_COMM_DIR)/gfx/gl_capabilities.c \
 	$(LIBRETRO_COMM_DIR)/glsym/glsym_gl.c \
 	$(LIBRETRO_COMM_DIR)/gfx/scaler/scaler.c \
@@ -32,10 +33,10 @@ CFLAGS  += -Wall $(INCDIRS) -std=gnu99 -D_GNU_SOURCE \
 LDFLAGS += -lm -lpthread
 
 ifneq ($(SANITIZER),)
-   CFLAGS  := -fsanitize=$(SANITIZER) -fno-omit-frame-pointer -g $(CFLAGS)
+   CFLAGS  := -fsanitize=$(SANITIZER) -fno-omit-frame-pointer -g1 $(CFLAGS)
    LDFLAGS := -fsanitize=$(SANITIZER) $(LDFLAGS)
 else
-   CFLAGS  += -g -O1
+   CFLAGS  += -g1 -O1
 endif
 
 all: $(TARGET)
@@ -43,7 +44,7 @@ all: $(TARGET)
 $(TARGET): $(OBJS)
 	$(CC) -o $@ $^ $(LDFLAGS)
 
-gl2_pbo_readback_test.o: $(CORE_DIR)/gfx/drivers/gl2.c $(CORE_DIR)/gfx/common/gl2_common.h
+gl2_pbo_readback_test.o: $(CORE_DIR)/gfx/drivers/gl2.c $(CORE_DIR)/gfx/common/gl2_common.h gl11_fakes.h
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -57,6 +58,6 @@ check: $(TARGET)
 
 clean:
 	rm -rf $(SAMPLE_OBJDIR)
-	rm -f $(OBJS) $(TARGET)
+	rm -f $(OBJS) $(TARGET) $(TARGET).exe
 
 .PHONY: all check clean

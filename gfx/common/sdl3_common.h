@@ -22,7 +22,9 @@
 
 #include <SDL3/SDL.h>
 
+#include <retro_atomic.h>
 #include "../video_defines.h"
+#include "../video_views.h"
 #include "../../retroarch.h"
 
 enum sdl3_flags
@@ -71,6 +73,20 @@ typedef struct _sdl3_video
 
    SDL_Renderer *renderer;
 
+   /* The largest swap interval the renderer took at init */
+   unsigned swap_interval_cap;
+
+   /* Resolution steps asked for on the main thread, taken on the
+    * video thread */
+   retro_atomic_int_t mode_step;
+
+   /* What SDL_RenderGeometry is handed, grown to the largest batch:
+    * the display draws, and the interlaced placement's rows */
+   SDL_Vertex *display_verts;
+   int *display_indices;
+   size_t display_verts_cap;
+   size_t display_indices_cap;
+
 #ifdef HAVE_OVERLAY
    struct sdl3_overlay *overlays;
    unsigned overlays_size;
@@ -78,6 +94,41 @@ typedef struct _sdl3_video
 #endif
 
    uint8_t flags;
+
+   struct
+   {
+      video_views_chains_t  chains;
+      video_views_target_t  canvas_target;
+      video_views_target_t  ui_target;
+      video_views_ui_dims_t saved;
+      /* What the last frame drew, kept for the viewport readback to
+       * draw again: its map, layout, chains and the window's size */
+      video_views_map_t     map;
+      video_views_layout_t  layout;
+      void                 *drawn[RETRO_VIDEO_VIEWS_MAX];
+      unsigned              dims;
+      /* Each view of the frame, written straight into its own texture */
+      SDL_Texture          *tex[RETRO_VIDEO_VIEWS_MAX];
+      unsigned              tex_dims[RETRO_VIDEO_VIEWS_MAX];
+      SDL_Texture          *canvas;
+      SDL_Texture          *ui;
+      SDL_BlendMode         premultiplied;
+      unsigned              frame_dims;
+      /* The game viewport while the UI layer is drawn */
+      struct video_viewport vp;
+      /* For get_flags on the main thread: whether views may be drawn,
+       * and whether the last frame with a map drew it whole */
+      retro_atomic_int_t    allowed;
+      retro_atomic_int_t    fallback;
+      bool                  tried;
+      /* A view could not be written at frame_dims: draw whole */
+      bool                  write_failed;
+      /* The premultiplied blend the UI layer is placed with */
+      bool                  layer;
+      bool                  active;
+      bool                  blend;
+      bool                  direct_seen;
+   } views;
 } sdl3_video_t;
 
 /* Registers the application name, version and metadata. */
@@ -151,7 +202,8 @@ void sdl3_show_mouse(void *data, bool state);
 
 /* Returns the active SDL_Window, whether it belongs to the sdl3
  * video driver or one of the gl/vk sdl3 context drivers. NULL when
- * SDL3 isn't driving the window. */
+ * SDL3 isn't driving the window. Under threaded video it is made on
+ * the video thread; only sdl3_pump_input_events pumps its queue. */
 SDL_Window *sdl3_get_window(void);
 
 /* True when SDL_StartTextInput() on this device pops up a system

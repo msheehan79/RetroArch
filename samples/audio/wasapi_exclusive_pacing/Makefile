@@ -32,13 +32,13 @@ INCDIRS   := -I. -I$(LIBRETRO_COMM_DIR)/include -I$(CORE_DIR) -I$(CORE_DIR)/deps
 CFLAGS   += -Wall $(INCDIRS) -DRARCH_INTERNAL -DHAVE_THREADS -DHAVE_WASAPI -D_GNU_SOURCE
 
 ifneq ($(SANITIZER),)
-CFLAGS  += -fsanitize=$(SANITIZER) -fno-omit-frame-pointer -g
+CFLAGS  += -fsanitize=$(SANITIZER) -fno-omit-frame-pointer -g1
 LDFLAGS += -fsanitize=$(SANITIZER)
 else
-CFLAGS  += -g -O1
+CFLAGS  += -g1 -O1
 endif
 
-all: $(TARGET)
+all: $(TARGET) threadless-check
 
 # The driver with its Windows includes swapped for the fake's.
 WASAPI_SRC ?= $(CORE_DIR)/audio/drivers/wasapi.c
@@ -50,6 +50,9 @@ $(GEN): $(WASAPI_SRC)
 	    -e 's|#include "../../verbosity.h"|#include "$(CORE_DIR)/verbosity.h"|' \
 	    -e 's|#include "../../configuration.h"|#include "$(CORE_DIR)/configuration.h"|' \
 	    $< > $@
+
+threadless-check: $(GEN)
+	$(CC) $(CFLAGS) -UHAVE_THREADS -std=gnu99 -Werror=implicit-function-declaration -fsyntax-only $(GEN)
 
 $(TARGET): $(OBJS)
 	$(CC) -o $@ $(OBJS) $(LDFLAGS) -lm -lpthread
@@ -65,4 +68,4 @@ clean:
 	rm -rf $(SAMPLE_OBJDIR)
 	rm -f $(OBJS) $(TARGET) $(GEN)
 
-.PHONY: all clean
+.PHONY: all clean threadless-check

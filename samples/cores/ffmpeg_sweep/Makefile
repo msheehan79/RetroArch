@@ -16,6 +16,7 @@ SOURCES_C := \
 	$(LIBRETRO_COMM_DIR)/rthreads/rthreads.c \
 	$(LIBRETRO_COMM_DIR)/rthreads/tpool.c \
 	$(LIBRETRO_COMM_DIR)/rthreads/retro_eventcount.c \
+	$(LIBRETRO_COMM_DIR)/compat/compat_strl.c \
 	$(LIBRETRO_COMM_DIR)/features/features_cpu.c
 
 OBJS      := $(call sample_objs,$(SOURCES_C:.c=.o))
@@ -29,10 +30,10 @@ CFLAGS   += -DHAVE_THREADS -DHAVE_SWRESAMPLE -D_GNU_SOURCE
 LDFLAGS  += $(FF_LIBS) -lm -lpthread
 
 ifneq ($(SANITIZER),)
-CFLAGS  += -fsanitize=$(SANITIZER) -fno-omit-frame-pointer -g
+CFLAGS  += -fsanitize=$(SANITIZER) -fno-omit-frame-pointer -g1
 LDFLAGS += -fsanitize=$(SANITIZER)
 else
-CFLAGS  += -g -O1
+CFLAGS  += -g1 -O1
 endif
 
 all: $(TARGET)

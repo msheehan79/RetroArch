@@ -155,8 +155,31 @@ static XRAPI_ATTR XrResult XRAPI_CALL t_init_loader(
 static XRAPI_ATTR XrResult XRAPI_CALL t_refresh_rates(XrSession s,
       uint32_t cap, uint32_t *count, float *r) { *count = 0; return XR_SUCCESS; }
 static unsigned t_rate_requests;
+static XrResult t_rate_result = XR_SUCCESS;
+static float t_rate_applied;
 static XRAPI_ATTR XrResult XRAPI_CALL t_request_rate(XrSession s, float hz)
-{ t_rate_requests++; return XR_SUCCESS; }
+{
+   t_rate_requests++;
+   if (XR_SUCCEEDED(t_rate_result))
+      t_rate_applied = hz;
+   return t_rate_result;
+}
+/* The levels last asked per domain, and how many asks. */
+static unsigned t_perf_calls;
+static unsigned t_perf_fail;
+static XrPerfSettingsLevelEXT t_perf_cpu, t_perf_gpu;
+static XRAPI_ATTR XrResult XRAPI_CALL t_perf_level(XrSession s,
+      XrPerfSettingsDomainEXT domain, XrPerfSettingsLevelEXT level)
+{
+   t_perf_calls++;
+   if (t_perf_fail & (domain == XR_PERF_SETTINGS_DOMAIN_CPU_EXT ? 1 : 2))
+      return XR_ERROR_RUNTIME_FAILURE;
+   if (domain == XR_PERF_SETTINGS_DOMAIN_CPU_EXT)
+      t_perf_cpu = level;
+   else if (domain == XR_PERF_SETTINGS_DOMAIN_GPU_EXT)
+      t_perf_gpu = level;
+   return XR_SUCCESS;
+}
 
 #define T_SESSION ((XrSession)(uintptr_t)0x30)
 #define T_OTHER   ((XrSession)(uintptr_t)0x31)
@@ -313,6 +336,9 @@ static unsigned t_head_locates;
 static XRAPI_ATTR XrResult XRAPI_CALL t_locate_space(XrSpace a, XrSpace b,
       XrTime t, XrSpaceLocation *loc)
 {
+   XrSpaceVelocity *vel = (XrSpaceVelocity*)loc->next;
+   if (vel && vel->type == XR_TYPE_SPACE_VELOCITY)
+      vel->velocityFlags = 0;
    if (t_in_stage_set && b == t_stage_space)
    {
       loc->locationFlags = XR_SPACE_LOCATION_ORIENTATION_VALID_BIT
@@ -366,6 +392,7 @@ static uint32_t t_sc_images = 3;
 static uint32_t t_sc_images_second;
 static unsigned t_sc_count_queries;
 static unsigned t_sc_made, t_sc_destroyed, t_sc_created_total;
+static unsigned t_sc_destroyed_at_create;
 static XrResult t_sc_wait = XR_SUCCESS;
 static XrResult t_sc_release = XR_SUCCESS;
 static XrDuration t_sc_wait_timeout;
@@ -392,6 +419,7 @@ static uint32_t t_sc_refuse_width;   /* a width the runtime refuses */
 static XRAPI_ATTR XrResult XRAPI_CALL t_create_sc(XrSession s,
       const XrSwapchainCreateInfo *ci, XrSwapchain *out)
 {
+   t_sc_destroyed_at_create = t_sc_destroyed;
    if (t_sc_refuse_width && ci->width == t_sc_refuse_width)
       return XR_ERROR_SWAPCHAIN_FORMAT_UNSUPPORTED;
    *out = (XrSwapchain)(uintptr_t)(0x100 + (++t_sc_created_total));
@@ -490,6 +518,7 @@ static unsigned t_waits, t_begins, t_ends, t_frame_unlocked;
 static unsigned t_discarded;
 static bool t_frame_open;
 static uint32_t t_last_layer_count;
+static unsigned t_sc_destroyed_at_end;
 static unsigned t_extra_cap;
 static XrResult t_wait_frame_res = XR_SUCCESS;
 static XrResult t_end_frame_res  = XR_SUCCESS;
@@ -530,6 +559,7 @@ static XRAPI_ATTR XrResult XRAPI_CALL t_end_frame(XrSession s,
    t_ends++;
    t_frame_open       = false;
    t_last_layer_count = ei->layerCount;
+   t_sc_destroyed_at_end = t_sc_destroyed;
    memset(t_layer_types, 0, sizeof(t_layer_types));
    for (i = 0; i < ei->layerCount && i < 4; i++)
       t_layer_types[i] = ei->layers[i]->type;
@@ -607,6 +637,7 @@ static const struct { const char *name; PFN_xrVoidFunction fn; } t_procs[] = {
    { "xrEnumerateEnvironmentBlendModes",  (PFN_xrVoidFunction)t_enum_modes },
    { "xrEnumerateDisplayRefreshRatesFB",  (PFN_xrVoidFunction)t_refresh_rates },
    { "xrRequestDisplayRefreshRateFB",     (PFN_xrVoidFunction)t_request_rate },
+   { "xrPerfSettingsSetPerformanceLevelEXT", (PFN_xrVoidFunction)t_perf_level },
    { "xrPollEvent",            (PFN_xrVoidFunction)t_poll_event },
    { "xrCreateSession",        (PFN_xrVoidFunction)t_create_session },
    { "xrDestroySession",       (PFN_xrVoidFunction)t_destroy_session },
@@ -673,6 +704,19 @@ XRAPI_ATTR XrResult XRAPI_CALL xrGetInstanceProcAddr(XrInstance i,
 #include "../../../gfx/common/gl_openxr.c"
 #endif
 #include "../../../gfx/common/vulkan_openxr.c"
+
+/* The input's hands: where and when the host had them located. */
+static XrSpace t_hands_in;
+static XrTime  t_hands_at;
+static bool t_locate_hands(void *user, XrSpace base, XrTime time,
+      struct retro_vr_controller_poses *out)
+{
+   t_hands_in = base;
+   t_hands_at = time;
+   out->hands[RETRO_VR_HAND_RIGHT].flags          = RETRO_VR_HAND_ACTIVE;
+   out->hands[RETRO_VR_HAND_RIGHT].grip.position[0] = 0.3f;
+   return true;
+}
 
 static void t_runtime_defaults(void)
 {
@@ -1149,6 +1193,106 @@ static bool t_pose_is(const video_xr_pose_t *p, float qy, float qw,
        && t_near(p->orientation.z, 0.0f) && t_near(p->orientation.w, qw)
        && t_near(p->position.x, x) && t_near(p->position.y, y)
        && t_near(p->position.z, z);
+}
+
+/* The latched seqlock the frame's shared state goes through: a writer
+ * stopped part way through a publication holds no reader up - they
+ * read the last whole one - and readers on two threads, with a writer
+ * going as fast as it can, never read two publications mixed. */
+#define T_LATCH_N 24
+static retro_atomic_int_t t_latch_seq;
+static retro_atomic_int_t t_latch_words[2 * T_LATCH_N];
+static retro_atomic_int_t t_latch_done;
+static unsigned t_latch_mixed[2], t_latch_back[2];
+
+static void t_latch_writer(void *data)
+{
+   int v[T_LATCH_N];
+   int n, i;
+   (void)data;
+   for (n = 1; n <= 100000; n++)
+   {
+      for (i = 0; i < T_LATCH_N; i++)
+         v[i] = n;
+      openxr_seq_publish(&t_latch_seq, t_latch_words, v, sizeof(v));
+   }
+   retro_atomic_store_release_int(&t_latch_done, 1);
+}
+
+static void t_latch_reader(void *data)
+{
+   unsigned who = *(unsigned*)data;
+   int last     = 0;
+   while (!retro_atomic_load_acquire_int(&t_latch_done))
+   {
+      int v[T_LATCH_N];
+      int i;
+      openxr_seq_read(&t_latch_seq, t_latch_words, v, sizeof(v));
+      for (i = 1; i < T_LATCH_N; i++)
+         if (v[i] != v[0])
+            t_latch_mixed[who]++;
+      if (v[0] < last)
+         t_latch_back[who]++;
+      last = v[0];
+   }
+}
+
+static void test_seq_latch(void)
+{
+   int a[T_LATCH_N], b[T_LATCH_N], got[T_LATCH_N];
+   unsigned i, who[2] = { 0, 1 };
+   sthread_t *w, *r0, *r1;
+
+   for (i = 0; i < T_LATCH_N; i++)
+   {
+      a[i] = (int)i + 1;
+      b[i] = (int)i + 100;
+   }
+   openxr_seq_publish(&t_latch_seq, t_latch_words, a, sizeof(a));
+   openxr_seq_read(&t_latch_seq, t_latch_words, got, sizeof(got));
+   CHECK(!memcmp(a, got, sizeof(a)), "latch: a publication not read back");
+
+   /* a writer stopped half way through copy 0: the reader goes on with
+    * the last whole publication, at once */
+   {
+      int s = retro_atomic_load_relaxed_int(&t_latch_seq);
+      retro_atomic_store_release_int(&t_latch_seq, s + 1);
+      for (i = 0; i < T_LATCH_N / 2; i++)
+         retro_atomic_store_relaxed_int(&t_latch_words[i], -1);
+      openxr_seq_read(&t_latch_seq, t_latch_words, got, sizeof(got));
+      CHECK(!memcmp(a, got, sizeof(a)),
+            "latch: a writer stopped part way through was read");
+      retro_atomic_store_release_int(&t_latch_seq, s);
+   }
+   openxr_seq_publish(&t_latch_seq, t_latch_words, b, sizeof(b));
+   openxr_seq_read(&t_latch_seq, t_latch_words, got, sizeof(got));
+   CHECK(!memcmp(b, got, sizeof(b)), "latch: the next publication not read back");
+
+   /* one writer, two readers */
+   for (i = 0; i < T_LATCH_N; i++)
+      a[i] = 0;
+   openxr_seq_publish(&t_latch_seq, t_latch_words, a, sizeof(a));
+   retro_atomic_store_release_int(&t_latch_done, 0);
+   r0 = sthread_create(t_latch_reader, &who[0]);
+   r1 = sthread_create(t_latch_reader, &who[1]);
+   w  = sthread_create(t_latch_writer, NULL);
+   CHECK(r0 && r1 && w, "latch: no threads");
+   if (w)
+      sthread_join(w);
+   else
+      retro_atomic_store_release_int(&t_latch_done, 1);
+   if (r0)
+      sthread_join(r0);
+   if (r1)
+      sthread_join(r1);
+   CHECK(!t_latch_mixed[0] && !t_latch_mixed[1],
+         "latch: a read mixed two publications (%u, %u)",
+         t_latch_mixed[0], t_latch_mixed[1]);
+   CHECK(!t_latch_back[0] && !t_latch_back[1],
+         "latch: a read went back to an older publication");
+   openxr_seq_read(&t_latch_seq, t_latch_words, got, sizeof(got));
+   CHECK(got[0] == 100000 && got[T_LATCH_N - 1] == 100000,
+         "latch: the newest was not read once the writer stopped");
 }
 
 static void test_frame(void)
@@ -1862,6 +2006,7 @@ static void test_host(void)
    openxr_host_t h;
    openxr_projection_t p;
    struct retro_vr_eye_state eyes[2];
+   unsigned token = 0;
    struct retro_vr_head_pose head;
    video_xr_pose_t anchor;
    enum retro_vr_reference_space space;
@@ -1897,7 +2042,7 @@ static void test_host(void)
     * which is for the frame's display time plus the measured period. */
    openxr_frame_run(&f);
    retro_atomic_store_release_int(&f.period_ns, 13888889);
-   CHECK(openxr_host_sample(&h, &flags) && !flags, "first sample: flags %u",
+   CHECK(openxr_host_sample(&h, 0, &flags) && !flags, "first sample: flags %u",
          (unsigned)flags);
    CHECK(     s.track_space && t_space_type == XR_REFERENCE_SPACE_TYPE_LOCAL
          && t_located_in == s.track_space
@@ -1907,11 +2052,46 @@ static void test_host(void)
    CHECK(openxr_host_head_pose(&h, &head) && t_near(head.position[1], 1.25f),
          "head not as sampled");
 
-   /* The views the core was given are the projection's. */
+   /* The hands are located only when asked for, then with the head: no
+    * input, none; the input's, in the same space for the same time. */
+   {
+      struct retro_vr_controller_poses hands;
+      memset(&hands, 0xff, sizeof(hands));
+      CHECK(     openxr_host_controller_poses(&h, &hands)
+            && hands.hands[0].flags == 0 && hands.hands[1].flags == 0,
+            "hands without an input");
+      f.locate_hands = t_locate_hands;
+      t_hands_at     = 0;
+      openxr_host_sample(&h, 0, &flags);
+      CHECK(t_hands_at == 0, "a sample located the hands unasked");
+      CHECK(openxr_host_locate_hands(&h), "the hands were not located");
+      CHECK(     t_hands_in == s.track_space && t_hands_at == t_located_at
+            && openxr_host_controller_poses(&h, &hands)
+            && hands.hands[1].flags == RETRO_VR_HAND_ACTIVE
+            && t_near(hands.hands[1].grip.position[0], 0.3f),
+            "the hands were not sampled with the head");
+      f.locate_hands = NULL;
+   }
+
+   /* The views the core was given are the projection's: handed out
+    * with a token, given when the frame drawn from them is drawn. */
    openxr_host_projection(&h, 400, 240, &p);
    CHECK(!p.active, "a projection before the core was given its eyes");
-   CHECK(     openxr_host_eye_state(&h, eyes)
+   CHECK(     openxr_host_eye_state(&h, eyes, &token)
          && t_near(eyes[1].position[0], 0.032f), "eyes not as sampled");
+   openxr_host_projection(&h, 400, 240, &p);
+   CHECK(!p.active, "eyes handed out were shown before a frame drew them");
+   {
+      /* Overwritten since: four more handed out, none given */
+      unsigned stale = token, i, t;
+      for (i = 0; i < 4; i++)
+         openxr_host_eye_state(&h, eyes, &t);
+      openxr_host_give(&h, stale);
+      openxr_host_projection(&h, 400, 240, &p);
+      CHECK(!p.active, "eyes overwritten since were given");
+      token = t;
+   }
+   openxr_host_give(&h, token);
    openxr_host_projection(&h, 400, 240, &p);
    CHECK(     p.active && p.width == 400 && p.height == 240
          && p.track_seq == retro_atomic_load_acquire_int(&s.track_seq)
@@ -1919,9 +2099,15 @@ static void test_host(void)
          && t_near(p.fov[1].angleRight, 0.8f),
          "the projection is not of the views the core was given");
 
+   /* Frames already handed over: a period further for each */
+   openxr_host_sample(&h, 1, &flags);
+   CHECK(t_located_at == openxr_frame_predicted_time(&f)
+         + 2 * (XrTime)retro_atomic_load_acquire_int(&f.period_ns),
+         "sampled at %lld one frame ahead", (long long)t_located_at);
+
    /* Without a measured period, the predicted time alone. */
    retro_atomic_store_release_int(&f.period_ns, 0);
-   openxr_host_sample(&h, &flags);
+   openxr_host_sample(&h, 0, &flags);
    CHECK(t_located_at == openxr_frame_predicted_time(&f),
          "sampled at %lld without a period", (long long)t_located_at);
 
@@ -1937,7 +2123,7 @@ static void test_host(void)
    openxr_frame_run(&f);
    openxr_frame_get_anchor(&f, &anchor);
    flags = 0;
-   CHECK(     openxr_host_sample(&h, &flags)
+   CHECK(     openxr_host_sample(&h, 0, &flags)
          && (flags & RETRO_VR_FRAME_RECENTERED), "a recenter was not told");
    CHECK(     t_near(t_space_pose.position.x, anchor.position.x)
          && t_near(t_space_pose.orientation.y, anchor.orientation.y),
@@ -1953,7 +2139,7 @@ static void test_host(void)
          && t_near(p.pose[0].position.x, -0.032f),
          "the projection shown did not go on in the new space");
    flags = 0;
-   openxr_host_sample(&h, &flags);
+   openxr_host_sample(&h, 0, &flags);
    CHECK(!(flags & RETRO_VR_FRAME_RECENTERED), "a recenter told twice");
    /* A sample that fails still tells of the recenter it took, for the
     * caller to keep until poses answer. */
@@ -1962,7 +2148,7 @@ static void test_host(void)
    openxr_frame_run(&f);
    t_views_tracked   = false;
    flags             = 0;
-   CHECK(     !openxr_host_sample(&h, &flags)
+   CHECK(     !openxr_host_sample(&h, 0, &flags)
          && (flags & RETRO_VR_FRAME_RECENTERED),
          "a failed sample dropped its recenter: flags %u", (unsigned)flags);
    t_views_tracked   = true;
@@ -1979,16 +2165,16 @@ static void test_host(void)
    openxr_frame_request_recenter(&f);
    openxr_frame_run(&f);
    flags = 0;
-   CHECK(     openxr_host_sample(&h, &flags)
+   CHECK(     openxr_host_sample(&h, 0, &flags)
          && (flags & RETRO_VR_FRAME_RECENTERED) && t_spaces_made == made,
          "a recenter of standing content: flags %u, %u spaces made",
          (unsigned)flags, t_spaces_made - made);
    openxr_host_stage_changed(&h);
    flags = 0;
-   CHECK(     openxr_host_sample(&h, &flags)
+   CHECK(     openxr_host_sample(&h, 0, &flags)
          && (flags & RETRO_VR_FRAME_RECENTERED), "a STAGE move was not told");
    flags = 0;
-   openxr_host_sample(&h, &flags);
+   openxr_host_sample(&h, 0, &flags);
    CHECK(!(flags & RETRO_VR_FRAME_RECENTERED), "a STAGE move told twice");
 
    /* Seated content hears nothing of STAGE. */
@@ -1996,7 +2182,7 @@ static void test_host(void)
    openxr_host_set_space(&h, &space, &w, &ht);
    openxr_host_stage_changed(&h);
    flags = 0;
-   openxr_host_sample(&h, &flags);
+   openxr_host_sample(&h, 0, &flags);
    CHECK(!(flags & RETRO_VR_FRAME_RECENTERED),
          "seated content was told of a STAGE move");
 
@@ -2060,7 +2246,7 @@ static void test_host_remake(void)
    t_stage_asked   = 0;
    t_located_in    = XR_NULL_HANDLE;
    retro_atomic_store_release_int(&f.period_ns, 13888889);
-   CHECK(!openxr_host_sample(&h, &flags) && !t_located_in,
+   CHECK(!openxr_host_sample(&h, 0, &flags) && !t_located_in,
          "a zero predicted time was located");
    openxr_frame_run(&f);
    t_host_recenter_at(&f, 0.25f);
@@ -2074,19 +2260,19 @@ static void test_host_remake(void)
          "STAGE-asked LOCAL content not made at the anchor: x %.2f",
          t_space_pose.position.x);
    flags = 0;
-   CHECK(openxr_host_sample(&h, &flags) && !flags,
+   CHECK(openxr_host_sample(&h, 0, &flags) && !flags,
          "a recenter told for the anchor the space was made at");
    t_host_recenter_at(&f, 0.5f);
    openxr_frame_get_anchor(&f, &anchor);
    made  = t_spaces_made;
    flags = 0;
-   CHECK(     openxr_host_sample(&h, &flags)
+   CHECK(     openxr_host_sample(&h, 0, &flags)
          && (flags & RETRO_VR_FRAME_RECENTERED) && t_spaces_made == made + 1
          && t_near(t_space_pose.position.x, anchor.position.x),
          "STAGE-asked LOCAL content not remade: flags %u, %u made, x %.2f",
          (unsigned)flags, t_spaces_made - made, t_space_pose.position.x);
    flags = 0;
-   openxr_host_sample(&h, &flags);
+   openxr_host_sample(&h, 0, &flags);
    CHECK(!(flags & RETRO_VR_FRAME_RECENTERED), "a recenter told twice");
    CHECK(t_stage_asked == 1, "STAGE asked %u times, want once", t_stage_asked);
    t_frame_free(&rt, &s, &f);
@@ -2102,17 +2288,17 @@ static void test_host_remake(void)
    openxr_frame_get_anchor(&f, &anchor);
    t_space_fail_at = t_spaces_made + 1;
    flags           = 0;
-   openxr_host_sample(&h, &flags);
+   openxr_host_sample(&h, 0, &flags);
    CHECK(!(flags & RETRO_VR_FRAME_RECENTERED),
          "a recenter told for a remake that failed");
    t_space_fail_at = 0;
    flags           = 0;
-   CHECK(     openxr_host_sample(&h, &flags)
+   CHECK(     openxr_host_sample(&h, 0, &flags)
          && (flags & RETRO_VR_FRAME_RECENTERED)
          && t_near(t_space_pose.position.x, anchor.position.x),
          "a failed remake was not retried: flags %u", (unsigned)flags);
    flags = 0;
-   openxr_host_sample(&h, &flags);
+   openxr_host_sample(&h, 0, &flags);
    CHECK(!(flags & RETRO_VR_FRAME_RECENTERED), "a recenter told twice");
 
    /* The runtime's own recenter moves the LOCAL origin: the space is
@@ -2120,14 +2306,14 @@ static void test_host_remake(void)
    openxr_frame_local_changed(&f);
    made  = t_spaces_made;
    flags = 0;
-   CHECK(     openxr_host_sample(&h, &flags)
+   CHECK(     openxr_host_sample(&h, 0, &flags)
          && (flags & RETRO_VR_FRAME_RECENTERED) && t_spaces_made == made + 1
          && t_near(t_space_pose.position.x, 0.0f)
          && t_near(t_space_pose.orientation.w, 1.0f),
          "the runtime's recenter: flags %u, %u made", (unsigned)flags,
          t_spaces_made - made);
    flags = 0;
-   openxr_host_sample(&h, &flags);
+   openxr_host_sample(&h, 0, &flags);
    CHECK(!(flags & RETRO_VR_FRAME_RECENTERED), "a recenter told twice");
 
    /* A session after the first has a new origin: the core is told once,
@@ -2139,13 +2325,13 @@ static void test_host_remake(void)
    openxr_host_session_created(&h);
    made  = t_spaces_made;
    flags = 0;
-   CHECK(     openxr_host_sample(&h, &flags)
+   CHECK(     openxr_host_sample(&h, 0, &flags)
          && (flags & RETRO_VR_FRAME_RECENTERED) && t_spaces_made == made + 1
          && t_space_type == XR_REFERENCE_SPACE_TYPE_STAGE,
          "a new session: flags %u, %u made, type %d", (unsigned)flags,
          t_spaces_made - made, (int)t_space_type);
    flags = 0;
-   openxr_host_sample(&h, &flags);
+   openxr_host_sample(&h, 0, &flags);
    CHECK(!(flags & RETRO_VR_FRAME_RECENTERED), "a recenter told twice");
 
    t_views_tracked = false;
@@ -2167,6 +2353,7 @@ static void test_host_recenter_paused(void)
    openxr_projection_t p;
    openxr_projection_t shown;
    struct retro_vr_eye_state eyes[2];
+   unsigned token = 0;
    video_xr_pose_t anchor;
    enum retro_vr_reference_space space;
    unsigned w     = 0;
@@ -2192,8 +2379,9 @@ static void test_host_recenter_paused(void)
    space = RETRO_VR_REFERENCE_SPACE_LOCAL;
    openxr_host_set_space(&h, &space, &w, &ht);
    t_view[0].pose.position.x = -0.25f;
-   openxr_host_sample(&h, &flags);
-   openxr_host_eye_state(&h, eyes);
+   openxr_host_sample(&h, 0, &flags);
+   openxr_host_eye_state(&h, eyes, &token);
+   openxr_host_give(&h, token);
    openxr_host_projection(&h, 400, 240, &p);
    openxr_frame_publish_projection(&f, &p);
    made = t_spaces_made;
@@ -2228,17 +2416,18 @@ static void test_host_recenter_paused(void)
    openxr_host_place_kept(&h);
    CHECK(t_spaces_made == made, "a recenter followed twice");
    flags = 0;
-   CHECK(     openxr_host_sample(&h, &flags)
+   CHECK(     openxr_host_sample(&h, 0, &flags)
          && (flags & RETRO_VR_FRAME_RECENTERED) && t_spaces_made == made,
          "the next sample: flags %u, %u made", (unsigned)flags,
          t_spaces_made - made);
    flags = 0;
-   openxr_host_sample(&h, &flags);
+   openxr_host_sample(&h, 0, &flags);
    CHECK(!(flags & RETRO_VR_FRAME_RECENTERED), "a recenter told twice");
 
    /* A remake that fails moves nothing and tells nothing; the sample
     * tries again. */
-   openxr_host_eye_state(&h, eyes);
+   openxr_host_eye_state(&h, eyes, &token);
+   openxr_host_give(&h, token);
    openxr_host_projection(&h, 400, 240, &p);
    openxr_frame_publish_projection(&f, &p);
    seq = retro_atomic_load_acquire_int(&s.track_seq);
@@ -2250,18 +2439,19 @@ static void test_host_recenter_paused(void)
          && openxr_host_has_given(&h) && shown.track_seq == seq,
          "a failed remake moved the paused frame");
    flags = 0;
-   openxr_host_sample(&h, &flags);
+   openxr_host_sample(&h, 0, &flags);
    CHECK(!(flags & RETRO_VR_FRAME_RECENTERED),
          "a recenter told for a remake that failed");
    t_space_fail_at = 0;
    flags           = 0;
-   CHECK(     openxr_host_sample(&h, &flags)
+   CHECK(     openxr_host_sample(&h, 0, &flags)
          && (flags & RETRO_VR_FRAME_RECENTERED)
          && retro_atomic_load_acquire_int(&s.track_seq) != seq,
          "a failed remake was not retried: flags %u", (unsigned)flags);
 
    /* Views and a projection from a space replaced since stay there. */
-   openxr_host_eye_state(&h, eyes);
+   openxr_host_eye_state(&h, eyes, &token);
+   openxr_host_give(&h, token);
    openxr_host_projection(&h, 400, 240, &p);
    openxr_frame_publish_projection(&f, &p);
    space = RETRO_VR_REFERENCE_SPACE_STAGE;
@@ -2279,8 +2469,9 @@ static void test_host_recenter_paused(void)
    /* Standing: the room stays, and the sample tells the recenter. */
    space = RETRO_VR_REFERENCE_SPACE_STAGE;
    openxr_host_set_space(&h, &space, &w, &ht);
-   openxr_host_sample(&h, &flags);
-   openxr_host_eye_state(&h, eyes);
+   openxr_host_sample(&h, 0, &flags);
+   openxr_host_eye_state(&h, eyes, &token);
+   openxr_host_give(&h, token);
    made = t_spaces_made;
    seq  = retro_atomic_load_acquire_int(&s.track_seq);
    t_host_recenter_at(&f, 0.25f);
@@ -2290,7 +2481,7 @@ static void test_host_recenter_paused(void)
          && openxr_host_has_given(&h),
          "a recenter moved a standing space while paused");
    flags = 0;
-   CHECK(     openxr_host_sample(&h, &flags)
+   CHECK(     openxr_host_sample(&h, 0, &flags)
          && (flags & RETRO_VR_FRAME_RECENTERED) && t_spaces_made == made,
          "a standing core's recenter: flags %u, %u made", (unsigned)flags,
          t_spaces_made - made);
@@ -2327,6 +2518,7 @@ static void test_host_recenter_locked(void)
    openxr_host_t h;
    openxr_projection_t p;
    struct retro_vr_eye_state eyes[2];
+   unsigned token = 0;
    enum retro_vr_reference_space space;
    unsigned w     = 0;
    unsigned ht    = 0;
@@ -2347,8 +2539,9 @@ static void test_host_recenter_locked(void)
    for (pass = 0; pass < 2; pass++)
    {
       int seq;
-      openxr_host_sample(&h, &flags);
-      openxr_host_eye_state(&h, eyes);
+      openxr_host_sample(&h, 0, &flags);
+      openxr_host_eye_state(&h, eyes, &token);
+   openxr_host_give(&h, token);
       openxr_host_projection(&h, 400, 240, &p);
       openxr_frame_publish_projection(&f, &p);
       t_host_recenter_at(&f, pass ? 0.5f : 0.25f);
@@ -2360,7 +2553,7 @@ static void test_host_recenter_locked(void)
       if (pass)
          openxr_host_place_kept(&h);
       else
-         openxr_host_sample(&h, &flags);
+         openxr_host_sample(&h, 0, &flags);
       t_at_unlock  = NULL;
       CHECK(retro_atomic_load_acquire_int(&s.track_seq) != seq,
             "%s: no remake", pass ? "paused" : "running");
@@ -2413,6 +2606,7 @@ static void test_host_kept(void)
    openxr_host_kept_t none;
    openxr_projection_t p;
    struct retro_vr_eye_state eyes[2];
+   unsigned token = 0;
    enum retro_vr_reference_space space;
    unsigned w     = 0;
    unsigned ht    = 0;
@@ -2426,11 +2620,12 @@ static void test_host_kept(void)
    space = RETRO_VR_REFERENCE_SPACE_STAGE;
    openxr_host_set_space(&h, &space, &w, &ht);
    t_view[0].pose.position.x = -0.25f;
-   openxr_host_sample(&h, &flags);
+   openxr_host_sample(&h, 0, &flags);
    t_keep(&h, &kept);
    CHECK(!kept.valid && kept.session,
          "views kept before the core was given any");
-   openxr_host_eye_state(&h, eyes);
+   openxr_host_eye_state(&h, eyes, &token);
+   openxr_host_give(&h, token);
    t_keep(&h, &kept);
    CHECK(     kept.valid && openxr_host_has_given(&h)
          && t_near(kept.views[0].pose.position.x, -0.25f),
@@ -2457,7 +2652,7 @@ static void test_host_kept(void)
    openxr_frame_run(&f);
    space = RETRO_VR_REFERENCE_SPACE_STAGE;
    openxr_host_set_space(&h, &space, &w, &ht);
-   openxr_host_sample(&h, &flags);
+   openxr_host_sample(&h, 0, &flags);
    t_resume(&h, &kept);
    openxr_host_projection(&h, 400, 240, &p);
    CHECK(     openxr_host_has_given(&h) && p.active
@@ -2465,7 +2660,7 @@ static void test_host_kept(void)
          && t_near(p.pose[0].position.x, -0.25f),
          "the kept views are not the next STAGE space's projection");
    flags = 0;
-   openxr_host_sample(&h, &flags);
+   openxr_host_sample(&h, 0, &flags);
    CHECK(!(flags & RETRO_VR_FRAME_RECENTERED),
          "a STAGE core was told of a recenter after a reinit");
    /* A new core frame was not drawn from them, but from eyes it asked
@@ -2473,7 +2668,8 @@ static void test_host_kept(void)
    openxr_host_new_frame(&h);
    CHECK(!openxr_host_has_given(&h), "kept views outlived a new core frame");
    t_resume(&h, &kept);
-   openxr_host_eye_state(&h, eyes);
+   openxr_host_eye_state(&h, eyes, &token);
+   openxr_host_give(&h, token);
    openxr_host_new_frame(&h);
    CHECK(openxr_host_has_given(&h),
          "a new frame dropped the eyes the core was given");
@@ -2487,8 +2683,9 @@ static void test_host_kept(void)
    space = RETRO_VR_REFERENCE_SPACE_LOCAL;
    openxr_host_set_space(&h, &space, &w, &ht);
    t_view[0].pose.position.x = -0.25f;
-   openxr_host_sample(&h, &flags);
-   openxr_host_eye_state(&h, eyes);
+   openxr_host_sample(&h, 0, &flags);
+   openxr_host_eye_state(&h, eyes, &token);
+   openxr_host_give(&h, token);
    t_pose(&t_in_stage, 1.0f, 0.0f, 0.70710678f);
    t_in_stage_set = true;
    gone           = t_spaces_destroyed;
@@ -2504,7 +2701,7 @@ static void test_host_kept(void)
    openxr_host_set_space(&h, &space, &w, &ht);
    t_resume(&h, &seated);
    flags = 0;
-   openxr_host_sample(&h, &flags);
+   openxr_host_sample(&h, 0, &flags);
    CHECK(!(flags & RETRO_VR_FRAME_RECENTERED),
          "a recenter told for a session kept across a reinit");
    t_frame_free(&rt, &s, &f);
@@ -2531,11 +2728,11 @@ static void test_host_kept(void)
          "the kept views are not where they were in the room: %.3f, %.3f",
          p.pose[0].position.x, p.pose[0].position.z);
    flags = 0;
-   CHECK(     openxr_host_sample(&h, &flags)
+   CHECK(     openxr_host_sample(&h, 0, &flags)
          && (flags & RETRO_VR_FRAME_RECENTERED),
          "a seated core was not told its origin moved");
    flags = 0;
-   openxr_host_sample(&h, &flags);
+   openxr_host_sample(&h, 0, &flags);
    CHECK(!(flags & RETRO_VR_FRAME_RECENTERED), "a recenter told twice");
    t_frame_free(&rt, &s, &f);
 
@@ -2547,8 +2744,9 @@ static void test_host_kept(void)
    t_resume(&h, &seated);
    openxr_frame_run(&f);
    t_view[0].pose.position.x = 0.75f;
-   openxr_host_sample(&h, &flags);
-   openxr_host_eye_state(&h, eyes);
+   openxr_host_sample(&h, 0, &flags);
+   openxr_host_eye_state(&h, eyes, &token);
+   openxr_host_give(&h, token);
    openxr_host_place_kept(&h);
    openxr_host_projection(&h, 400, 240, &p);
    CHECK(t_near(p.pose[0].position.x, 0.75f),
@@ -2579,8 +2777,9 @@ static void test_host_kept(void)
    openxr_frame_run(&f);
    space = RETRO_VR_REFERENCE_SPACE_LOCAL;
    openxr_host_set_space(&h, &space, &w, &ht);
-   openxr_host_sample(&h, &flags);
-   openxr_host_eye_state(&h, eyes);
+   openxr_host_sample(&h, 0, &flags);
+   openxr_host_eye_state(&h, eyes, &token);
+   openxr_host_give(&h, token);
    t_keep(&h, &none);
    CHECK(!none.valid && none.session, "seated views kept without a STAGE");
    space = RETRO_VR_REFERENCE_SPACE_STAGE;
@@ -2607,6 +2806,7 @@ static void test_host_record(void)
    openxr_host_t h;
    openxr_projection_t p;
    struct retro_vr_eye_state eyes[2];
+   unsigned token = 0;
    enum retro_vr_reference_space space;
    unsigned w     = 0;
    unsigned ht    = 0;
@@ -2618,8 +2818,9 @@ static void test_host_record(void)
    space = RETRO_VR_REFERENCE_SPACE_STAGE;
    openxr_host_set_space(&h, &space, &w, &ht);
    t_view[0].pose.position.x = -0.25f;
-   openxr_host_sample(&h, &flags);
-   openxr_host_eye_state(&h, eyes);
+   openxr_host_sample(&h, 0, &flags);
+   openxr_host_eye_state(&h, eyes, &token);
+   openxr_host_give(&h, token);
    openxr_host_keep(&h);
    CHECK(     openxr_host_record.valid
          && openxr_host_record.session == h.session_serial
@@ -2647,8 +2848,9 @@ static void test_host_record(void)
    openxr_frame_run(&f);
    space = RETRO_VR_REFERENCE_SPACE_STAGE;
    openxr_host_set_space(&h, &space, &w, &ht);
-   openxr_host_sample(&h, &flags);
-   openxr_host_eye_state(&h, eyes);
+   openxr_host_sample(&h, 0, &flags);
+   openxr_host_eye_state(&h, eyes, &token);
+   openxr_host_give(&h, token);
    openxr_host_keep(&h);
    t_frame_free(&rt, &s, &f);
    openxr_host_forget();
@@ -2666,8 +2868,9 @@ static void test_host_record(void)
    openxr_frame_run(&f);
    space = RETRO_VR_REFERENCE_SPACE_STAGE;
    openxr_host_set_space(&h, &space, &w, &ht);
-   openxr_host_sample(&h, &flags);
-   openxr_host_eye_state(&h, eyes);
+   openxr_host_sample(&h, 0, &flags);
+   openxr_host_eye_state(&h, eyes, &token);
+   openxr_host_give(&h, token);
    openxr_host_keep(&h);
    t_frame_free(&rt, &s, &f);
    t_host_up(&rt, &s, &sc, &f, &h);
@@ -2692,6 +2895,7 @@ static void test_host_same_space(void)
    openxr_frame_t f;
    openxr_host_t h;
    struct retro_vr_eye_state eyes[2];
+   unsigned token = 0;
    enum retro_vr_reference_space space;
    unsigned w     = 0;
    unsigned ht    = 0;
@@ -2704,8 +2908,9 @@ static void test_host_same_space(void)
    openxr_frame_run(&f);
    space = RETRO_VR_REFERENCE_SPACE_STAGE;
    openxr_host_set_space(&h, &space, &w, &ht);
-   openxr_host_sample(&h, &flags);
-   openxr_host_eye_state(&h, eyes);
+   openxr_host_sample(&h, 0, &flags);
+   openxr_host_eye_state(&h, eyes, &token);
+   openxr_host_give(&h, token);
    seq  = retro_atomic_load_acquire_int(&s.track_seq);
    made = t_spaces_made;
    space = RETRO_VR_REFERENCE_SPACE_STAGE;
@@ -2723,8 +2928,9 @@ static void test_host_same_space(void)
          "a different space kept the views of the old one");
    /* A recenter is the sample's: the space asked again stays. */
    openxr_host_set_space(&h, &space, &w, &ht);
-   openxr_host_sample(&h, &flags);
-   openxr_host_eye_state(&h, eyes);
+   openxr_host_sample(&h, 0, &flags);
+   openxr_host_eye_state(&h, eyes, &token);
+   openxr_host_give(&h, token);
    seq  = retro_atomic_load_acquire_int(&s.track_seq);
    openxr_frame_request_recenter(&f);
    openxr_frame_run(&f);
@@ -2733,7 +2939,7 @@ static void test_host_same_space(void)
          && openxr_host_has_given(&h),
          "a recenter remade the space asked again");
    flags = 0;
-   openxr_host_sample(&h, &flags);
+   openxr_host_sample(&h, 0, &flags);
    CHECK(     (flags & RETRO_VR_FRAME_RECENTERED)
          && retro_atomic_load_acquire_int(&s.track_seq) != seq,
          "the sample did not remake the seated space at a recenter");
@@ -2741,8 +2947,9 @@ static void test_host_same_space(void)
    t_stage_missing = true;
    space = RETRO_VR_REFERENCE_SPACE_STAGE;
    openxr_host_set_space(&h, &space, &w, &ht);
-   openxr_host_sample(&h, &flags);
-   openxr_host_eye_state(&h, eyes);
+   openxr_host_sample(&h, 0, &flags);
+   openxr_host_eye_state(&h, eyes, &token);
+   openxr_host_give(&h, token);
    seq  = retro_atomic_load_acquire_int(&s.track_seq);
    space = RETRO_VR_REFERENCE_SPACE_STAGE;
    openxr_host_set_space(&h, &space, &w, &ht);
@@ -2775,8 +2982,9 @@ static void test_host_same_space(void)
    space = RETRO_VR_REFERENCE_SPACE_STAGE;
    openxr_host_set_space(&h, &space, &w, &ht);
    t_view[0].pose.position.x = -0.25f;
-   openxr_host_sample(&h, &flags);
-   openxr_host_eye_state(&h, eyes);
+   openxr_host_sample(&h, 0, &flags);
+   openxr_host_eye_state(&h, eyes, &token);
+   openxr_host_give(&h, token);
    openxr_host_keep(&h);
    CHECK(openxr_host_record.valid,
          "the views of the first content were not kept");
@@ -2787,15 +2995,16 @@ static void test_host_same_space(void)
    space = RETRO_VR_REFERENCE_SPACE_LOCAL;
    openxr_host_set_space(&h, &space, &w, &ht);
    t_view[0].pose.position.x = 0.5f;
-   openxr_host_sample(&h, &flags);
-   openxr_host_eye_state(&h, eyes);
+   openxr_host_sample(&h, 0, &flags);
+   openxr_host_eye_state(&h, eyes, &token);
+   openxr_host_give(&h, token);
    openxr_host_new_frame(&h);
    space = RETRO_VR_REFERENCE_SPACE_LOCAL;
    openxr_host_set_space(&h, &space, &w, &ht);
    openxr_host_resume(&h);
    openxr_host_place_kept(&h);
    flags = 0;
-   openxr_host_sample(&h, &flags);
+   openxr_host_sample(&h, 0, &flags);
    CHECK(     openxr_host_has_given(&h) && !(flags & RETRO_VR_FRAME_RECENTERED)
          && t_near(h.given[0].pose.position.x, 0.5f),
          "a stale record was resumed after a content switch");
@@ -3217,6 +3426,476 @@ static void test_frame_inline(void)
    t_frame_free(&rt, &s, &f);
 }
 
+/* One in-line headset frame, drawn. */
+static void t_drawn_frame(openxr_frame_t *f)
+{
+   openxr_frame_begun_t b;
+   if (openxr_frame_begin(f, &b))
+   {
+      b.render = true;
+      openxr_frame_end(f, &b);
+   }
+}
+
+/* A slot made again at another size shows its old swapchains until the
+ * new ones have an image, and frees them after the xrEndFrame that
+ * shows the new ones; a forgotten slot shows neither. */
+static void test_slot_resize(void)
+{
+   openxr_runtime_t rt;
+   openxr_session_t s;
+   openxr_swapchains_t sc;
+   openxr_frame_t f;
+   openxr_frame_begun_t b;
+   video_xr_quad_set_t set;
+   XrSwapchain old0;
+   uint32_t max_layers;
+   unsigned n = 0, i, destroyed, idx[2];
+   const unsigned menu = VIDEO_XR_MENU_SLOT;
+   int cb_user         = 0;
+
+   t_sc_wait          = XR_SUCCESS;
+   t_sc_refuse_width  = 0;
+   t_sc_images        = 3;
+   t_sc_images_second = 0;
+   t_listed_got       = -1;
+   t_frame_fresh(&rt, &s, &sc, &f);
+   CHECK(openxr_frame_start_inline(&f), "resize: in-line start");
+   t_push_state(T_SESSION, XR_SESSION_STATE_READY);
+   CHECK(openxr_frame_begin(&f, &b), "resize: first frame");
+   openxr_frame_end(&f, &b);
+   retro_atomic_store_release_int(&s.state, XR_SESSION_STATE_FOCUSED);
+
+   memset(&set, 0, sizeof(set));
+   set.num_quads     = 1;
+   set.quads[0].slot = 1;
+   openxr_frame_publish(&f, &set);
+   CHECK(     openxr_slot_create(&sc, 1, 44, false, VIDEO_SCALE_PACK(64, 64),
+               1, t_images_cb, &cb_user, &n)
+         && openxr_slot_acquire(&sc, 1, idx), "resize: 64");
+   openxr_slot_release(&sc, 1);
+   old0 = sc.slots[1].swapchains[0];
+   t_drawn_frame(&f);
+   CHECK(t_last_layer_count == 1 && t_quad.subImage.swapchain == old0,
+         "resize: 64 not shown");
+
+   /* Until the new swapchain has an image, the old one shows at its own
+    * size. */
+   destroyed     = t_sc_destroyed;
+   t_sc_unlocked = 0;
+   CHECK(openxr_slot_create(&sc, 1, 44, false, VIDEO_SCALE_PACK(96, 64), 1,
+            t_images_cb, &cb_user, &n), "resize: 96");
+   CHECK(     t_sc_destroyed == destroyed && sc.slots[1].old[0] == old0
+         && sc.slots[1].swapchains[0] != old0,
+         "resize: the shown swapchain destroyed at the resize");
+   t_drawn_frame(&f);
+   CHECK(     t_last_layer_count == 1 && t_quad.subImage.swapchain == old0
+         && t_quad.subImage.imageRect.extent.width == 64,
+         "resize: %u layers between the resize and the release, width %d",
+         t_last_layer_count, (int)t_quad.subImage.imageRect.extent.width);
+
+   /* Released: the next frame shows the new one, and the old one goes
+    * after that frame's xrEndFrame, under the lock, once. */
+   CHECK(openxr_slot_acquire(&sc, 1, idx), "resize: acquire 96");
+   openxr_slot_release(&sc, 1);
+   t_drawn_frame(&f);
+   CHECK(     t_last_layer_count == 1
+         && t_quad.subImage.swapchain == sc.slots[1].swapchains[0]
+         && t_quad.subImage.imageRect.extent.width == 96,
+         "resize: 96 not shown after its release");
+   CHECK(     t_sc_destroyed_at_end == destroyed
+         && t_sc_destroyed == destroyed + 1 && !sc.slots[1].old[0]
+         && !t_sc_unlocked,
+         "resize: old swapchain: %u destroyed by xrEndFrame, %u after, "
+         "%u unlocked", t_sc_destroyed_at_end - destroyed,
+         t_sc_destroyed - destroyed, t_sc_unlocked);
+   t_drawn_frame(&f);
+   CHECK(t_sc_destroyed == destroyed + 1,
+         "resize: an old swapchain destroyed twice");
+
+   /* A second resize before the first's image: the shown swapchain
+    * stays, the one never shown goes at once. */
+   old0      = sc.slots[1].swapchains[0];
+   destroyed = t_sc_destroyed;
+   CHECK(     openxr_slot_create(&sc, 1, 44, false,
+               VIDEO_SCALE_PACK(128, 64), 1, t_images_cb, &cb_user, &n)
+         && openxr_slot_create(&sc, 1, 44, false,
+               VIDEO_SCALE_PACK(160, 64), 1, t_images_cb, &cb_user, &n),
+         "resize: twice");
+   CHECK(t_sc_destroyed_at_create == destroyed + 1,
+         "resize: the 128 swapchain destroyed after the 160 one was made: "
+         "%u before", t_sc_destroyed_at_create - destroyed);
+   t_drawn_frame(&f);
+   CHECK(     t_sc_destroyed == destroyed + 1 && sc.slots[1].old[0] == old0
+         && t_last_layer_count == 1 && t_quad.subImage.swapchain == old0
+         && t_quad.subImage.imageRect.extent.width == 96,
+         "resize: a second resize lost the shown image: %u destroyed, "
+         "%u layers", t_sc_destroyed - destroyed, t_last_layer_count);
+   CHECK(openxr_slot_acquire(&sc, 1, idx), "resize: acquire 160");
+   openxr_slot_release(&sc, 1);
+   t_drawn_frame(&f);
+   CHECK(     t_sc_destroyed == destroyed + 2
+         && t_quad.subImage.imageRect.extent.width == 160,
+         "resize: 160 after its release");
+
+   /* A size the runtime refuses: nothing kept, old or new. */
+   destroyed         = t_sc_destroyed;
+   CHECK(     openxr_slot_create(&sc, 1, 44, false,
+               VIDEO_SCALE_PACK(192, 64), 1, t_images_cb, &cb_user, &n)
+         && sc.slots[1].old[0], "refused: no old set before the refusal");
+   t_sc_refuse_width = 4096;
+   CHECK(!openxr_slot_create(&sc, 1, 44, false, VIDEO_SCALE_PACK(4096, 64),
+            1, t_images_cb, &cb_user, &n), "refused: made");
+   t_sc_refuse_width = 0;
+   CHECK(     t_sc_destroyed == destroyed + 2 && !sc.slots[1].swapchains[0]
+         && !sc.slots[1].old[0]
+         && !retro_atomic_load_acquire_int(&sc.slots[1].content)
+         && !retro_atomic_load_acquire_int(&sc.slots[1].old_layers),
+         "refused: %u destroyed", t_sc_destroyed - destroyed);
+
+   /* Refused while a set with an image shows: it and the superseded old
+    * set both go. */
+   CHECK(     openxr_slot_create(&sc, 1, 44, false, VIDEO_SCALE_PACK(64, 64),
+               1, t_images_cb, &cb_user, &n)
+         && openxr_slot_acquire(&sc, 1, idx), "refused shown: 64");
+   openxr_slot_release(&sc, 1);
+   CHECK(     openxr_slot_create(&sc, 1, 44, false, VIDEO_SCALE_PACK(96, 64),
+               1, t_images_cb, &cb_user, &n)
+         && openxr_slot_acquire(&sc, 1, idx), "refused shown: 96");
+   openxr_slot_release(&sc, 1);
+   CHECK(     sc.slots[1].old[0]
+         && retro_atomic_load_acquire_int(&sc.slots[1].content),
+         "refused shown: no old set beside a shown one");
+   destroyed         = t_sc_destroyed;
+   t_sc_refuse_width = 4096;
+   CHECK(!openxr_slot_create(&sc, 1, 44, false, VIDEO_SCALE_PACK(4096, 64),
+            1, t_images_cb, &cb_user, &n), "refused shown: made");
+   t_sc_refuse_width = 0;
+   CHECK(     t_sc_destroyed == destroyed + 2 && !sc.slots[1].swapchains[0]
+         && !sc.slots[1].old[0]
+         && !retro_atomic_load_acquire_int(&sc.slots[1].content)
+         && !retro_atomic_load_acquire_int(&sc.slots[1].old_layers),
+         "refused shown: %u destroyed", t_sc_destroyed - destroyed);
+
+   /* Mono to stereo while the mono swapchain shows: the right eye's
+    * layer 1 is left out, never read from a set that lacks it. */
+   memset(&set, 0, sizeof(set));
+   set.num_quads     = 1;
+   set.quads[0].slot = 2;
+   openxr_frame_publish(&f, &set);
+   CHECK(     openxr_slot_create(&sc, 2, 44, false, VIDEO_SCALE_PACK(64, 64),
+               1, t_images_cb, &cb_user, &n)
+         && openxr_slot_acquire(&sc, 2, idx), "stereo: mono");
+   openxr_slot_release(&sc, 2);
+   old0 = sc.slots[2].swapchains[0];
+   CHECK(openxr_slot_create(&sc, 2, 44, false, VIDEO_SCALE_PACK(64, 64), 2,
+            t_images_cb, &cb_user, &n), "stereo: two layers");
+   set.num_quads      = 2;
+   set.quads[0].eye   = VIDEO_XR_EYE_LEFT;
+   set.quads[1].slot  = 2;
+   set.quads[1].eye   = VIDEO_XR_EYE_RIGHT;
+   set.quads[1].layer = 1;
+   openxr_frame_publish(&f, &set);
+   {
+      XrCompositionLayerQuad layers[VIDEO_XR_MAX_QUADS];
+      const XrCompositionLayerBaseHeader *ptrs[VIDEO_XR_MAX_QUADS];
+      unsigned got = openxr_frame_layers(&f, layers, ptrs);
+      CHECK(     got == 1 && layers[0].subImage.swapchain == old0
+            && layers[0].eyeVisibility == XR_EYE_VISIBILITY_LEFT,
+            "stereo: %u layers from the old mono set", got);
+      CHECK(openxr_slot_acquire(&sc, 2, idx), "stereo: acquire");
+      openxr_slot_release(&sc, 2);
+      got = openxr_frame_layers(&f, layers, ptrs);
+      CHECK(     got == 2
+            && layers[0].subImage.swapchain == sc.slots[2].swapchains[0]
+            && layers[1].subImage.swapchain == sc.slots[2].swapchains[1],
+            "stereo: %u new layers", got);
+   }
+
+   /* Made again before the release's frame: the superseded mono set
+    * goes first. */
+   destroyed = t_sc_destroyed;
+   CHECK(     openxr_slot_create(&sc, 2, 44, false, VIDEO_SCALE_PACK(96, 64),
+               1, t_images_cb, &cb_user, &n)
+         && t_sc_destroyed_at_create == destroyed + 1,
+         "remade: the mono set destroyed after the next one was made: "
+         "%u before", t_sc_destroyed_at_create - destroyed);
+
+   /* Destroyed before the old set's frame: both sets go, under the
+    * lock. */
+   destroyed     = t_sc_destroyed;
+   t_sc_unlocked = 0;
+   openxr_slot_destroy(&sc, 2);
+   CHECK(     t_sc_destroyed == destroyed + 3 && !t_sc_unlocked
+         && !sc.slots[2].swapchains[0] && !sc.slots[2].old[0]
+         && !retro_atomic_load_acquire_int(&sc.slots[2].old_layers),
+         "destroy: %u of 3 swapchains, %u unlocked",
+         t_sc_destroyed - destroyed, t_sc_unlocked);
+
+   /* The menu resized: its old swapchain is still the menu's at the
+    * runtime's layer count. */
+   CHECK(     openxr_slot_create(&sc, menu, 44, false,
+               VIDEO_SCALE_PACK(64, 64), 1, t_images_cb, &cb_user, &n)
+         && openxr_slot_acquire(&sc, menu, idx), "menu");
+   openxr_slot_release(&sc, menu);
+   old0 = sc.slots[menu].swapchains[0];
+   CHECK(openxr_slot_create(&sc, menu, 44, false, VIDEO_SCALE_PACK(96, 64),
+            1, t_images_cb, &cb_user, &n), "menu: resize");
+   max_layers    = rt.max_layers;
+   rt.max_layers = 3;
+   {
+      XrCompositionLayerQuad q[4];
+      const XrCompositionLayerBaseHeader *kept[4];
+      memset(q, 0, sizeof(q));
+      for (i = 0; i < 4; i++)
+         kept[i] = (const XrCompositionLayerBaseHeader*)&q[i];
+      q[0].subImage.swapchain = sc.slots[1].swapchains[0];
+      q[1].subImage.swapchain = sc.slots[1].swapchains[0];
+      q[2].subImage.swapchain = old0;
+      CHECK(     openxr_frame_fit(&f, kept, 4, 0, 3) == 3
+            && kept[0] == (const XrCompositionLayerBaseHeader*)&q[0]
+            && kept[1] == (const XrCompositionLayerBaseHeader*)&q[2]
+            && kept[2] == (const XrCompositionLayerBaseHeader*)&q[3],
+            "fit: the menu's old swapchain dropped as a screen");
+   }
+   rt.max_layers = max_layers;
+
+   /* Closed before its new image: neither set shows, the old one goes at
+    * the next xrEndFrame, and a menu back at another size shows nothing
+    * until its release. */
+   memset(&set, 0, sizeof(set));
+   set.num_quads     = 1;
+   set.quads[0].kind = VIDEO_XR_QUAD_MENU;
+   set.quads[0].slot = menu;
+   openxr_frame_publish(&f, &set);
+   t_drawn_frame(&f);
+   CHECK(t_last_layer_count == 1 && t_quad.subImage.swapchain == old0,
+         "menu: %u layers while resized", t_last_layer_count);
+   destroyed = t_sc_destroyed;
+   openxr_slot_forget(&sc, menu);
+   t_drawn_frame(&f);
+   CHECK(     !t_last_layer_count && t_sc_destroyed == destroyed + 1
+         && !sc.slots[menu].old[0],
+         "forget: %u layers, %u destroyed", t_last_layer_count,
+         t_sc_destroyed - destroyed);
+   CHECK(openxr_slot_create(&sc, menu, 44, false, VIDEO_SCALE_PACK(128, 64),
+            1, t_images_cb, &cb_user, &n), "forget: back at 128");
+   t_drawn_frame(&f);
+   CHECK(     !t_last_layer_count && t_sc_destroyed == destroyed + 2
+         && !sc.slots[menu].old[0],
+         "forget: the menu came back with its last image");
+   CHECK(openxr_slot_acquire(&sc, menu, idx), "forget: acquire");
+   openxr_slot_release(&sc, menu);
+   t_drawn_frame(&f);
+   CHECK(     t_last_layer_count == 1
+         && t_quad.subImage.swapchain == sc.slots[menu].swapchains[0],
+         "forget: the new image not shown");
+
+   openxr_frame_stop_inline(&f);
+   openxr_slot_destroy(&sc, 1);
+   openxr_slot_destroy(&sc, menu);
+   t_frame_free(&rt, &s, &f);
+}
+
+/* Performance Boost: nothing asked while off from the start, CPU boost
+ * once on, both domains back at sustained high (the runtime's default)
+ * once off again, one ask per change, and nothing without the
+ * extension or its function. */
+static void test_frame_perf(void)
+{
+   openxr_runtime_t rt;
+   openxr_session_t s;
+   openxr_swapchains_t sc;
+   openxr_frame_t f;
+   openxr_frame_begun_t b;
+   unsigned i;
+
+   /* The extension is asked for when offered, dropped without its
+    * function. */
+   t_runtime_defaults();
+   t_exts[t_num_exts++] = XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME;
+   memset(&rt, 0, sizeof(rt));
+   CHECK(openxr_runtime_create_instance(&rt, t_get_proc, "XR_KHR_vulkan_enable2")
+         == OPENXR_RUNTIME_OK, "instance with performance settings");
+   CHECK(rt.perf_settings && rt.PerfSettingsSetPerformanceLevelEXT,
+         "performance settings not loaded");
+   openxr_runtime_deinit(&rt);
+   t_runtime_defaults();
+   t_exts[t_num_exts++] = XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME;
+   t_missing = "xrPerfSettingsSetPerformanceLevelEXT";
+   memset(&rt, 0, sizeof(rt));
+   openxr_runtime_create_instance(&rt, t_get_proc, "XR_KHR_vulkan_enable2");
+   CHECK(!rt.perf_settings, "performance settings kept without the function");
+   openxr_runtime_deinit(&rt);
+
+   t_frame_fresh(&rt, &s, &sc, &f);
+   rt.perf_settings                      = true;
+   rt.PerfSettingsSetPerformanceLevelEXT = t_perf_level;
+   video_xr_set_perf_boost(false);
+   t_perf_calls = 0;
+   t_perf_cpu   = t_perf_gpu = (XrPerfSettingsLevelEXT)0;
+   CHECK(openxr_frame_start_inline(&f), "in-line start");
+   t_push_state(T_SESSION, XR_SESSION_STATE_READY);
+   for (i = 0; i < 3; i++)
+   {
+      openxr_frame_begin(&f, &b);
+      openxr_frame_end(&f, &b);
+   }
+   CHECK(t_perf_calls == 0, "%u asks while off from the start", t_perf_calls);
+
+   video_xr_set_perf_boost(true);
+   for (i = 0; i < 3; i++)
+   {
+      openxr_frame_begin(&f, &b);
+      openxr_frame_end(&f, &b);
+   }
+   CHECK(t_perf_calls == 2
+         && t_perf_cpu == XR_PERF_SETTINGS_LEVEL_BOOST_EXT
+         && t_perf_gpu == XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT,
+         "on: %u asks, CPU %d, GPU %d", t_perf_calls, (int)t_perf_cpu,
+         (int)t_perf_gpu);
+
+   video_xr_set_perf_boost(false);
+   for (i = 0; i < 3; i++)
+   {
+      openxr_frame_begin(&f, &b);
+      openxr_frame_end(&f, &b);
+   }
+   CHECK(t_perf_calls == 4
+         && t_perf_cpu == XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT
+         && t_perf_gpu == XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT,
+         "off again: %u asks, CPU %d, GPU %d", t_perf_calls,
+         (int)t_perf_cpu, (int)t_perf_gpu);
+
+   /* Without the extension: never asked. */
+   rt.perf_settings = false;
+   video_xr_set_perf_boost(true);
+   openxr_frame_begin(&f, &b);
+   openxr_frame_end(&f, &b);
+   CHECK(t_perf_calls == 4, "asked without the extension");
+   rt.perf_settings = true;
+   for (i = 1; i <= 3; i++)
+   {
+      unsigned calls, applied = 3 ^ i;
+      video_xr_set_perf_boost(false);
+      openxr_frame_ask_perf(&f);
+      video_xr_set_perf_boost(true);
+      t_perf_fail = i;
+      calls = t_perf_calls;
+      openxr_frame_ask_perf(&f);
+      CHECK(t_perf_calls == calls + 2 && f.perf_applied == applied,
+            "partial failure %u lost applied domain state", i);
+      calls = t_perf_calls;
+      t_reset_log();
+      openxr_frame_ask_perf(&f);
+      CHECK(t_perf_calls == calls && !t_log[0],
+            "failed performance request retried or logged before deadline");
+      f.perf_retry_usec = 0;
+      openxr_frame_ask_perf(&f);
+      CHECK(t_perf_calls == calls + (i == 3 ? 2 : 1)
+            && f.perf_applied == applied && !t_log[0],
+            "retry repeated successful domain or warning");
+      t_perf_fail = 0;
+      calls = t_perf_calls;
+      f.perf_retry_usec = 0;
+      openxr_frame_ask_perf(&f);
+      CHECK(t_perf_calls == calls + (i == 3 ? 2 : 1)
+            && f.perf_applied == 3
+            && t_perf_cpu == XR_PERF_SETTINGS_LEVEL_BOOST_EXT
+            && t_perf_gpu == XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT,
+            "failed performance request did not recover");
+      calls = t_perf_calls;
+      openxr_frame_ask_perf(&f);
+      CHECK(t_perf_calls == calls, "completed request repeated");
+   }
+   video_xr_set_perf_boost(false);
+   t_perf_fail = 1;
+   openxr_frame_ask_perf(&f);
+   CHECK(f.perf_applied == 2, "failed boost removal lost GPU success");
+   video_xr_set_perf_boost(true);
+   t_perf_fail = 0;
+   openxr_frame_ask_perf(&f);
+   CHECK(f.perf_applied == 3 && f.asked_perf == 1,
+         "new setting was delayed by old retry deadline");
+   openxr_frame_stop_inline(&f);
+   CHECK(openxr_frame_start_inline(&f) && f.asked_perf == -1
+         && !f.perf_applied && !f.perf_retry_usec,
+         "session restart retained performance retry state");
+   openxr_frame_ask_perf(&f);
+   CHECK(f.perf_applied == 3, "session restart did not reapply boost");
+   video_xr_set_perf_boost(false);
+   t_frame_free(&rt, &s, &f);
+}
+
+static void test_frame_rate_retry(void)
+{
+   openxr_runtime_t rt;
+   openxr_session_t s;
+   openxr_swapchains_t sc;
+   openxr_frame_t f;
+   unsigned calls;
+
+   t_frame_fresh(&rt, &s, &sc, &f);
+   rt.refresh_ext = true;
+   rt.RequestDisplayRefreshRateFB = t_request_rate;
+   CHECK(openxr_frame_start_inline(&f), "rate retry in-line start");
+   t_rate_requests = 0;
+   t_rate_applied = 72.0f;
+   t_rate_result = XR_ERROR_RUNTIME_FAILURE;
+   openxr_frame_request_rate(&f, 90.0f);
+   openxr_frame_ask_rate(&f);
+   CHECK(t_rate_requests == 1 && f.asked_rate == 0.0f
+         && t_rate_applied == 72.0f, "failed rate cached as applied");
+   t_reset_log();
+   openxr_frame_ask_rate(&f);
+   CHECK(t_rate_requests == 1 && !t_log[0], "rate retry ignored deadline");
+   f.rate_retry_usec = 0;
+   openxr_frame_ask_rate(&f);
+   CHECK(t_rate_requests == 2 && !t_log[0], "rate retry missing or logged again");
+   t_rate_result = XR_SUCCESS;
+   f.rate_retry_usec = 0;
+   openxr_frame_ask_rate(&f);
+   CHECK(t_rate_requests == 3 && f.asked_rate == 90.0f
+         && t_rate_applied == 90.0f, "rate retry did not recover");
+   openxr_frame_ask_rate(&f);
+   CHECK(t_rate_requests == 3, "accepted rate requested again");
+
+   t_rate_result = XR_ERROR_RUNTIME_FAILURE;
+   openxr_frame_request_rate(&f, 120.0f);
+   openxr_frame_ask_rate(&f);
+   CHECK(t_rate_requests == 4 && f.asked_rate == 90.0f,
+         "changed rate delayed or replaced accepted rate on failure");
+   openxr_frame_request_rate(&f, 90.0f);
+   openxr_frame_ask_rate(&f);
+   CHECK(t_rate_requests == 4, "return to accepted rate requested it again");
+   openxr_frame_request_rate(&f, 120.0f);
+   openxr_frame_ask_rate(&f);
+   CHECK(t_rate_requests == 5, "return to failed rate retained old deadline");
+   openxr_frame_request_rate(&f, 0.0f);
+   openxr_frame_ask_rate(&f);
+   CHECK(t_rate_requests == 5 && f.requested_rate == 0.0f,
+         "disabled rate did not cancel retries");
+
+   openxr_frame_stop_inline(&f);
+   CHECK(openxr_frame_start_inline(&f) && !f.asked_rate
+         && !f.requested_rate && !f.rate_retry_usec,
+         "session restart retained rate state");
+   t_rate_result = XR_SUCCESS;
+   openxr_frame_request_rate(&f, 90.0f);
+   openxr_frame_ask_rate(&f);
+   CHECK(t_rate_requests == 6 && f.asked_rate == 90.0f,
+         "session restart did not reapply rate");
+   calls = t_rate_requests;
+   openxr_frame_request_rate(&f, 120.0f);
+   rt.refresh_ext = false;
+   openxr_frame_ask_rate(&f);
+   rt.refresh_ext = true;
+   rt.RequestDisplayRefreshRateFB = NULL;
+   openxr_frame_ask_rate(&f);
+   CHECK(t_rate_requests == calls, "rate requested without extension or function");
+   t_frame_free(&rt, &s, &f);
+}
+
 static void test_binding_gles(void)
 {
    openxr_runtime_t rt;
@@ -3249,21 +3928,30 @@ static void test_binding_gles(void)
    memset(&sc, 0, sizeof(sc));
    openxr_swapchains_load(&sc, &rt, &s);
 
-   /* RGBA8 first; sRGB only with a warning; neither: none. */
+   /* sRGB when the copy can keep the values; else RGBA8 first; sRGB
+    * only with a warning; neither: none. */
    t_formats[0] = OPENXR_GLES_SRGB8_ALPHA8;
    t_formats[1] = OPENXR_GLES_RGBA8;
    openxr_swapchains_list_formats(&sc);
-   CHECK(openxr_binding_gles_format(&sc) == OPENXR_GLES_RGBA8, "RGBA8 not chosen");
+   CHECK(openxr_binding_gles_format(&sc, true) == OPENXR_GLES_SRGB8_ALPHA8,
+         "sRGB not chosen with write control");
+   CHECK(openxr_binding_gles_format(&sc, false) == OPENXR_GLES_RGBA8, "RGBA8 not chosen");
+   t_formats[0] = OPENXR_GLES_RGBA8;
+   t_formats[1] = 44;
+   openxr_swapchains_list_formats(&sc);
+   CHECK(openxr_binding_gles_format(&sc, true) == OPENXR_GLES_RGBA8,
+         "RGBA8 not chosen without sRGB on offer");
+   t_formats[0] = OPENXR_GLES_SRGB8_ALPHA8;
    t_formats[1] = OPENXR_GLES_SRGB8_ALPHA8;
    openxr_swapchains_list_formats(&sc);
    t_reset_log();
-   CHECK(openxr_binding_gles_format(&sc) == OPENXR_GLES_SRGB8_ALPHA8
+   CHECK(openxr_binding_gles_format(&sc, false) == OPENXR_GLES_SRGB8_ALPHA8
          && LOGGED("[OpenXR] Only an sRGB swapchain format is offered; the output may look washed out.\n"),
          "sRGB: %s", t_log);
    t_formats[0] = 50;
    t_formats[1] = 44;
    openxr_swapchains_list_formats(&sc);
-   CHECK(!openxr_binding_gles_format(&sc), "a format from nothing");
+   CHECK(!openxr_binding_gles_format(&sc, true), "a format from nothing");
 
    /* Each layer's images land as its textures. */
    memset(tex, 0, sizeof(tex));
@@ -3507,6 +4195,7 @@ static void test_vulkan_inline(void)
    XrLoaderInitInfoBaseHeaderKHR loader;
    openxr_input_hooks_t hooks;
    struct retro_vr_eye_state eyes[2];
+   unsigned token = 0;
    enum retro_vr_reference_space space;
    openxr_projection_t p;
    vulkan_openxr_t *xr;
@@ -3693,8 +4382,9 @@ static void test_vulkan_inline(void)
    space = RETRO_VR_REFERENCE_SPACE_STAGE;
    t_xr_host.set_space(t_xr_host.user, &space, &w, &ht);
    t_view[0].pose.position.x = -0.25f;
-   t_xr_host.sample(t_xr_host.user, &flags);
-   t_xr_host.eye_state(t_xr_host.user, eyes);
+   t_xr_host.sample(t_xr_host.user, 0, &flags);
+   t_xr_host.eye_state(t_xr_host.user, eyes, &token);
+   t_xr_host.give(t_xr_host.user, token);
    vulkan_openxr_stop(xr);
    CHECK(     openxr_host_record.valid
          && t_near(openxr_host_record.views[0].pose.position.x, -0.25f),
@@ -3717,7 +4407,7 @@ static void test_vulkan_inline(void)
    space = RETRO_VR_REFERENCE_SPACE_STAGE;
    t_xr_host.set_space(t_xr_host.user, &space, &w, &ht);
    t_view[0].pose.position.x = 0.5f;
-   t_xr_host.sample(t_xr_host.user, &flags);
+   t_xr_host.sample(t_xr_host.user, 0, &flags);
    if (t_xr_host.resume)
       t_xr_host.resume(t_xr_host.user);
    vulkan_openxr_place_kept(xr);
@@ -3730,7 +4420,8 @@ static void test_vulkan_inline(void)
    CHECK(!vulkan_openxr_has_given(xr), "kept views outlived a new core frame");
 
    /* A new core frame drops a record kept for the next start. */
-   t_xr_host.eye_state(t_xr_host.user, eyes);
+   t_xr_host.eye_state(t_xr_host.user, eyes, &token);
+   t_xr_host.give(t_xr_host.user, token);
    vulkan_openxr_stop(xr);
    vulkan_openxr_start(xr, vk_inst, gpu, dev, 0, lock);
    kept = openxr_host_record.session;
@@ -3750,8 +4441,9 @@ static void test_vulkan_inline(void)
       vulkan_openxr_end_frame(xr, 0);
       space = RETRO_VR_REFERENCE_SPACE_STAGE;
       t_xr_host.set_space(t_xr_host.user, &space, &w, &ht);
-      t_xr_host.sample(t_xr_host.user, &flags);
-      t_xr_host.eye_state(t_xr_host.user, eyes);
+      t_xr_host.sample(t_xr_host.user, 0, &flags);
+      t_xr_host.eye_state(t_xr_host.user, eyes, &token);
+      t_xr_host.give(t_xr_host.user, token);
       vulkan_openxr_drop(xr);
       CHECK(!openxr_host_record.session, "a drop left the record");
    }
@@ -4276,11 +4968,13 @@ static void t_inline_frame(openxr_frame_t *f, openxr_host_t *h,
    openxr_frame_begun_t b;
    openxr_projection_t p;
    struct retro_vr_eye_state eyes[2];
+   unsigned token = 0;
    uint32_t flags = 0;
    if (running)
    {
-      openxr_host_sample(h, &flags);
-      openxr_host_eye_state(h, eyes);
+      openxr_host_sample(h, 0, &flags);
+      openxr_host_eye_state(h, eyes, &token);
+      openxr_host_give(h, token);
    }
    openxr_frame_begin(f, &b);
    if (recenter)
@@ -5678,6 +6372,7 @@ static void test_gl_host_records(void)
 static void test_gl_host_resize(void)
 {
    unsigned made;
+   XrSwapchain before, shown;
    gl_openxr_t *xr = t_gl_host_new();
    CHECK(xr, "host");
    if (!xr)
@@ -5689,18 +6384,21 @@ static void test_gl_host_resize(void)
          && t_gl_shown(NULL) == 1, "64: width %u, image %u",
          (unsigned)t_ci_width, t_gl_image_content(xr, 1, 1));
 
-   /* A new size waits for its image: the slot shows nothing while the
-    * runtime is busy, never the new size's quad over the old pixels. */
+   /* A new size waits for its image: the old one shows meanwhile, with
+    * its own quad. */
+   before    = xr->sc.slots[1].swapchains[0];
    t_sc_wait = XR_TIMEOUT_EXPIRED;
    CHECK(t_gl_draw(xr, 1, VIDEO_SCALE_PACK(128, 64), 2, 2, NULL)
          && t_gate_step(1), "second size");
-   CHECK(t_ci_width == 128 && !t_gl_shown(NULL)
-         && t_gl_image_content(xr, 1, 0) != 20,
+   CHECK(     t_ci_width == 128 && t_gl_shown(&shown) == 1
+         && shown == before && t_gl_image_content(xr, 1, 0) != 20,
          "128 busy: width %u, shown %u", (unsigned)t_ci_width,
          t_gl_shown(NULL));
    t_sc_wait = XR_SUCCESS;
    CHECK(t_gate_step(1), "frame");
-   CHECK(t_gl_image_content(xr, 1, 0) == 20 && t_gl_shown(NULL) == 1,
+   CHECK(     t_gl_image_content(xr, 1, 0) == 20
+         && t_gl_shown(&shown) == 1
+         && shown == xr->sc.slots[1].swapchains[0] && shown != before,
          "128: image %u, shown %u", t_gl_image_content(xr, 1, 0),
          t_gl_shown(NULL));
 
@@ -5845,6 +6543,7 @@ static void test_gl_host_projection(void)
    const unsigned dims = VIDEO_SCALE_PACK(96, 80);
    enum retro_vr_reference_space space = RETRO_VR_REFERENCE_SPACE_LOCAL;
    XrPosef origin;
+   XrSwapchain before;
    openxr_projection_t p, got;
    int seq;
    gl_openxr_t *xr = t_gl_host_new();
@@ -5917,18 +6616,22 @@ static void test_gl_host_projection(void)
          "carried: seq %d of %d, x %f", got.track_seq, seq + 2,
          t_proj_views[0].pose.position.x);
 
-   /* Another eye size, its image not copied yet: no projection, rather
-    * than the new size's extent over the old pixels, or the old one's
-    * over images the runtime has none of. */
+   /* Another eye size, its image not copied yet: the old images show,
+    * with the projection they were drawn for. */
+   before    = xr->sc.slots[slot].swapchains[0];
    t_sc_wait = XR_TIMEOUT_EXPIRED;
    p.width   = 100;
    p.height  = 90;
    CHECK(t_gl_draw(xr, slot, VIDEO_SCALE_PACK(128, 96), 2, 5, &p)
          && t_gate_step(1), "resized, busy");
-   CHECK(t_ci_width == 128
-         && t_layer_types[0] != XR_TYPE_COMPOSITION_LAYER_PROJECTION,
-         "resized, busy: width %u, type %d", (unsigned)t_ci_width,
-         (int)t_layer_types[0]);
+   CHECK(     t_ci_width == 128
+         && t_layer_types[0] == XR_TYPE_COMPOSITION_LAYER_PROJECTION
+         && t_proj_views[0].subImage.swapchain == before
+         && t_proj_views[0].subImage.imageRect.extent.width == 64
+         && t_proj_views[1].subImage.imageRect.extent.height == 48,
+         "resized, busy: width %u, type %d, extent %d",
+         (unsigned)t_ci_width, (int)t_layer_types[0],
+         (int)t_proj_views[0].subImage.imageRect.extent.width);
    t_sc_wait = XR_SUCCESS;
    CHECK(     t_gate_step(1)
          && t_layer_types[0] == XR_TYPE_COMPOSITION_LAYER_PROJECTION
@@ -5974,6 +6677,7 @@ int main(void)
    test_ring_threads();
    test_session();
    test_swapchain();
+   test_seq_latch();
    test_frame();
    test_frame_thread_hooks();
    test_frame_carried_seq();
@@ -5992,6 +6696,9 @@ int main(void)
    test_runtime_platform();
    test_runtime_gaps();
    test_frame_inline();
+   test_slot_resize();
+   test_frame_perf();
+   test_frame_rate_retry();
    test_binding_gles();
    test_binding_gl();
 #ifdef HAVE_OPENXR_GL

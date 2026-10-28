@@ -1,3 +1,4 @@
+.DEFAULT_GOAL := all
 # record_ffmpeg end to end: frames and audio pushed from this thread,
 # taken by the driver's encoder thread, decoded back and checked.
 
@@ -10,6 +11,9 @@ TARGET    := ffmpeg_pipeline_test
 
 SOURCES_C := \
 	ffmpeg_pipeline_test.c \
+	record_finalize_test.c \
+	record_audio_growth_test.c \
+	record_video_stride_test.c \
 	stubs_retroarch.c \
 	$(CORE_DIR)/record/drivers/record_ffmpeg.c \
 	$(LIBRETRO_COMM_DIR)/queues/retro_spsc.c \
@@ -53,7 +57,11 @@ FF_LIBS   := $(shell pkg-config --libs   libavcodec libavformat libavutil libsws
 INCDIRS   := -I$(LIBRETRO_COMM_DIR)/include -I$(CORE_DIR) -I$(CORE_DIR)/deps
 CFLAGS   += -Wall $(INCDIRS) $(FF_CFLAGS)
 CFLAGS   += -DRARCH_INTERNAL -DHAVE_FFMPEG -DHAVE_THREADS -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64
-LDFLAGS  += $(FF_LIBS) -lm -lpthread
+LDFLAGS  += $(FF_LIBS) -lm -lpthread \
+   -Wl,--wrap=av_write_trailer -Wl,--wrap=avio_closep \
+   -Wl,--wrap=avcodec_send_frame -Wl,--wrap=avcodec_receive_packet \
+   -Wl,--wrap=av_interleaved_write_frame \
+   -Wl,--wrap=av_malloc -Wl,--wrap=sthread_join -Wl,--wrap=av_realloc
 
 # PLAIN_RING=1 builds the lane where the video ring cannot be mirrored.
 ifneq ($(PLAIN_RING),)
@@ -62,11 +70,21 @@ LDFLAGS += -Wl,--wrap=retro_spsc_init_mirrored
 endif
 
 ifneq ($(SANITIZER),)
-CFLAGS  += -fsanitize=$(SANITIZER) -fno-omit-frame-pointer -g
+CFLAGS  += -fsanitize=$(SANITIZER) -fno-omit-frame-pointer -g1
 LDFLAGS += -fsanitize=$(SANITIZER)
 else
-CFLAGS  += -g -O1
+CFLAGS  += -g1 -O1
 endif
+
+record_finalize_fragment.c: $(CORE_DIR)/record/record_driver.c
+	sed -n '/^bool recording_deinit(void)/,/^void streaming_set_state/p' $< | sed '$$d' > $@
+
+record_start_fragment.c: $(CORE_DIR)/record/record_driver.c
+	sed -n '/^void recording_gpu_poll(void)/,/^void recording_gpu_stop(void)/p' $< | sed '$$d' > $@
+
+record_finalize_test.o: record_finalize_fragment.c record_start_fragment.c
+record_audio_growth_test.o: $(CORE_DIR)/record/drivers/record_ffmpeg.c
+record_video_stride_test.o: $(CORE_DIR)/record/drivers/record_ffmpeg.c
 
 all: $(TARGET)
 
@@ -82,6 +100,6 @@ $(SAMPLE_OBJDIR)/%.o: $$(call sample_src,$$*).c
 
 clean:
 	rm -rf $(SAMPLE_OBJDIR)
-	rm -f $(TARGET) $(OBJS) ffmpeg_pipeline_test.mkv
+	rm -f $(TARGET) $(TARGET).exe $(OBJS) ffmpeg_pipeline_test.mkv record_finalize_fragment.c record_start_fragment.c
 
 .PHONY: clean

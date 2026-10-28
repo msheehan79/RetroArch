@@ -55,6 +55,7 @@ COMMON_SOURCES := \
 	$(LIBRETRO_COMM_DIR)/streams/trans_stream_deflate.c \
 	$(LIBRETRO_COMM_DIR)/encodings/encoding_deflate.c \
 	$(LIBRETRO_COMM_DIR)/encodings/encoding_rzstd.c \
+	$(LIBRETRO_COMM_DIR)/encodings/encoding_xxh64.c \
 	$(LIBRETRO_COMM_DIR)/streams/trans_stream_rzstd.c \
 	$(LIBRETRO_COMM_DIR)/vfs/vfs_implementation.c \
 	$(LIBRETRO_COMM_DIR)/time/rtime.c \
@@ -92,7 +93,7 @@ ifneq ($(SANITIZER),)
 endif
 
 ifeq ($(DEBUG), 1)
-	CFLAGS += -O0 -g -DDEBUG -D_DEBUG
+	CFLAGS += -O0 -g1 -DDEBUG -D_DEBUG
 else
 	CFLAGS += -O2 -DNDEBUG
 endif

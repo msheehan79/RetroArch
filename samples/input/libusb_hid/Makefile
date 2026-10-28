@@ -12,11 +12,12 @@ SOURCES := \
 	fake_libusb.c \
 	$(RARCH_DIR)/input/drivers_hid/libusb_hid.c \
 	$(LIBRETRO_COMM_DIR)/rthreads/rthreads.c \
+	$(LIBRETRO_COMM_DIR)/compat/compat_strl.c \
 	$(LIBRETRO_COMM_DIR)/features/features_cpu.c
 
 OBJS := $(call sample_objs,$(SOURCES:.c=.o))
 
-CFLAGS  += -Wall -std=gnu99 -g -O1 -D_GNU_SOURCE -DHAVE_THREADS -DHAVE_HID \
+CFLAGS  += -Wall -std=gnu99 -g1 -O1 -D_GNU_SOURCE -DHAVE_THREADS -DHAVE_HID \
            -DHAVE_LIBUSB -I$(RARCH_DIR) -I$(LIBRETRO_COMM_DIR)/include -I.
 LDFLAGS += -lpthread -lm
 

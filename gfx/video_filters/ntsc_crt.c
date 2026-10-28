@@ -411,6 +411,9 @@ reset_eq(struct EQF *f)
     memset(f->h, 0, sizeof(f->h));
 }
 
+/* At four samples per chroma period the decoder runs this through
+ * EQF_STEP below instead. */
+#if (CRT_CC_SAMPLES != 4)
 static int
 eqf(struct EQF *f, int s)
 {
@@ -439,6 +442,37 @@ eqf(struct EQF *f, int s)
 
     return (r[0] + r[1] + r[2]);
 }
+#endif
+
+/* eqf() on locals: P names a filter's state (lf, hf, the gains, the
+ * four low and high stages and the history), loaded from a struct EQF
+ * by EQF_LOCALS. EQF_STEP runs one sample through it exactly as eqf()
+ * does and leaves the result in OUT. */
+#define EQF_LOCALS(P, F) \
+    const int P##lf = (F).lf, P##hf = (F).hf; \
+    const int P##g0 = (F).g[0], P##g1 = (F).g[1], P##g2 = (F).g[2]; \
+    int P##L0 = (F).fL[0], P##L1 = (F).fL[1], P##L2 = (F).fL[2], P##L3 = (F).fL[3]; \
+    int P##H0 = (F).fH[0], P##H1 = (F).fH[1], P##H2 = (F).fH[2], P##H3 = (F).fH[3]; \
+    int P##h0 = (F).h[0], P##h1 = (F).h[1], P##h2 = (F).h[2]
+
+#define EQF_STEP(P, S, OUT) \
+    do { \
+        int s_ = (S); \
+        P##L0 += (P##lf * (s_ - P##L0) + EQ_R) >> EQ_P; \
+        P##H0 += (P##hf * (s_ - P##H0) + EQ_R) >> EQ_P; \
+        P##L1 += (P##lf * (P##L0 - P##L1) + EQ_R) >> EQ_P; \
+        P##H1 += (P##hf * (P##H0 - P##H1) + EQ_R) >> EQ_P; \
+        P##L2 += (P##lf * (P##L1 - P##L2) + EQ_R) >> EQ_P; \
+        P##H2 += (P##hf * (P##H1 - P##H2) + EQ_R) >> EQ_P; \
+        P##L3 += (P##lf * (P##L2 - P##L3) + EQ_R) >> EQ_P; \
+        P##H3 += (P##hf * (P##H2 - P##H3) + EQ_R) >> EQ_P; \
+        (OUT) = ((P##L3 * P##g0) >> EQ_P) \
+              + (((P##H3 - P##L3) * P##g1) >> EQ_P) \
+              + (((P##h2 - P##H3) * P##g2) >> EQ_P); \
+        P##h2 = P##h1; \
+        P##h1 = P##h0; \
+        P##h0 = s_; \
+    } while (0)
 
 #endif
 
@@ -496,12 +530,95 @@ crt_init(struct CRT *v, int w, int h, int f, unsigned char *out)
 
 }
 
+/* SIMD tiers for the passes that run several lines or samples at once
+ * (see "Several lines at once" below). */
+#define CRT_LANES_MAX 16
+
+#if (CRT_CC_SAMPLES == 4) && !USE_CONVOLUTION && !CRT_DO_BLOOM \
+    && (defined(__x86_64__) || defined(__i386__) \
+     || defined(_M_X64) || defined(_M_IX86))
+#if defined(_MSC_VER) && !defined(__clang__)
+#if _MSC_VER >= 1911
+#define CRT_HAVE_LANES_AVX2   1
+#define CRT_HAVE_LANES_AVX512 1
+#define CRT_TARGET_AVX2
+#define CRT_TARGET_AVX512
+#endif
+#elif defined(__clang__) && (defined(__SCE__) || defined(_MSC_VER))
+/* PlayStation clang and clang-cl declare only the intrinsics of ISAs
+ * the whole build enables, so a tier is built only where the baseline
+ * has it. */
+#ifdef __AVX2__
+#define CRT_HAVE_LANES_AVX2 1
+#define CRT_TARGET_AVX2
+#ifdef __AVX512F__
+#define CRT_HAVE_LANES_AVX512 1
+#define CRT_TARGET_AVX512
+#endif
+#endif
+#elif (defined(__clang__) && __clang_major__ >= 4) \
+   || (defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 5)
+#define CRT_HAVE_LANES_AVX2   1
+#define CRT_HAVE_LANES_AVX512 1
+#define CRT_TARGET_AVX2   __attribute__((target("avx2")))
+#define CRT_TARGET_AVX512 __attribute__((target("avx512f")))
+#endif
+#endif
+
+#if defined(CRT_HAVE_LANES_AVX2) || defined(CRT_HAVE_LANES_AVX512)
+#define CRT_HAVE_LANES 1
+#include <immintrin.h>
+
+#if defined(_MSC_VER) && !defined(__clang__)
+#define CRT_ZEROUPPER() _mm256_zeroupper()
+#else
+#define CRT_ZEROUPPER()
+#endif
+#endif
+
+/* The noise generator: rn' = a * rn + c in 32 bits. Applying it k times
+ * is again one multiply and add, with A = a^k and C = c * (a^(k-1) +
+ * ... + 1), all mod 2^32, so a lane can start k steps ahead and step k
+ * at a time and see exactly the numbers the one-at-a-time loop does. */
+#define CRT_LCG_A 214019u
+#define CRT_LCG_C 140327895u
+
+#ifdef CRT_HAVE_LANES
+static void crt_lcg_coef(unsigned k, unsigned *A, unsigned *C)
+{
+    unsigned ra = 1, rc = 0, ba = CRT_LCG_A, bc = CRT_LCG_C;
+    while (k) {
+        if (k & 1) {
+            rc = ba * rc + bc;
+            ra = ba * ra;
+        }
+        bc = ba * bc + bc;
+        ba = ba * ba;
+        k >>= 1;
+    }
+    *A = ra;
+    *C = rc;
+}
+
+static unsigned crt_lcg_jump(unsigned rn, unsigned k)
+{
+    unsigned A, C;
+    crt_lcg_coef(k, &A, &C);
+    return A * rn + C;
+}
+#endif
+
+#ifdef CRT_HAVE_LANES
+static size_t crt_noise_lanes(int lanes, const signed char *an,
+        signed char *out, size_t n, unsigned rn, int nn);
+#endif
+
 /* The first half of demodulation, in line order: noise, vertical sync,
  * then for each active line the horizontal sync search and colour carrier
  * accumulation - which carry from one line to the next - and the
  * parameters the rest of the line's decoding needs, into v->lines. */
 static void
-crt_demodulate_begin(struct CRT *v, int noise)
+crt_demodulate_begin(struct CRT *v, int noise, int lanes)
 {
     int i, j, line, rn;
     signed char *sig;
@@ -551,10 +668,22 @@ found_field:
     field = (j > (CRT_HRES / 2));
     v->vsync = -3;
 #endif
-    for (i = 0; i < CRT_INPUT_SIZE; i++) {
+    i = 0;
+#ifdef CRT_HAVE_LANES
+    /* Most of the signal in lanes, and the rest below from the state
+     * the lanes reached, so the numbers and v->rn are the same. */
+    if (lanes) {
+        i  = (int)crt_noise_lanes(lanes, v->analog, v->inp, CRT_INPUT_SIZE,
+                (unsigned)rn, noise);
+        rn = (int)crt_lcg_jump((unsigned)rn, (unsigned)i);
+    }
+#else
+    (void)lanes;
+#endif
+    for (; i < CRT_INPUT_SIZE; i++) {
         int nn = noise;
         /* The LCG wraps by design; in unsigned it does so defined. */
-        rn = (int)(214019u * (unsigned)rn + 140327895u);
+        rn = (int)(CRT_LCG_A * (unsigned)rn + CRT_LCG_C);
         /* signal + noise */
         s = v->analog[i] + (((((rn >> 16) & 0xff) - 0x7f) * nn) >> 8);
         if (s >  127) { s =  127; }
@@ -754,12 +883,623 @@ vsync_found:
  * three equalisers and the resampling into the output rows each line
  * owns. Lines are independent here, so bands of them can be decoded at
  * once; 'out' is AV_LEN + 1 entries of scratch per caller. */
-static void
-crt_demodulate_lines(struct CRT *v, int first, int last, struct crt_yiq *out)
+/* ---- Several lines at once -------------------------------------------
+ * Lines are independent once demodulate_begin has run, and without
+ * bloom they all cover the same samples, so up to 16 run in lockstep,
+ * one per SIMD lane (AVX2: 8, AVX-512: 16). Each lane does exactly the
+ * scalar decoder's integer operations in the same order - multiplies
+ * keep the low 32 bits and shifts are arithmetic, as int arithmetic is
+ * on every target this builds for - so the output is unchanged.
+ *
+ * The lanes' signal is transposed into one byte per lane per sample,
+ * and the decoded Y, I and Q are left interleaved likewise, sample s of
+ * lane k at [s * lanes + k], for crt_render_line to read in place. The
+ * buffers are made at create; the tier comes from the SIMD mask
+ * RetroArch passes there, so the plugin needs nothing of its own to
+ * detect the CPU. */
+struct crt_lanes {
+    int n;            /* lanes per batch: 0 (scalar only), 8 or 16 */
+    signed char *sig; /* [AV_LEN + 1][n] */
+    int *y, *i, *q;   /* [AV_LEN + 1][n] each */
+};
+
+/* The encoder's lanes: one source row per lane, converted to Y, I and Q
+ * once per source pixel ([w_cap][n] each), and the signal levels the
+ * lanes produce, [AV_LEN][n], before they go to their rows. */
+struct crt_mod_lanes {
+    int n;
+    unsigned w_cap;
+    int *y, *i, *q;
+    int *out;
+};
+
+#ifdef CRT_HAVE_LANES
+
+/* One equaliser step on vectors of lanes: EQF_STEP's updates, in its
+ * order, with the history shifted after the output is formed. */
+#define CRT_EQ_STEP_V(ADD, SUB, MUL, SRAI, S, O) \
+    L0 = ADD(L0, SRAI(ADD(MUL(lf, SUB(S, L0)), rnd), EQ_P)); \
+    H0 = ADD(H0, SRAI(ADD(MUL(hf, SUB(S, H0)), rnd), EQ_P)); \
+    L1 = ADD(L1, SRAI(ADD(MUL(lf, SUB(L0, L1)), rnd), EQ_P)); \
+    H1 = ADD(H1, SRAI(ADD(MUL(hf, SUB(H0, H1)), rnd), EQ_P)); \
+    L2 = ADD(L2, SRAI(ADD(MUL(lf, SUB(L1, L2)), rnd), EQ_P)); \
+    H2 = ADD(H2, SRAI(ADD(MUL(hf, SUB(H1, H2)), rnd), EQ_P)); \
+    L3 = ADD(L3, SRAI(ADD(MUL(lf, SUB(L2, L3)), rnd), EQ_P)); \
+    H3 = ADD(H3, SRAI(ADD(MUL(hf, SUB(H2, H3)), rnd), EQ_P)); \
+    O  = ADD(ADD(SRAI(MUL(L3, g0), EQ_P), \
+                 SRAI(MUL(SUB(H3, L3), g1), EQ_P)), \
+             SRAI(MUL(SUB(h2, H3), g2), EQ_P)); \
+    h2 = h1; \
+    h1 = h0; \
+    h0 = S
+
+#ifdef CRT_HAVE_LANES_AVX2
+#define CRT_A2_ADD(a, b)  _mm256_add_epi32(a, b)
+#define CRT_A2_SUB(a, b)  _mm256_sub_epi32(a, b)
+#define CRT_A2_MUL(a, b)  _mm256_mullo_epi32(a, b)
+#define CRT_A2_SRAI(a, n) _mm256_srai_epi32(a, n)
+
+/* One equaliser (Y when wave is NULL, else I or Q) over samples [L, R)
+ * of 8 lanes. */
+CRT_TARGET_AVX2
+static void crt_eq_pass_avx2(const struct EQF *t, const signed char *sig,
+        int L, int R, const int *wave, int bright, int *dst)
 {
-    struct crt_yiq *yiqA, *yiqB;
-    int line, s, bpp, pitch;
+    const __m256i lf  = _mm256_set1_epi32(t->lf);
+    const __m256i hf  = _mm256_set1_epi32(t->hf);
+    const __m256i g0  = _mm256_set1_epi32(t->g[0]);
+    const __m256i g1  = _mm256_set1_epi32(t->g[1]);
+    const __m256i g2  = _mm256_set1_epi32(t->g[2]);
+    const __m256i rnd = _mm256_set1_epi32(EQ_R);
+    const __m256i vb  = _mm256_set1_epi32(bright);
+    __m256i L0 = _mm256_setzero_si256(), L1 = L0, L2 = L0, L3 = L0;
+    __m256i H0 = L0, H1 = L0, H2 = L0, H3 = L0;
+    __m256i h0 = L0, h1 = L0, h2 = L0;
+    int i;
+    for (i = L; i < R; i++) {
+        __m256i sv = _mm256_cvtepi8_epi32(
+                _mm_loadl_epi64((const __m128i*)(sig + (size_t)i * 8)));
+        __m256i o;
+        if (wave) {
+            sv = _mm256_srai_epi32(_mm256_mullo_epi32(sv,
+                        _mm256_loadu_si256((const __m256i*)
+                            (wave + (i & 3) * 8))), 9);
+        } else {
+            sv = _mm256_add_epi32(sv, vb);
+        }
+        CRT_EQ_STEP_V(CRT_A2_ADD, CRT_A2_SUB, CRT_A2_MUL, CRT_A2_SRAI, sv, o);
+        o = wave ? _mm256_srai_epi32(o, 3) : _mm256_slli_epi32(o, 4);
+        _mm256_storeu_si256((__m256i*)(dst + (size_t)i * 8), o);
+    }
+    CRT_ZEROUPPER();
+}
+#endif
+
+#ifdef CRT_HAVE_LANES_AVX512
+#define CRT_A5_ADD(a, b)  _mm512_add_epi32(a, b)
+#define CRT_A5_SUB(a, b)  _mm512_sub_epi32(a, b)
+#define CRT_A5_MUL(a, b)  _mm512_mullo_epi32(a, b)
+#define CRT_A5_SRAI(a, n) _mm512_srai_epi32(a, n)
+
+/* The same over 16 lanes. */
+CRT_TARGET_AVX512
+static void crt_eq_pass_avx512(const struct EQF *t, const signed char *sig,
+        int L, int R, const int *wave, int bright, int *dst)
+{
+    const __m512i lf  = _mm512_set1_epi32(t->lf);
+    const __m512i hf  = _mm512_set1_epi32(t->hf);
+    const __m512i g0  = _mm512_set1_epi32(t->g[0]);
+    const __m512i g1  = _mm512_set1_epi32(t->g[1]);
+    const __m512i g2  = _mm512_set1_epi32(t->g[2]);
+    const __m512i rnd = _mm512_set1_epi32(EQ_R);
+    const __m512i vb  = _mm512_set1_epi32(bright);
+    __m512i L0 = _mm512_setzero_si512(), L1 = L0, L2 = L0, L3 = L0;
+    __m512i H0 = L0, H1 = L0, H2 = L0, H3 = L0;
+    __m512i h0 = L0, h1 = L0, h2 = L0;
+    int i;
+    for (i = L; i < R; i++) {
+        __m512i sv = _mm512_cvtepi8_epi32(
+                _mm_loadu_si128((const __m128i*)(sig + (size_t)i * 16)));
+        __m512i o;
+        if (wave) {
+            sv = _mm512_srai_epi32(_mm512_mullo_epi32(sv,
+                        _mm512_loadu_si512((const void*)
+                            (wave + (i & 3) * 16))), 9);
+        } else {
+            sv = _mm512_add_epi32(sv, vb);
+        }
+        CRT_EQ_STEP_V(CRT_A5_ADD, CRT_A5_SUB, CRT_A5_MUL, CRT_A5_SRAI, sv, o);
+        o = wave ? _mm512_srai_epi32(o, 3) : _mm512_slli_epi32(o, 4);
+        _mm512_storeu_si512((void*)(dst + (size_t)i * 16), o);
+    }
+    CRT_ZEROUPPER();
+}
+#endif
+
+/* Decodes the lanes' lines idx[0..n) into lanes->y/i/q. */
+static void crt_decode_lanes(struct CRT *v, const int *idx,
+        const struct crt_lanes *lanes, int bright)
+{
+    const int nl = lanes->n;
+    const int L  = v->lines[idx[0]].L;
+    const int R  = v->lines[idx[0]].R;
+    /* Each lane's carrier for I (wave[i & 3]) and Q (wave[(i + 3) & 3])
+     * at the four sample phases. */
+    int wi[4 * CRT_LANES_MAX], wq[4 * CRT_LANES_MAX];
+    int k, m, i;
+
+    for (k = 0; k < nl; k++) {
+        const struct crt_line *cl = &v->lines[idx[k]];
+        const signed char *src    = v->inp + cl->pos;
+        signed char *dst          = lanes->sig + k;
+        for (i = L; i < R; i++) {
+            dst[(size_t)i * nl] = src[i];
+        }
+        for (m = 0; m < 4; m++) {
+            wi[m * nl + k] = cl->wave[m];
+            wq[m * nl + k] = cl->wave[(m + 3) & 3];
+        }
+    }
+
+#ifdef CRT_HAVE_LANES_AVX512
+    if (nl == 16) {
+        crt_eq_pass_avx512(&eqY, lanes->sig, L, R, NULL, bright, lanes->y);
+        crt_eq_pass_avx512(&eqI, lanes->sig, L, R, wi,   bright, lanes->i);
+        crt_eq_pass_avx512(&eqQ, lanes->sig, L, R, wq,   bright, lanes->q);
+        return;
+    }
+#endif
+#ifdef CRT_HAVE_LANES_AVX2
+    crt_eq_pass_avx2(&eqY, lanes->sig, L, R, NULL, bright, lanes->y);
+    crt_eq_pass_avx2(&eqI, lanes->sig, L, R, wi,   bright, lanes->i);
+    crt_eq_pass_avx2(&eqQ, lanes->sig, L, R, wq,   bright, lanes->q);
+#endif
+}
+/* ---- The encoder in lanes ----
+ * Each line of the modulator runs three one-pole filters along its
+ * samples from zero and turns them into a signal level; lines are
+ * independent, so they run in lanes as the decoder's do, with the
+ * scalar loop's integer operations in its order. */
+/* EXP_P, the filters' fixed-point shift, defined with the modulator
+ * further down; checked equal there. */
+#define CRT_MOD_EXP_P 11
+#define CRT_MOD_STEP_V(ADD, SUB, MUL, SRAI, MIN, MAX) \
+    hY  = ADD(hY, SRAI(MUL(SUB(fy, hY), vcY), CRT_MOD_EXP_P)); \
+    hI  = ADD(hI, SRAI(MUL(SUB(fi, hI), vcI), CRT_MOD_EXP_P)); \
+    hQ  = ADD(hQ, SRAI(MUL(SUB(fq, hQ), vcQ), CRT_MOD_EXP_P)); \
+    ire = ADD(vblack, SRAI(MUL(ADD(ADD(hY, SRAI(MUL(hI, mi[xoff]), 4)), \
+                                   SRAI(MUL(hQ, mq[xoff]), 4)), \
+                               vwhite), 10)); \
+    ire = MIN(MAX(ire, vlo), vhi)
+
+#ifdef CRT_HAVE_LANES_AVX2
+#define CRT_A2_MIN(a, b) _mm256_min_epi32(a, b)
+#define CRT_A2_MAX(a, b) _mm256_max_epi32(a, b)
+
+CRT_TARGET_AVX2
+static void crt_mod_pass_avx2(const int *ty, const int *ti, const int *tq,
+        const int *colc, int destw, int xo, int black, int white,
+        int cY, int cI, int cQ, const int *modI, const int *modQ, int *out)
+{
+    const __m256i vcY = _mm256_set1_epi32(cY);
+    const __m256i vcI = _mm256_set1_epi32(cI);
+    const __m256i vcQ = _mm256_set1_epi32(cQ);
+    const __m256i vblack = _mm256_set1_epi32(black);
+    const __m256i vwhite = _mm256_set1_epi32(white);
+    const __m256i vlo = _mm256_setzero_si256();
+    const __m256i vhi = _mm256_set1_epi32(110);
+    __m256i mi[4], mq[4];
+    __m256i hY = vlo, hI = vlo, hQ = vlo;
+    int x, m;
+    for (m = 0; m < 4; m++) {
+        mi[m] = _mm256_set1_epi32(modI[m]);
+        mq[m] = _mm256_set1_epi32(modQ[m]);
+    }
+    for (x = 0; x < destw; x++) {
+        size_t c   = (size_t)colc[x] * 8;
+        __m256i fy = _mm256_loadu_si256((const __m256i*)(ty + c));
+        __m256i fi = _mm256_loadu_si256((const __m256i*)(ti + c));
+        __m256i fq = _mm256_loadu_si256((const __m256i*)(tq + c));
+        int xoff   = (x + xo) & 3;
+        __m256i ire;
+        CRT_MOD_STEP_V(CRT_A2_ADD, CRT_A2_SUB, CRT_A2_MUL, CRT_A2_SRAI,
+                CRT_A2_MIN, CRT_A2_MAX);
+        _mm256_storeu_si256((__m256i*)(out + (size_t)x * 8), ire);
+    }
+    CRT_ZEROUPPER();
+}
+#endif
+
+#ifdef CRT_HAVE_LANES_AVX512
+#define CRT_A5_MIN(a, b) _mm512_min_epi32(a, b)
+#define CRT_A5_MAX(a, b) _mm512_max_epi32(a, b)
+
+CRT_TARGET_AVX512
+static void crt_mod_pass_avx512(const int *ty, const int *ti, const int *tq,
+        const int *colc, int destw, int xo, int black, int white,
+        int cY, int cI, int cQ, const int *modI, const int *modQ, int *out)
+{
+    const __m512i vcY = _mm512_set1_epi32(cY);
+    const __m512i vcI = _mm512_set1_epi32(cI);
+    const __m512i vcQ = _mm512_set1_epi32(cQ);
+    const __m512i vblack = _mm512_set1_epi32(black);
+    const __m512i vwhite = _mm512_set1_epi32(white);
+    const __m512i vlo = _mm512_setzero_si512();
+    const __m512i vhi = _mm512_set1_epi32(110);
+    __m512i mi[4], mq[4];
+    __m512i hY = vlo, hI = vlo, hQ = vlo;
+    int x, m;
+    for (m = 0; m < 4; m++) {
+        mi[m] = _mm512_set1_epi32(modI[m]);
+        mq[m] = _mm512_set1_epi32(modQ[m]);
+    }
+    for (x = 0; x < destw; x++) {
+        size_t c   = (size_t)colc[x] * 16;
+        __m512i fy = _mm512_loadu_si512((const void*)(ty + c));
+        __m512i fi = _mm512_loadu_si512((const void*)(ti + c));
+        __m512i fq = _mm512_loadu_si512((const void*)(tq + c));
+        int xoff   = (x + xo) & 3;
+        __m512i ire;
+        CRT_MOD_STEP_V(CRT_A5_ADD, CRT_A5_SUB, CRT_A5_MUL, CRT_A5_SRAI,
+                CRT_A5_MIN, CRT_A5_MAX);
+        _mm512_storeu_si512((void*)(out + (size_t)x * 16), ire);
+    }
+    CRT_ZEROUPPER();
+}
+#endif
+
+/* Modulates the n lines from y0 into their signal rows: each lane's
+ * source row converted once per pixel, the lanes run, and each lane's
+ * levels copied to its row. 'colc' is each sample's source column. */
+static void crt_modulate_lanes(struct CRT *v, const struct NTSC_SETTINGS *s,
+        const struct crt_mod_lanes *ml, int y0, int desth, int destw,
+        const int *colc, int xo, int yo, int black, int white,
+        int cY, int cI, int cQ, const int *modI, const int *modQ)
+{
+    const int nl = ml->n;
+    const unsigned char *rows[CRT_LANES_MAX];
+    int k, x;
+    for (k = 0; k < nl; k++) {
+        int y            = y0 + k;
+        int field_offset = (s->field * s->h + desth) / desth / 2;
+        int sy           = (y * s->h) / desth + field_offset;
+        if (sy >= s->h) sy = s->h;
+        rows[k] = s->data + (size_t)sy * s->w * 3;
+    }
+    /* Column by column, so each column's lanes are stored together
+     * rather than one value per cache line, lane after lane. */
+    for (x = 0; x < s->w; x++) {
+        int *py = ml->y + (size_t)x * nl;
+        int *pi = ml->i + (size_t)x * nl;
+        int *pq = ml->q + (size_t)x * nl;
+        for (k = 0; k < nl; k++) {
+            const unsigned char *pix = rows[k] + (size_t)x * 3;
+            int rA = pix[0], gA = pix[1], bA = pix[2];
+            py[k] = (19595 * rA + 38470 * gA +  7471 * bA) >> 14;
+            pi[k] = (39059 * rA - 18022 * gA - 21103 * bA) >> 14;
+            pq[k] = (13894 * rA - 34275 * gA + 20382 * bA) >> 14;
+        }
+    }
+#ifdef CRT_HAVE_LANES_AVX512
+    if (nl == 16)
+        crt_mod_pass_avx512(ml->y, ml->i, ml->q, colc, destw, xo, black,
+                white, cY, cI, cQ, modI, modQ, ml->out);
+    else
+#endif
+    {
+#ifdef CRT_HAVE_LANES_AVX2
+        crt_mod_pass_avx2(ml->y, ml->i, ml->q, colc, destw, xo, black,
+                white, cY, cI, cQ, modI, modQ, ml->out);
+#endif
+    }
+    {
+        signed char *dst[CRT_LANES_MAX];
+        for (k = 0; k < nl; k++)
+            dst[k] = &v->analog[xo + (y0 + k + yo) * CRT_HRES];
+        /* Sample by sample, reading each sample's lanes together. */
+        for (x = 0; x < destw; x++) {
+            const int *src = ml->out + (size_t)x * nl;
+            for (k = 0; k < nl; k++)
+                dst[k][x] = (signed char)src[k];
+        }
+    }
+}
+/* ---- Noise in lanes ----
+ * demodulate_begin's noise pass over the whole signal, many samples a
+ * step: each lane holds the generator state for its own sample, steps
+ * by the lane count with crt_lcg_coef's constants, and does the scalar
+ * loop's arithmetic. Several vectors at once hide the multiply's
+ * latency. Returns how many samples it wrote (a multiple of the step);
+ * the caller finishes the rest from crt_lcg_jump. */
+#ifdef CRT_HAVE_LANES_AVX2
+CRT_TARGET_AVX2
+static size_t crt_noise_avx2(const signed char *an, signed char *out,
+        size_t n, unsigned rn, int nn)
+{
+    unsigned st[32], A, C;
+    size_t i;
+    int j;
+    __m256i v0, v1, v2, v3;
+    const __m256i ff  = _mm256_set1_epi32(0xff);
+    const __m256i k7f = _mm256_set1_epi32(0x7f);
+    const __m256i vnn = _mm256_set1_epi32(nn);
+    const __m256i lo  = _mm256_set1_epi32(-127);
+    const __m256i hi  = _mm256_set1_epi32(127);
+    const __m256i ord = _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7);
+    __m256i vA, vC;
+    for (j = 0; j < 32; j++) {
+        rn    = CRT_LCG_A * rn + CRT_LCG_C;
+        st[j] = rn;
+    }
+    crt_lcg_coef(32, &A, &C);
+    vA = _mm256_set1_epi32((int)A);
+    vC = _mm256_set1_epi32((int)C);
+    v0 = _mm256_loadu_si256((const __m256i*)(st +  0));
+    v1 = _mm256_loadu_si256((const __m256i*)(st +  8));
+    v2 = _mm256_loadu_si256((const __m256i*)(st + 16));
+    v3 = _mm256_loadu_si256((const __m256i*)(st + 24));
+#define CRT_NOISE_A2(V, OFF, S) \
+    { \
+        __m256i t_ = _mm256_sub_epi32(_mm256_and_si256( \
+                    _mm256_srli_epi32(V, 16), ff), k7f); \
+        t_ = _mm256_srai_epi32(_mm256_mullo_epi32(t_, vnn), 8); \
+        S  = _mm256_add_epi32(_mm256_cvtepi8_epi32(_mm_loadl_epi64( \
+                    (const __m128i*)(an + i + (OFF)))), t_); \
+        S  = _mm256_min_epi32(_mm256_max_epi32(S, lo), hi); \
+        V  = _mm256_add_epi32(_mm256_mullo_epi32(V, vA), vC); \
+    }
+    for (i = 0; i + 32 <= n; i += 32) {
+        __m256i s0, s1, s2, s3, b;
+        CRT_NOISE_A2(v0,  0, s0)
+        CRT_NOISE_A2(v1,  8, s1)
+        CRT_NOISE_A2(v2, 16, s2)
+        CRT_NOISE_A2(v3, 24, s3)
+        /* Narrowing packs per 128-bit lane: 4-sample groups come out
+         * as s0 s1 s2 s3 (low halves) then the high halves; the
+         * permute puts them back in sample order. In range, so the
+         * saturation never acts. */
+        b = _mm256_packs_epi16(_mm256_packs_epi32(s0, s1),
+                _mm256_packs_epi32(s2, s3));
+        _mm256_storeu_si256((__m256i*)(out + i),
+                _mm256_permutevar8x32_epi32(b, ord));
+    }
+#undef CRT_NOISE_A2
+    CRT_ZEROUPPER();
+    return i;
+}
+#endif
+
+#ifdef CRT_HAVE_LANES_AVX512
+CRT_TARGET_AVX512
+static size_t crt_noise_avx512(const signed char *an, signed char *out,
+        size_t n, unsigned rn, int nn)
+{
+    unsigned st[64], A, C;
+    size_t i;
+    int j;
+    __m512i v0, v1, v2, v3;
+    const __m512i ff  = _mm512_set1_epi32(0xff);
+    const __m512i k7f = _mm512_set1_epi32(0x7f);
+    const __m512i vnn = _mm512_set1_epi32(nn);
+    const __m512i lo  = _mm512_set1_epi32(-127);
+    const __m512i hi  = _mm512_set1_epi32(127);
+    __m512i vA, vC;
+    for (j = 0; j < 64; j++) {
+        rn    = CRT_LCG_A * rn + CRT_LCG_C;
+        st[j] = rn;
+    }
+    crt_lcg_coef(64, &A, &C);
+    vA = _mm512_set1_epi32((int)A);
+    vC = _mm512_set1_epi32((int)C);
+    v0 = _mm512_loadu_si512((const void*)(st +  0));
+    v1 = _mm512_loadu_si512((const void*)(st + 16));
+    v2 = _mm512_loadu_si512((const void*)(st + 32));
+    v3 = _mm512_loadu_si512((const void*)(st + 48));
+#define CRT_NOISE_A5(V, OFF) \
+    { \
+        __m512i t_ = _mm512_sub_epi32(_mm512_and_si512( \
+                    _mm512_srli_epi32(V, 16), ff), k7f); \
+        __m512i s_; \
+        t_ = _mm512_srai_epi32(_mm512_mullo_epi32(t_, vnn), 8); \
+        s_ = _mm512_add_epi32(_mm512_cvtepi8_epi32(_mm_loadu_si128( \
+                    (const __m128i*)(an + i + (OFF)))), t_); \
+        s_ = _mm512_min_epi32(_mm512_max_epi32(s_, lo), hi); \
+        _mm_storeu_si128((__m128i*)(out + i + (OFF)), \
+                _mm512_cvtepi32_epi8(s_)); \
+        V  = _mm512_add_epi32(_mm512_mullo_epi32(V, vA), vC); \
+    }
+    for (i = 0; i + 64 <= n; i += 64) {
+        CRT_NOISE_A5(v0,  0)
+        CRT_NOISE_A5(v1, 16)
+        CRT_NOISE_A5(v2, 32)
+        CRT_NOISE_A5(v3, 48)
+    }
+#undef CRT_NOISE_A5
+    CRT_ZEROUPPER();
+    return i;
+}
+#endif
+
+/* Samples [0, n) of the noise pass in lanes when there are any; returns
+ * how many were done. */
+static size_t crt_noise_lanes(int lanes, const signed char *an,
+        signed char *out, size_t n, unsigned rn, int nn)
+{
+#ifdef CRT_HAVE_LANES_AVX512
+    if (lanes == 16)
+        return crt_noise_avx512(an, out, n, rn, nn);
+#endif
+#ifdef CRT_HAVE_LANES_AVX2
+    if (lanes)
+        return crt_noise_avx2(an, out, n, rn, nn);
+#endif
+    (void)lanes; (void)an; (void)out; (void)n; (void)rn; (void)nn;
+    return 0;
+}
+#endif /* CRT_HAVE_LANES */
+
+/* The lane count a filter created with this SIMD mask decodes with. */
+static int crt_lanes_for(unsigned simd)
+{
+#ifdef CRT_HAVE_LANES_AVX512
+    if (simd & SOFTFILTER_SIMD_AVX512) {
+        return 16;
+    }
+#endif
+#ifdef CRT_HAVE_LANES_AVX2
+    if (simd & SOFTFILTER_SIMD_AVX2) {
+        return 8;
+    }
+#endif
+    (void)simd;
+    return 0;
+}
+
+/* One line's output rows from its decoded samples. Sample s's Y, I and
+ * Q are py[s * stride], pi[s * stride] and pq[s * stride], so the same
+ * code reads the scalar decoder's struct crt_yiq array (stride 3) and
+ * the lane decoder's interleaved buffers (stride = lane count). */
+static void
+crt_render_line(struct CRT *v, const struct crt_line *cl,
+        const int *py, const int *pi, const int *pq, size_t stride,
+        int bpp, int pitch, int contrast, int blend, int out_format)
+{
+    unsigned pos;
+    unsigned scanR = cl->scanR;
+    int scanL      = cl->scanL;
+    int dx         = cl->dx;
+    int beg        = cl->beg;
+    int end        = cl->end;
+    int L, R, s;
+    unsigned char *cL, *cR;
+
+    cL = v->out + (beg * pitch);
+    cR = cL + pitch;
+
+    for (pos = scanL; pos < scanR && cL < cR; pos += dx) {
+        int y, i, q;
+        int r, g, b;
+        int aa, bb;
+
+        R = pos & 0xfff;
+        L = 0xfff - R;
+        s = pos >> 12;
+
+        {
+            size_t a_ = (size_t)s * stride, b_ = a_ + stride;
+            /* interpolate between samples if needed */
+            y = ((py[a_] * L) >>  2) + ((py[b_] * R) >>  2);
+            i = ((pi[a_] * L) >> 14) + ((pi[b_] * R) >> 14);
+            q = ((pq[a_] * L) >> 14) + ((pq[b_] * R) >> 14);
+        }
+
+        /* YIQ to RGB */
+        r = (((y + 3879 * i + 2556 * q) >> 12) * contrast) >> 8;
+        g = (((y - 1126 * i - 2605 * q) >> 12) * contrast) >> 8;
+        b = (((y - 4530 * i + 7021 * q) >> 12) * contrast) >> 8;
+
+        if (r < 0) r = 0;
+        if (g < 0) g = 0;
+        if (b < 0) b = 0;
+        if (r > 255) r = 255;
+        if (g > 255) g = 255;
+        if (b > 255) b = 255;
+
+        if (blend) {
+            aa = (r << 16 | g << 8 | b);
+
+            switch (out_format) {
+                case CRT_PIX_FORMAT_RGB:
+                case CRT_PIX_FORMAT_RGBA:
+                    bb = cL[0] << 16 | cL[1] << 8 | cL[2];
+                    break;
+                case CRT_PIX_FORMAT_BGR:
+                case CRT_PIX_FORMAT_BGRA:
+                    bb = cL[2] << 16 | cL[1] << 8 | cL[0];
+                    break;
+                case CRT_PIX_FORMAT_ARGB:
+                    bb = cL[1] << 16 | cL[2] << 8 | cL[3];
+                    break;
+                case CRT_PIX_FORMAT_ABGR:
+                    bb = cL[3] << 16 | cL[2] << 8 | cL[1];
+                    break;
+                default:
+                    bb = 0;
+                    break;
+            }
+
+            /* blend with previous color there */
+            bb = (((aa & 0xfefeff) >> 1) + ((bb & 0xfefeff) >> 1));
+        } else {
+            bb = (r << 16 | g << 8 | b);
+        }
+
+        switch (out_format) {
+            case CRT_PIX_FORMAT_RGB:
+                cL[0] = bb >> 16 & 0xff;
+                cL[1] = bb >>  8 & 0xff;
+                cL[2] = bb >>  0 & 0xff;
+                break;
+
+            case CRT_PIX_FORMAT_RGBA:
+                cL[0] = bb >> 16 & 0xff;
+                cL[1] = bb >>  8 & 0xff;
+                cL[2] = bb >>  0 & 0xff;
+                cL[3] = 0xff;
+                break;
+
+            case CRT_PIX_FORMAT_BGR:
+                cL[0] = bb >>  0 & 0xff;
+                cL[1] = bb >>  8 & 0xff;
+                cL[2] = bb >> 16 & 0xff;
+                break;
+
+            case CRT_PIX_FORMAT_BGRA:
+                cL[0] = bb >>  0 & 0xff;
+                cL[1] = bb >>  8 & 0xff;
+                cL[2] = bb >> 16 & 0xff;
+                cL[3] = 0xff;
+                break;
+
+            case CRT_PIX_FORMAT_ARGB:
+                cL[0] = 0xff;
+                cL[1] = bb >> 16 & 0xff;
+                cL[2] = bb >>  8 & 0xff;
+                cL[3] = bb >>  0 & 0xff;
+                break;
+
+            case CRT_PIX_FORMAT_ABGR:
+                cL[0] = 0xff;
+                cL[1] = bb >>  0 & 0xff;
+                cL[2] = bb >>  8 & 0xff;
+                cL[3] = bb >> 16 & 0xff;
+                break;
+
+            default:
+                break;
+        }
+
+        cL += bpp;
+    }
+
+    /* duplicate extra lines */
+    for (s = beg + 1; s < (end - v->scanlines); s++) {
+        memcpy(v->out + s * pitch, v->out + (s - 1) * pitch, pitch);
+    }
+}
+
+static void
+crt_demodulate_lines(struct CRT *v, int first, int last, struct crt_yiq *out,
+        const struct crt_lanes *lanes)
+{
+    int line, bpp, pitch;
     int bright = v->bright;
+    /* Read once: every pixel is stored through an unsigned char
+     * pointer, which may alias these, so they were fetched again for
+     * every pixel. */
+    const int contrast   = v->contrast;
+    const int blend      = v->blend;
+    const int out_format = v->out_format;
     signed char *sig;
 
     if (!v->frame_ok) {
@@ -767,14 +1507,53 @@ crt_demodulate_lines(struct CRT *v, int first, int last, struct crt_yiq *out)
     }
     bpp   = crt_bpp4fmt(v->out_format);
     pitch = v->outw * bpp;
+    line  = CRT_TOP + first;
 
-    for (line = CRT_TOP + first; line < CRT_TOP + last; line++) {
+#ifdef CRT_HAVE_LANES
+    /* Whole batches of lines, one per lane, in line order; what is left
+     * (fewer lines than lanes) takes the scalar loop below. Lines that
+     * are skipped do nothing either way, so the rows are drawn in the
+     * same order as one line at a time. */
+    if (lanes && lanes->n) {
+        const int nl = lanes->n;
+        for (;;) {
+            int idx[CRT_LANES_MAX] = { 0 };
+            int n = 0, l2, k;
+            for (l2 = line; l2 < CRT_TOP + last && n < nl; l2++) {
+                if (!v->lines[l2 - CRT_TOP].skip) {
+                    idx[n++] = l2 - CRT_TOP;
+                }
+            }
+            if (n < nl) {
+                break;
+            }
+            /* Lockstep needs one sample range for all of them; without
+             * bloom every line has [0, AV_LEN). */
+            for (k = 1; k < nl; k++) {
+                if (     v->lines[idx[k]].L != v->lines[idx[0]].L
+                      || v->lines[idx[k]].R != v->lines[idx[0]].R) {
+                    break;
+                }
+            }
+            if (k < nl) {
+                break;
+            }
+            crt_decode_lanes(v, idx, lanes, bright);
+            for (k = 0; k < nl; k++) {
+                crt_render_line(v, &v->lines[idx[k]], lanes->y + k,
+                        lanes->i + k, lanes->q + k, (size_t)nl, bpp,
+                        pitch, contrast, blend, out_format);
+            }
+            line = l2;
+        }
+    }
+#else
+    (void)lanes;
+#endif
+
+    for (; line < CRT_TOP + last; line++) {
         const struct crt_line *cl = &v->lines[line - CRT_TOP];
-        unsigned pos, scanR;
-        int scanL, dx;
         int L, R, i;
-        int beg, end;
-        unsigned char *cL, *cR;
 #if (CRT_CC_SAMPLES == 4)
         const int *wave = cl->wave;
 #else
@@ -784,11 +1563,6 @@ crt_demodulate_lines(struct CRT *v, int first, int last, struct crt_yiq *out)
         struct EQF eqY_l, eqI_l, eqQ_l;
 
         if (cl->skip) { continue; }
-        beg   = cl->beg;
-        end   = cl->end;
-        dx    = cl->dx;
-        scanL = cl->scanL;
-        scanR = cl->scanR;
         L     = cl->L;
         R     = cl->R;
         sig   = v->inp + cl->pos;
@@ -801,7 +1575,34 @@ crt_demodulate_lines(struct CRT *v, int first, int last, struct crt_yiq *out)
         reset_eq(&eqI_l);
         reset_eq(&eqQ_l);
 
-#if (CRT_CC_SAMPLES == 4)
+#if (CRT_CC_SAMPLES == 4) && !USE_CONVOLUTION
+        {
+            /* eqf() for Y, I and Q side by side with their state in
+             * locals: through the struct pointers, every store to out[]
+             * (ints too) could alias the state, so it was reloaded and
+             * stored back on every sample. Same updates in the same
+             * order, so the same result. */
+            EQF_LOCALS(y_, eqY_l);
+            EQF_LOCALS(i_, eqI_l);
+            EQF_LOCALS(q_, eqQ_l);
+            const int w0 = wave[0], w1 = wave[1], w2 = wave[2], w3 = wave[3];
+            for (i = L; i < R; i++) {
+                int sv = sig[i], ry, ri, rq, wi, wq;
+                switch (i & 3) {
+                    case 0:  wi = w0; wq = w3; break;
+                    case 1:  wi = w1; wq = w0; break;
+                    case 2:  wi = w2; wq = w1; break;
+                    default: wi = w3; wq = w2; break;
+                }
+                EQF_STEP(y_, sv + bright, ry);
+                EQF_STEP(i_, sv * wi >> 9, ri);
+                EQF_STEP(q_, sv * wq >> 9, rq);
+                out[i].y = ry * 16; /* may be negative */
+                out[i].i = ri >> 3;
+                out[i].q = rq >> 3;
+            }
+        }
+#elif (CRT_CC_SAMPLES == 4)
         for (i = L; i < R; i++) {
             out[i].y = eqf(&eqY_l, sig[i] + bright) * 16; /* may be negative */
             out[i].i = eqf(&eqI_l, sig[i] * wave[(i + 0) & 3] >> 9) >> 3;
@@ -815,119 +1616,9 @@ crt_demodulate_lines(struct CRT *v, int first, int last, struct crt_yiq *out)
         }
 #endif
 
-        cL = v->out + (beg * pitch);
-        cR = cL + pitch;
-
-        for (pos = scanL; pos < scanR && cL < cR; pos += dx) {
-            int y, i, q;
-            int r, g, b;
-            int aa, bb;
-
-            R = pos & 0xfff;
-            L = 0xfff - R;
-            s = pos >> 12;
-
-            yiqA = out + s;
-            yiqB = out + s + 1;
-
-            /* interpolate between samples if needed */
-            y = ((yiqA->y * L) >>  2) + ((yiqB->y * R) >>  2);
-            i = ((yiqA->i * L) >> 14) + ((yiqB->i * R) >> 14);
-            q = ((yiqA->q * L) >> 14) + ((yiqB->q * R) >> 14);
-
-            /* YIQ to RGB */
-            r = (((y + 3879 * i + 2556 * q) >> 12) * v->contrast) >> 8;
-            g = (((y - 1126 * i - 2605 * q) >> 12) * v->contrast) >> 8;
-            b = (((y - 4530 * i + 7021 * q) >> 12) * v->contrast) >> 8;
-
-            if (r < 0) r = 0;
-            if (g < 0) g = 0;
-            if (b < 0) b = 0;
-            if (r > 255) r = 255;
-            if (g > 255) g = 255;
-            if (b > 255) b = 255;
-
-            if (v->blend) {
-                aa = (r << 16 | g << 8 | b);
-
-                switch (v->out_format) {
-                    case CRT_PIX_FORMAT_RGB:
-                    case CRT_PIX_FORMAT_RGBA:
-                        bb = cL[0] << 16 | cL[1] << 8 | cL[2];
-                        break;
-                    case CRT_PIX_FORMAT_BGR:
-                    case CRT_PIX_FORMAT_BGRA:
-                        bb = cL[2] << 16 | cL[1] << 8 | cL[0];
-                        break;
-                    case CRT_PIX_FORMAT_ARGB:
-                        bb = cL[1] << 16 | cL[2] << 8 | cL[3];
-                        break;
-                    case CRT_PIX_FORMAT_ABGR:
-                        bb = cL[3] << 16 | cL[2] << 8 | cL[1];
-                        break;
-                    default:
-                        bb = 0;
-                        break;
-                }
-
-                /* blend with previous color there */
-                bb = (((aa & 0xfefeff) >> 1) + ((bb & 0xfefeff) >> 1));
-            } else {
-                bb = (r << 16 | g << 8 | b);
-            }
-
-            switch (v->out_format) {
-                case CRT_PIX_FORMAT_RGB:
-                    cL[0] = bb >> 16 & 0xff;
-                    cL[1] = bb >>  8 & 0xff;
-                    cL[2] = bb >>  0 & 0xff;
-                    break;
-
-                case CRT_PIX_FORMAT_RGBA:
-                    cL[0] = bb >> 16 & 0xff;
-                    cL[1] = bb >>  8 & 0xff;
-                    cL[2] = bb >>  0 & 0xff;
-                    cL[3] = 0xff;
-                    break;
-
-                case CRT_PIX_FORMAT_BGR:
-                    cL[0] = bb >>  0 & 0xff;
-                    cL[1] = bb >>  8 & 0xff;
-                    cL[2] = bb >> 16 & 0xff;
-                    break;
-
-                case CRT_PIX_FORMAT_BGRA:
-                    cL[0] = bb >>  0 & 0xff;
-                    cL[1] = bb >>  8 & 0xff;
-                    cL[2] = bb >> 16 & 0xff;
-                    cL[3] = 0xff;
-                    break;
-
-                case CRT_PIX_FORMAT_ARGB:
-                    cL[0] = 0xff;
-                    cL[1] = bb >> 16 & 0xff;
-                    cL[2] = bb >>  8 & 0xff;
-                    cL[3] = bb >>  0 & 0xff;
-                    break;
-
-                case CRT_PIX_FORMAT_ABGR:
-                    cL[0] = 0xff;
-                    cL[1] = bb >>  0 & 0xff;
-                    cL[2] = bb >>  8 & 0xff;
-                    cL[3] = bb >> 16 & 0xff;
-                    break;
-
-                default:
-                    break;
-            }
-
-            cL += bpp;
-        }
-
-        /* duplicate extra lines */
-        for (s = beg + 1; s < (end - v->scanlines); s++) {
-            memcpy(v->out + s * pitch, v->out + (s - 1) * pitch, pitch);
-        }
+        crt_render_line(v, cl, &out->y, &out->i, &out->q,
+                sizeof(*out) / sizeof(int), bpp, pitch, contrast, blend,
+                out_format);
     }
 }
 
@@ -945,6 +1636,9 @@ crt_demodulate_lines(struct CRT *v, int first, int last, struct crt_yiq *out)
 #endif
 
 #define EXP_P         11
+#if defined(CRT_MOD_EXP_P) && (CRT_MOD_EXP_P != EXP_P)
+#error "the encoder lanes' CRT_MOD_EXP_P must equal EXP_P"
+#endif
 #define EXP_ONE       (1 << EXP_P)
 #define EXP_MASK      (EXP_ONE - 1)
 #define EXP_PI        6434
@@ -1048,7 +1742,8 @@ iirf(struct IIRLP *f, int s)
 }
 
 static void
-crt_modulate(struct CRT *v, struct NTSC_SETTINGS *s)
+crt_modulate(struct CRT *v, struct NTSC_SETTINGS *s,
+        const struct crt_mod_lanes *ml)
 {
     int x, y, xo, yo;
     int destw = AV_LEN;
@@ -1173,6 +1868,73 @@ crt_modulate(struct CRT *v, struct NTSC_SETTINGS *s)
         }
     }
 
+    {
+        /* Loop invariants, held where a store to the signal (signed
+         * char, which may alias anything) cannot make the compiler fetch
+         * them again: the level scale and black level, each column's
+         * source offset (a divide per sample before), and the filters'
+         * coefficients. Their history is reset at every line, so it
+         * lives in locals for the line. RGB input, the format the
+         * softfilter wrapper feeds this, gets its own loop. */
+        const int white   = WHITE_LEVEL * v->white_point / 100;
+        const int black   = BLACK_LEVEL + v->black_point;
+        const int cY      = iirY.c, cI = iirI.c, cQ = iirQ.c;
+        int modI[4], modQ[4];
+        int col[AV_LEN];
+
+        for (x = 0; x < 4; x++) {
+            modI[x] = ph * ccmodI[x & (CRT_CC_SAMPLES - 1)];
+            modQ[x] = ph * ccmodQ[x & (CRT_CC_SAMPLES - 1)];
+        }
+        if (s->format == CRT_PIX_FORMAT_RGB && CRT_CC_SAMPLES == 4
+                && destw <= AV_LEN) {
+            y = 0;
+#ifdef CRT_HAVE_LANES
+            /* Whole batches of lines in lanes; the rest below. Every
+             * line writes only its own row, so the order is free. */
+            if (ml && ml->n && (unsigned)s->w <= ml->w_cap) {
+                for (x = 0; x < destw; x++)
+                    col[x] = (x * s->w) / destw;
+                for (; y + ml->n <= desth; y += ml->n)
+                    crt_modulate_lanes(v, s, ml, y, desth, destw, col,
+                            xo, yo, black, white, cY, cI, cQ, modI, modQ);
+            }
+#else
+            (void)ml;
+#endif
+            for (x = 0; x < destw; x++)
+                col[x] = ((x * s->w) / destw) * 3;
+            for (; y < desth; y++) {
+                int field_offset = (s->field * s->h + desth) / desth / 2;
+                int sy           = (y * s->h) / desth + field_offset;
+                int hY = 0, hI = 0, hQ = 0;
+                const unsigned char *row;
+                signed char *dst;
+                if (sy >= s->h) sy = s->h;
+                row = s->data + (size_t)sy * s->w * 3;
+                dst = &v->analog[xo + (y + yo) * CRT_HRES];
+                for (x = 0; x < destw; x++) {
+                    const unsigned char *pix = row + col[x];
+                    int rA = pix[0], gA = pix[1], bA = pix[2];
+                    int fy = (19595 * rA + 38470 * gA +  7471 * bA) >> 14;
+                    int fi = (39059 * rA - 18022 * gA - 21103 * bA) >> 14;
+                    int fq = (13894 * rA - 34275 * gA + 20382 * bA) >> 14;
+                    int xoff = (x + xo) & 3;
+                    int ire;
+                    hY += EXP_MUL(fy - hY, cY);
+                    hI += EXP_MUL(fi - hI, cI);
+                    hQ += EXP_MUL(fq - hQ, cQ);
+                    ire = black + ((hY + (hI * modI[xoff] >> 4)
+                                       + (hQ * modQ[xoff] >> 4)) * white >> 10);
+                    if (ire < 0)   ire = 0;
+                    if (ire > 110) ire = 110;
+                    dst[x] = (signed char)ire;
+                }
+            }
+            goto modulated;
+        }
+    }
+
     for (y = 0; y < desth; y++) {
         int field_offset;
         int sy;
@@ -1244,6 +2006,7 @@ crt_modulate(struct CRT *v, struct NTSC_SETTINGS *s)
             v->analog[(x + xo) + (y + yo) * CRT_HRES] = ire;
         }
     }
+modulated:
     for (n = 0; n < CRT_CC_VPER; n++) {
         for (x = 0; x < CRT_CC_SAMPLES; x++) {
             v->ccf[n][x] = iccf[x] * 128; /* may be negative */
@@ -1292,6 +2055,8 @@ struct softfilter_thread_data
     unsigned     row_first;
     unsigned     row_last;
     struct crt_yiq *scratch;
+    /* this worker's lane buffers; n is 0 when it decodes line by line */
+    struct crt_lanes lanes;
 };
 
 /* -----------------------------------------------------------------------
@@ -1314,6 +2079,14 @@ struct filter_data
 
     /* AV_LEN + 1 entries of line scratch per worker */
     struct crt_yiq *scratch;
+    /* every worker's lane buffers, one block made at create */
+    void *lane_mem;
+    /* lanes per step for the passes that need no buffers (noise):
+     * 0, 8 or 16, from the SIMD mask given to create */
+    int lanes_tier;
+    /* the encoder's lane buffers (it runs before the workers, once) */
+    struct crt_mod_lanes mod_lanes;
+    void *mod_lane_mem;
     /* set by the packets pass when this frame was modulated */
     int frame_ready;
 
@@ -1421,7 +2194,6 @@ static void *ntsc_crt_create(const struct softfilter_config *config,
     struct filter_data *filt;
     unsigned char *out_buf;
     (void)out_fmt;
-    (void)simd;
     (void)userdata;
 
     filt = (struct filter_data*)calloc(1, sizeof(*filt));
@@ -1439,6 +2211,52 @@ static void *ntsc_crt_create(const struct softfilter_config *config,
     /* single-threaded — CRT state is not thread-safe */
     filt->threads = threads;
     filt->in_fmt  = in_fmt;
+
+    /* Lane buffers for every worker, when the CPU can decode lines in
+     * lanes: the transposed signal and the decoded Y, I and Q, each
+     * started on a 64-byte boundary. Without them the workers decode
+     * line by line, as before. */
+    filt->lanes_tier = crt_lanes_for(simd);
+    {
+        int    nl   = crt_lanes_for(simd);
+        size_t rows = (size_t)AV_LEN + 1;
+        size_t sigb = (rows * nl + 63) & ~(size_t)63;
+        size_t intb = (rows * nl * sizeof(int) + 63) & ~(size_t)63;
+        size_t per  = sigb + 3 * intb;
+        /* The encoder's: three [max_width][nl] source planes and the
+         * [AV_LEN][nl] levels. A frame wider than create was told of,
+         * which the softfilter contract rules out, is encoded line by
+         * line instead. */
+        size_t plane = ((size_t)max_width * nl * sizeof(int) + 63)
+            & ~(size_t)63;
+        size_t lvls  = ((size_t)AV_LEN * nl * sizeof(int) + 63)
+            & ~(size_t)63;
+        if (nl && max_width
+                && (filt->mod_lane_mem = malloc(3 * plane + lvls + 63))) {
+            unsigned char *at = (unsigned char*)
+                (((uintptr_t)filt->mod_lane_mem + 63) & ~(uintptr_t)63);
+            filt->mod_lanes.n     = nl;
+            filt->mod_lanes.w_cap = max_width;
+            filt->mod_lanes.y     = (int*)(void*)at;
+            filt->mod_lanes.i     = (int*)(void*)(at + plane);
+            filt->mod_lanes.q     = (int*)(void*)(at + 2 * plane);
+            filt->mod_lanes.out   = (int*)(void*)(at + 3 * plane);
+        }
+        if (nl && (filt->lane_mem = malloc(per * threads + 63))) {
+            unsigned char *base = (unsigned char*)
+                (((uintptr_t)filt->lane_mem + 63) & ~(uintptr_t)63);
+            unsigned w;
+            for (w = 0; w < threads; w++) {
+                struct crt_lanes *ln = &filt->workers[w].lanes;
+                unsigned char *at    = base + per * w;
+                ln->n   = nl;
+                ln->sig = (signed char*)at;
+                ln->y   = (int*)(void*)(at + sigb);
+                ln->i   = (int*)(void*)(at + sigb + intb);
+                ln->q   = (int*)(void*)(at + sigb + 2 * intb);
+            }
+        }
+    }
 
     /* Allocate CRT output buffer: RGB (3 bpp) */
     /* Cleared: crt_demodulate does not write every pixel of it, and
@@ -1502,6 +2320,8 @@ static void ntsc_crt_destroy(void *data)
     if (filt->in_buf)  free(filt->in_buf);
     if (filt->out_buf) free(filt->out_buf);
     free(filt->scratch);
+    free(filt->lane_mem);
+    free(filt->mod_lane_mem);
     free(filt->workers);
     free(filt);
 }
@@ -1568,8 +2388,8 @@ static int ntsc_crt_prepare(struct filter_data *filt, const void *in_data,
     filt->ntsc.hue    = filt->hue;
 
     /* ---- Encode → signal → decode ---- */
-    crt_modulate(&filt->crt, &filt->ntsc);
-    crt_demodulate_begin(&filt->crt, filt->noise);
+    crt_modulate(&filt->crt, &filt->ntsc, &filt->mod_lanes);
+    crt_demodulate_begin(&filt->crt, filt->noise, filt->lanes_tier);
 
     /* ---- Advance field/frame counters ---- */
     filt->field ^= 1;
@@ -1590,7 +2410,7 @@ static void ntsc_crt_work_cb(void *data, void *thread_data)
         return;
 
     crt_demodulate_lines(&filt->crt, thr->line_first, thr->line_last,
-            thr->scratch);
+            thr->scratch, &thr->lanes);
 
     for (y = thr->row_first; y < thr->row_last; y++) {
         uint32_t *dst_row = (uint32_t*)

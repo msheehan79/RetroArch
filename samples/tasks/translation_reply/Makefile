@@ -20,8 +20,8 @@ SOURCES := translation_reply_test.c \
            $(LIBRETRO_COMM_DIR)/string/stdstring.c \
            $(LIBRETRO_COMM_DIR)/encodings/encoding_utf.c
 
-CFLAGS  += -Wall -std=gnu99 -g -O1 -DRARCH_INTERNAL -DHAVE_RPNG \
-           -DHAVE_TRANSLATE -DHAVE_NETWORKING -DHAVE_ACCESSIBILITY \
+CFLAGS  += -Wall -std=gnu99 -g1 -O1 -DRARCH_INTERNAL -DHAVE_RPNG \
+           -DHAVE_TRANSLATE -DHAVE_NETWORKING -DHAVE_ACCESSIBILITY -DHAVE_AUDIOMIXER \
            -I$(REPO_ROOT) -I$(LIBRETRO_COMM_DIR)/include -I$(REPO_ROOT)/deps
 
 ifneq ($(SANITIZER),)

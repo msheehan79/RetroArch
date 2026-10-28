@@ -23,11 +23,9 @@ SOURCES := video_hdr_fp16_test.c \
 	$(LIBRETRO_COMM_DIR)/formats/h264/rh264.c \
 	$(LIBRETRO_COMM_DIR)/formats/h265/rh265.c \
 	$(LIBRETRO_COMM_DIR)/formats/mp4/rmp4.c \
-	$(LIBRETRO_COMM_DIR)/formats/mp4/rmp4_video.c \
 	$(LIBRETRO_COMM_DIR)/formats/vp8/rvp8.c \
 	$(LIBRETRO_COMM_DIR)/formats/vp9/rvp9.c \
 	$(LIBRETRO_COMM_DIR)/formats/webm/rwebm.c \
-	$(LIBRETRO_COMM_DIR)/formats/webm/rwebm_video.c \
 	$(LIBRETRO_COMM_DIR)/lists/string_list.c \
 	$(LIBRETRO_COMM_DIR)/memmap/memalign.c \
 	$(LIBRETRO_COMM_DIR)/memmap/memmap.c \
@@ -43,7 +41,7 @@ SOURCES := video_hdr_fp16_test.c \
 
 OBJS := $(call sample_objs,$(SOURCES:.c=.o))
 
-CFLAGS  += -Wall -std=gnu99 -g -O1 -ffunction-sections \
+CFLAGS  += -Wall -std=gnu99 -g1 -O1 -ffunction-sections \
 	-DHAVE_RMP4 -DHAVE_RWEBM -DHAVE_RH264 -DHAVE_RH265 -DHAVE_RVP9 -DHAVE_THREADS \
 	-I$(LIBRETRO_COMM_DIR)/include
 LDFLAGS += -Wl,--gc-sections -lm -lpthread
@@ -61,6 +59,9 @@ all: $(TARGET)
 $(SAMPLE_OBJDIR)/%.o: $$(call sample_src,$$*).c
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+video_hdr_fp16_test.o: $(LIBRETRO_COMM_DIR)/formats/mp4/rmp4_video.c \
+	$(LIBRETRO_COMM_DIR)/formats/webm/rwebm_video.c
 
 $(TARGET): $(OBJS)
 	$(CC) -o $@ $^ $(LDFLAGS)

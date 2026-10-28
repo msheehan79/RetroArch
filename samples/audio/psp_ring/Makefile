@@ -11,13 +11,14 @@ CFLAGS  += -std=gnu99 -Wall $(INCDIRS) -DRARCH_INTERNAL -DHAVE_THREADS \
 LDFLAGS += -lm -lpthread
 
 ifneq ($(SANITIZER),)
-   CFLAGS  := -fsanitize=$(SANITIZER) -fno-omit-frame-pointer -g $(CFLAGS)
+   CFLAGS  := -fsanitize=$(SANITIZER) -fno-omit-frame-pointer -g1 $(CFLAGS)
    LDFLAGS := -fsanitize=$(SANITIZER) $(LDFLAGS)
 endif
 
 # Each driver is built for its own platform, against that platform's
 # compile-only SDK stubs; device_mock.c supplies the bodies.
 OBJS := $(call sample_objs,psp_ring_test.o device_mock.o psp_audio.o psp2_audio.o ps4_audio.o \
+	../../../audio/audio_upmix.o \
 	$(LIBRETRO_COMM_DIR)/rthreads/rthreads.o \
 	$(LIBRETRO_COMM_DIR)/rthreads/retro_eventcount.o)
 

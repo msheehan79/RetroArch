@@ -19,6 +19,7 @@ static int      sync_live[MAX_SYNCS];
 static unsigned syncs_created;
 static unsigned syncs_deleted;
 static unsigned maps;
+static GLenum forced_wait_result;
 static uint32_t pixels[W * H];
 
 static GLsync fake_fence_sync(GLenum condition, GLbitfield flags)
@@ -47,7 +48,8 @@ static GLenum fake_client_wait_sync(GLsync sync, GLbitfield flags,
       printf("  [FAIL] glClientWaitSync on a deleted sync\n");
       exit(1);
    }
-   return sync_signalled[id] ? GL_ALREADY_SIGNALED : GL_TIMEOUT_EXPIRED;
+   return forced_wait_result ? forced_wait_result
+      : sync_signalled[id] ? GL_ALREADY_SIGNALED : GL_TIMEOUT_EXPIRED;
 }
 
 static void fake_delete_sync(GLsync sync)
@@ -99,37 +101,7 @@ static GLboolean fake_unmap_buffer(GLenum target)
    return GL_TRUE;
 }
 
-/* GL 1.1 entry points the driver links directly. */
-void glPixelStorei(GLenum pname, GLint param) { (void)pname; (void)param; }
-void glReadBuffer(GLenum mode) { (void)mode; }
-void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height,
-      GLenum format, GLenum type, GLvoid *data)
-{ (void)x; (void)y; (void)width; (void)height; (void)format; (void)type; (void)data; }
-void glBindTexture(GLenum t, GLuint i) { (void)t; (void)i; }
-void glBlendFunc(GLenum a, GLenum b) { (void)a; (void)b; }
-void glClear(GLbitfield m) { (void)m; }
-void glClearColor(GLclampf r, GLclampf g, GLclampf b, GLclampf a) { (void)r; (void)g; (void)b; (void)a; }
-void glCopyTexSubImage2D(GLenum a, GLint b, GLint c, GLint d, GLint e, GLint f, GLsizei g, GLsizei h)
-{ (void)a; (void)b; (void)c; (void)d; (void)e; (void)f; (void)g; (void)h; }
-void glDeleteTextures(GLsizei n, const GLuint *t) { (void)n; (void)t; }
-void glDisable(GLenum c) { (void)c; }
-void glDrawArrays(GLenum m, GLint f, GLsizei c) { (void)m; (void)f; (void)c; }
-void glEnable(GLenum c) { (void)c; }
-void glFinish(void) { printf("  [FAIL] glFinish\n"); exit(1); }
-void glFlush(void) { }
-void glGenTextures(GLsizei n, GLuint *t) { (void)n; (void)t; }
-GLenum glGetError(void) { return GL_NO_ERROR; }
-void glGetIntegerv(GLenum p, GLint *v) { (void)p; *v = 0; }
-const GLubyte *glGetString(GLenum n) { (void)n; return (const GLubyte*)""; }
-GLboolean glIsEnabled(GLenum c) { (void)c; return GL_FALSE; }
-void glScissor(GLint a, GLint b, GLsizei c, GLsizei d) { (void)a; (void)b; (void)c; (void)d; }
-void glTexImage2D(GLenum a, GLint b, GLint c, GLsizei d, GLsizei e, GLint f, GLenum g, GLenum h, const GLvoid *i)
-{ (void)a; (void)b; (void)c; (void)d; (void)e; (void)f; (void)g; (void)h; (void)i; }
-void glTexParameteri(GLenum a, GLenum b, GLint c) { (void)a; (void)b; (void)c; }
-void glTexSubImage2D(GLenum a, GLint b, GLint c, GLint d, GLsizei e, GLsizei f, GLenum g, GLenum h, const GLvoid *i)
-{ (void)a; (void)b; (void)c; (void)d; (void)e; (void)f; (void)g; (void)h; (void)i; }
-void glViewport(GLint a, GLint b, GLsizei c, GLsizei d) { (void)a; (void)b; (void)c; (void)d; }
-void glGetTexLevelParameteriv(GLenum a, GLint b, GLenum c, GLint *d) { (void)a; (void)b; (void)c; *d = 0; }
+#include "gl11_fakes.h"
 
 static int fails;
 
@@ -209,6 +181,97 @@ int main(void)
    CHECK(gl2_read_pbo(&gl, out, false) && maps == 1,
          "frame mapped as before");
    gl2_free_pbo_readback(&gl);
+
+   /* The recording reader the threaded wrapper calls, through the poke:
+    * B,G,R,X rows as the PBO holds them, or BGR24, bottom row first
+    * either way, as glReadPixels leaves them. */
+   printf("recording reader:\n");
+   {
+      unsigned x, y, bad;
+      bool bottom_up = false;
+      for (y = 0; y < H; y++)
+         for (x = 0; x < W; x++)
+            pixels[y * W + x] = 0xff000000u | (0x5au << 16)
+               | ((uint32_t)y << 8) | (uint32_t)x;
+      gl.flags |= GL2_FLAG_HAVE_SYNC;
+      gl.flags &= ~GL2_FLAG_PBO_READBACK_ENABLE;
+      CHECK(gl2_poke_interface.record_read != NULL,
+            "the poke carries the reader");
+      CHECK(!gl2_poke_interface.record_read(&gl, out, true, &bottom_up)
+            && (gl.flags & GL2_FLAG_PBO_READBACK_ENABLE),
+            "first call starts the readbacks, no frame");
+
+      /* A full ring, every fence signalled: the oldest slot is read */
+      for (i = 0; i < 4; i++)
+         gl2_pbo_async_readback(&gl);
+      for (i = 1; i <= syncs_created; i++)
+         sync_signalled[i] = 1;
+      memset(out, 0, W * H * 4);
+      CHECK(gl2_poke_interface.record_read(&gl, out, true, &bottom_up)
+            && bottom_up, "BGRX frame read, bottom row first");
+      for (bad = 0, y = 0; y < H; y++)
+         for (x = 0; x < W; x++)
+         {
+            const uint8_t *p = out + ((size_t)y * W + x) * 4;
+            if (p[0] != x || p[1] != y || p[2] != 0x5a)
+               bad++;
+         }
+      CHECK(!bad, "BGRX rows are the PBO's, as read");
+
+      /* A full ring, every fence signalled: the oldest slot is read */
+      for (i = 0; i < 4; i++)
+         gl2_pbo_async_readback(&gl);
+      for (i = 1; i <= syncs_created; i++)
+         sync_signalled[i] = 1;
+      memset(out, 0, W * H * 4);
+      bottom_up = false;
+      CHECK(gl2_poke_interface.record_read(&gl, out, false, &bottom_up)
+            && bottom_up, "BGR24 frame read, bottom row first");
+      for (bad = 0, y = 0; y < H; y++)
+         for (x = 0; x < W; x++)
+         {
+            const uint8_t *p = out + ((size_t)y * W + x) * 3;
+            if (p[0] != x || p[1] != y || p[2] != 0x5a)
+               bad++;
+         }
+      CHECK(!bad, "BGR24 rows are the PBO's, converted");
+      gl2_free_pbo_readback(&gl);
+   }
+
+   printf("failed completion queries:\n");
+   for (i = 0; i < 2; i++)
+   {
+      unsigned n, bad = 0, deleted, id;
+      void *sync;
+      gl.flags |= GL2_FLAG_HAVE_SYNC;
+      CHECK(gl2_init_pbo_readback(&gl), "failure-query ring initialised");
+      for (n = 0; n < 4; n++)
+         gl2_pbo_async_readback(&gl);
+      sync = gl.pbo_readback_sync[gl.pbo_readback_index];
+      id = (unsigned)(uintptr_t)sync;
+      deleted = syncs_deleted;
+      maps = 0;
+      forced_wait_result = GL_WAIT_FAILED;
+      memset(out, 0xa5, W * H * 4);
+      CHECK(!gl2_read_pbo(&gl, out, i != 0), "failed wait rejects recording frame");
+      for (n = 0; n < W * H * 4; n++)
+         if (out[n] != 0xa5)
+            bad++;
+      CHECK(!maps && !bad, "failed wait neither maps nor changes destination");
+      CHECK(gl.pbo_readback_valid[gl.pbo_readback_index]
+            && gl.pbo_readback_sync[gl.pbo_readback_index] == sync
+            && sync_live[id] && syncs_deleted == deleted,
+            "failed wait retains slot and fence ownership");
+      forced_wait_result = GL_CONDITION_SATISFIED;
+      CHECK(gl2_read_pbo(&gl, out, i != 0) && maps == 1,
+            "successful retry maps the retained frame");
+      CHECK(syncs_deleted == deleted + 1 && !sync_live[id],
+            "successful retry retires the fence once");
+      forced_wait_result = 0;
+      gl2_free_pbo_readback(&gl);
+   }
+   CHECK(syncs_deleted == syncs_created, "failure-query teardown retires every fence");
+   CHECK(!gl11_finishes, "no glFinish anywhere on the readback path");
 
    free(out);
    if (fails)

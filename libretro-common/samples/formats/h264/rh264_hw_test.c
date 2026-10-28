@@ -107,8 +107,11 @@ typedef struct
 } fake_t;
 
 static fake_t fake;
+static int inject_busy;
+static int decode_busy, output_busy;
 /* the sample the next decode call is for, as the test feeds them */
 static int cur_sample;
+static unsigned slot_limit = FAKE_SLOTS;
 
 static void fake_err(const char *fmt, ...)
 {
@@ -125,9 +128,9 @@ static void *fake_open(void *user, const rh264_hw_sps_t *sps,
       unsigned slots)
 {
    (void)user;
-   if (slots < 2 || slots > FAKE_SLOTS)
+   if (slots < 2 || slots > slot_limit)
       return NULL;
-   fake.opened = 1;
+   fake.opened++;
    fake.slots  = slots;
    fake.width  = sps->width;
    fake.height = sps->height;
@@ -139,6 +142,12 @@ static int fake_decode(void *dec, const rh264_hw_pic_t *pic)
    unsigned i, j;
    fake_t *f = (fake_t*)dec;
    (void)f;
+   if (inject_busy && !decode_busy)
+   {
+      decode_busy = 1;
+      return 1;
+   }
+   decode_busy = 0;
    if (pic->slot < 0 || (unsigned)pic->slot >= fake.slots)
    {
       fake_err("picture %d: slot %d out of range", cur_sample, pic->slot);
@@ -211,6 +220,12 @@ static void fake_abandon(void *owner, uint64_t done, uint64_t value)
 static int fake_output(void *dec, unsigned slot, video_hw_frame_t *out)
 {
    (void)dec;
+   if (inject_busy && !output_busy)
+   {
+      output_busy = 1;
+      return 1;
+   }
+   output_busy = 0;
    if (slot >= fake.slots || !fake.pending[slot])
    {
       fake_err("slot %u shown without a picture waiting", slot);
@@ -228,12 +243,14 @@ static int fake_output(void *dec, unsigned slot, video_hw_frame_t *out)
    return 0;
 }
 
+static int readbacks, fail_readback;
 static int fake_readback(void *dec, unsigned slot, uint8_t *planes[3])
 {
    video_hw_frame_t out;
    size_t y = (size_t)fake.width * fake.height;
    size_t c = (size_t)((fake.width + 1) / 2) * ((fake.height + 1) / 2);
-   if (fake_output(dec, slot, &out) != 0)
+   readbacks++;
+   if (fail_readback || fake_output(dec, slot, &out) != 0)
       return -1;
    memset(planes[0], 19, y);
    memset(planes[1], 71, c);
@@ -262,7 +279,49 @@ typedef struct
    int hw;                      /* rh264_video_set_hw said yes           */
    int failed;                  /* a decode or drain refused            */
    int order[MAX_SAMPLES];      /* hw: decode index of each shown       */
+   int materialized;
 } result_t;
+
+static int deferred_output(rh264_video *v, result_t *res)
+{
+   int w, h, stride, s, chosen = -1, before = readbacks;
+   if (rh264_video_frame_size(v, &w, &h) != 0
+         || w != fake.width || h != fake.height)
+      return -1;
+   if (rh264_video_plane(v, 0, NULL, NULL, NULL))
+   {
+      /* A backend without spare capacity retains eager CPU readback. */
+      if (rh264_video_readback(v) != 0 || readbacks != before)
+         return -1;
+      res->materialized++;
+      return 0;
+   }
+   if (res->shown % 3 == 0)
+   {
+      const uint8_t *pixels;
+      if (rh264_video_readback(v) != 0)
+         return -1;
+      pixels = rh264_video_plane(v, 0, &stride, &w, &h);
+      if (!pixels || pixels[0] != 19 || stride != w)
+         return -1;
+      if (rh264_video_readback(v) != 0 || readbacks != before + 1)
+         return -1;
+      res->materialized++;
+   }
+   else
+   {
+      /* The consumer deliberately drops the next picture in display order.
+       * Its backend slot may now be reused without a readback callback. */
+      for (s = 0; s < (int)fake.slots; s++)
+         if (fake.pending[s] && (chosen < 0
+               || res->pts[fake.sample[s]] < res->pts[fake.sample[chosen]]))
+            chosen = s;
+      if (chosen < 0 || readbacks != before)
+         return -1;
+      fake.pending[chosen] = 0;
+   }
+   return 0;
+}
 
 /* Decodes @mp4, on the backend when @hw, with catch-up on over samples
  * [skip_lo, skip_hi). */
@@ -299,8 +358,14 @@ static int decode(const char *mp4, int hw, int skip_lo, int skip_hi,
       rh264_video_set_extradata(v, rmp4_get_track(m, trk)->codec_private,
             rmp4_get_track(m, trk)->codec_private_size);
    memset(&fake, 0, sizeof(fake));
-   if (hw == 2)
+   readbacks = 0;
+   if (hw >= 2)
+   {
       rh264_video_set_hw_readback(v, 1);
+      rh264_video_set_deferred_readback(v, hw >= 3);
+      if (hw >= 3 && rh264_video_readback(v) == 0)
+         res->failed = 1;
+   }
    else if (hw)
       res->hw = rh264_video_set_hw(v, 1);
 
@@ -316,7 +381,14 @@ static int decode(const char *mp4, int hw, int skip_lo, int skip_hi,
       cur_sample = res->n;
       rh264_video_set_skip_nonref(v,
             res->n >= skip_lo && res->n < skip_hi);
-      r = rh264_video_decode(v, pkt.data, pkt.size);
+      {
+         unsigned tries = 0;
+         do
+            r = rh264_video_decode(v, pkt.data, pkt.size);
+         while (r == 2 && ++tries < 100);
+         if (r == 2)
+            r = -1;
+      }
       res->n++;
       if (rh264_video_dropped(v))
          res->dropped++;
@@ -326,19 +398,34 @@ static int decode(const char *mp4, int hw, int skip_lo, int skip_hi,
          break;
       }
       if (r == 1)
+      {
+         if (hw >= 3 && deferred_output(v, res) != 0)
+         { res->failed = 1; break; }
          res->shown++;
+      }
    }
-   while (!res->failed && rh264_video_drain(v) == 0)
+   while (!res->failed)
+   {
+      int r = rh264_video_drain(v);
+      if (r == 2)
+         continue;
+      if (r != 0)
+         break;
+      if (hw >= 3 && deferred_output(v, res) != 0)
+      { res->failed = 1; break; }
       res->shown++;
-   if (hw == 2)
+   }
+   if (hw >= 2)
       res->hw = rh264_video_is_hw(v);
+   if (hw >= 3 && !res->failed && rh264_video_readback(v) == 0)
+      res->failed = 1;
    if (res->hw)
    {
       video_hw_frame_t fr;
       /* the frame of the last picture shown is still to be had */
-      if (hw != 2 && res->shown && rh264_video_hw_frame(v, &fr) != 0)
+      if (hw < 2 && res->shown && rh264_video_hw_frame(v, &fr) != 0)
          res->failed = 1;
-      if (hw != 2 && res->shown && rh264_video_plane(v, 0, NULL, NULL, NULL))
+      if (hw < 2 && res->shown && rh264_video_plane(v, 0, NULL, NULL, NULL))
          res->failed = 1;
       if (hw == 2 && res->shown)
       {
@@ -363,6 +450,46 @@ static int decode(const char *mp4, int hw, int skip_lo, int skip_hi,
             res->failed = 1;
       }
       memcpy(res->order, fake.shown, sizeof(res->order));
+   }
+   if (res->hw && hw == 1 && !res->failed)
+   {
+      int pass;
+      int decoded = fake.ndecoded;
+      int shown = fake.nshown;
+      for (pass = 0; pass < 3; pass++)
+      {
+         int r = 0;
+         rmp4_rewind(m);
+         if (!rh264_video_restart_hw(&v) || fake.opened != 1 || fake.closed)
+         {
+            res->failed = 1;
+            break;
+         }
+         while (rmp4_read_packet(m, &pkt) == 1)
+         {
+            unsigned tries = 0;
+            if (pkt.track != trk)
+               continue;
+            cur_sample = 0;
+            rh264_video_set_skip_nonref(v, 0);
+            do
+               r = rh264_video_decode(v, pkt.data, pkt.size);
+            while (r == 2 && ++tries < 100);
+            break;
+         }
+         if (r == 0)
+            do
+               r = rh264_video_drain(v);
+            while (r == 2);
+         else if (r == 1)
+            r = 0;
+         if (r != 0 || fake.errors)
+            res->failed = 1;
+      }
+      check("three hardware restarts retain the backend session",
+            !res->failed && fake.opened == 1 && !fake.closed);
+      fake.ndecoded = decoded;
+      fake.nshown = shown;
    }
    rh264_video_close(v);
    rmp4_close(m);
@@ -485,6 +612,31 @@ int main(void)
    decode(mp4, 2, -1, -1, 1, &r);
    check("readback: lazy hardware activation, I420 planes and drain",
          r.hw && !r.failed && r.shown == r.n && !fake.errors && fake.closed);
+   slot_limit = fake.slots;
+   decode(mp4, 3, -1, -1, 1, &r);
+   check("deferred: no spare backend slot retains hardware with eager planes",
+         r.hw && !r.failed && r.shown == r.n && !fake.errors && readbacks == r.shown);
+   slot_limit = FAKE_SLOTS;
+   decode(mp4, 3, -1, -1, 1, &r);
+   check("deferred: all outputs, only requested CPU copies, repeated access cached",
+         r.hw && !r.failed && r.shown == r.n && !fake.errors
+         && r.materialized == (r.shown + 2) / 3 && readbacks == r.materialized);
+   printf("      deferred: %d outputs, %d readbacks\n", r.shown, readbacks);
+   snprintf(mp4, sizeof(mp4), "%s/main_bpyr.mp4", dir);
+   decode(mp4, 3, -1, -1, 1, &r);
+   check("deferred: B-frame/reference sequencing survives discarded outputs and drain",
+         r.hw && !r.failed && r.shown == r.n && !fake.errors
+         && readbacks == r.materialized && r.materialized < r.shown);
+   snprintf(mp4, sizeof(mp4), "%s/cropped.mp4", dir);
+   decode(mp4, 3, -1, -1, 1, &r);
+   check("deferred: cropped metadata and readback dimensions agree",
+         r.hw && !r.failed && r.shown == r.n && !fake.errors);
+   fail_readback = 1;
+   decode(mp4, 3, -1, -1, 1, &r);
+   check("deferred: backend readback failure reaches the caller",
+         r.hw && r.failed && readbacks == 1 && fake.closed);
+   fail_readback = 0;
+   snprintf(mp4, sizeof(mp4), "%s/baseline.mp4", dir);
    fake_ops.readback = NULL;
    decode(mp4, 2, -1, -1, 1, &r);
    check("readback: backend without readback stays in software",
@@ -494,6 +646,16 @@ int main(void)
    decode(mp4, 1, -1, -1, 1, &r);
    check("no backend: stays in software", !r.hw && !r.failed && r.shown == r.n);
 
+   inject_busy = 1;
+   rh264_set_hw_backend(&fake_ops);
+   decode_busy = output_busy = 0;
+   hw_case("busy_baseline", "testsrc2=s=176x144:r=25", 24,
+         "-profile:v baseline -preset medium -x264-params bframes=0", 1);
+   hw_case("busy_bpyr", "testsrc2=s=176x144:r=25", 48,
+         "-profile:v main -preset slow -x264-params bframes=3:b-pyramid=normal:ref=4", 1);
+   hw_case("busy_slices", "testsrc2=s=192x160:r=25", 24,
+         "-profile:v high -preset medium -x264-params slices=4:bframes=2", 1);
+   inject_busy = 0;
    run("rm -rf '%s'", dir);
    printf("rh264_hw_test: %s (%d failure%s)\n", fails ? "FAIL" : "PASS",
          fails, fails == 1 ? "" : "s");

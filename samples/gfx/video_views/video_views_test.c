@@ -24,6 +24,7 @@
 
 #include "gfx/video_views.h"
 #include "gfx/video_defines.h"
+#include "gfx/video_views_cpu.h"
 
 static int failures = 0;
 
@@ -701,6 +702,276 @@ static void test_eye_pair(void)
    CHECK(video_views_eye_pair(&map, eyes) && eyes[0] == 1 && eyes[1] == 0);
 }
 
+/* A screen's views as a map of their own: the 3DS driver's top and
+ * bottom screens. */
+static void test_select_screens(void)
+{
+   video_views_map_t map, sub;
+   struct retro_video_view v[4];
+   unsigned index[RETRO_VIDEO_VIEWS_MAX];
+
+   map_3ds(&map);
+   CHECK(video_views_select_screens(&map, 0, 1, &sub, index));
+   CHECK(sub.num_views == 2 && sub.num_screens == 1);
+   CHECK(index[0] == 0 && index[1] == 1);
+   CHECK(sub.views[1].eye == RETRO_VIDEO_VIEW_EYE_RIGHT);
+   CHECK(video_views_find(&sub, 0, RETRO_VIDEO_VIEW_EYE_RIGHT) == 1);
+
+   CHECK(video_views_select_screens(&map, 1, 1, &sub, index));
+   CHECK(sub.num_views == 1 && sub.num_screens == 1);
+   CHECK(index[0] == 2 && sub.views[0].screen == 0);
+   CHECK(sub.views[0].x == 240 && sub.views[0].y == 240);
+
+   /* The count is cut to the screens there are. */
+   CHECK(video_views_select_screens(&map, 1, 5, &sub, index));
+   CHECK(sub.num_screens == 1 && sub.num_views == 1);
+   CHECK(!video_views_select_screens(&map, 2, 1, &sub, index));
+   CHECK(sub.num_views == 0 && sub.num_screens == 0);
+   CHECK(!video_views_select_screens(&map, 0, 0, &sub, index));
+
+   /* Screens 1 and 2 of three, in the map's order, which needn't be the
+    * screens'. */
+   v[0] = mkview(0,   0, 100, 50, 2, RETRO_VIDEO_VIEW_EYE_NONE);
+   v[1] = mkview(0,  50, 100, 50, 0, RETRO_VIDEO_VIEW_EYE_NONE);
+   v[2] = mkview(0, 100, 100, 50, 1, RETRO_VIDEO_VIEW_EYE_LEFT);
+   v[3] = mkview(100, 100, 100, 50, 1, RETRO_VIDEO_VIEW_EYE_RIGHT);
+   CHECK(video_views_validate(v, 4, &map));
+   CHECK(video_views_select_screens(&map, 1, 2, &sub, index));
+   CHECK(sub.num_views == 3 && sub.num_screens == 2);
+   CHECK(index[0] == 0 && sub.views[0].screen == 1);
+   CHECK(index[1] == 2 && sub.views[1].screen == 0);
+   CHECK(index[2] == 3 && sub.views[2].screen == 0);
+   /* A layout of the selection places its screens like a map of two. */
+   {
+      video_views_layout_params_t p;
+      video_views_layout_t l;
+      memset(&p, 0, sizeof(p));
+      p.map         = &sub;
+      p.dims        = VIDEO_SCALE_PACK(320, 240);
+      p.stereo_mode = VIDEO_STEREO_MODE_2D;
+      video_views_layout(&p, &l);
+      CHECK(l.num_placements == 2);
+      CHECK(l.placements[0].view == 1 && l.placements[1].view == 0);
+   }
+}
+
+/* A console's touchscreen through the views it shows: the 3DS's bottom
+ * screen showing the DS map's second screen. */
+static void test_touch(void)
+{
+   video_views_map_t map, sub;
+   video_views_layout_params_t p;
+   video_views_layout_t l;
+   video_views_touch_t t;
+   unsigned index[RETRO_VIDEO_VIEWS_MAX];
+   int16_t x = 123, y = 456;
+   unsigned frame = VIDEO_SCALE_PACK(256, 384);
+
+   memset(&t, 0, sizeof(t));
+   CHECK(!video_views_touch_point(&t, 0, 0, &x, &y));
+   CHECK(x == 123 && y == 456);
+
+   map_ds(&map);
+   CHECK(video_views_select_screens(&map, 1, 1, &sub, index));
+   memset(&p, 0, sizeof(p));
+   p.map         = &sub;
+   p.dims        = VIDEO_SCALE_PACK(320, 240);
+   p.stereo_mode = VIDEO_STEREO_MODE_2D;
+   video_views_layout(&p, &l);
+   /* 256x192 into 320x240: the whole screen, aspect kept. */
+   CHECK(l.num_placements == 1
+         && l.placements[0].dst.dims == VIDEO_SCALE_PACK(320, 240));
+   video_views_touch_publish(&t, &map, &l, index, p.dims, frame);
+   CHECK(!(retro_atomic_load_acquire_int(&t.seq) & 1));
+
+   /* The display's middle is the second screen's: (128, 288) packed. */
+   CHECK(video_views_touch_point(&t, 0, 0, &x, &y));
+   CHECK(x >= -2 && x <= 2);
+   CHECK(y >= 16383 - 200 && y <= 16383 + 200);
+   /* The top left corner is the second screen's: (0, 192). */
+   CHECK(video_views_touch_point(&t, -0x7fff, -0x7fff, &x, &y));
+   CHECK(x == -0x7fff && y >= -2 && y <= 2);
+
+   /* Pillarboxed: off the view is off the frame. */
+   p.dims = VIDEO_SCALE_PACK(400, 240);
+   video_views_layout(&p, &l);
+   video_views_touch_publish(&t, &map, &l, index, p.dims, frame);
+   CHECK(video_views_touch_point(&t, -0x7fff, 0, &x, &y));
+   CHECK(x == -0x8000 && y == -0x8000);
+
+   /* Taken back: none. */
+   video_views_touch_publish(&t, NULL, NULL, NULL, 0, 0);
+   x = 7;
+   CHECK(!video_views_touch_point(&t, 0, 0, &x, &y) && x == 7);
+}
+
+/* The CPU drivers' composer: a layout made for a screen twice the DS
+ * map's size is composed at half that, each view copied as it is, for
+ * display hardware to enlarge; and side by side at full size. */
+/* What a blitter scales into each placement's visible part */
+static void test_cut_source(void)
+{
+   struct retro_video_view v = { 0 };
+   video_views_rect_t dst, cut, out;
+
+   v.x = 10; v.y = 20; v.width = 100; v.height = 50;
+   /* Drawn whole, at twice its size: all of it */
+   dst.pos  = VIDEO_POS_PACK(4, 6);
+   dst.dims = VIDEO_SCALE_PACK(200, 100);
+   video_views_cut_source(&v, &dst, &dst, &out);
+   CHECK(VIDEO_POS_X(out.pos) == 10 && VIDEO_POS_Y(out.pos) == 20);
+   CHECK(VIDEO_SCALE_W(out.dims) == 100 && VIDEO_SCALE_H(out.dims) == 50);
+   /* Its right half and bottom half cut away */
+   cut.pos  = dst.pos;
+   cut.dims = VIDEO_SCALE_PACK(100, 50);
+   video_views_cut_source(&v, &dst, &cut, &out);
+   CHECK(VIDEO_POS_X(out.pos) == 10 && VIDEO_POS_Y(out.pos) == 20);
+   CHECK(VIDEO_SCALE_W(out.dims) == 50 && VIDEO_SCALE_H(out.dims) == 25);
+   /* Off the left and top of the screen: the view's far quarter */
+   dst.pos  = VIDEO_POS_PACK(-150, -75);
+   cut.pos  = VIDEO_POS_PACK(0, 0);
+   cut.dims = VIDEO_SCALE_PACK(50, 25);
+   video_views_cut_source(&v, &dst, &cut, &out);
+   CHECK(VIDEO_POS_X(out.pos) == 85 && VIDEO_POS_Y(out.pos) == 57);
+   CHECK(VIDEO_SCALE_W(out.dims) == 25 && VIDEO_SCALE_H(out.dims) == 13);
+   /* Shrunk to less than a pixel's worth: still a pixel */
+   dst.pos  = VIDEO_POS_PACK(0, 0);
+   dst.dims = VIDEO_SCALE_PACK(10, 5);
+   cut.pos  = VIDEO_POS_PACK(9, 4);
+   cut.dims = VIDEO_SCALE_PACK(1, 1);
+   video_views_cut_source(&v, &dst, &cut, &out);
+   CHECK(VIDEO_POS_X(out.pos) == 100 && VIDEO_POS_Y(out.pos) == 60);
+   CHECK(VIDEO_SCALE_W(out.dims) == 10 && VIDEO_SCALE_H(out.dims) == 10);
+   /* A one-pixel view stays one pixel */
+   v.width  = 1;
+   v.height = 1;
+   dst.dims = VIDEO_SCALE_PACK(40, 40);
+   cut.pos  = VIDEO_POS_PACK(39, 39);
+   video_views_cut_source(&v, &dst, &cut, &out);
+   CHECK(VIDEO_POS_X(out.pos) == 10 && VIDEO_POS_Y(out.pos) == 20);
+   CHECK(VIDEO_SCALE_W(out.dims) == 1 && VIDEO_SCALE_H(out.dims) == 1);
+}
+
+static void test_cpu_compose(void)
+{
+   unsigned i, x, y;
+   video_views_map_t map;
+   video_views_layout_params_t p;
+   video_views_layout_t l;
+   video_views_cpu_t cpu;
+   static uint32_t frame[256 * 384];
+   static uint32_t out[512 * 384];
+   unsigned dims;
+   float scale;
+   bool ok = true;
+
+   memset(&cpu, 0, sizeof(cpu));
+   for (y = 0; y < 384; y++)
+      for (x = 0; x < 256; x++)
+         frame[y * 256 + x] = (y << 12) | (x << 1) | (y >= 192);
+
+   map_ds(&map);
+   memset(&p, 0, sizeof(p));
+   p.map         = &map;
+   p.dims        = VIDEO_SCALE_PACK(512, 768);
+   p.stereo_mode = VIDEO_STEREO_MODE_2D;
+   video_views_layout(&p, &l);
+   scale = video_views_cpu_scale(&map, &l);
+   CHECK(scale == 0.5f);
+   dims  = video_views_cpu_dims(p.dims, scale);
+   CHECK(dims == VIDEO_SCALE_PACK(256, 384));
+   video_views_cpu_compose(&cpu, &map, &l, frame, 256 * 4,
+         SCALER_FMT_ARGB8888, SCALER_TYPE_POINT, scale, dims, out, 256,
+         NULL);
+   /* The screens stacked as they are packed: the frame itself */
+   for (i = 0; i < 256 * 384; i++)
+      if ((out[i] & 0xffffff) != (frame[i] & 0xffffff))
+         ok = false;
+   CHECK(ok);
+
+   /* Side by side, full: each eye's half its own. */
+   p.dims        = VIDEO_SCALE_PACK(512, 384);
+   p.stereo_mode = VIDEO_STEREO_MODE_SBS_FULL;
+   video_views_layout(&p, &l);
+   video_views_cpu_compose(&cpu, &map, &l, frame, 256 * 4,
+         SCALER_FMT_ARGB8888, SCALER_TYPE_POINT, 1.0f, p.dims, out, 512,
+         NULL);
+   /* Both halves show the top screen at their top left */
+   CHECK((out[0] & 0xffffff) == (frame[0] & 0xffffff));
+   CHECK((out[256] & 0xffffff) == (frame[0] & 0xffffff));
+
+   /* Turned a quarter counter-clockwise, each view in its own place:
+    * the top screen's right column read downward becomes its top row */
+   p.dims        = VIDEO_SCALE_PACK(384, 512);
+   p.stereo_mode = VIDEO_STEREO_MODE_2D;
+   p.stretch     = true;
+   p.rotation    = 1;
+   video_views_layout(&p, &l);
+   cpu.rot       = 1;
+   memset(out, 0, sizeof(out));
+   video_views_cpu_compose(&cpu, &map, &l, frame, 256 * 4,
+         SCALER_FMT_ARGB8888, SCALER_TYPE_POINT, 1.0f, p.dims, out, 384,
+         NULL);
+   {
+      video_views_rect_t r = l.placements[0].dst;
+      int px = VIDEO_POS_X(r.pos), py = VIDEO_POS_Y(r.pos);
+      unsigned rw = VIDEO_SCALE_W(r.dims), rh = VIDEO_SCALE_H(r.dims);
+      /* Turned, the view stands taller than it is wide */
+      CHECK(rw > 0 && rh > rw);
+      /* Its top left is the view's top right; its bottom left the
+       * view's top left */
+      CHECK((out[(size_t)py * 384 + px] & 0xffffff)
+            == (frame[255] & 0xffffff));
+      CHECK((out[(size_t)(py + rh - 1) * 384 + px] & 0xffffff)
+            == (frame[0] & 0xffffff));
+   }
+   cpu.rot       = 0;
+   p.rotation    = 0;
+   p.stretch     = false;
+
+   /* Interlaced is composed at the screen's own size. */
+   p.dims        = VIDEO_SCALE_PACK(512, 384);
+   p.stereo_mode = VIDEO_STEREO_MODE_INTERLACED;
+   video_views_layout(&p, &l);
+   CHECK(video_views_cpu_scale(&map, &l) == 1.0f);
+   video_views_cpu_free(&cpu);
+}
+
+/* The CPU drivers' blend of a canvas's halves. */
+static void test_blend(void)
+{
+   /* Two 2x2 halves side by side, and an output wider than the eye. */
+   uint32_t canvas[2 * 4];
+   uint32_t out[2 * 3];
+   unsigned i;
+
+   for (i = 0; i < 2; i++)
+   {
+      canvas[i * 4 + 0] = 0xffffff;
+      canvas[i * 4 + 1] = 0x000000;
+      canvas[i * 4 + 2] = 0x000000;
+      canvas[i * 4 + 3] = 0xffffff;
+   }
+   for (i = 0; i < 6; i++)
+      out[i] = 0x123456;
+
+   video_views_blend_xrgb8888(canvas, 4, out, 3, VIDEO_SCALE_PACK(2, 2),
+         VIDEO_STEREO_MODE_ANAGLYPH);
+   /* White left only is red, white right only cyan. */
+   CHECK(out[0] == 0xff0000 && out[1] == 0x00ffff);
+   CHECK(out[3] == 0xff0000 && out[4] == 0x00ffff);
+   /* Past the eye's width is left alone. */
+   CHECK(out[2] == 0x123456 && out[5] == 0x123456);
+
+   canvas[4] = 0x0000ff;
+   canvas[6] = 0x00ff00;
+   video_views_blend_xrgb8888(canvas, 4, out, 3, VIDEO_SCALE_PACK(2, 2),
+         VIDEO_STEREO_MODE_INTERLACED);
+   /* Row 0 from the left half, row 1 from the right. */
+   CHECK(out[0] == 0xffffff && out[1] == 0x000000);
+   CHECK(out[3] == 0x00ff00 && out[4] == 0xffffff);
+}
+
 /* ---- the compositor, instantiated over fakes ---- */
 
 typedef struct fake_chain
@@ -1047,6 +1318,11 @@ int main(void)
    test_validate();
    test_frame_helpers();
    test_eye_pair();
+   test_select_screens();
+   test_blend();
+   test_cpu_compose();
+   test_cut_source();
+   test_touch();
    test_layout_screens();
    test_layout_stereo();
    test_layout_one_screen();

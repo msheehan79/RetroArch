@@ -41,70 +41,53 @@ jobs:
   samples-cores:
     name: Build and run samples/cores
     runs-on: ubuntu-latest
+    env:
+      APT_PKGS: build-essential pkg-config ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev libv4l-dev libasound2-dev ccache libavdevice-dev libavfilter-dev libpipewire-0.3-dev mesa-vulkan-drivers
     timeout-minutes: 25
 
     steps:
-      - name: Install dependencies
-        timeout-minutes: 20
-        run: |
-          pkgs="build-essential pkg-config ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev libv4l-dev libasound2-dev"
-          if dpkg -s $pkgs >/dev/null 2>&1; then
-            echo "All packages already present on runner image; skipping apt."
-            exit 0
-          fi
-          for i in 1 2 3; do
-            sudo timeout 90 apt-get update -y \
-              -o Acquire::Retries=3 -o Acquire::http::Timeout=30 && break
-            echo "apt-get update failed (attempt $i); retrying in 10s"
-            sleep 10
-          done
-          # Fetch first, under a bound: a download is safe to stop and
-          # resumes, an install is not. A mirror that stalls is left for
-          # the main archive on the next attempt.
-          for i in 1 2 3; do
-            sudo timeout 240 apt-get install -y --download-only \
-              -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
-              $pkgs && break
-            [ $i = 3 ] && exit 1
-            echo "package download failed or stalled (attempt $i); retrying from archive.ubuntu.com"
-            if [ ! -d /etc/apt/ra-orig ]; then
-              sudo mkdir /etc/apt/ra-orig
-              sudo cp -a /etc/apt/sources.list.d /etc/apt/ra-orig/
-              [ ! -f /etc/apt/sources.list ] || sudo cp -a /etc/apt/sources.list /etc/apt/ra-orig/
-            fi
-            for f in /etc/apt/sources.list /etc/apt/sources.list.d/*; do
-              [ -f "$f" ] || continue
-              sudo sed -i -e 's#mirror+file:/etc/apt/apt-mirrors.txt#http://archive.ubuntu.com/ubuntu/#g' \
-                -e 's#http://azure\.archive\.ubuntu\.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' "$f"
-            done
-            # A refresh cut short or refused leaves apt no package lists: it
-            # is retried, without translations or command-not-found data, and
-            # the mirror is put back when the archive will not answer either.
-            upd="-o Acquire::Retries=3 -o Acquire::http::Timeout=30
-              -o Acquire::Languages=none
-              -o Acquire::IndexTargets::deb::CNF::DefaultEnabled=false
-              -o APT::Update::Error-Mode=any"
-            ok=0
-            for j in 1 2; do
-              sudo timeout 120 apt-get update -y $upd && { ok=1; break; }
-            done
-            if [ $ok = 0 ]; then
-              sudo rm -rf /etc/apt/sources.list.d
-              sudo cp -a /etc/apt/ra-orig/sources.list.d /etc/apt/
-              [ ! -f /etc/apt/ra-orig/sources.list ] || sudo cp -a /etc/apt/ra-orig/sources.list /etc/apt/
-              sudo rm -rf /etc/apt/ra-orig
-              sudo timeout 120 apt-get update -y $upd || true
-            fi
-          done
-          sudo apt-get install -y \
-            -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
-            $pkgs
-
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Apt cache key
+        id: apt
+        run: sh .github/workflows/scripts/apt-cache-key.sh "$APT_PKGS"
+
+      - name: Restore apt cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.apt-cache
+          key: ${{ steps.apt.outputs.key }}
+          restore-keys: ${{ steps.apt.outputs.prefix }}
+
+      - name: Install dependencies
+        timeout-minutes: 20
+        run: sh .github/workflows/scripts/apt-install.sh $APT_PKGS
+
+      - name: Save apt cache
+        if: env.APT_CACHE_SAVE == '1'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.apt-cache
+          key: ${{ steps.apt.outputs.key }}
+
+      - name: Select software Vulkan for CPU fixtures
+        run: |
+          set -eu
+          for icd in /usr/share/vulkan/icd.d/lvp_icd*.json; do
+            if [ -f "$icd" ]; then
+              printf 'VK_ICD_FILENAMES=%s\n' "$icd" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          echo "Lavapipe ICD is missing" >&2
+          exit 1
+
+      - name: Link with lld
+        run: sh .github/workflows/scripts/use-lld.sh
+
       - name: Restore ccache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/.ccache
           key: ccache-${{ github.workflow }}-${{ github.job }}-${{ github.sha }}
@@ -114,11 +97,10 @@ jobs:
       - name: Enable ccache
         run: |
           set -eu
-          command -v ccache >/dev/null 2>&1 || sudo apt-get install -y -qq ccache
           export CCACHE_DIR="$HOME/.ccache"
           echo "CCACHE_DIR=$CCACHE_DIR" >> "$GITHUB_ENV"
           echo "/usr/lib/ccache" >> "$GITHUB_PATH"
-          ccache -M 500M
+          ccache -M 250M
           ccache -z
 
       - name: Build and run camera ffmpeg_live_test (plain, ASan + UBSan, TSan)
@@ -126,8 +108,6 @@ jobs:
         working-directory: samples/camera/ffmpeg_live
         run: |
           set -eu
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libavdevice-dev libavfilter-dev
           # The camera driver against lavfi: built with its input
           # format set to libavfilter, a filter graph is the device and
           # the whole pipeline runs with no camera attached - avformat
@@ -143,14 +123,14 @@ jobs:
           # decoded, and a slow poll the thread must not wait on. Leak
           # checking is on: a packet or plane kept per frame or per
           # start is a leak report.
-          make clean all
+          make clean && make -j$(nproc) all
           ./ffmpeg_live_test
           echo "[pass] ffmpeg_live_test"
-          make clean all SANITIZER=address,undefined
+          make clean SANITIZER=address,undefined && make -j$(nproc) all SANITIZER=address,undefined
           ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
              timeout 600 ./ffmpeg_live_test
           echo "[pass] ffmpeg_live_test (ASan)"
-          make clean all SANITIZER=thread
+          make clean SANITIZER=thread && make -j$(nproc) all SANITIZER=thread
           TSAN_OPTIONS=halt_on_error=1:suppressions=../../cores/ffmpeg_audio_pipe/tsan.supp \
              timeout 600 ./ffmpeg_live_test
           echo "[pass] ffmpeg_live_test (TSan)"
@@ -160,7 +140,6 @@ jobs:
         working-directory: samples/camera/pipewire_poll
         run: |
           set -eu
-          sudo apt-get install -y -qq libpipewire-0.3-dev
           # The pipewire camera driver's poll against a scripted
           # stream, the pw_stream calls link-wrapped: an empty queue
           # returns at once, and every buffer the poll takes - valid,
@@ -169,10 +148,20 @@ jobs:
           # the failure.
           make clean check
           echo "[pass] pipewire_poll_test"
-          make clean all SANITIZER=address,undefined
+          make clean SANITIZER=address,undefined && make -j$(nproc) all SANITIZER=address,undefined
           ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
              timeout 60 ./pipewire_poll_test
           echo "[pass] pipewire_poll_test (ASan)"
+
+      - name: FFmpeg hardware-context replacement (plain, ASan + UBSan)
+        working-directory: samples/cores/ffmpeg_hw_context
+        run: |
+          set -eu
+          make clean
+          make check
+          make clean
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+            make check SANITIZER=address,undefined
 
       - name: Build and run ffmpeg_sweep_test (plain, ASan + UBSan, TSan)
         shell: bash
@@ -193,14 +182,14 @@ jobs:
           # contexts and hardware devices. The libav* TSan
           # suppressions are the audio-pipe lane's, for the same
           # reason.
-          make clean all
+          make clean && make -j$(nproc) all
           ./ffmpeg_sweep_test
           echo "[pass] ffmpeg_sweep_test"
-          make clean all SANITIZER=address,undefined
+          make clean SANITIZER=address,undefined && make -j$(nproc) all SANITIZER=address,undefined
           ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
              UBSAN_OPTIONS=print_stacktrace=1 timeout 900 ./ffmpeg_sweep_test
           echo "[pass] ffmpeg_sweep_test (ASan)"
-          make clean all SANITIZER=thread
+          make clean SANITIZER=thread && make -j$(nproc) all SANITIZER=thread
           TSAN_OPTIONS=halt_on_error=1:suppressions=../ffmpeg_audio_pipe/tsan.supp \
              timeout 900 ./ffmpeg_sweep_test
           echo "[pass] ffmpeg_sweep_test (TSan)"
@@ -223,10 +212,10 @@ jobs:
           # The main thread's wait for a finished video slot ends when
           # the decode thread does, at the end of a clip, instead of
           # holding retro_run() on a slot nothing will finish.
-          make clean all SANITIZER=address,undefined
+          make clean SANITIZER=address,undefined && make -j$(nproc) all SANITIZER=address,undefined
           ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1 \
              timeout 60 ./ffmpeg_finished_wait_test
-          make clean all SANITIZER=thread
+          make clean SANITIZER=thread && make -j$(nproc) all SANITIZER=thread
           TSAN_OPTIONS=halt_on_error=1:suppressions=../ffmpeg_audio_pipe/tsan.supp \
              timeout 60 ./ffmpeg_finished_wait_test
           echo "[pass] ffmpeg_finished_wait_test"
@@ -244,13 +233,13 @@ jobs:
           # teardown mid-stream, all on a watchdog.  Needs the ffmpeg
           # CLI to generate the clip.  Leak detection off: libavutil's
           # own HW-device probing allocates and keeps a few objects.
-          make clean all SANITIZER=address,undefined
+          make clean SANITIZER=address,undefined && make -j$(nproc) all SANITIZER=address,undefined
           test -x ffmpeg_audio_pipe_test
           ASAN_OPTIONS=detect_leaks=0:detect_stack_use_after_return=1 \
              UBSAN_OPTIONS=print_stacktrace=1 timeout 300 \
              ./ffmpeg_audio_pipe_test
           echo "[pass] ffmpeg_audio_pipe_test (ASan)"
-          make clean all SANITIZER=thread
+          make clean SANITIZER=thread && make -j$(nproc) all SANITIZER=thread
           # The libav* libraries are uninstrumented, so TSan cannot see
           # the atomics that order an AVBufferRef's reference count and
           # reports the allocation and the release as a race. Only
@@ -272,12 +261,26 @@ jobs:
           # lands mid-read included - and no lock taken by the callback.
           # The device is ALSA's null PCM; the capture read is a
           # stand-in.
-          make clean all
+          make clean && make -j$(nproc) all
           timeout 120 ./videoproc_audio_test
-          make clean all SANITIZER=address,undefined
+          make clean SANITIZER=address,undefined && make -j$(nproc) all SANITIZER=address,undefined
           ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
              timeout 120 ./videoproc_audio_test
           echo "[pass] videoproc_audio_test (ASan)"
-          make clean all SANITIZER=thread
+          make clean SANITIZER=thread && make -j$(nproc) all SANITIZER=thread
           TSAN_OPTIONS=halt_on_error=1 timeout 120 ./videoproc_audio_test
           echo "[pass] videoproc_audio_test (TSan)"
+
+      - name: ccache statistics
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: ccache -sv
+
+      - name: Save ccache
+        # Only master's pushes keep a cache: pull requests restore
+        # master's, so one push does not evict the next one's.
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ github.workflow }}-${{ github.job }}-${{ github.sha }}

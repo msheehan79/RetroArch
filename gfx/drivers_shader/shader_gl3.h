@@ -103,6 +103,12 @@ void gl3_filter_chain_set_pass_info(
 
 bool gl3_filter_chain_init(gl3_filter_chain_t *chain);
 
+void gl3_filter_chain_set_passthrough(
+      gl3_filter_chain_t *chain, unsigned passthrough);
+
+void gl3_filter_chain_set_source_hdr(
+      gl3_filter_chain_t *chain, unsigned source_hdr);
+
 void gl3_filter_chain_set_input_texture(
       gl3_filter_chain_t *chain,
       const struct gl3_filter_chain_texture *texture);
@@ -131,6 +137,10 @@ void gl3_filter_chain_set_frame_direction(
 void gl3_filter_chain_set_frame_time_delta(
       gl3_filter_chain_t *chain,
       uint32_t time_delta);
+
+void gl3_filter_chain_set_hdr_parameters(
+      gl3_filter_chain_t *chain, unsigned mode,
+      float paper_white_nits, unsigned expand_gamut, float peak_nits);
 
 void gl3_filter_chain_set_original_fps(
       gl3_filter_chain_t *chain,
@@ -221,6 +231,7 @@ struct video_shader *gl3_filter_chain_get_preset(
  * compile any shader passes. Returns NULL on failure.
  * The returned chain is NOT yet usable for rendering.
  **/
+/* The scheduled count may include a copy step pruned after reflection. */
 gl3_filter_chain_t *gl3_filter_chain_create_deferred(
       const char *path,
       enum glslang_filter_chain_filter filter,

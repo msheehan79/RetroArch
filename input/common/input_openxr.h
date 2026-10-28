@@ -69,8 +69,8 @@ void input_openxr_reannounce(void);
  * headset's. */
 bool input_openxr_autoconfigure(unsigned slot);
 
-/* RARCH_MENU_TOGGLE, RARCH_HEADSET_RECENTER or
- * RARCH_LASER_POINTER_TOGGLE, from the headset's own actions. */
+/* RARCH_MENU_TOGGLE, RARCH_HEADSET_RECENTER, RARCH_LASER_POINTER_TOGGLE
+ * or RARCH_HEADSET_VIEW_TOGGLE, from the headset's own actions. */
 bool input_openxr_hotkey(unsigned id);
 
 /* The laser as RETRO_DEVICE_POINTER or RETRO_DEVICE_LIGHTGUN on port 0,
@@ -82,6 +82,11 @@ bool input_openxr_pointer(unsigned port, unsigned device, unsigned idx,
 /* The laser on the menu quad: where, from 0 to 1 across and down, and
  * whether its trigger is held. */
 bool input_openxr_menu_pointer(float *u, float *v, bool *pressed);
+
+/* Marks, on the hands the host sampled with the head, which are held
+ * and through which interaction profile; a hand neither held nor
+ * tracked is cleared. Main thread. */
+void input_openxr_controller_poses(struct retro_vr_controller_poses *out);
 
 /* Whether a core's rumble reaches the controllers now. Any thread. */
 bool input_openxr_can_rumble(void);
