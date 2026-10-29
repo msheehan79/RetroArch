@@ -345,6 +345,10 @@ platform_video "rs90 video"     "-DDINGUX -DRS90" "-I/usr/include/SDL" \
    gfx/drivers/sdl_rs90_gfx.c /usr/include/SDL/SDL.h
 platform_video "wiiu gx2 video" "-DWIIU $HOSTOFF" \
    "-Ios/wiiu/include -Ios/wiiu" gfx/drivers/gx2_gfx.c ""
+# The iosuhax client, devoptab and libfat sector interface that replaced
+# deps/libiosuhax, against newlib's devoptab order.
+platform_video "wiiu iosuhax" "-DWIIU -D__wiiu__ -DHAVE_IOSUHAX $HOSTOFF" \
+   "-Ios/wiiu/include -Itools/platform_stubs/wiiu" os/wiiu/fs/iosuhax.c ""
 platform_video "hub75 video" "" "" gfx/drivers/hub75_gfx.c ""
 platform_video "openvg video" "-DHAVE_VG -DHAVE_EGL" \
    "-Itools/platform_stubs/openvg" gfx/drivers/vg.c ""
@@ -363,6 +367,13 @@ platform_video "dispmanx video" "-DHAVE_DISPMANX" "-I$STUBS/videocore" \
 platform_video "oga video" "-DHAVE_ODROIDGO2" \
    "-I$STUBS/rga -I/usr/include/libdrm" \
    gfx/drivers/oga_gfx.c /usr/include/xf86drm.h
+# Its GL context: the RGA rotate and page flip that libgo2 used to do,
+# against the same librga stand-in.
+platform_video "go2 drm context" \
+   "-DHAVE_ODROIDGO2 -DHAVE_KMS -DHAVE_EGL -DHAVE_OPENGLES -DHAVE_GLSL" \
+   "-I$STUBS/rga -I/usr/include/libdrm" \
+   gfx/drivers_context/drm_go2_ctx.c \
+   "/usr/include/xf86drm.h /usr/include/gbm.h /usr/include/EGL/egl.h"
 
 # The Direct3D drivers, against the DirectX headers the tree vendors in
 # gfx/include/dxsdk. Six drivers no other lane compiles, and they read

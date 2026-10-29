@@ -34373,7 +34373,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_FAILED_TO_ENTER_GAMEMODE_LINUX,
-   "Failed to enter GameMode - ensure GameMode daemon is installed/running"
+   "Failed to enter Game Mode"
    )
 MSG_HASH(
    MSG_VRR_RUNLOOP_ENABLED,
@@ -35374,11 +35374,11 @@ MSG_HASH(MENU_ENUM_LABEL_VALUE_##T, us)
 #undef SETTINGS_DEF_STRINGS_PASS
 MSG_HASH(
    MENU_ENUM_SUBLABEL_GAMEMODE_ENABLE_LINUX,
-   "Can improve performance, reduce latency and fix audio crackling issues. You need https://github.com/FeralInteractive/gamemode for this to work."
+   "Raises RetroArch's disk access priority and holds the system's performance power profile (through power-profiles-daemon or tuned-ppd), which can improve performance, reduce latency and fix audio crackling. The performance profile only applies when plugged in. The previous profile is restored when Game Mode is turned off or RetroArch exits."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_GAMEMODE_ENABLE,
-   "Enabling Linux GameMode can improve latency, fix audio crackling issues and maximize overall performance by automatically configuring your CPU and GPU for best performance.\nThe GameMode software needs to be installed for this to work. See https://github.com/FeralInteractive/gamemode for information on how to install GameMode."
+   "Game Mode raises disk access priority and requests the performance power profile through power-profiles-daemon or tuned-ppd. This can reduce latency, fix audio crackling and improve performance. The profile is held only while plugged in: unplugging releases it, and plugging back in restores it.\nNo extra software is needed on desktop distributions. The hold is released when Game Mode is turned off or RetroArch exits, including after a crash."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_META_RESTART_KEY,

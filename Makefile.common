@@ -190,7 +190,8 @@ ifneq ($(findstring Linux,$(OS)),)
 endif
 
 ifeq ($(HAVE_UNIX), 1)
-   OBJ += frontend/drivers/platform_unix.o
+   OBJ += frontend/drivers/platform_unix.o \
+          frontend/drivers/gamemode_linux.o
 
 	ifeq ($(UNIX_CWD_ENV), 1)
 		DEF_FLAGS += -DRARCH_UNIX_CWD_ENV
@@ -279,6 +280,7 @@ OBJ += \
        tasks/task_core_backup.o \
        $(LIBRETRO_COMM_DIR)/encodings/encoding_utf.o \
        $(LIBRETRO_COMM_DIR)/encodings/encoding_crc32.o \
+       $(LIBRETRO_COMM_DIR)/encodings/encoding_xxh64.o \
        $(LIBRETRO_COMM_DIR)/encodings/encoding_base64.o
 
 ifeq ($(HAVE_TRANSLATE), 1)
@@ -493,7 +495,8 @@ endif
 
 ifeq ($(HAVE_STATESTREAM), 1)
    DEFINES += -DHAVE_STATESTREAM
-   OBJ += input/bsv/uint32s_index.o
+   OBJ += input/bsv/uint32s_index.o \
+          $(LIBRETRO_COMM_DIR)/encodings/encoding_xxh3.o
 endif
 
 ifeq ($(HAVE_RUNAHEAD), 1)
@@ -1479,29 +1482,17 @@ ifeq ($(HAVE_WINRAWINPUT), 1)
 endif
 endif
 
+# The Dingux joypad driver's vibration motor is written from it too
+ifeq ($(HAVE_SDL_DINGUX), 1)
+   HAVE_INPUT_OUTPUT_WRITER = 1
+endif
+
 # The thread the joypad drivers write to their controllers from (udev,
-# XInput, Windows raw input): one object, whichever of them is built.
+# XInput, Windows raw input, Dingux): one object, whichever of them is built.
 ifeq ($(HAVE_INPUT_OUTPUT_WRITER), 1)
    OBJ += input/common/output_writer.o
 endif
 
-ifeq ($(HAVE_LIBSHAKE), 1)
-ifeq ($(OSX), 1)
-   DEFINES      += -DHAVE_LIBSHAKE
-   INCLUDE_DIRS += -I$(DEPS_DIR)/libShake/include
-   OBJ          += $(DEPS_DIR)/libShake/src/common/error.o \
-                   $(DEPS_DIR)/libShake/src/common/helpers.o \
-                   $(DEPS_DIR)/libShake/src/common/presets.o \
-                   $(DEPS_DIR)/libShake/src/osx/shake.o
-else ifeq ($(HAVE_UNIX), 1)
-   DEFINES      += -DHAVE_LIBSHAKE
-   INCLUDE_DIRS += -I$(DEPS_DIR)/libShake/include
-   OBJ          += $(DEPS_DIR)/libShake/src/common/error.o \
-                   $(DEPS_DIR)/libShake/src/common/helpers.o \
-                   $(DEPS_DIR)/libShake/src/common/presets.o \
-                   $(DEPS_DIR)/libShake/src/linux/shake.o
-endif
-endif
 
 # Companion UI
 
@@ -2269,7 +2260,6 @@ endif
 ifeq ($(HAVE_RZSTD),1)
    DEFINES += -DHAVE_RZSTD
    OBJ += $(LIBRETRO_COMM_DIR)/encodings/encoding_rzstd.o \
-          $(LIBRETRO_COMM_DIR)/encodings/encoding_xxh64.o \
           $(LIBRETRO_COMM_DIR)/streams/trans_stream_rzstd.o
 endif
 
@@ -3085,10 +3075,9 @@ endif
 
 ifeq ($(WANT_IOSUHAX), 1)
    DEFINES += -DHAVE_IOSUHAX
-   INCLUDE_DIRS += -I$(DEPS_DIR)/libiosuhax/include
-   OBJ += $(DEPS_DIR)/libiosuhax/source/iosuhax.o \
-          $(DEPS_DIR)/libiosuhax/source/iosuhax_devoptab.o \
-          $(DEPS_DIR)/libiosuhax/source/iosuhax_disc_interface.o
+   # libfat includes iosuhax_disc_interface.h by name
+   INCLUDE_DIRS += -Ios/wiiu/fs
+   OBJ += os/wiiu/fs/iosuhax.o
 endif
 
 ifeq ($(WANT_LIBFAT), 1)
@@ -3257,11 +3246,8 @@ endif
 
 ifeq ($(HAVE_ODROIDGO2), 1)
   DEFINES += -DHAVE_ODROIDGO2
-  LIBS += -lrga -lpng -lz
-  INCLUDE_DIRS += -I$(DEPS_DIR)/libgo2/include
-  OBJ += $(DEPS_DIR)/libgo2/src/display.o \
-         $(DEPS_DIR)/libgo2/src/queue.o \
-         gfx/drivers/oga_gfx.o
+  LIBS += -lrga
+  OBJ += gfx/drivers/oga_gfx.o
 endif
 
 ifeq ($(HAVE_GAME_AI),1)

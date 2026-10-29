@@ -19,6 +19,9 @@
 #include "softfilter.h"
 #include <stdlib.h>
 
+/* Vector runs over blocks of one colour (see softfilter_copyrun.h) */
+#include "softfilter_copyrun.h"
+
 #ifdef RARCH_INTERNAL
 #define softfilter_get_implementation supereagle_get_implementation
 #define softfilter_thread_data supereagle_softfilter_thread_data
@@ -47,6 +50,8 @@ struct filter_data
    unsigned threads;
    struct softfilter_thread_data *workers;
    unsigned in_fmt;
+   /* The copy runs for this machine (NULL without a vector tier) */
+   struct softfilter_copyrun copyrun;
 };
 
 static unsigned supereagle_generic_input_fmts(void)
@@ -80,6 +85,7 @@ static void *supereagle_generic_create(const struct softfilter_config *config,
    }
    filt->threads = threads;
    filt->in_fmt  = in_fmt;
+   softfilter_copy2x2_pick(&filt->copyrun, simd);
    return filt;
 }
 
@@ -178,25 +184,33 @@ static void supereagle_generic_destroy(void *data)
          } \
          else if (color5 == color3 && color2 == color6) \
          { \
-            int r = 0; \
-            r += supereagle_result(color6, color5, color1, colorA1); \
-            r += supereagle_result(color6, color5, color4, colorB1); \
-            r += supereagle_result(color6, color5, colorA2, colorS1); \
-            r += supereagle_result(color6, color5, colorB2, colorS2); \
-            if (r > 0) \
-            { \
-               product1b = product2a = color2; \
-               product1a = product2b = interpolate_cb(color5, color6); \
-            } \
-            else if (r < 0) \
-            { \
-               product2b = product1a = color5; \
-               product1b = product2a = interpolate_cb(color5, color6); \
-            } \
+            /* A flat 2x2 block: each tie-break term compares color6 \
+             * and color5 alike, so r is 0 and every product is the \
+             * block's colour; most of a game frame lands here. */ \
+            if (color5 == color6) \
+               product1a = product1b = product2a = product2b = color5; \
             else \
             { \
-               product2b = product1a = color5; \
-               product1b = product2a = color2; \
+               int r = 0; \
+               r += supereagle_result(color6, color5, color1, colorA1); \
+               r += supereagle_result(color6, color5, color4, colorB1); \
+               r += supereagle_result(color6, color5, colorA2, colorS1); \
+               r += supereagle_result(color6, color5, colorB2, colorS2); \
+               if (r > 0) \
+               { \
+                  product1b = product2a = color2; \
+                  product1a = product2b = interpolate_cb(color5, color6); \
+               } \
+               else if (r < 0) \
+               { \
+                  product2b = product1a = color5; \
+                  product1b = product2a = interpolate_cb(color5, color6); \
+               } \
+               else \
+               { \
+                  product2b = product1a = color5; \
+                  product1b = product2a = color2; \
+               } \
             } \
          } \
          else \
@@ -216,6 +230,118 @@ static void supereagle_generic_destroy(void *data)
          out += 2
 #endif
 
+#ifdef SOFTFILTER_HAVE_COPYRUN
+/* One pixel of xrgb8888, the plain loop's body: for pixels a copy run
+ * finds are not in a block of one colour. */
+static SOFTFILTER_FORCE_INLINE void supereagle_full_xrgb8888(const uint32_t *row,
+      unsigned x, unsigned width, unsigned prevline, unsigned nextline,
+      unsigned nextline2, uint32_t *dst, unsigned dst_stride)
+{
+   const uint32_t *in = row + x;
+   uint32_t *out      = dst + 2 * x;
+   unsigned finish = width - x;
+   {
+         /* finish counts down from width, so it doubles as the distance
+          * to the right edge. */
+         int xm1 = (finish < width) ? -1 : 0;
+         int xp1 = (finish > 1) ? 1 : 0;
+         int xp2 = (finish > 2) ? 2 : (int)finish - 1;
+
+         supereagle_declare_variables(uint32_t, in, prevline, nextline, nextline2,
+               xm1, xp1, xp2);
+         supereagle_function(supereagle_result, supereagle_interpolate_xrgb8888, supereagle_interpolate2_xrgb8888);
+   }
+   (void)in;
+   (void)out;
+}
+
+/* Pixels x0 up to x1 of a row of xrgb8888, in the plain loop's own form */
+static void supereagle_seg_xrgb8888(const uint32_t *row, unsigned x0,
+      unsigned x1, unsigned width, unsigned prevline, unsigned nextline,
+      unsigned nextline2, uint32_t *dst, unsigned dst_stride)
+{
+   const uint32_t *in = row + x0;
+   uint32_t *out      = dst + 2 * x0;
+   unsigned finish;
+   for (finish = width - x0; finish > width - x1; finish -= 1)
+   {
+         /* finish counts down from width, so it doubles as the distance
+          * to the right edge. */
+         int xm1 = (finish < width) ? -1 : 0;
+         int xp1 = (finish > 1) ? 1 : 0;
+         int xp2 = (finish > 2) ? 2 : (int)finish - 1;
+
+         supereagle_declare_variables(uint32_t, in, prevline, nextline, nextline2,
+               xm1, xp1, xp2);
+         supereagle_function(supereagle_result, supereagle_interpolate_xrgb8888, supereagle_interpolate2_xrgb8888);
+   }
+}
+
+static void supereagle_vec_xrgb8888(const struct filter_data *filt,
+      unsigned width, unsigned height, int first, unsigned below,
+      const uint32_t *src, unsigned src_stride, uint32_t *dst,
+      unsigned dst_stride)
+{
+   SOFTFILTER_COPYRUN_ROWS(uint32_t, supereagle_full_xrgb8888, supereagle_seg_xrgb8888,
+         filt->copyrun.xrgb8888, filt->copyrun.lanes_xrgb8888)
+}
+
+/* One pixel of rgb565, the plain loop's body: for pixels a copy run
+ * finds are not in a block of one colour. */
+static SOFTFILTER_FORCE_INLINE void supereagle_full_rgb565(const uint16_t *row,
+      unsigned x, unsigned width, unsigned prevline, unsigned nextline,
+      unsigned nextline2, uint16_t *dst, unsigned dst_stride)
+{
+   const uint16_t *in = row + x;
+   uint16_t *out      = dst + 2 * x;
+   unsigned finish = width - x;
+   {
+         /* finish counts down from width, so it doubles as the distance
+          * to the right edge. */
+         int xm1 = (finish < width) ? -1 : 0;
+         int xp1 = (finish > 1) ? 1 : 0;
+         int xp2 = (finish > 2) ? 2 : (int)finish - 1;
+
+         supereagle_declare_variables(uint16_t, in, prevline, nextline, nextline2,
+               xm1, xp1, xp2);
+         supereagle_function(supereagle_result, supereagle_interpolate_rgb565, supereagle_interpolate2_rgb565);
+   }
+   (void)in;
+   (void)out;
+}
+
+/* Pixels x0 up to x1 of a row of rgb565, in the plain loop's own form */
+static void supereagle_seg_rgb565(const uint16_t *row, unsigned x0,
+      unsigned x1, unsigned width, unsigned prevline, unsigned nextline,
+      unsigned nextline2, uint16_t *dst, unsigned dst_stride)
+{
+   const uint16_t *in = row + x0;
+   uint16_t *out      = dst + 2 * x0;
+   unsigned finish;
+   for (finish = width - x0; finish > width - x1; finish -= 1)
+   {
+         /* finish counts down from width, so it doubles as the distance
+          * to the right edge. */
+         int xm1 = (finish < width) ? -1 : 0;
+         int xp1 = (finish > 1) ? 1 : 0;
+         int xp2 = (finish > 2) ? 2 : (int)finish - 1;
+
+         supereagle_declare_variables(uint16_t, in, prevline, nextline, nextline2,
+               xm1, xp1, xp2);
+         supereagle_function(supereagle_result, supereagle_interpolate_rgb565, supereagle_interpolate2_rgb565);
+   }
+}
+
+static void supereagle_vec_rgb565(const struct filter_data *filt,
+      unsigned width, unsigned height, int first, unsigned below,
+      const uint16_t *src, unsigned src_stride, uint16_t *dst,
+      unsigned dst_stride)
+{
+   SOFTFILTER_COPYRUN_ROWS(uint16_t, supereagle_full_rgb565, supereagle_seg_rgb565,
+         filt->copyrun.rgb565, filt->copyrun.lanes_rgb565)
+}
+
+#else
 static void supereagle_generic_xrgb8888(unsigned width, unsigned height,
       int first, unsigned below, uint32_t *src,
       unsigned src_stride, uint32_t *dst, unsigned dst_stride)
@@ -297,6 +423,7 @@ static void supereagle_generic_rgb565(unsigned width, unsigned height,
       dst += 2 * dst_stride;
    }
 }
+#endif
 
 static void supereagle_work_cb_rgb565(void *data, void *thread_data)
 {
@@ -306,11 +433,19 @@ static void supereagle_work_cb_rgb565(void *data, void *thread_data)
    unsigned width   = thr->width;
    unsigned height  = thr->height;
 
+#ifdef SOFTFILTER_HAVE_COPYRUN
+   supereagle_vec_rgb565((const struct filter_data*)data, width, height,
+         thr->first, thr->below, input,
+         (unsigned)(thr->in_pitch / SOFTFILTER_BPP_RGB565),
+         output,
+         (unsigned)(thr->out_pitch / SOFTFILTER_BPP_RGB565));
+#else
    supereagle_generic_rgb565(width, height,
          thr->first, thr->below, input,
          (unsigned)(thr->in_pitch / SOFTFILTER_BPP_RGB565),
          output,
          (unsigned)(thr->out_pitch / SOFTFILTER_BPP_RGB565));
+#endif
 }
 
 static void supereagle_work_cb_xrgb8888(void *data, void *thread_data)
@@ -321,11 +456,19 @@ static void supereagle_work_cb_xrgb8888(void *data, void *thread_data)
    unsigned width   = thr->width;
    unsigned height  = thr->height;
 
+#ifdef SOFTFILTER_HAVE_COPYRUN
+   supereagle_vec_xrgb8888((const struct filter_data*)data, width, height,
+         thr->first, thr->below, input,
+         (unsigned)(thr->in_pitch / SOFTFILTER_BPP_XRGB8888),
+         output,
+         (unsigned)(thr->out_pitch / SOFTFILTER_BPP_XRGB8888));
+#else
    supereagle_generic_xrgb8888(width, height,
          thr->first, thr->below, input,
          (unsigned)(thr->in_pitch / SOFTFILTER_BPP_XRGB8888),
          output,
          (unsigned)(thr->out_pitch / SOFTFILTER_BPP_XRGB8888));
+#endif
 }
 
 static void supereagle_generic_packets(void *data,

@@ -9,10 +9,12 @@ name: CI Linux filter plugins
 # takes more than one worker must give the single-worker output byte for
 # byte with 2, 3 and 4 workers running at once.  The same run is repeated
 # with the plugins and the harness built under ASan, UBSan and
-# LeakSanitizer, and under ThreadSanitizer.  The NTSC, 2xBR, NTSC-CRT and
-# 2xSaI-family filters are also held byte for byte to output hashes
+# LeakSanitizer, and under ThreadSanitizer.  The NTSC, 2xBR, NTSC-CRT,
+# 2xSaI-family, Phosphor2x, Blargg NTSC SNES, De-Dither, Pixel Art AA,
+# Scale2x, Scanline2x, Upscale 1.5x/1.66x and the Normal, Grid, Game Boy
+# and Dot Matrix scalers are also held byte for byte to output hashes
 # recorded from their earlier implementations
-# (samples/gfx/{ntsc,xbr,crt,sai}_filter_golden).
+# (samples/gfx/{ntsc,crt}_filter_golden and samples/gfx/filter_golden).
 
 on:
   push:
@@ -24,9 +26,8 @@ on:
       - 'libretro-common/include/libretro_dspfilter.h'
       - 'samples/gfx/filter_plugins/**'
       - 'samples/gfx/ntsc_filter_golden/**'
-      - 'samples/gfx/xbr_filter_golden/**'
       - 'samples/gfx/crt_filter_golden/**'
-      - 'samples/gfx/sai_filter_golden/**'
+      - 'samples/gfx/filter_golden/**'
       - '.github/workflows/Linux-filter-plugins.yml'
   pull_request:
     paths:
@@ -35,9 +36,8 @@ on:
       - 'libretro-common/include/libretro_dspfilter.h'
       - 'samples/gfx/filter_plugins/**'
       - 'samples/gfx/ntsc_filter_golden/**'
-      - 'samples/gfx/xbr_filter_golden/**'
       - 'samples/gfx/crt_filter_golden/**'
-      - 'samples/gfx/sai_filter_golden/**'
+      - 'samples/gfx/filter_golden/**'
       - '.github/workflows/Linux-filter-plugins.yml'
   workflow_dispatch:
 
@@ -90,11 +90,11 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: |
           set -eu
-          for t in ntsc_filter_golden xbr_filter_golden crt_filter_golden \
-                   sai_filter_golden; do
-             make -C samples/gfx/$t check
+          jobs=$(getconf _NPROCESSORS_ONLN)
+          for t in ntsc_filter_golden crt_filter_golden filter_golden; do
+             make -C samples/gfx/$t -j"$jobs" check
              make -C samples/gfx/$t clean
-             make -C samples/gfx/$t check SANITIZER=address,undefined
+             make -C samples/gfx/$t -j"$jobs" check SANITIZER=address,undefined
           done
 
       - name: Load and run every plugin under ThreadSanitizer

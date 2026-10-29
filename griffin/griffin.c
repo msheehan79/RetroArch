@@ -164,7 +164,6 @@ COMPRESSION
 #include "../libretro-common/encodings/encoding_deflate.c"
 #ifdef HAVE_RZSTD
 #include "../libretro-common/encodings/encoding_rzstd.c"
-#include "../libretro-common/encodings/encoding_xxh64.c"
 #include "../libretro-common/streams/trans_stream_rzstd.c"
 #endif
 #include "../libretro-common/streams/trans_stream_deflate.c"
@@ -179,6 +178,7 @@ ENCODINGS
 ============================================================ */
 #include "../libretro-common/encodings/encoding_utf.c"
 #include "../libretro-common/encodings/encoding_crc32.c"
+#include "../libretro-common/encodings/encoding_xxh64.c"
 #include "../libretro-common/encodings/encoding_base64.c"
 
 /*============================================================
@@ -916,6 +916,9 @@ INPUT
 #ifdef HAVE_BSV_MOVIE
 #include "../input/bsv/bsvmovie.c"
 #include "../input/bsv/uint32s_index.c"
+#ifdef HAVE_STATESTREAM
+#include "../libretro-common/encodings/encoding_xxh3.c"
+#endif
 #endif
 #include "../input/input_keymaps.c"
 #include "../tasks/task_autodetect.c"
@@ -1034,7 +1037,8 @@ INPUT
 #endif
 
 /* the thread the joypad drivers write to their controllers from */
-#if defined(HAVE_XINPUT) || defined(HAVE_WINRAWINPUT) || defined(HAVE_UDEV) || defined(ANDROID)
+#if defined(HAVE_XINPUT) || defined(HAVE_WINRAWINPUT) || defined(HAVE_UDEV) || defined(ANDROID) \
+   || (defined(DINGUX) && defined(HAVE_SDL_DINGUX))
 #include "../input/common/output_writer.c"
 #endif
 
@@ -1051,17 +1055,6 @@ INPUT
 #ifdef HAVE_UDEV
 #include "../input/drivers/udev_input.c"
 #include "../input/drivers_joypad/udev_joypad.c"
-#endif
-
-#if defined(HAVE_LIBSHAKE)
-#include "../deps/libShake/src/common/error.c"
-#include "../deps/libShake/src/common/helpers.c"
-#include "../deps/libShake/src/common/presets.c"
-#if TARGET_OS_OSX
-#include "../deps/libShake/src/osx/shake.c"
-#elif defined(__linux__) || (defined(BSD) && !defined(__MACH__))
-#include "../deps/libShake/src/linux/shake.c"
-#endif
 #endif
 
 #ifdef HAVE_TEST_DRIVERS
@@ -1207,6 +1200,8 @@ LEDS
 
 #if defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)
 #include "../led/drivers/led_win32_keyboard.c"
+#elif defined(HAVE_X11)
+#include "../led/drivers/led_x11_keyboard.c"
 #endif
 
 /*============================================================
@@ -1600,6 +1595,7 @@ FRONTEND
 #include "../frontend/drivers/platform_qnx.c"
 #elif defined(__linux__) || (defined(BSD) && !defined(__MACH__))
 #include "../frontend/drivers/platform_unix.c"
+#include "../frontend/drivers/gamemode_linux.c"
 #if defined(ANDROID)
 #include "../libretro-common/jni/rjni.c"
 #endif
@@ -1999,9 +1995,7 @@ DEPENDENCIES
 #endif
 
 #ifdef WANT_IOSUHAX
-#include "../deps/libiosuhax/source/iosuhax.c"
-#include "../deps/libiosuhax/source/iosuhax_devoptab.c"
-#include "../deps/libiosuhax/source/iosuhax_disc_interface.c"
+#include "../os/wiiu/fs/iosuhax.c"
 #endif
 
 /*============================================================

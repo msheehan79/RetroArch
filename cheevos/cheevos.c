@@ -849,6 +849,11 @@ bool rcheevos_hardcore_active(void)
    return rcheevos_locals.hardcore_being_enabled;
 }
 
+bool rcheevos_hardcore_in_game(void)
+{
+   return rcheevos_hardcore_active() && rcheevos_is_game_loaded();
+}
+
 void rcheevos_pause_hardcore(void)
 {
    rcheevos_locals.hardcore_allowed = false;
@@ -934,10 +939,13 @@ void rcheevos_leaderboard_trackers_visibility_changed(void)
 #endif
 }
 
-/* Disable slowdown */
+/* Disable slowdown, and what a command left playing */
 static void rcheevos_enforce_hardcore_settings(void)
 {
    runloop_state_get_ptr()->flags &= ~RUNLOOP_FLAG_SLOWMOTION;
+#ifdef HAVE_COMMAND
+   command_hardcore_entered();
+#endif
 }
 
 static void rcheevos_toggle_hardcore_active(rcheevos_locals_t* locals)

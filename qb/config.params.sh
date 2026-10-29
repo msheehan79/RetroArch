@@ -213,7 +213,6 @@ HAVE_WGI=auto              # Windows.Gaming.Input for Xbox pads on the HID drive
 HAVE_LIBUSB=auto           # Libusb HID support
 C89_LIBUSB=no
 HAVE_BLISSBOX=auto         # Blissbox support
-HAVE_LIBSHAKE=no           # libShake haptic feedback support
 HAVE_RPILED=auto           # RPI led support
 HAVE_TEST_DRIVERS=yes      # Test input driver
 
@@ -236,8 +235,7 @@ HAVE_MPV=no                # MPV support
 # System integration
 HAVE_DBUS=no               # dbus support
 HAVE_SYSTEMD=auto          # Systemd support
-HAVE_GAMEMODE=yes          # Feral GameMode support (Linux)
-C89_GAMEMODE=no
+HAVE_GAMEMODE=yes          # Game Mode support (Linux)
 
 # Image, audio and video codecs
 HAVE_FREETYPE=auto         # FreeType support
