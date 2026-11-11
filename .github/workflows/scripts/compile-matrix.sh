@@ -58,6 +58,7 @@ check() {
 }
 
 AUDIO="libretro-common/formats/audio_transfer.c libretro-common/audio/audio_mixer.c"
+check "wma only" "-DHAVE_RWMA" $AUDIO
 
 echo "== audio codec combinations =="
 # the sets real platform makefiles select, plus each codec alone and none
@@ -830,7 +831,7 @@ check "psp: psp_joypad"        "$PSP_DEFS $CDECL" input/drivers_joypad/psp_joypa
 check "orbis: ps4_audio"       "$HOSTOFF -Itools/platform_stubs/orbis -DORBIS $CDECL" audio/drivers/ps4_audio.c
 check "qnx: alsa_qsa"          "$HOSTOFF -Itools/platform_stubs/qnx -D__QNX__ $CDECL" audio/drivers/alsa_qsa.c
 check "android: vfs saf"       "$HOSTOFF -Itools/platform_stubs/android -DANDROID $CDECL" libretro-common/vfs/vfs_implementation_saf.c
-check "android: play delivery" "$HOSTOFF -Itools/platform_stubs/android -DANDROID $CDECL" play_feature_delivery/play_feature_delivery.c
+check "android: play delivery" "$HOSTOFF -Itools/platform_stubs/android -DANDROID $CDECL" os/android/play_feature_delivery.c
 # the Android build carries the built-in NFS client and its backend
 # (HAVE_RETRONFS in pkg/android/phoenix-common/jni/Android.mk) and the
 # prefetcher both network backends read through
@@ -1081,7 +1082,7 @@ check_gates "griffin: HAVE_RETROSMB + cloud sync"  "$UIDEFS -DRARCH_INTERNAL -DH
 # griffin can carry. A static helper in one translation unit that
 # another one also defines (get32 in net_smb2.c and rvorbis.c) only
 # collides here, so this lane carries as much of griffin as a host can.
-GRIFFIN_FULL="-DRARCH_INTERNAL -DHAVE_GRIFFIN=1 -DHAVE_MENU -DHAVE_RGUI -DHAVE_XMB -DHAVE_OZONE -DHAVE_MATERIALUI -DHAVE_GFX_WIDGETS -DHAVE_OVERLAY -DHAVE_CONFIGFILE -DHAVE_CHEEVOS -DRC_DISABLE_LUA -DHAVE_RUNAHEAD -DHAVE_REWIND -DHAVE_PATCH -DHAVE_XDELTA -DHAVE_CHEATS -DHAVE_SCREENSHOTS -DHAVE_TRANSLATE -DHAVE_LIBRETRODB -DHAVE_DYNAMIC -DHAVE_DYLIB -DHAVE_THREADS -DHAVE_AUDIOMIXER -DHAVE_DSP_FILTER -DHAVE_VIDEO_FILTER -DHAVE_RWAV -DHAVE_RFLAC -DHAVE_RVORBIS -DHAVE_RMP3 -DHAVE_RAC3 -DHAVE_RPNG -DHAVE_RJPEG -DHAVE_RBMP -DHAVE_RTGA -DHAVE_RWEBP -DHAVE_RDDS -DHAVE_RZSTD -DHAVE_7ZIP -DHAVE_CHD -DHAVE_RCHD -DHAVE_STB_FONT -DHAVE_NETWORKING -DHAVE_IFINFO -DHAVE_NETWORK_CMD -DHAVE_NETPLAYDISCOVERY -DHAVE_ONLINE_UPDATER -DHAVE_UPDATE_ASSETS -DHAVE_UPDATE_CORES -DHAVE_UPDATE_CORE_INFO -DHAVE_CORE_INFO_CACHE -DHAVE_CLOUDSYNC -DHAVE_S3 -DHAVE_CRYPTO -DHAVE_KEYCHAIN -DHAVE_SSL -DHAVE_RETROSSL -DHAVE_SMBCLIENT -DHAVE_RETROSMB -DHAVE_NFSCLIENT -DHAVE_RETRONFS -DHAVE_LANGEXTRA -DHAVE_SHADERPIPELINE -DHAVE_GLSL -DHAVE_OPENGL -D_GNU_SOURCE"
+GRIFFIN_FULL="-DRARCH_INTERNAL -DHAVE_GRIFFIN=1 -DHAVE_MENU -DHAVE_RGUI -DHAVE_XMB -DHAVE_OZONE -DHAVE_MATERIALUI -DHAVE_GFX_WIDGETS -DHAVE_OVERLAY -DHAVE_CONFIGFILE -DHAVE_CHEEVOS -DRC_DISABLE_LUA -DHAVE_RUNAHEAD -DHAVE_REWIND -DHAVE_PATCH -DHAVE_XDELTA -DHAVE_CHEATS -DHAVE_SCREENSHOTS -DHAVE_TRANSLATE -DHAVE_LIBRETRODB -DHAVE_DYNAMIC -DHAVE_DYLIB -DHAVE_THREADS -DHAVE_AUDIOMIXER -DHAVE_DSP_FILTER -DHAVE_VIDEO_FILTER -DHAVE_RWAV -DHAVE_RFLAC -DHAVE_RVORBIS -DHAVE_RMP3 -DHAVE_RAC3 -DHAVE_RPNG -DHAVE_RJPEG -DHAVE_RBMP -DHAVE_RTGA -DHAVE_RGIF -DHAVE_RWEBP -DHAVE_RDDS -DHAVE_RZSTD -DHAVE_7ZIP -DHAVE_CHD -DHAVE_RCHD -DHAVE_STB_FONT -DHAVE_NETWORKING -DHAVE_IFINFO -DHAVE_NETWORK_CMD -DHAVE_NETPLAYDISCOVERY -DHAVE_ONLINE_UPDATER -DHAVE_UPDATE_ASSETS -DHAVE_UPDATE_CORES -DHAVE_UPDATE_CORE_INFO -DHAVE_CORE_INFO_CACHE -DHAVE_CLOUDSYNC -DHAVE_S3 -DHAVE_CRYPTO -DHAVE_KEYCHAIN -DHAVE_SSL -DHAVE_RETROSSL -DHAVE_SMBCLIENT -DHAVE_RETROSMB -DHAVE_NFSCLIENT -DHAVE_RETRONFS -DHAVE_LANGEXTRA -DHAVE_SHADERPIPELINE -DHAVE_GLSL -DHAVE_OPENGL -D_GNU_SOURCE"
 check_gates "griffin: full unity (every codec + network stack)" "$UIDEFS $GRIFFIN_FULL" griffin/griffin.c
 # The SMB show-settings row read a HAVE_MENU-only default under
 # HAVE_SMBCLIENT alone; with the built-in client on by default that

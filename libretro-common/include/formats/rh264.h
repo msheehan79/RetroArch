@@ -104,12 +104,31 @@ int rh264_video_set_extradata(rh264_video *v, const uint8_t *avcc, size_t len);
 /* 2 on hardware backpressure: retry with the same live data and length. */
 int rh264_video_decode(rh264_video *v, const uint8_t *data, size_t len);
 
+/* A caller's value for the picture the next rh264_video_decode opens,
+ * given back with that picture by rh264_video_tag once it is handed out:
+ * with B pictures the output is not the input's order. A field pair
+ * keeps its first field's. 0 until set. */
+void rh264_video_set_tag(rh264_video *v, uint64_t tag);
+uint64_t rh264_video_tag(const rh264_video *v);
+
 /* Hand out the next pending picture in display order without feeding more
  * data, for end of stream. Returns 0 when a picture became available through
  * rh264_video_plane, -1 when nothing is pending. */
 /* 2 when hardware output is busy; retry later. */
 /* -2 on terminal hardware failure; -1 means no pending output. */
 int rh264_video_drain(rh264_video *v);
+
+/* The decoder's state between access units, for savestates: what the
+ * pictures after it predict from and how they are ordered for output.
+ * Pictures still decoding on a pool are finished first, so call these
+ * between access units only. Size is 0 when
+ * there is none to give: half a field pair, or a hardware session.
+ * Save writes it and returns the bytes written, 0 if @size is short.
+ * Load takes it into a software decoder, which then decodes on exactly
+ * as the saved one would; on -1 the decoder starts over, as at a seek. */
+size_t rh264_video_state_size(rh264_video *v);
+size_t rh264_video_save_state(rh264_video *v, void *data, size_t size);
+int rh264_video_load_state(rh264_video *v, const void *data, size_t size);
 
 /* Bits per sample of the decoded pictures (8..14).  Above 8 the planes
  * hold uint16_t samples: rh264_video_plane still returns a byte

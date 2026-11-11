@@ -2329,8 +2329,18 @@ static const struct
    char s_4b582a0c[38];
    char s_61213f1d[21];
    char s_95e4b29f[71];
+   char s_fa462638[9];
+   char s_29f97e35[5];
+   char s_569b0627[6];
+   char s_99b1b2f6[6];
+   char s_569b11b0[12];
+   char s_328ddae3[12];
    char s_60258de0[7];
+   char s_5410e874[7];
+   char s_9eb59c3e[12];
    char s_34b2592a[12];
+   char s_d65a7d95[6];
+   char s_d6611158[8];
    char s_57665cff[7];
    char s_0e2c0fca[44];
    char s_93ac5ec8[42];
@@ -2365,6 +2375,7 @@ static const struct
    char s_69b801ef[9];
    char s_a40653a7[42];
    char s_52e3d6ea[40];
+   char s_3253994e[7];
    char s_c992346c[34];
    char s_580e244f[7];
    char s_a9c8430e[23];
@@ -2419,6 +2430,7 @@ static const struct
    char s_8f379310[49];
    char s_6a9b757c[32];
    char s_6c52dfb1[33];
+   char s_334daaaa[8];
    char s_9119ef97[33];
 #if defined (WIIU)
 #ifdef WIIU
@@ -3500,7 +3512,6 @@ static const struct
    char s_a55bf936[40];
    char s_c519f84d[40];
    char s_48aefa30[35];
-   char s_5d383a58[58];
    char s_dcf8bd8b[54];
    char s_bce9b94f[52];
    char s_d32f5a63[41];
@@ -4184,6 +4195,7 @@ static const struct
    char s_8ab54d62[101];
    char s_aa554847[20];
    char s_ac2c797c[24];
+   char s_c52621db[6];
    char s_3fe94404[6];
    char s_80528b14[48];
    char s_eae21890[35];
@@ -6920,8 +6932,18 @@ static const struct
    "Posici\303\263n de notificaci\303\263n (vertical)",
    "\303\215ndice de monitores",
    "Activa a pantalla completa sobre o notch en dispositivos Android e iOS",
+   "En pausa",
+   "Alto",
+   "Baixo",
+   "Medio",
+   "Desactivado",
+   "Desactivado",
+   "Sempre",
    "Sempre",
    "Desactivado",
+   "Desactivado",
+   "Ambos",
+   "Ning\303\272n",
    "Sa\303\255da",
    "Correcci\303\263n de sobreexploraci\303\263n (inferior)",
    "Correcci\303\263n de sobreexploraci\303\263n (arriba)",
@@ -6956,6 +6978,7 @@ static const struct
    "Escalado",
    "Sincronizaci\303\263n por li\303\261a de exploraci\303\263n",
    "Simulaci\303\263n de li\303\261a de escaneo rodante",
+   "Escala",
    "Cambio de modo de pantalla de SDL",
    "V\303\255deo",
    "Sombreadores de v\303\255deo",
@@ -7010,6 +7033,7 @@ static const struct
    "Relaci\303\263n de aspecto personalizada (posici\303\263n Y)",
    "Establecer ancho da pantalla VI",
    "Sincronizaci\303\263n vertical (VSync)",
+   "Sistema",
    "Cadeas de intercambio esperables",
 #if defined (WIIU)
 #ifdef WIIU
@@ -8679,7 +8703,6 @@ static const struct
    "Mostrar a configuraci\303\263n de \"Latencia\".",
    "Mostrar a configuraci\303\263n de \"Registro\".",
    "Amosar a configuraci\303\263n de \"Rede\".",
-   "Mostrar a configuraci\303\263n de \"Visualizaci\303\263n en pantalla\".",
    "Mostrar a configuraci\303\263n de \"Listas de reproduci\303\263n\".",
    "Mostrar a configuraci\303\263n de \"Xesti\303\263n de enerx\303\255a\".",
    "Amosar a configuraci\303\263n de \"Grabaci\303\263n\".",
@@ -9583,6 +9606,7 @@ static const struct
    "\303\263n.",
    "N\303\272cleos omitidos: ",
    "N\303\272cleos actualizados: ",
+   "Men\303\272",
    "Plana",
    "A superposici\303\263n do teclado non est\303\241 definida.",
    "Non gardando. Anulaci\303\263ns activas.",
@@ -9770,7 +9794,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_gl_blob_check[
-      (sizeof(msg_hash_gl_blob) == (210871u
+      (sizeof(msg_hash_gl_blob) == (210917u
 #ifdef ANDROID
        + 365u
 #endif
@@ -12545,8 +12569,18 @@ static const msg_hash_id_t msg_hash_gl_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_MESSAGE_POS_Y,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_MONITOR_INDEX,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_NOTCH_WRITE_OVER,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_EDIT_PAUSE_ON,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_EDIT_SMOOTHING_HIGH,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_EDIT_SMOOTHING_LOW,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_EDIT_SMOOTHING_MEDIUM,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_EDIT_SMOOTHING_OFF,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_EDIT_SNAP_ANGLES_OFF,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_ALWAYS,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_BEAM_ALWAYS,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_BEAM_OFF,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_OFF,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_TOUCH_HANDS_BOTH,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_TOUCH_HANDS_NONE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OUTPUT_SETTINGS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OVERSCAN_CORRECTION_BOTTOM,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OVERSCAN_CORRECTION_TOP,
@@ -12581,6 +12615,7 @@ static const msg_hash_id_t msg_hash_gl_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCALING_SETTINGS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCANLINE_SYNC,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCAN_SUBFRAMES,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_XR_SCALE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SDL_DISPLAY_SERVER,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SETTINGS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SHADERS_ENABLE,
@@ -12635,6 +12670,7 @@ static const msg_hash_id_t msg_hash_gl_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_VIEWPORT_CUSTOM_Y,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_VI_WIDTH,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_VSYNC,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_VULKAN_DRIVER_PATH_SYSTEM,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_WAITABLE_SWAPCHAINS,
 #if defined (WIIU)
 #ifdef WIIU
@@ -13710,7 +13746,6 @@ static const msg_hash_id_t msg_hash_gl_ids[] =
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_SETTINGS_SHOW_LATENCY,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_SETTINGS_SHOW_LOGGING,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_SETTINGS_SHOW_NETWORK,
-   (msg_hash_id_t)MENU_ENUM_SUBLABEL_SETTINGS_SHOW_ONSCREEN_DISPLAY,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_SETTINGS_SHOW_PLAYLISTS,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_SETTINGS_SHOW_POWER_MANAGEMENT,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_SETTINGS_SHOW_RECORDING,
@@ -14393,6 +14428,7 @@ static const msg_hash_id_t msg_hash_gl_ids[] =
    (msg_hash_id_t)MSG_NO_THUMBNAIL_DOWNLOAD_POSSIBLE,
    (msg_hash_id_t)MSG_NUM_CORES_LOCKED,
    (msg_hash_id_t)MSG_NUM_CORES_UPDATED,
+   (msg_hash_id_t)MSG_OPENXR_EDIT_TAG_MENU,
    (msg_hash_id_t)MSG_OPENXR_HEADSET_VIEW_FLAT,
    (msg_hash_id_t)MSG_OSK_OVERLAY_NOT_SET,
    (msg_hash_id_t)MSG_OVERRIDES_ACTIVE_NOT_SAVING,

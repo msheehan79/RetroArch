@@ -2474,13 +2474,20 @@ static const struct
    char s_4b582a0c[38];
    char s_61213f1d[21];
    char s_95e4b29f[94];
-   char s_1ee69db0[19];
    char s_0cfd4fd0[9];
    char s_d64659c4[9];
    char s_0861dea4[21];
+   char s_fa462638[16];
+   char s_29f97e35[9];
+   char s_569b0627[6];
+   char s_99b1b2f6[8];
+   char s_569b11b0[12];
+   char s_328ddae3[12];
    char s_d7deafe0[26];
    char s_83217fd0[15];
    char s_60258de0[9];
+   char s_5410e874[9];
+   char s_9eb59c3e[12];
    char s_34b2592a[12];
    char s_be406532[24];
    char s_13ce50e1[21];
@@ -2488,6 +2495,8 @@ static const struct
    char s_bacb5991[26];
    char s_740ed6e5[16];
    char s_c7ab7873[42];
+   char s_d65a7d95[9];
+   char s_d6611158[16];
    char s_83ecb279[20];
    char s_de16b5d2[8];
    char s_57665cff[14];
@@ -2534,6 +2543,7 @@ static const struct
    char s_f387bafb[21];
    char s_2c868ae4[12];
    char s_9c535394[10];
+   char s_3253994e[9];
    char s_c992346c[35];
    char s_580e244f[7];
    char s_a9c8430e[15];
@@ -2599,6 +2609,7 @@ static const struct
    char s_8f379310[59];
    char s_6a9b757c[35];
    char s_6c52dfb1[35];
+   char s_334daaaa[9];
    char s_9119ef97[32];
 #if defined (WIIU)
 #ifdef WIIU
@@ -3482,9 +3493,7 @@ static const struct
 #ifdef HAVE_NFSCLIENT
    char s_0dc9bb2c[49];
    char s_1536325c[313];
-   char s_ad621411[80];
    char s_f6ec26c1[48];
-   char s_4f7fb41f[78];
    char s_70f70009_0[500];
    char s_70f70009_1[19];
    char s_3487ce71[38];
@@ -3772,7 +3781,6 @@ static const struct
    char s_a55bf936[39];
    char s_c519f84d[46];
    char s_48aefa30[39];
-   char s_5d383a58[53];
    char s_dcf8bd8b[49];
    char s_bce9b94f[57];
    char s_d32f5a63[46];
@@ -4002,10 +4010,8 @@ static const struct
    char s_34400c79[98];
    char s_34400c7a[102];
    char s_4a09218b[36];
-   char s_dea334de[211];
    char s_cacc1492[67];
    char s_c0c6924e[273];
-   char s_c83fcc7e[255];
    char s_cdf158e0[403];
    char s_7efaf561[275];
    char s_c90aff27[113];
@@ -4527,6 +4533,7 @@ static const struct
    char s_8ab54d62[117];
    char s_aa554847[19];
    char s_ac2c797c[22];
+   char s_c52621db[6];
    char s_c5fee1cb[73];
    char s_3fe94404[5];
    char s_272dccbd[20];
@@ -7466,13 +7473,20 @@ static const struct
    "Num\303\251ro du moniteur ",
    "Activer le d\303\251passement de l'encoche (notch) en plein \303\251cran sur les appareils Andro"
    "id et iOS",
-   "Manettes de casque",
    "Combin\303\251",
    "S\303\251par\303\251",
    "Distance de l'\303\251cran",
+   "Mettre en pause",
+   "\303\211lev\303\251e",
+   "Basse",
+   "Moyenne",
+   "D\303\251sactiv\303\251",
+   "D\303\251sactiv\303\251",
    "Sortie du casque (OpenXR)",
    "Pointeur laser",
    "Toujours",
+   "Toujours",
+   "D\303\251sactiv\303\251",
    "D\303\251sactiv\303\251",
    "Emplacement de l'\303\251cran",
    "Fix\303\251 dans la pi\303\250ce",
@@ -7480,6 +7494,8 @@ static const struct
    "Mouvement de suivi souple",
    "Choix du casque",
    "Fr\303\251quence de rafra\303\256chissement du casque",
+   "Les deux",
+   "Ne pas partager",
    "Largeur de l'\303\251cran",
    "Normale",
    "Sortie vid\303\251o",
@@ -7526,6 +7542,7 @@ static const struct
    "Disposition d'\303\251cran",
    "Horizontale",
    "Verticale",
+   "\303\211chelle",
    "Changement de mode d'affichage SDL",
    "Vid\303\251o",
    "Shaders vid\303\251o",
@@ -7592,6 +7609,7 @@ static const struct
    "Position Y de l'affichage (Rapport d'aspect personnalis\303\251)",
    "D\303\251finir la largeur d'\303\251cran de VI",
    "Synchronisation verticale (V-Sync)",
+   "Syst\303\250me",
    "Cha\303\256nes d'\303\251changes en attente",
 #if defined (WIIU)
 #ifdef WIIU
@@ -9166,9 +9184,7 @@ static const struct
    "ur le serveur fonctionne \303\251galement avec NFS version 4, m\303\252me si le serveur peut le "
    "pr\303\251senter sous un nom plus court. Laissez ce champ vide pour sp\303\251cifier l'exportati"
    "on dans l'adresse sous la forme nfs://serveur/chemin/export.",
-   "Port du service MOUNT. 0 interroge le mappeur de ports (portmapper) du serveur.",
    "Connexions maintenues ouvertes vers le serveur.",
-   "Port du service NFS. 0 interroge le mappeur de ports (portmapper) du serveur.",
    "Donn\303\251es pr\303\251charg\303\251es lorsqu'un jeu lit un fichier par petits segments, un fi"
    "l d'ex\303\251cution d'arri\303\250re-plan assurant le chargement continu de la fen\303\252tre d"
    "e donn\303\251es suivante. Permet de fluidifier l'acc\303\250s \303\240 de grandes images disque"
@@ -9678,7 +9694,6 @@ static const struct
    "Afficher les r\303\251glages pour 'Latence'.",
    "Afficher les r\303\251glages pour 'Journalisation'.",
    "Afficher les r\303\251glages pour 'R\303\251seau'.",
-   "Afficher les r\303\251glages pour 'Affichage \303\240 l'\303\251cran'.",
    "Afficher les r\303\251glages pour 'Listes de lecture'.",
    "Afficher les r\303\251glages pour 'Gestion de l'alimentation'.",
    "Afficher les r\303\251glages pour 'Enregistrement'.",
@@ -10073,17 +10088,11 @@ static const struct
    "Sp\303\251cifier la position personalis\303\251e sur l'axe Y pour le texte \303\240 l'\303\251cr"
    "an. 0 est le bord inf\303\251rieur.",
    "S\303\251lectionner l'\303\251cran \303\240 utiliser.",
-   "Comment fonctionnent les manettes du casque. En mode combin\303\251, elles forment une seule man"
-   "ette pour le joueur 1. En mode s\303\251par\303\251, la manette de gauche est attribu\303\251e a"
-   "u joueur 1 et celle de droite au joueur 2.",
    "La distance \303\240 laquelle le casque affiche les \303\251crans devant vous.",
    "Afficher \303\251galement le contenu dans un casque OpenXR : chaque \303\251cran appara\303\256t"
    " comme un \303\251cran flottant distinct, en 3D st\303\251r\303\251oscopique, pour les deux yeux"
    ", avec le menu plac\303\251 devant eux. Utilise Vulkan, ou OpenGL sous Linux. La fen\303\252tre "
    "conserve son affichage habituel.",
-   "Utilise les zones tactiles de la manette au lieu d'appuyer sur L2 ou R2. Auto : dans le menu lor"
-   "squ'il est ouvert, ainsi que les \303\251crans secondaires comme un \303\251cran tactile. Toujou"
-   "rs : dans tous les \303\251crans (pour les pistolets). D\303\251sactiv\303\251 : nulle part.",
    "Emplacement des \303\251crans par rapport au casque. Fix\303\251 dans la pi\303\250ce : l\303"
    "\240 o\303\271 la fonction de recentrage les place. Suivre la t\303\252te : toujours devant vous"
    " ; sur un grand \303\251cran, les bords se situent l\303\240 o\303\271 la vision \303\240 traver"
@@ -10799,6 +10808,7 @@ static const struct
    "\303\251 essay\303\251s pour cette entr\303\251e de liste de lecture.",
    "C\305\223urs ignor\303\251s : ",
    "C\305\223urs mis \303\240 jour : ",
+   "Menu ",
    "La sortie du casque n'a pas pu d\303\251marrer. La fen\303\252tre affiche la sortie.",
    "Plat",
    "Pointeur laser : %s",
@@ -11017,7 +11027,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_fr_blob_check[
-      (sizeof(msg_hash_fr_blob) == (258012u
+      (sizeof(msg_hash_fr_blob) == (257607u
 #ifdef ANDROID
        + 373u
 #endif
@@ -11417,9 +11427,7 @@ typedef char msg_hash_fr_blob_check[
 #ifdef HAVE_NFSCLIENT
        + 49u
        + 313u
-       + 80u
        + 48u
-       + 78u
        + 519u
        + 38u
 #endif
@@ -14042,13 +14050,20 @@ static const msg_hash_id_t msg_hash_fr_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_MESSAGE_POS_Y,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_MONITOR_INDEX,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_NOTCH_WRITE_OVER,
-   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_CONTROLLERS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_CONTROLLERS_COMBINED,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_CONTROLLERS_SEPARATE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_DISTANCE,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_EDIT_PAUSE_ON,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_EDIT_SMOOTHING_HIGH,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_EDIT_SMOOTHING_LOW,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_EDIT_SMOOTHING_MEDIUM,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_EDIT_SMOOTHING_OFF,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_EDIT_SNAP_ANGLES_OFF,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_ENABLE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_ALWAYS,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_BEAM_ALWAYS,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_BEAM_OFF,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_OFF,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_PLACEMENT,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_PLACEMENT_FIXED,
@@ -14056,6 +14071,8 @@ static const msg_hash_id_t msg_hash_fr_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_PLACEMENT_LAZY,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_REFRESH_HEADSET,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_REFRESH_RATE,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_TOUCH_HANDS_BOTH,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_TOUCH_HANDS_NONE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_WIDTH,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_ORIENTATION_NORMAL,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OUTPUT_SETTINGS,
@@ -14102,6 +14119,7 @@ static const msg_hash_id_t msg_hash_fr_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_LAYOUT,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_LAYOUT_HORIZONTAL,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_LAYOUT_VERTICAL,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_XR_SCALE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SDL_DISPLAY_SERVER,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SETTINGS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SHADERS_ENABLE,
@@ -14167,6 +14185,7 @@ static const msg_hash_id_t msg_hash_fr_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_VIEWPORT_CUSTOM_Y,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_VI_WIDTH,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_VSYNC,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_VULKAN_DRIVER_PATH_SYSTEM,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_WAITABLE_SWAPCHAINS,
 #if defined (WIIU)
 #ifdef WIIU
@@ -15037,9 +15056,7 @@ static const msg_hash_id_t msg_hash_fr_ids[] =
 #ifdef HAVE_NFSCLIENT
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_NFS_CLIENT_BROWSE,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_NFS_CLIENT_EXPORT,
-   (msg_hash_id_t)MENU_ENUM_SUBLABEL_NFS_CLIENT_MOUNT_PORT,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_NFS_CLIENT_NUM_CONTEXTS,
-   (msg_hash_id_t)MENU_ENUM_SUBLABEL_NFS_CLIENT_PORT,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_NFS_CLIENT_READAHEAD,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_NFS_CLIENT_SERVER,
 #endif
@@ -15325,7 +15342,6 @@ static const msg_hash_id_t msg_hash_fr_ids[] =
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_SETTINGS_SHOW_LATENCY,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_SETTINGS_SHOW_LOGGING,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_SETTINGS_SHOW_NETWORK,
-   (msg_hash_id_t)MENU_ENUM_SUBLABEL_SETTINGS_SHOW_ONSCREEN_DISPLAY,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_SETTINGS_SHOW_PLAYLISTS,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_SETTINGS_SHOW_POWER_MANAGEMENT,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_SETTINGS_SHOW_RECORDING,
@@ -15550,10 +15566,8 @@ static const msg_hash_id_t msg_hash_fr_ids[] =
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_MESSAGE_POS_X,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_MESSAGE_POS_Y,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_MONITOR_INDEX,
-   (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_OPENXR_CONTROLLERS,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_OPENXR_DISTANCE,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_OPENXR_ENABLE,
-   (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_OPENXR_LASER,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_OPENXR_PLACEMENT,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_OPENXR_REFRESH_RATE,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_OPENXR_WIDTH,
@@ -16073,6 +16087,7 @@ static const msg_hash_id_t msg_hash_fr_ids[] =
    (msg_hash_id_t)MSG_NO_THUMBNAIL_DOWNLOAD_POSSIBLE,
    (msg_hash_id_t)MSG_NUM_CORES_LOCKED,
    (msg_hash_id_t)MSG_NUM_CORES_UPDATED,
+   (msg_hash_id_t)MSG_OPENXR_EDIT_TAG_MENU,
    (msg_hash_id_t)MSG_OPENXR_FAILED,
    (msg_hash_id_t)MSG_OPENXR_HEADSET_VIEW_FLAT,
    (msg_hash_id_t)MSG_OPENXR_LASER_POINTER,

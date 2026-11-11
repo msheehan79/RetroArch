@@ -2198,10 +2198,20 @@ static const struct
    char s_4b582a0c[55];
    char s_61213f1d[18];
    char s_95e4b29f[79];
+   char s_fa462638[8];
+   char s_29f97e35[6];
+   char s_569b0627[9];
+   char s_99b1b2f6[9];
+   char s_569b11b0[3];
+   char s_328ddae3[3];
    char s_60258de0[7];
    char s_caf61308[12];
+   char s_5410e874[7];
+   char s_9eb59c3e[3];
    char s_34b2592a[3];
    char s_c7a27b20[12];
+   char s_d65a7d95[11];
+   char s_d6611158[6];
    char s_317b17ed[8];
    char s_94c8d15f[8];
    char s_de16b5d2[8];
@@ -2246,6 +2256,7 @@ static const struct
    char s_52e3d6ea[40];
    char s_2c868ae4[12];
    char s_9c535394[13];
+   char s_3253994e[12];
    char s_580e244f[5];
    char s_a9c8430e[14];
    char s_f5911f43[33];
@@ -2302,6 +2313,7 @@ static const struct
    char s_8f379310[32];
    char s_6a9b757c[29];
    char s_6c52dfb1[46];
+   char s_334daaaa[9];
    char s_9119ef97[25];
 #if defined (WIIU)
 #ifdef WIIU
@@ -3301,7 +3313,6 @@ static const struct
    char s_a55bf936[48];
    char s_c519f84d[45];
    char s_48aefa30[44];
-   char s_5d383a58[63];
    char s_dcf8bd8b[48];
    char s_bce9b94f[55];
    char s_d32f5a63[43];
@@ -3957,6 +3968,7 @@ static const struct
    char s_8ab54d62[101];
    char s_aa554847[17];
    char s_ac2c797c[19];
+   char s_c52621db[6];
    char s_3fe94404[8];
    char s_80528b14[42];
    char s_eae21890[45];
@@ -6674,10 +6686,20 @@ static const struct
    "Monitor sorsz\303\241ma",
    "A teljes k\303\251perny\305\221 kiterjeszt\303\251se a bev\303\241g\303\241sra Android \303\251s"
    " iOS eszk\303\266z\303\266k\303\266n",
+   "Sz\303\274net",
+   "Magas",
+   "Alacsony",
+   "K\303\266zepes",
+   "Ki",
+   "Ki",
    "Mindig",
    "Automatikus",
+   "Mindig",
+   "Ki",
    "Ki",
    "Automatikus",
+   "Mindkett\305\221",
+   "Nincs",
    "180 fok",
    "270 fok",
    "Norm\303\241l",
@@ -6723,6 +6745,7 @@ static const struct
    "G\303\266rd\303\274l\305\221 elektronsug\303\241r szimul\303\241l\303\241sa",
    "V\303\255zszintes",
    "F\303\274gg\305\221leges",
+   "M\303\251retez\303\251s",
    "K\303\251p",
    "Videoshaderek",
    "Automatikus shader k\303\251sleltet\303\251s",
@@ -6781,6 +6804,7 @@ static const struct
    "Egyedi k\303\251par\303\241ny (Y poz\303\255ci\303\263)",
    "A VI k\303\251perny\305\221 sz\303\251less\303\251ge",
    "F\303\274gg\305\221leges szinkronjelhez igazod\303\241s (VSync)",
+   "Rendszer",
    "V\303\241rakoztatott swapchain",
 #if defined (WIIU)
 #ifdef WIIU
@@ -8628,8 +8652,6 @@ static const struct
    "A k\303\251sleltet\303\251si be\303\241ll\303\255t\303\241sok jelenjenek meg.",
    "A napl\303\263z\303\241si be\303\241ll\303\255t\303\241sok jelenjenek meg.",
    "A h\303\241l\303\263zati be\303\241ll\303\255t\303\241sok jelenjenek meg.",
-   "A k\303\251perny\305\221n megjelen\305\221 elemek be\303\241ll\303\255t\303\241sai jelenjenek me"
-   "g.",
    "A j\303\241t\303\251klist\303\241k be\303\241ll\303\255t\303\241sai jelenjenek meg.",
    "Az energiagazd\303\241lkod\303\241s be\303\241ll\303\255t\303\241sai jelenjenek meg.",
    "A felv\303\251tel be\303\241ll\303\255t\303\241sai jelenjenek meg.",
@@ -9580,6 +9602,7 @@ static const struct
    "\251p let\303\266lt\303\251si opci\303\263 v\303\251gig volt pr\303\263b\303\241lva.",
    "Magok kihagyva: ",
    "Magok friss\303\255tve: ",
+   "Men\303\274",
    "Egyenes",
    "Nincs be\303\241ll\303\255tott billenty\305\261zet r\303\241t\303\251t.",
    "Nincs ment\303\251s. Fel\303\274lb\303\255r\303\241l\303\263 f\303\241jl akt\303\255v.",
@@ -9793,7 +9816,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_hu_blob_check[
-      (sizeof(msg_hash_hu_blob) == (187160u
+      (sizeof(msg_hash_hu_blob) == (187189u
 #ifdef ANDROID
        + 316u
 #endif
@@ -12421,10 +12444,20 @@ static const msg_hash_id_t msg_hash_hu_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_MESSAGE_POS_Y,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_MONITOR_INDEX,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_NOTCH_WRITE_OVER,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_EDIT_PAUSE_ON,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_EDIT_SMOOTHING_HIGH,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_EDIT_SMOOTHING_LOW,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_EDIT_SMOOTHING_MEDIUM,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_EDIT_SMOOTHING_OFF,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_EDIT_SNAP_ANGLES_OFF,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_ALWAYS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_AUTO,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_BEAM_ALWAYS,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_BEAM_OFF,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_OFF,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_REFRESH_AUTO,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_TOUCH_HANDS_BOTH,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_TOUCH_HANDS_NONE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_ORIENTATION_FLIPPED,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_ORIENTATION_FLIPPED_ROTATED,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_ORIENTATION_NORMAL,
@@ -12469,6 +12502,7 @@ static const msg_hash_id_t msg_hash_hu_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCAN_SUBFRAMES,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_LAYOUT_HORIZONTAL,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_LAYOUT_VERTICAL,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_XR_SCALE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SETTINGS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SHADERS_ENABLE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SHADER_DELAY,
@@ -12525,6 +12559,7 @@ static const msg_hash_id_t msg_hash_hu_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_VIEWPORT_CUSTOM_Y,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_VI_WIDTH,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_VSYNC,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_VULKAN_DRIVER_PATH_SYSTEM,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_WAITABLE_SWAPCHAINS,
 #if defined (WIIU)
 #ifdef WIIU
@@ -13522,7 +13557,6 @@ static const msg_hash_id_t msg_hash_hu_ids[] =
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_SETTINGS_SHOW_LATENCY,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_SETTINGS_SHOW_LOGGING,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_SETTINGS_SHOW_NETWORK,
-   (msg_hash_id_t)MENU_ENUM_SUBLABEL_SETTINGS_SHOW_ONSCREEN_DISPLAY,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_SETTINGS_SHOW_PLAYLISTS,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_SETTINGS_SHOW_POWER_MANAGEMENT,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_SETTINGS_SHOW_RECORDING,
@@ -14178,6 +14212,7 @@ static const msg_hash_id_t msg_hash_hu_ids[] =
    (msg_hash_id_t)MSG_NO_THUMBNAIL_DOWNLOAD_POSSIBLE,
    (msg_hash_id_t)MSG_NUM_CORES_LOCKED,
    (msg_hash_id_t)MSG_NUM_CORES_UPDATED,
+   (msg_hash_id_t)MSG_OPENXR_EDIT_TAG_MENU,
    (msg_hash_id_t)MSG_OPENXR_HEADSET_VIEW_FLAT,
    (msg_hash_id_t)MSG_OSK_OVERLAY_NOT_SET,
    (msg_hash_id_t)MSG_OVERRIDES_ACTIVE_NOT_SAVING,

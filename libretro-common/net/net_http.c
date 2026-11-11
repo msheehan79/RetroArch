@@ -279,6 +279,8 @@ struct http_t
    size_t      out_head_len;
    size_t      body_queued;   /* body bytes handed to out so far */
    int         send_phase;    /* enum net_http_send_phase */
+   /* the connection's own TLS settings, borrowed from the caller */
+   const struct ssl_socket_retro_config *tls;
    bool ssl;
    bool request_sent;
    /* The last net_http_update() stopped because the transport had
@@ -294,6 +296,8 @@ struct http_t
    /* The request has already been replayed once on a fresh
     * connection; it will not be replayed again. */
    bool retried;
+   /* 3xx responses are handed back as they are, not followed. */
+   bool no_redirect;
    unsigned redirects;
 
    /* For the stall bound: when the transfer last moved and how far it
@@ -326,8 +330,10 @@ struct http_connection_t
    net_http_source_t source;
    net_http_source_rewind_t source_rewind;
    void *source_data;
+   const struct ssl_socket_retro_config *tls;
    int port;
    bool ssl;
+   bool no_redirect;
 };
 
 /* The OS error left by the socket call that just failed, for
@@ -734,7 +740,8 @@ int net_http_urldecode(char *dst, size_t dst_size, const char *src)
 
 int net_http_urldecode_inplace(char *s)
 {
-   return string_percent_decode(s, (size_t)-1, s);
+   /* Decoding never grows the string, so its own size is the bound */
+   return string_percent_decode(s, strlen(s) + 1, s);
 }
 
 /* Base64 "user:pass" for Basic auth, from a URL's userinfo. */
@@ -748,7 +755,7 @@ static char *net_http_basic_auth(const char *userinfo, size_t len)
       return NULL;
    memcpy(raw, userinfo, len);
    raw[len] = '\0';
-   out = base64(raw, net_http_urldecode_inplace(raw), &flen);
+   out = base64(raw, string_percent_decode(raw, len + 1, raw), &flen);
    free(raw);
    return out;
 }
@@ -964,6 +971,12 @@ void net_http_connection_set_user_agent(
    conn->useragent = user_agent ? strdup(user_agent) : NULL;
 }
 
+void net_http_connection_set_redirects(
+      struct http_connection_t *conn, bool follow)
+{
+   conn->no_redirect = !follow;
+}
+
 void net_http_connection_set_headers(
       struct http_connection_t *conn, const char *headers)
 {
@@ -971,6 +984,13 @@ void net_http_connection_set_headers(
       free(conn->headers);
 
    conn->headers = headers ? strdup(headers) : NULL;
+}
+
+void net_http_connection_set_tls(struct http_connection_t *conn,
+      const struct ssl_socket_retro_config *cfg)
+{
+   if (conn)
+      conn->tls = cfg;
 }
 
 /**
@@ -1270,7 +1290,7 @@ static void net_http_conn_pool_remove_expired(void)
    {
       if (!entry->in_use && entry->fd >= 0 && entry->fd < FD_SETSIZE)
       {
-         FD_SET(entry->fd, &fds);
+         FD_SET((unsigned)entry->fd, &fds);
          if (entry->fd >= max)
             max = entry->fd + 1;
       }
@@ -1425,6 +1445,7 @@ struct http_t *net_http_new(struct http_connection_t *conn)
       return NULL;
 
    state->ssl  = conn->ssl;
+   state->tls  = conn->tls;
    state->conn = NULL;
 
    state->request.domain        = strdup(conn->domain);
@@ -1456,6 +1477,7 @@ struct http_t *net_http_new(struct http_connection_t *conn)
    state->request.headers  = conn->headers ? strdup(conn->headers) : NULL;
    state->request.auth     = conn->auth    ? strdup(conn->auth)    : NULL;
    state->request.port     = conn->port;
+   state->no_redirect      = conn->no_redirect;
 
    state->response.status  = -1;
    state->sink                  = conn->sink;
@@ -1562,7 +1584,7 @@ static int net_http_socket_for(struct addrinfo **addr)
    struct addrinfo *a;
    for (a = *addr; a; a = a->ai_next)
    {
-      int fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+      int fd = (int)socket(a->ai_family, a->ai_socktype, a->ai_protocol);
       if (fd >= 0)
       {
          *addr = a;
@@ -1731,6 +1753,20 @@ static bool net_http_connect(struct http_t *state)
             socket_close(conn->fd);
             break;
          }
+         if (state->tls)
+         {
+            /* settings only the built-in client takes */
+#ifdef HAVE_RETROSSL
+            if (ssl_socket_retro_configure(conn->ssl_ctx, state->tls) != 0)
+#endif
+            {
+               net_http_log_transport_state(state, "ssl_config_failed", -1);
+               ssl_socket_free(conn->ssl_ctx);
+               conn->ssl_ctx = NULL;
+               socket_close(conn->fd);
+               break;
+            }
+         }
 
          /* TODO: Properly figure out what's going wrong when the newer
           timeout/poll code interacts with mbed and winsock
@@ -1877,6 +1913,22 @@ static void net_http_send_reset(struct http_t *state)
    state->send_phase   = SEND_NONE;
 }
 
+/* Whether the caller's pre-formatted headers carry @name (with its
+ * colon), at the start of a line, in any case. */
+static bool net_http_has_header(const char *headers, const char *name)
+{
+   size_t len = strlen(name);
+   const char *line;
+   for (line = headers; line && *line; )
+   {
+      const char *next = strchr(line, '\n');
+      if (!strncasecmp(line, name, len))
+         return true;
+      line = next ? next + 1 : NULL;
+   }
+   return false;
+}
+
 static size_t net_http_put(char *dst, size_t at, const char *src)
 {
    size_t n = strlen(src);
@@ -1891,8 +1943,12 @@ static bool net_http_build_head(struct http_t *state)
 {
    struct request *request = &state->request;
    const char *method      = request->method ? request->method : "GET";
-   bool body_method        = request->method && request->method[0] == 'P';
+   /* Content-Length goes with a POST/PUT/PATCH, empty or not, and with
+    * any other method carrying a body, which is sent */
+   bool body_method        = (request->method && request->method[0] == 'P')
+      || ((request->postdata || request->source) && request->contentlength);
    size_t cap              = 192
+      + STRLEN_CONST("Accept-Encoding: identity\r\n")
       + strlen(method) + strlen(request->path) + strlen(request->domain)
       + (request->headers     ? strlen(request->headers)     : 0)
       + (request->auth        ? strlen(request->auth)
@@ -1940,9 +1996,18 @@ static bool net_http_build_head(struct http_t *state)
             (long long unsigned)request->contentlength);
 #endif
    }
-   n = net_http_put(h, n, "User-Agent: ");
-   n = net_http_put(h, n, request->useragent ? request->useragent : "libretro");
-   n = net_http_put(h, n, "\r\n\r\n");
+   /* The body reaches callers as sent: no content coding is decoded,
+    * so none is accepted. Without this header a server may pick any.
+    * A caller sending its own takes on decoding what it accepts. */
+   if (!net_http_has_header(request->headers, "Accept-Encoding:"))
+      n = net_http_put(h, n, "Accept-Encoding: identity\r\n");
+   if (!net_http_has_header(request->headers, "User-Agent:"))
+   {
+      n = net_http_put(h, n, "User-Agent: ");
+      n = net_http_put(h, n, request->useragent ? request->useragent : "libretro");
+      n = net_http_put(h, n, "\r\n");
+   }
+   n = net_http_put(h, n, "\r\n");
 
    state->out_head     = h;
    state->out_head_len = n;
@@ -2259,6 +2324,7 @@ static ssize_t net_http_receive_header(struct http_t *state, ssize_t len)
                response->conn_close = true;
             if (   status >= 300 && status < 400
                 && response->location
+                && !state->no_redirect
                 && state->redirects < NET_HTTP_MAX_REDIRECTS)
                response->discard = true;
             if (status >= 100 && status < 200 && status != 101)
@@ -3244,7 +3310,14 @@ bool net_http_wait(struct http_t *state, int timeout_ms)
       return true;
 
    if (state->conn->connected && state->request_sent)
+   {
       rd = true;
+#ifdef HAVE_RETROSSL
+      if (state->ssl && state->conn->ssl_ctx
+            && ssl_socket_retro_pending(state->conn->ssl_ctx, &wr))
+         return true;
+#endif
+   }
    else
       wr = true;
 
@@ -3321,8 +3394,9 @@ bool net_http_update_budget(struct http_t *state,
    if (!state->conn)
    {
       /* A replayed request goes out on a connection of its own;
-       * the pool is what it is recovering from. */
-      if (!state->retried)
+       * the pool is what it is recovering from. One with TLS settings
+       * of its own never shares one. */
+      if (!state->retried && !state->tls)
          state->conn = net_http_conn_pool_find(state->request.domain, state->request.port);
       state->conn_reused = (state->conn != NULL);
       if (!state->conn)
@@ -3529,16 +3603,9 @@ bool net_http_update_budget(struct http_t *state,
          if (response->part == P_DONE || state->err)
             break;
 
-         /* _len == 0 is EAGAIN: the socket is drained for now.
-          * _len < 0 past the header stage is a close, which the body
-          * parser above has already turned into P_DONE for T_FULL and
-          * into an error otherwise; either way we are finished here.
-          *
-          * This is the one exit that leaves nothing buffered anywhere,
-          * including inside the TLS layer: the SSL read reports EAGAIN
-          * only once it has handed over every decrypted byte it holds.
-          * Breaking on the budget below leaves bytes waiting, so only
-          * this exit marks the transfer as blocked. */
+         /* Zero yields: net_http_wait checks TLS-local work as well as
+          * socket readiness. A negative result ends a close-delimited
+          * body, or fails any other unfinished body above. */
          if (_len <= 0)
          {
             state->blocked = (_len == 0);
@@ -3574,12 +3641,15 @@ bool net_http_update_budget(struct http_t *state,
       state->conn = NULL;
    }
 
-   if (state->conn)
+   if (state->conn && state->tls)
+      net_http_conn_pool_remove(state->conn);
+   else if (state->conn)
       net_http_conn_pool_release(state->conn);
    state->conn = NULL;
 
    if (   response->status >= 300 && response->status < 400
-       && response->location)
+       && response->location
+       && !state->no_redirect)
    {
       if (state->redirects >= NET_HTTP_MAX_REDIRECTS)
       {

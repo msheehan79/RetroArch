@@ -81,8 +81,9 @@ static void companion_core_download_orphan(companion_core_t *core);
 #endif
 
 #ifdef HAVE_LIBRETRODB
-/* task_push_dbscan() carries no user data, so the requesting core is
- * kept here. Only one desktop companion is active at a time. */
+/* The requesting core, kept here rather than passed as the scan's
+ * user data so that freeing the core clears it. Only one desktop
+ * companion is active at a time. */
 static companion_core_t *companion_core_scan_owner = NULL;
 #endif
 
@@ -1724,7 +1725,16 @@ bool companion_core_request_load_content(companion_core_t *core,
 
    db_name_full[0] = '\0';
    if (!string_is_empty(db_name))
-      fill_pathname(db_name_full, db_name, ".lpl", sizeof(db_name_full));
+   {
+      /* Qt hands the name without its .lpl, Win32 and Cocoa with it;
+       * a dot inside the name stays (Tiger - Game.com). */
+      size_t _len = strlcpy(db_name_full, db_name, sizeof(db_name_full));
+      if (     _len < sizeof(db_name_full)
+            && !string_ends_with_size(db_name_full, ".lpl", _len,
+               STRLEN_CONST(".lpl")))
+         strlcpy_lit(db_name_full + _len, ".lpl",
+               sizeof(db_name_full) - _len);
+   }
 
    memset(&content_info, 0, sizeof(content_info));
 
@@ -1848,6 +1858,15 @@ static void companion_core_scan_finished(retro_task_t *task,
 }
 #endif
 
+const char *companion_core_scan_refusal(void)
+{
+#ifdef HAVE_LIBRETRODB
+   if (task_dbscan_chain_is_running())
+      return msg_hash_to_str(MSG_MANUAL_CONTENT_SCAN_ALREADY_RUNNING);
+#endif
+   return "Scanning is not available in this build.";
+}
+
 bool companion_core_request_scan(companion_core_t *core, const char *path)
 {
 #ifdef HAVE_LIBRETRODB
@@ -1855,7 +1874,7 @@ bool companion_core_request_scan(companion_core_t *core, const char *path)
       return false;
 
    companion_core_scan_owner = core;
-   return task_push_dbscan(path, companion_core_scan_finished);
+   return task_push_dbscan(path, companion_core_scan_finished, NULL);
 #else
    (void)core;
    (void)path;
