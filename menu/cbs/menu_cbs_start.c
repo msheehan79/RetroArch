@@ -60,6 +60,10 @@
 #include "../../core_updater_list.h"
 #endif
 
+#ifdef HAVE_CORE_SIGNATURES
+#include "../../core_trust_runtime.h"
+#endif
+
 #ifndef BIND_ACTION_START
 #define BIND_ACTION_START(cbs, name) (cbs)->action_start = (name)
 #endif
@@ -372,6 +376,24 @@ static int action_start_shader_filter_pass(
    unsigned pass                         = type - MENU_SETTINGS_SHADER_PASS_FILTER_0;
    return menu_shader_manager_clear_pass_filter(menu_shader_get(), pass);
 }
+
+#ifdef HAVE_SLANG
+static int action_start_shader_simulated_res_pass(
+      const char *path, const char *label,
+      unsigned type, size_t idx, size_t entry_idx)
+{
+   unsigned pass = type - MENU_SETTINGS_SHADER_PASS_SIMULATED_RES_0;
+   struct video_shader *shader = menu_shader_get();
+
+   if (!shader || pass >= shader->passes)
+      return -1;
+
+   shader->pass[pass].use_simulated_res = (pass == 0);
+   shader->flags                       |= SHDR_FLAG_MODIFIED;
+
+   return 0;
+}
+#endif
 #endif
 
 static int action_start_netplay_mitm_server(
@@ -844,6 +866,16 @@ static int action_start_core_lock(
    return ret;
 }
 
+#ifdef HAVE_CORE_SIGNATURES
+static int action_start_core_signature_check(
+      const char *path, const char *label,
+      unsigned type, size_t idx, size_t entry_idx)
+{
+   core_trust_runtime_set_checks(true);
+   return 0;
+}
+#endif
+
 static int action_start_core_set_standalone_exempt(
       const char *path, const char *label,
       unsigned type, size_t idx, size_t entry_idx)
@@ -954,6 +986,11 @@ static int menu_cbs_init_bind_start_compare_label(menu_file_list_cbs_t *cbs)
          case MENU_ENUM_LABEL_VIDEO_SHADER_FILTER_PASS:
 #if defined(HAVE_CG) || defined(HAVE_GLSL) || defined(HAVE_SLANG) || defined(HAVE_HLSL)
             BIND_ACTION_START(cbs, action_start_shader_filter_pass);
+#endif
+            break;
+         case MENU_ENUM_LABEL_VIDEO_SHADER_SIMULATED_RES_PASS:
+#if defined(HAVE_SLANG)
+            BIND_ACTION_START(cbs, action_start_shader_simulated_res_pass);
 #endif
             break;
          case MENU_ENUM_LABEL_SHADER_WATCH_FOR_CHANGES:
@@ -1095,6 +1132,11 @@ static int menu_cbs_init_bind_start_compare_type(menu_file_list_cbs_t *cbs,
          case MENU_SETTING_ACTION_CORE_LOCK:
             BIND_ACTION_START(cbs, action_start_core_lock);
             break;
+#ifdef HAVE_CORE_SIGNATURES
+         case MENU_SETTING_ACTION_CORE_SIGNATURE_CHECK:
+            BIND_ACTION_START(cbs, action_start_core_signature_check);
+            break;
+#endif
          case MENU_SETTING_ACTION_CORE_SET_STANDALONE_EXEMPT:
             BIND_ACTION_START(cbs, action_start_core_set_standalone_exempt);
             break;

@@ -39,6 +39,7 @@
 #include "../verbosity.h"
 #include "../libretro-db/libretrodb.h"
 #include "../tasks/tasks_internal.h"
+#include "../gfx/gfx_thumbnail_results.h"
 
 /* Explore */
 enum
@@ -66,6 +67,7 @@ enum
    EXPLORE_BY_SETTING,
    EXPLORE_BY_VISUAL,
    EXPLORE_BY_VEHICULAR,
+   EXPLORE_BY_ENHANCEMENT_HW,
    EXPLORE_BY_ORIGIN,
    EXPLORE_BY_REGION,
    EXPLORE_BY_FRANCHISE,
@@ -121,6 +123,9 @@ struct explore_state
    explore_string_t **by[EXPLORE_CAT_COUNT];
    explore_entry_t *entries;
    playlist_t **playlists;
+   uint8_t *thumb_pushed; /* per playlist: its matches are held */
+   size_t thumb_last;     /* the playlist an entry was last found in */
+   unsigned thumb_gen;    /* the store's generation they were held in */
    gfx_surface_t **icons;
    const char *label_explore_item_str;
 
@@ -169,9 +174,10 @@ explore_by_info[EXPLORE_CAT_COUNT] =
    { "setting",            MENU_ENUM_LABEL_VALUE_RDB_ENTRY_SETTING,             MENU_ENUM_LABEL_VALUE_EXPLORE_BY_SETTING,            true,  false, false, false },
    { "visual",             MENU_ENUM_LABEL_VALUE_RDB_ENTRY_VISUAL,              MENU_ENUM_LABEL_VALUE_EXPLORE_BY_VISUAL,             true,  false, false, false },
    { "vehicular",          MENU_ENUM_LABEL_VALUE_RDB_ENTRY_VEHICULAR,           MENU_ENUM_LABEL_VALUE_EXPLORE_BY_VEHICULAR,          true,  false, false, false },
+   { "enhancement_hw",     MENU_ENUM_LABEL_VALUE_RDB_ENTRY_ENHANCEMENT_HW,      MENU_ENUM_LABEL_VALUE_EXPLORE_BY_ENHANCEMENT_HW,     false, false, false, false },
    { "origin",             MENU_ENUM_LABEL_VALUE_RDB_ENTRY_ORIGIN,              MENU_ENUM_LABEL_VALUE_EXPLORE_BY_ORIGIN,             false, false, false, false },
-   { "region",             MENU_ENUM_LABEL_VALUE_EXPLORE_CATEGORY_REGION,       MENU_ENUM_LABEL_VALUE_EXPLORE_BY_REGION,             false, false, false, false },
-   { "franchise",          MENU_ENUM_LABEL_VALUE_RDB_ENTRY_FRANCHISE,           MENU_ENUM_LABEL_VALUE_EXPLORE_BY_FRANCHISE,          false, false, false, false },
+   { "region",             MENU_ENUM_LABEL_VALUE_EXPLORE_CATEGORY_REGION,       MENU_ENUM_LABEL_VALUE_EXPLORE_BY_REGION,             true,  false, false, false },
+   { "franchise",          MENU_ENUM_LABEL_VALUE_RDB_ENTRY_FRANCHISE,           MENU_ENUM_LABEL_VALUE_EXPLORE_BY_FRANCHISE,          true,  false, false, false },
    { "tags",               MENU_ENUM_LABEL_VALUE_EXPLORE_CATEGORY_TAG,          MENU_ENUM_LABEL_VALUE_EXPLORE_BY_TAG,                true,  false, false, false },
    { "system",             MENU_ENUM_LABEL_VALUE_CORE_INFO_SYSTEM_NAME,         MENU_ENUM_LABEL_VALUE_EXPLORE_BY_SYSTEM_NAME,        false, false, false, false },
 };
@@ -326,8 +332,6 @@ static void explore_add_unique_string(
       explore_string_t ***split_buf)
 {
    bool is_company;
-   const char *p;
-   const char *p_next;
    if (!str || !*str)
    {
       state->has_unknown[cat] = true;
@@ -338,84 +342,58 @@ static void explore_add_unique_string(
       split_buf = NULL;
    is_company   = explore_by_info[cat].is_company;
 
-   for (p = str + 1;; p++)
+   for (;;)
    {
       size_t _len             = 0;
       uint32_t hash           = 0;
       explore_string_t* entry = NULL;
+      const char *sep         = split_buf ? strstr(str, " / ") : NULL;
+      const char *p           = sep ? sep : str + strlen(str);
 
-      if (*p != '/' && *p != ',' && *p != '|' && *p != '\0')
-         continue;
-
-      if (!split_buf && *p != '\0')
-         continue;
-
-      p_next = p;
       while (*str == ' ')
          str++;
-      while (p[-1] == ' ')
+      while (p > str && p[-1] == ' ')
          p--;
-
-      if (p == str)
-      {
-         if (*p == '\0')
-            return;
-         continue;
-      }
 
       if (is_company && p - str > 5)
       {
          p -= explore_check_company_suffix(p, true);
-         while (p[-1] == ' ')
+         while (p > str && (p[-1] == ' ' || p[-1] == ','))
             p--;
       }
 
-      _len                    = p - str;
-      hash                    = ex_hash32_nocase_filtered(
-            (unsigned char*)str, _len, '0', 255);
-      entry                   = RHMAP_GET(maps[cat], hash);
-
-      if (!entry)
+      if (p > str)
       {
-         entry                = (explore_string_t*)
-            ex_arena_alloc(&state->arena,
-                  sizeof(explore_string_t) + _len);
-         /* NULL-check: ex_arena_alloc returns NULL on OOM now.
-          * On failure skip this entry - the surrounding loop
-          * iterates over chars in the input string splitting on
-          * separators, so one missed entry just means one
-          * category value doesn't get indexed this pass.  Picked
-          * up on the next scan once memory is available. */
+         _len                 = p - str;
+         hash                 = ex_hash32_nocase_filtered(
+               (unsigned char*)str, _len, '0', 255);
+         entry                = RHMAP_GET(maps[cat], hash);
+
          if (!entry)
-            continue;
-         memcpy(entry->str, str, _len);
-         entry->str[_len]      = '\0';
-         RBUF_PUSH(state->by[cat], entry);
-         RHMAP_SET(maps[cat], hash, entry);
+         {
+            /* On OOM this value goes unindexed until the next scan. */
+            if ((entry = (explore_string_t*)ex_arena_alloc(&state->arena,
+                        sizeof(explore_string_t) + _len)))
+            {
+               memcpy(entry->str, str, _len);
+               entry->str[_len] = '\0';
+               RBUF_PUSH(state->by[cat], entry);
+               RHMAP_SET(maps[cat], hash, entry);
+            }
+         }
+
+         if (entry)
+         {
+            if (!e->by[cat])
+               e->by[cat] = entry;
+            else
+               RBUF_PUSH(*split_buf, entry);
+         }
       }
 
-      if (!e->by[cat])
-         e->by[cat] = entry;
-      else
-         RBUF_PUSH(*split_buf, entry);
-
-      if (*p_next == '\0')
+      if (!sep)
          return;
-      if (is_company && *p_next == ',')
-      {
-         p = p_next + 1;
-         while (*p == ' ')
-            p++;
-         p += explore_check_company_suffix(p, false);
-         while (*p == ' ')
-            p++;
-         if (*p == '\0')
-            return;
-         if (*p == '/' || *p == ',' || *p == '|')
-            p_next = p;
-      }
-      p = p_next;
-      str = p + 1;
+      str = sep + 3;
    }
 }
 
@@ -2136,6 +2114,7 @@ ssize_t menu_explore_get_entry_playlist_index(unsigned type,
          *playlist = pl;
       if (playlist_entry)
          *playlist_entry = entry->playlist_entry;
+      explore_state->thumb_last = (size_t)pl_idx;
 
       /* correct numbers of list pos and list size */
       if (list && list_pos && list_size)
@@ -2147,6 +2126,51 @@ ssize_t menu_explore_get_entry_playlist_index(unsigned type,
       return (ssize_t)(entry->playlist_entry - pl_first);
    }
    return -1;
+}
+
+/* Explore holds each playlist it shows until it is freed. */
+void menu_explore_push_thumbnail_match(playlist_t *playlist)
+{
+   size_t i;
+   settings_t *settings;
+   playlist_config_t *cfg;
+   size_t count = explore_state ? RBUF_LEN(explore_state->playlists) : 0;
+
+   /* Mostly the one its entry was just found in */
+   if (     count && explore_state->thumb_last < count
+         && explore_state->playlists[explore_state->thumb_last] == playlist)
+      i = explore_state->thumb_last;
+   else
+   {
+      for (i = 0; i < count; i++)
+         if (explore_state->playlists[i] == playlist)
+            break;
+      if (i == count)
+         return;
+   }
+   settings = config_get_ptr();
+   /* An override skips the menu's handler: apply the rule first */
+   gfx_thumbnail_results_set_other_regions(
+         settings->bools.playlist_thumbnail_other_regions);
+   if (explore_state->thumb_gen != gfx_thumbnail_results_generation())
+   {
+      if (explore_state->thumb_pushed)
+         memset(explore_state->thumb_pushed, 0, count);
+      explore_state->thumb_gen = gfx_thumbnail_results_generation();
+   }
+   if (     !explore_state->thumb_pushed
+         && !(explore_state->thumb_pushed = (uint8_t*)calloc(count, 1)))
+      return;
+   if (explore_state->thumb_pushed[i])
+      return;
+   cfg = playlist_get_config(playlist);
+   task_push_pl_thumbnail_match(cfg, playlist,
+         settings->paths.directory_thumbnails,
+         settings->paths.path_content_database,
+         settings->bools.playlist_allow_non_png,
+         settings->bools.playlist_thumbnail_other_regions);
+   explore_state->thumb_pushed[i] = gfx_thumbnail_results_hold(cfg->path,
+         GFX_THUMBNAIL_RESULTS_HOLD_EXPLORE);
 }
 
 ssize_t menu_explore_set_playlist_thumbnail(unsigned type,
@@ -2173,6 +2197,7 @@ ssize_t menu_explore_set_playlist_thumbnail(unsigned type,
 
    if (playlist_index >= 0 && playlist)
    {
+      menu_explore_push_thumbnail_match(playlist);
       gfx_thumbnail_set_system(thumbnail_path_data, db_name, playlist);
       gfx_thumbnail_set_content_playlist(thumbnail_path_data,
             playlist, playlist_index);
@@ -2218,6 +2243,7 @@ void menu_explore_free_state(explore_state_t *state)
    for (i = 0; i != RBUF_LEN(state->playlists); i++)
       playlist_free(state->playlists[i]);
    RBUF_FREE(state->playlists);
+   free(state->thumb_pushed);
 
    explore_unload_icons(state);
    RBUF_FREE(state->icons);
@@ -2233,6 +2259,7 @@ void menu_explore_free(void)
    menu_explore_free_state(explore_state);
    free(explore_state);
    explore_state = NULL;
+   gfx_thumbnail_results_release(GFX_THUMBNAIL_RESULTS_HOLD_EXPLORE);
 }
 
 void menu_explore_set_state(explore_state_t *state)

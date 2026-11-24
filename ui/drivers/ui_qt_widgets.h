@@ -48,6 +48,7 @@ class QLayout;
 class QPaintEvent;
 class QResizeEvent;
 class QVBoxLayout;
+class QDoubleSpinBox;
 /* Forward decls kept unconditional so that callers holding bare
  * pointers to these (e.g. ui_qt.h's QPointer<ShaderParamsDialog>
  * member) parse cleanly when HAVE_MENU is not defined. The full
@@ -78,6 +79,7 @@ struct PlaylistEntry
    QString coreName;
    QString crc32;
    QString dbName;
+   QString thumbnailSystem; /* thumbnails/<system> folder */
    QString plName;
    QString plPath;
    unsigned index = 0;
@@ -100,6 +102,7 @@ public:
    void addUIntColorButton(const QString &title, msg_hash_enums r, msg_hash_enums g, msg_hash_enums b);
    void addUIntSpinBox(rarch_setting_t *setting);
    void addFloatSpinBox(rarch_setting_t *setting);
+   void addRefreshRateControl(rarch_setting_t *setting);
    void addCheckBox(rarch_setting_t *setting);
    void addUIntComboBox(rarch_setting_t *setting);
    bool addBindButton(rarch_setting_t *setting);
@@ -117,6 +120,17 @@ public:
 
       if (!setting)
          return false;
+
+      /* These two refresh-rate rows share a float target but have distinct
+       * semantics: one stages a manual value, the other applies the
+       * display-reported value through its action callback. */
+      if (setting->enum_idx == MENU_ENUM_LABEL_VIDEO_REFRESH_RATE)
+      {
+         this->addRefreshRateControl(setting);
+         return true;
+      }
+      if (setting->enum_idx == MENU_ENUM_LABEL_VIDEO_REFRESH_RATE_POLLED)
+         return this->addBindButton(setting);
 
       ui_type = (enum ui_setting_type)setting->ui_type;
 
@@ -195,6 +209,17 @@ public:
       if (!setting)
          return false;
 
+      if (setting->enum_idx == MENU_ENUM_LABEL_VIDEO_REFRESH_RATE)
+      {
+         this->addRefreshRateControl(setting);
+         return true;
+      }
+      if (setting->enum_idx == MENU_ENUM_LABEL_VIDEO_REFRESH_RATE_POLLED)
+      {
+         this->addBindButton(setting);
+         return true;
+      }
+
       ui_type = (enum ui_setting_type)setting->ui_type;
 
       switch (ui_type)
@@ -265,6 +290,7 @@ private:
    void addUIntSpinBox(rarch_setting_t *setting);
    void addUIntComboBox(rarch_setting_t *setting);
    void addFloatSpinBox(rarch_setting_t *setting);
+   void addRefreshRateControl(rarch_setting_t *setting);
    void addFileSelector(rarch_setting_t *setting);
    void addDirectorySelector(rarch_setting_t *setting);
    void addFloatSliderAndSpinBox(rarch_setting_t *setting);
@@ -436,6 +462,25 @@ private:
    rarch_setting_t *m_setting;
 };
 
+/* Manual refresh-rate editor. Values are staged locally and only applied
+ * when the user presses Set; this keeps it independent from the polled-rate
+ * action even though both settings reference the same float target. */
+class RefreshRateControl : public QWidget
+{
+public:
+   RefreshRateControl(rarch_setting_t *setting, QWidget *parent = 0);
+protected:
+   void paintEvent(QPaintEvent *event) override;
+private:
+   void syncValue();
+   rarch_setting_t *m_setting;
+   QSlider *m_slider;
+   QDoubleSpinBox *m_spinBox;
+   int m_scale;
+   float m_synced;
+   bool m_dirty;
+};
+
 class FloatSpinBox : public QDoubleSpinBox
 {
    Q_OBJECT
@@ -539,16 +584,34 @@ private:
    FloatSpinBox *m_spinBox;
 };
 
+/* A bind: clicked, the menu captures it, and the keys pressed here
+ * meanwhile are handed to that capture. */
 class BindButton : public QPushButton
 {
    Q_OBJECT
 public:
    BindButton(rarch_setting_t *setting, QWidget *parent = 0);
    BindButton(msg_hash_enums enum_idx, QWidget *parent = 0);
+   ~BindButton();
+   /* Once a frame: ends the capture under way once the menu has. */
+   static void captureIterate(void);
+public slots:
+   void setDefault(void);
+   void clear(void);
+protected:
+   bool event(QEvent *event);
 private slots:
    void onClicked(bool checked);
 private:
+   void refresh(void);
+   void captureEnd(void);
    rarch_setting_t *m_setting;
+   /* the button capturing, frames waited for the menu to start it,
+    * whether it has, and whether the click opened the menu for it */
+   static BindButton *s_capture;
+   static unsigned s_captureWait;
+   static bool s_captureSeen;
+   static bool s_captureMenu;
 };
 
 class ColorButton : public QToolButton
@@ -891,6 +954,12 @@ public:
 public slots:
    void showDialog();
    void hideDialog();
+#ifdef HAVE_MENU
+   QListWidget *categoryListWidget() const;
+   QWidget *categoryPagesWidget() const;
+   void loadCategory(int index);
+   void applyCurrentCategory();
+#endif
 private slots:
    void onRejected();
 protected:
@@ -908,6 +977,9 @@ private:
    QVector<OptionsCategory*> m_categoryList;
    QListWidget *m_optionsList;
    QStackedLayout *m_optionsStack;
+   QWidget *m_categoryPagesWidget;
+   QLabel *m_headerLabel;
+   int m_currentCategoryIndex;
 #else
    ViewOptionsWidget *m_viewOptionsWidget;
 #endif
@@ -1046,6 +1118,14 @@ public:
    QVector<OptionsPage*> pages();
 };
 
+class DriversPage : public OptionsPage
+{
+   Q_OBJECT
+public:
+   DriversPage(QObject *parent = nullptr);
+   QWidget *widget();
+};
+
 /***********************************************************
    AI Service
 ************************************************************/
@@ -1099,19 +1179,9 @@ public:
 private slots:
    void onResolutionComboIndexChanged(const QString& value);
    void onResolutionComboIndexChanged(int index);
-private:
-   QComboBox *m_resolutionCombo;
-};
-
-class CrtSwitchresPage : public OptionsPage
-{
-   Q_OBJECT
-public:
-   CrtSwitchresPage(QObject *parent = nullptr);
-   QWidget *widget();
-private slots:
    void onCrtSuperResolutionComboIndexChanged(int index);
 private:
+   QComboBox *m_resolutionCombo;
    QComboBox *m_crtSuperResolutionCombo;
 };
 
@@ -1434,6 +1504,38 @@ class DirectoryCategory : public OptionsCategory
 public:
    DirectoryCategory(QWidget *parent);
    QVector<OptionsPage*> pages();
+};
+
+/************************************************************
+   Information
+************************************************************/
+class InformationPage;
+
+class InformationCategory : public OptionsCategory
+{
+public:
+   InformationCategory(QWidget *parent);
+   QVector<OptionsPage*> pages();
+   void load();
+
+private:
+   InformationPage *m_page;
+};
+
+class InformationPage : public OptionsPage
+{
+public:
+   InformationPage(QObject *parent = nullptr);
+   QWidget *widget();
+   void load();
+
+private:
+   QWidget *m_widget;
+   QGroupBox *m_systemGroup;
+   QGroupBox *m_aboutGroup;
+   QGroupBox *m_displayGroup;
+   QGroupBox *m_inputGroup;
+   QGroupBox *m_networkGroup;
 };
 
 static inline QWidget *create_widget(enum menu_displaylist_ctl_state name)

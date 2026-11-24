@@ -54,8 +54,10 @@ static bool load_vulkan(void) { return true; }
 #include "../../../gfx/video_upscaler.h"
 #include "../../../gfx/common/vulkan_ngx.h"
 #include "../../../gfx/common/vulkan_upscaler.h"
+#include "../../../gfx/common/vulkan_session_key.h"
 #include <file/file_path.h>
 #include "fake_ngx.h"
+#include "../upscaler_async_test.h"
 
 extern float stub_core_hz;
 #include "../../../libretro-common/samples/gfx/amd/fake_ffx.h"
@@ -143,6 +145,7 @@ static void clear_dlssnr_runtime(const char *dir)
 
 static int failures;
 static fake_ngx_record_t *record(void);
+int session_cache_test(int *checks);
 static int checks;
 static int validation_errors;
 
@@ -169,6 +172,14 @@ typedef struct image
 static VkInstance instance;
 static VkPhysicalDevice gpu;
 static VkDevice device;
+/* Handoff-only stand-in devices below have no GPU resources, but the
+ * production wrapper now saves their dispatch for deferred destruction. */
+static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL handoff_device_proc(
+      VkDevice unused, const char *name)
+{
+   (void)unused;
+   return vkGetDeviceProcAddr(device, name);
+}
 static VkQueue queue;
 static uint32_t queue_family;
 static VkCommandPool pool;
@@ -475,15 +486,25 @@ static void begin_frame(void)
    vkBeginCommandBuffer(cmd, &begin);
 }
 
+static vulkan_upscaler_t *async_frame_up;
+static unsigned setup_submits;
+
 static void end_frame(void)
 {
    VkSubmitInfo submit;
+   VkCommandBuffer lists[2];
+   unsigned count;
+   lists[0] = vulkan_upscaler_take_commands(async_frame_up);
+   lists[1] = cmd;
+   count = lists[0] ? 2 : 1;
+   if (lists[0]) setup_submits++;
    vkEndCommandBuffer(cmd);
    memset(&submit, 0, sizeof(submit));
    submit.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-   submit.commandBufferCount = 1;
-   submit.pCommandBuffers    = &cmd;
+   submit.commandBufferCount = count;
+   submit.pCommandBuffers    = lists + 2 - count;
    vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE);
+   CHECK(vulkan_upscaler_signal_reload(async_frame_up, queue) == VK_SUCCESS);
    /* A test: the frame is over before the next is recorded */
    vkQueueWaitIdle(queue);
 }
@@ -1270,7 +1291,8 @@ static void test_nr(settings_t *settings, image_t *color, image_t *mv,
    settings->bools.video_dlss_nr_enable          = false;
    CHECK(vulkan_ngx_device_extensions(gpu, vkGetInstanceProcAddr, instance,
             list, 0, 8) >= 1);
-   CHECK(rec->ext_calls == calls + 2);
+   CHECK(rec->ext_feature_id == NGX_FEATURE_SUPER_SAMPLING
+         && rec->ext_calls == calls + 3);
    settings->bools.video_dlss_nr_enable          = true;
 
    ngx = vulkan_ngx_init(instance, gpu, device, vkGetInstanceProcAddr,
@@ -1394,7 +1416,7 @@ static void test_nr(settings_t *settings, image_t *color, image_t *mv,
    CHECK(ngx != NULL);
    if (ngx)
    {
-      CHECK(!video_upscaler_nr_available());
+      CHECK(video_upscaler_nr_available());
       vulkan_ngx_free(ngx);
    }
 
@@ -1404,9 +1426,7 @@ static void test_nr(settings_t *settings, image_t *color, image_t *mv,
    ngx = vulkan_ngx_init(instance, gpu, device, vkGetInstanceProcAddr,
          vkGetDeviceProcAddr, &mem_props, "Zdir");
    CHECK(ngx != NULL);
-   CHECK(!video_upscaler_nr_available());
-   video_upscaler_status_string(status, sizeof(status));
-   CHECK(strstr(status, "Neural Rendering: needs a newer driver") != NULL);
+   CHECK(video_upscaler_nr_available());
    if (ngx)
    {
       creates = rec->creates;
@@ -1415,6 +1435,9 @@ static void test_nr(settings_t *settings, image_t *color, image_t *mv,
                VIDEO_SCALE_PACK(1920, 1080), &out));
       end_frame();
       vulkan_ngx_frame_done(ngx);
+      CHECK(!video_upscaler_nr_available());
+      video_upscaler_status_string(status, sizeof(status));
+      CHECK(strstr(status, "Neural Rendering: needs a newer driver") != NULL);
       CHECK(rec->creates == creates + 1
             && rec->create[creates % FAKE_NGX_MAX].feature == 1);
       vkDeviceWaitIdle(device);
@@ -1425,6 +1448,106 @@ static void test_nr(settings_t *settings, image_t *color, image_t *mv,
    video_upscaler_note_nr(true);
    clear_dlssnr_runtime("Zdir");
    video_upscaler_probe(VIDEO_TEMPORAL_UPSCALER_DLSS);
+}
+
+static void test_session_keys(void)
+{
+   VkApplicationInfo app = {0};
+   VkInstanceCreateInfo instance_info = {0};
+   VkDeviceCreateInfo device_info = {0};
+   VkDeviceQueueCreateInfo queue_info = {0};
+   VkPhysicalDeviceTimelineSemaphoreFeatures a = {0}, b = {0};
+   VkPhysicalDeviceExtendedDynamicStateFeaturesEXT dynamic = {0};
+   VkPhysicalDeviceExtendedDynamicState2FeaturesEXT dynamic2 = {0};
+   VkPhysicalDeviceExtendedDynamicState3FeaturesEXT dynamic3 = {0};
+   VkBaseInStructure unknown = {0};
+   vulkan_session_key_t first, second;
+   float priority = 1.0f;
+   char extension[] = "VK_KHR_timeline_semaphore";
+   const char *names[] = {extension};
+   app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+   app.apiVersion = VK_API_VERSION_1_2;
+   app.pApplicationName = "test";
+   instance_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+   instance_info.pApplicationInfo = &app;
+   first = vulkan_session_instance_key(&instance_info);
+   second = vulkan_session_instance_key(&instance_info);
+   CHECK(vulkan_session_key_equal(&first, &second));
+   vulkan_session_key_free(&second);
+   app.apiVersion = VK_API_VERSION_1_1;
+   second = vulkan_session_instance_key(&instance_info);
+   CHECK(!vulkan_session_key_equal(&first, &second));
+   vulkan_session_key_free(&second);
+   instance_info.pNext = &unknown;
+   second = vulkan_session_instance_key(&instance_info);
+   CHECK(second.failed && !vulkan_session_key_equal(&second, &second));
+   vulkan_session_key_free(&first);
+   vulkan_session_key_free(&second);
+
+   queue_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+   queue_info.queueCount = 1;
+   queue_info.pQueuePriorities = &priority;
+   a.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
+   a.timelineSemaphore = VK_TRUE;
+   b = a;
+   device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+   device_info.pNext = &a;
+   device_info.queueCreateInfoCount = 1;
+   device_info.pQueueCreateInfos = &queue_info;
+   device_info.enabledExtensionCount = 1;
+   device_info.ppEnabledExtensionNames = names;
+   first = vulkan_session_device_key((VkPhysicalDevice)(uintptr_t)1, &device_info);
+   device_info.pNext = &b;
+   second = vulkan_session_device_key((VkPhysicalDevice)(uintptr_t)1, &device_info);
+   CHECK(vulkan_session_key_equal(&first, &second));
+   vulkan_session_key_free(&second);
+   second = vulkan_session_device_key((VkPhysicalDevice)(uintptr_t)2, &device_info);
+   CHECK(!vulkan_session_key_equal(&first, &second));
+   vulkan_session_key_free(&second);
+   queue_info.queueFamilyIndex = 1;
+   second = vulkan_session_device_key((VkPhysicalDevice)(uintptr_t)1, &device_info);
+   CHECK(!vulkan_session_key_equal(&first, &second));
+   vulkan_session_key_free(&second);
+   queue_info.queueFamilyIndex = 0;
+   b.timelineSemaphore = VK_FALSE;
+   second = vulkan_session_device_key((VkPhysicalDevice)(uintptr_t)1, &device_info);
+   CHECK(!vulkan_session_key_equal(&first, &second));
+   vulkan_session_key_free(&second);
+   b.timelineSemaphore = VK_TRUE;
+   priority = 0.5f;
+   second = vulkan_session_device_key((VkPhysicalDevice)(uintptr_t)1, &device_info);
+   CHECK(!vulkan_session_key_equal(&first, &second));
+   vulkan_session_key_free(&second);
+   priority = 1.0f;
+   extension[0] = 'X';
+   second = vulkan_session_device_key((VkPhysicalDevice)(uintptr_t)1, &device_info);
+   CHECK(!vulkan_session_key_equal(&first, &second));
+   vulkan_session_key_free(&second);
+   b.pNext = &unknown;
+   unknown.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+   second = vulkan_session_device_key((VkPhysicalDevice)(uintptr_t)1, &device_info);
+   CHECK(second.failed && !vulkan_session_key_equal(&first, &second));
+   vulkan_session_key_free(&first);
+   vulkan_session_key_free(&second);
+
+   dynamic.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT;
+   dynamic.extendedDynamicState = VK_TRUE;
+   dynamic.pNext = &dynamic2;
+   dynamic2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT;
+   dynamic2.extendedDynamicState2 = VK_TRUE;
+   dynamic2.pNext = &dynamic3;
+   dynamic3.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT;
+   dynamic3.extendedDynamicState3ColorBlendEnable = VK_TRUE;
+   device_info.pNext = &dynamic;
+   first = vulkan_session_device_key((VkPhysicalDevice)(uintptr_t)1, &device_info);
+   second = vulkan_session_device_key((VkPhysicalDevice)(uintptr_t)1, &device_info);
+   CHECK(vulkan_session_key_equal(&first, &second));
+   vulkan_session_key_free(&second);
+   dynamic3.extendedDynamicState3ColorBlendEnable = VK_FALSE;
+   second = vulkan_session_device_key((VkPhysicalDevice)(uintptr_t)1, &device_info);
+   CHECK(!vulkan_session_key_equal(&first, &second));
+   vulkan_session_key_free(&first);
+   vulkan_session_key_free(&second);
 }
 
 int main(void)
@@ -1441,6 +1564,11 @@ int main(void)
    unsigned render_dims, min_dims, max_dims;
    unsigned i;
 
+   setvbuf(stdout, NULL, _IONBF, 0);
+   clear_dlssnr_runtime("Zdir");
+   test_session_keys();
+   CHECK(async_test_exclusive_borrow());
+
    /* Until a core asks for it, nothing loads the NGX library: not the
     * log of what the upscaler would find, nor (on Windows, where a
     * stand-in hooks the process) the status */
@@ -1453,6 +1581,7 @@ int main(void)
 #endif
    video_upscaler_note_wanted();
    CHECK(video_upscaler_wanted());
+   failures += session_cache_test(&checks);
    video_upscaler_clear_wanted();
    CHECK(!video_upscaler_wanted());
    video_upscaler_note_wanted();
@@ -1781,8 +1910,20 @@ int main(void)
    vkDeviceWaitIdle(device);
    {
       unsigned releases = rec->releases;
-      vulkan_ngx_free(ngx);
+      unsigned inits = rec->init_calls;
+      unsigned shutdowns = rec->shutdown_calls;
+      vulkan_ngx_reset(ngx);
       CHECK(rec->releases == releases + 5);  /* the five retired */
+      CHECK(rec->init_calls == inits && rec->shutdown_calls == shutdowns);
+      CHECK(rec->params_destroyed == 0);
+      begin_frame();
+      CHECK(vulkan_ngx_upscale(ngx, cmd, &in, &inputs, NGX_PERF_QUALITY_MAX_PERF, 0,
+               VIDEO_SCALE_PACK(2560, 1440), &out));
+      end_frame();
+      CHECK(rec->eval[(rec->evals - 1) % FAKE_NGX_MAX].reset);
+      CHECK(rec->init_calls == inits && rec->shutdown_calls == shutdowns);
+      vkDeviceWaitIdle(device);
+      vulkan_ngx_free(ngx);
       CHECK(rec->shutdown_calls == 2 && rec->params_destroyed == 2);
       CHECK(rec->shutdown_path0 == 'Z');
    }
@@ -1792,6 +1933,27 @@ int main(void)
    test_mode_for(&color, &mv, &depth);
    test_barriers(&color, &mv, &depth);
    test_nr(settings, &color, &mv, &depth);
+
+   /* Native NGX's common requirements cover SR and NR without loading
+    * a feature DLL for discovery on the content-loading thread. */
+   {
+      const char *names[8];
+      unsigned modern_calls = rec->ext_calls;
+      unsigned legacy_calls = rec->legacy_calls;
+      rec->legacy_requirements = 1;
+      settings->bools.video_dlss_nr_enable = true;
+      plant_dlssnr_runtime("Zdir");
+      CHECK(vulkan_ngx_device_extensions(gpu, vkGetInstanceProcAddr, instance,
+               names, 0, 8) == 1);
+      CHECK(rec->legacy_calls == legacy_calls + 2);
+      clear_dlssnr_runtime("Zdir");
+      CHECK(vulkan_ngx_device_extensions(gpu, vkGetInstanceProcAddr, instance,
+               names, 0, 8) == 1);
+      CHECK(rec->legacy_calls == legacy_calls + 3);
+      CHECK(rec->ext_calls == modern_calls);
+      rec->legacy_requirements = 0;
+      settings->bools.video_dlss_nr_enable = false;
+   }
 
    /* DLSS behind the dispatch: the frontend's mode word translated to
     * NGX's quality, preset and sharpness; the session's tables name
@@ -1851,15 +2013,228 @@ int main(void)
    test_ffx(settings, &color, &mv, &depth);
    test_xess(settings, &color, &mv, &depth);
 
-   free_image(&color);
-   free_image(&mv);
-   free_image(&depth);
-   free_image(&color_big);
-   vkDestroyCommandPool(device, pool, NULL);
-   vkDestroyDevice(device, NULL);
-   if (messenger && destroy_messenger)
-      destroy_messenger(instance, messenger, NULL);
-   vkDestroyInstance(instance, NULL);
+   /* Device handoff keeps the replacement SDK session alive. These
+    * handles are used only by the stand-in, never by Vulkan. */
+   {
+      const ngx_lib_t *lib = ngx_lib_get();
+      ngx_parameter_t *caps = NULL;
+      vulkan_ngx_t *old_session = vulkan_ngx_init(instance, gpu,
+            (VkDevice)(uintptr_t)2, (PFN_vkGetInstanceProcAddr)(uintptr_t)1,
+            handoff_device_proc, &mem_props, "Zdir");
+      vulkan_ngx_t *new_session = vulkan_ngx_init(instance, gpu,
+            (VkDevice)(uintptr_t)3, (PFN_vkGetInstanceProcAddr)(uintptr_t)1,
+            handoff_device_proc, &mem_props, "Zdir");
+      CHECK(old_session != NULL && new_session != NULL);
+      vulkan_ngx_free(old_session);
+      CHECK(!NGX_FAILED(lib->vulkan.get_capability_parameters(&caps)));
+      CHECK(vulkan_ngx_optimal(new_session, NGX_PERF_QUALITY_MAX_QUALITY,
+               VIDEO_SCALE_PACK(1920, 1080), &render_dims, &min_dims, &max_dims));
+      vulkan_ngx_free(new_session);
+      CHECK(NGX_FAILED(lib->vulkan.get_capability_parameters(&caps)));
+      rec->overlap_fails = 1;
+      old_session = vulkan_ngx_init(instance, gpu,
+            (VkDevice)(uintptr_t)2, (PFN_vkGetInstanceProcAddr)(uintptr_t)1,
+            handoff_device_proc, &mem_props, "Zdir");
+      CHECK(old_session != NULL);
+      new_session = vulkan_ngx_init(instance, gpu,
+            (VkDevice)(uintptr_t)3, (PFN_vkGetInstanceProcAddr)(uintptr_t)1,
+            handoff_device_proc, &mem_props, "Zdir");
+      CHECK(new_session == NULL);
+      vulkan_ngx_free(old_session);
+      vulkan_ngx_free(new_session);
+      new_session = vulkan_ngx_init(instance, gpu,
+            (VkDevice)(uintptr_t)3, (PFN_vkGetInstanceProcAddr)(uintptr_t)1,
+            handoff_device_proc, &mem_props, "Zdir");
+      CHECK(new_session != NULL);
+      vulkan_ngx_free(new_session);
+      rec->overlap_fails = 0;
+   }
+
+   /* A core can render and close while Init is held inside the SDK.
+    * Keep the graphics owners for a second close-during-init test. */
+   {
+      vulkan_upscaler_instance_t *instance_owner =
+         vulkan_upscaler_instance_new(instance, vkGetInstanceProcAddr);
+      vulkan_upscaler_device_t *device_owner = instance_owner ?
+         vulkan_upscaler_device_new(instance_owner, device, vkGetDeviceProcAddr) : NULL;
+      vulkan_upscaler_t *up;
+      vulkan_upscaler_image_t din, dout;
+      async_test_gate_t gate;
+      unsigned init_calls = rec->init_calls;
+      unsigned shutdown_calls = rec->shutdown_calls;
+      memset(&gate, 0, sizeof(gate));
+      CHECK(instance_owner != NULL && device_owner != NULL);
+      CHECK(retro_eventcount_init(&gate.wake));
+      rec->optiscaler = 0;
+      rec->init_hook = async_test_hold;
+      rec->init_hook_data = &gate;
+      up = vulkan_upscaler_init_async(instance, gpu, device,
+            vkGetInstanceProcAddr, vkGetDeviceProcAddr, &mem_props, "Zdir", device_owner, queue_family);
+      CHECK(up != NULL && rec->init_calls == init_calls);
+      CHECK(!vulkan_upscaler_optimal(up, QUALITY(QUALITY), VIDEO_SCALE_PACK(1920, 1080),
+               &render_dims, &min_dims, &max_dims));
+      /* Abandoning content before its first frame must not start NGX. */
+      vulkan_upscaler_free(up);
+      CHECK(async_test_idle() && rec->init_calls == init_calls);
+      up = vulkan_upscaler_init_async(instance, gpu, device,
+            vkGetInstanceProcAddr, vkGetDeviceProcAddr, &mem_props, "Zdir", device_owner, queue_family);
+      CHECK(up != NULL);
+      begin_frame();
+      end_frame();
+      vulkan_upscaler_frame_done(up);
+      CHECK(async_test_wait(&gate.wake, &gate.entered));
+      for (i = 0; i < 8; i++)
+      {
+         CHECK(!vulkan_upscaler_optimal(up, QUALITY(QUALITY), VIDEO_SCALE_PACK(1920, 1080),
+                  &render_dims, &min_dims, &max_dims));
+         CHECK(!vulkan_upscaler_upscale(up, VK_NULL_HANDLE, NULL, NULL, 0, 0, NULL));
+         begin_frame();
+         end_frame();
+         vulkan_upscaler_frame_done(up);
+      }
+      CHECK(rec->init_calls == init_calls);
+      async_test_release(&gate);
+      CHECK(async_test_idle());
+      CHECK(vulkan_upscaler_optimal(up, QUALITY(QUALITY), VIDEO_SCALE_PACK(1920, 1080),
+               &render_dims, &min_dims, &max_dims));
+      CHECK(rec->init_calls == init_calls + 1);
+      din.image  = color.image;
+      din.view   = color.view;
+      din.layout = color.layout;
+      din.format = color.format;
+      din.dims   = VIDEO_SCALE_PACK(color.width, color.height);
+      {
+         async_test_gate_t feature_gate;
+         unsigned creates = rec->creates;
+         memset(&feature_gate, 0, sizeof(feature_gate));
+         CHECK(retro_eventcount_init(&feature_gate.wake));
+         rec->create_hook = async_test_hold;
+         rec->create_hook_data = &feature_gate;
+         settings->bools.video_dlss_nr_enable = false;
+         async_frame_up = up;
+         begin_frame();
+         CHECK(!vulkan_upscaler_upscale(up, cmd, &din, &inputs, QUALITY(QUALITY),
+                  VIDEO_SCALE_PACK(1920, 1080), &dout));
+         end_frame();
+         CHECK(async_test_wait(&feature_gate.wake, &feature_gate.entered));
+         for (i = 0; i < 8; i++)
+         {
+            CHECK(vulkan_upscaler_optimal(up, QUALITY(QUALITY), VIDEO_SCALE_PACK(1920, 1080),
+                     &render_dims, &min_dims, &max_dims));
+            begin_frame();
+            CHECK(!vulkan_upscaler_upscale(up, cmd, &din, &inputs, QUALITY(QUALITY),
+                     VIDEO_SCALE_PACK(1920, 1080), &dout));
+            end_frame();
+            vulkan_upscaler_frame_done(up);
+         }
+         CHECK(rec->creates == creates);
+         async_test_release(&feature_gate);
+         CHECK(async_test_idle());
+         CHECK(!retro_atomic_load_acquire_int(&feature_gate.timed_out));
+         CHECK(rec->creates == creates + 1);
+         begin_frame();
+         CHECK(vulkan_upscaler_upscale(up, cmd, &din, &inputs, QUALITY(QUALITY),
+                  VIDEO_SCALE_PACK(1920, 1080), &dout));
+         end_frame();
+         CHECK(setup_submits == 1);
+         retro_eventcount_free(&feature_gate.wake);
+
+         /* First enable promotes the SR-only SDK once. The renderer
+          * signals a private fence; only the SDK worker waits for it. */
+         memset(&feature_gate, 0, sizeof(feature_gate));
+         CHECK(retro_eventcount_init(&feature_gate.wake));
+         CHECK(async_test_park_cache());
+         rec->create_hook_feature = 18;
+         settings->bools.video_dlss_nr_enable = true;
+         for (i = 0; i < 5000 && !retro_atomic_load_acquire_int(&feature_gate.entered); i++)
+         {
+            begin_frame();
+            vulkan_upscaler_upscale(up, cmd, &din, &inputs, QUALITY(QUALITY),
+                  VIDEO_SCALE_PACK(1920, 1080), &dout);
+            end_frame();
+            vulkan_upscaler_frame_done(up);
+            retro_sleep(1);
+         }
+         CHECK(retro_atomic_load_acquire_int(&feature_gate.entered));
+         async_test_release(&feature_gate);
+         CHECK(async_test_idle());
+         CHECK(!retro_atomic_load_acquire_int(&feature_gate.timed_out));
+         CHECK(rec->creates == creates + 3
+               && rec->create[(rec->creates - 1) % FAKE_NGX_MAX].feature == 18);
+         begin_frame();
+         CHECK(vulkan_upscaler_upscale(up, cmd, &din, &inputs, QUALITY(QUALITY),
+                  VIDEO_SCALE_PACK(1920, 1080), &dout));
+         end_frame();
+         CHECK(setup_submits == 2);
+         CHECK(rec->init_calls == init_calls + 2);
+         CHECK(rec->shutdown_calls == shutdown_calls + 1);
+         for (i = 0; i < 6; i++)
+         {
+            settings->bools.video_dlss_nr_enable = (i & 1) != 0;
+            begin_frame();
+            CHECK(vulkan_upscaler_upscale(up, cmd, &din, &inputs, QUALITY(QUALITY),
+                     VIDEO_SCALE_PACK(1920, 1080), &dout));
+            end_frame();
+            vulkan_upscaler_frame_done(up);
+         }
+         CHECK(rec->init_calls == init_calls + 2 && rec->creates == creates + 3);
+         CHECK(async_test_retire_calls == 1 && async_test_parked_destroyed);
+         CHECK(async_test_parked == NULL);
+         video_upscaler_retire_cached();
+         CHECK(async_test_retire_calls == 1);
+         CHECK(setup_submits == 2);
+         rec->create_hook_feature = 0;
+         rec->create_hook = NULL;
+         rec->create_hook_data = NULL;
+         settings->bools.video_dlss_nr_enable = false;
+         async_frame_up = NULL;
+         retro_eventcount_free(&feature_gate.wake);
+      }
+      vulkan_upscaler_reset(up);
+      CHECK(async_test_idle());
+      CHECK(!vulkan_upscaler_optimal(up, QUALITY(QUALITY), VIDEO_SCALE_PACK(1920, 1080),
+               &render_dims, &min_dims, &max_dims));
+      begin_frame();
+      end_frame();
+      vulkan_upscaler_frame_done(up);
+      CHECK(vulkan_upscaler_optimal(up, QUALITY(QUALITY), VIDEO_SCALE_PACK(1920, 1080),
+               &render_dims, &min_dims, &max_dims));
+      vulkan_upscaler_free(up);
+      CHECK(async_test_idle() && rec->shutdown_calls == shutdown_calls + 2);
+      CHECK(!retro_atomic_load_acquire_int(&gate.timed_out));
+      retro_eventcount_free(&gate.wake);
+
+      free_image(&color);
+      free_image(&mv);
+      free_image(&depth);
+      free_image(&color_big);
+      vkDestroyCommandPool(device, pool, NULL);
+      if (messenger && destroy_messenger)
+         destroy_messenger(instance, messenger, NULL);
+
+      memset(&gate, 0, sizeof(gate));
+      CHECK(retro_eventcount_init(&gate.wake));
+      up = vulkan_upscaler_init_async(instance, gpu, device,
+            vkGetInstanceProcAddr, vkGetDeviceProcAddr, &mem_props, "Zdir", device_owner, queue_family);
+      CHECK(up != NULL);
+      vulkan_upscaler_frame_done(up);
+      CHECK(async_test_wait(&gate.wake, &gate.entered));
+      vulkan_upscaler_free(up);
+      vulkan_upscaler_device_release(device_owner);
+      vulkan_upscaler_instance_release(instance_owner);
+      /* Only the worker now owns both handles. Init still has not returned. */
+      CHECK(rec->init_calls == init_calls + 2);
+      async_test_release(&gate);
+      CHECK(async_test_idle());
+      CHECK(rec->init_calls == init_calls + 3
+            && rec->shutdown_calls == shutdown_calls + 3);
+      CHECK(!retro_atomic_load_acquire_int(&gate.timed_out));
+      rec->init_hook = NULL;
+      rec->init_hook_data = NULL;
+      retro_eventcount_free(&gate.wake);
+      video_upscaler_async_shutdown();
+   }
+   /* Retired by the last asynchronous owner above. */
 
    CHECK(validation_errors == 0);
    if (failures)

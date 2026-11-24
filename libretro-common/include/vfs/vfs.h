@@ -90,9 +90,20 @@ typedef struct
  * Listed rather than assumed: the descriptor path compiles everywhere
  * but has only ever run on the mapping targets, so a platform joins
  * this list once its open()/read()/lseek() have been exercised.  A
- * target that is not listed keeps the behaviour it has today. */
+ * target that is not listed keeps the behaviour it has today.
+ *
+ * The POSIX desktops are listed for themselves too: RetroArch reaches
+ * the path on them with HAVE_MMAP, and a core built without it (most
+ * are) gets the same descriptor reads, and with them the identity,
+ * volume and fs-verity answers a stream needs a descriptor for. */
 #ifndef VFS_HAVE_DESCRIPTOR_IO
 #if defined(VFS_HAVE_FILE_MAPPING) \
+ || ((defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__) \
+      || defined(__NetBSD__) || defined(__OpenBSD__) \
+      || defined(__DragonFly__)) \
+     && !defined(ORBIS) && !defined(PS2) && !defined(PSP) \
+     && !defined(VITA) && !defined(__SWITCH__) && !defined(GEKKO) \
+     && !defined(_3DS) && !defined(WIIU)) \
  || defined(VITA) \
  || defined(_3DS) \
  || (defined(WIIU) && defined(HAVE_WIIU_DESCRIPTOR_IO)) \
@@ -128,11 +139,39 @@ typedef struct
  * and an fstat on top of that.  On an SD card every extra stat is a
  * directory lookup, so a bulk extraction pays for all of it per
  * member. */
+/* The desktops (the file mapping targets) take it too, for streams
+ * opened to read and write as well as to write: a caller that writes
+ * in big pieces, or reads and writes a file in place as an emulated
+ * file system does, gets its bytes to and from the descriptor without
+ * a copy through a stdio buffer, and its writes are in the file for
+ * every other handle at once, with no flush.  A caller that writes in
+ * small pieces leaves the hint off and keeps the buffer. */
 #ifndef VFS_HAVE_DESCRIPTOR_WRITE
-#if defined(VITA) || defined(GEKKO) || defined(PSP) || defined(PS2)
+#if defined(VITA) || defined(GEKKO) || defined(PSP) || defined(PS2) \
+ || defined(VFS_HAVE_FILE_MAPPING)
 #define VFS_HAVE_DESCRIPTOR_WRITE 1
 #endif
 #endif
+
+/* Gathered writes: where a descriptor-written stream can hand several
+ * pieces of memory to the kernel in one writev() call.  POSIX only;
+ * Windows and the consoles write the pieces one by one. */
+#ifndef VFS_HAVE_WRITEV
+#if defined(VFS_HAVE_DESCRIPTOR_WRITE) && defined(HAVE_MMAP) \
+ && (defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__) \
+  || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__)) \
+ && !defined(_WIN32) && !defined(VITA) && !defined(GEKKO) \
+ && !defined(PSP) && !defined(PS2)
+#define VFS_HAVE_WRITEV 1
+#endif
+#endif
+
+/* One piece of memory for a gathered write */
+struct retro_vfs_span
+{
+   const void *data;
+   size_t      len;
+};
 
 enum vfs_scheme
 {
@@ -142,69 +181,6 @@ enum vfs_scheme
    VFS_SCHEME_SMB,
    VFS_SCHEME_NFS
 };
-
-#if !(defined(__WINRT__) && defined(__cplusplus_winrt))
-#ifdef VFS_FRONTEND
-struct retro_vfs_file_handle
-#else
-struct libretro_vfs_implementation_file
-#endif
-{
-   int64_t size;
-   uint64_t mappos;
-   uint64_t mapsize;
-#if defined(_WIN32) && !defined(_XBOX) && !defined(HAVE_MMAP)
-   /* mapped read-ahead: where the next hint is due, the last read's end */
-   uint64_t ra_next;
-   uint64_t ra_last;
-#endif
-   FILE *fp;
-#ifdef _WIN32
-   HANDLE fh;
-   /* CreateFileMapping handle backing `mapped`; NULL when unmapped */
-   HANDLE map_handle;
-#if !defined(_XBOX) && !defined(HAVE_MMAP)
-   void *warm;   /* mapped read-ahead thread, NULL until used */
-#endif
-#endif
-   char *buf;
-   char* orig_path;
-   uint8_t *mapped;
-   int fd;
-   unsigned hints;
-   enum vfs_scheme scheme;
-#ifdef HAVE_CDROM
-   /* Allocated by retro_vfs_file_open_impl() only when the path
-    * carries the cdrom:// scheme, and freed by
-    * retro_vfs_file_close_impl(). It used to be an inline member at
-    * the head of this struct, which is a poor trade: vfs_cdrom_t
-    * embeds a 2352-byte sector cache, so every open file handle in a
-    * build with HAVE_CDROM cost 2464 bytes instead of 72, and the
-    * fields the read/seek paths actually touch (mappos, mapsize,
-    * mapped, hints) were pushed past offset 2392 and split across two
-    * cache lines instead of sharing one. Every consumer already gates
-    * on 'scheme == VFS_SCHEME_CDROM' before reaching for it, so a
-    * NULL here is unreachable on those paths. */
-   vfs_cdrom_t *cdrom;
-#endif
-#ifdef HAVE_SMBCLIENT
-   intptr_t smb_fh;
-   intptr_t smb_ctx;
-   intptr_t smb_slot;   /* pool slot held from open to close, 0 if private */
-   intptr_t smb_prefetch; /* struct smb_prefetch *, read-only opens with threads */
-   intptr_t smb_reopen;   /* struct smb_reopen *: how to open it again */
-#endif
-#ifdef HAVE_NFSCLIENT
-   intptr_t nfs_fh;
-   intptr_t nfs_ctx;
-   intptr_t nfs_prefetch; /* struct nfs_prefetch *, read-only opens with threads */
-#endif
-#if defined(HAVE_CDROM) && defined(__APPLE__)
-   void *iokit_plugin;   /* IOCFPlugInInterface ** */
-   void *iokit_mmc;      /* MMCDeviceInterface ** */
-#endif
-};
-#endif
 
 /* Replace the following symbol with something appropriate
  * to signify the file is being compiled for a front end instead of a core.

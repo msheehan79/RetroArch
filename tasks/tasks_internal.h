@@ -261,14 +261,35 @@ void *task_push_core_backup_install(
       const char *dir_core_assets, bool mute,
       retro_task_callback_t cb, void *user_data);
 
+struct core_check;
+
 /* NOTE: If 'core_loaded' is true, menu stack should be
- * flushed if task_push_core_restore() returns true */
+ * flushed if task_push_core_restore() returns true.
+ * own_backup: from RetroArch's own backup list, so it may be an older
+ * build. warned: Install and Trust's check, which the core installed
+ * must still match; NULL otherwise. */
 bool task_push_core_restore(const char *backup_path,
       const char *dir_libretro,
-      bool *core_loaded);
+      bool *core_loaded, bool own_backup,
+      const struct core_check *warned);
 
 bool task_push_pl_manager_reset_cores(const playlist_config_t *playlist_config);
 bool task_push_pl_manager_clean_playlist(const playlist_config_t *playlist_config);
+
+/* Matches the playlist's entries to the thumbnails on disk, once a
+ * session, through <playlist>.lpl.thumbs. Main thread. @playlist is the
+ * caller's loaded copy, or NULL; history and favourites read core info
+ * from it for entries without a db_name. Nothing of it is kept. */
+bool task_push_pl_thumbnail_match(const playlist_config_t *playlist_config,
+      playlist_t *playlist, const char *dir_thumbnails,
+      const char *dir_database, bool allow_non_png, bool other_regions);
+/* An on-demand download saved under another name than the label:
+ * shown for the entry only if it matches it under @other_regions,
+ * while the store still matches under that rule. Main thread. */
+bool task_pl_thumbnail_match_note_download(const char *playlist_path,
+      const char *content_path, const char *label, const char *system,
+      unsigned type, const char *file_name, bool allow_non_png,
+      bool other_regions);
 
 /* downscale_cap: if non-zero, the decoded image is capped to this many
  * pixels on its longest side before upload, preserving aspect ratio.
@@ -603,6 +624,19 @@ bool input_autoconfigure_connect_ex(
       unsigned vid,
       unsigned pid,
       uint8_t flags);
+/* As input_autoconfigure_connect(), from a driver that tells apart
+ * controllers of one model: @uniq is the controller's own serial or
+ * Bluetooth address, "" when it has none and @phys, where it is
+ * plugged in, tells it apart instead. */
+bool input_autoconfigure_connect_uniq(
+      const char *name,
+      const char *display_name,
+      const char *phys,
+      const char *uniq,
+      const char *driver,
+      unsigned port,
+      unsigned vid,
+      unsigned pid);
 bool input_autoconfigure_disconnect(
       unsigned port, const char *name);
 bool input_autoconfigure_reconnect(unsigned port);

@@ -514,6 +514,9 @@ typedef struct
    bool run_state_update;
    /* Touch panel properties */
    bool is_touch_device;
+   /* Contacts come in MT slots; the single-touch emulation
+    * (ABS_X/ABS_Y/BTN_TOUCH) repeats one of them and is ignored. */
+   bool mt_slots;
 } udev_input_touch_t;
 
 #endif
@@ -570,6 +573,8 @@ typedef struct udev_input
 #ifdef UDEV_XKB_HANDLING
    bool xkb_handling;
 #endif
+   /* The monitor is in the device set, as its one entry without a device */
+   bool monitor_watched;
 
 #ifdef __linux__
    linux_illuminance_sensor_t *illuminance_sensor;
@@ -715,7 +720,6 @@ static bool udev_vp_ok;
 static udev_input_mouse_t *udev_get_mouse(
       struct udev_input *udev, unsigned port)
 {
-   unsigned i;
    unsigned mouse_index      = 0;
    int dev_index             = -1;
 
@@ -1131,10 +1135,8 @@ static void udev_touch_ts_print(const udev_touch_ts_t *ts)
 static udev_input_device_t *udev_get_pointer_port_dev(
       struct udev_input *udev, unsigned port)
 {
-   uint16_t i;
    uint16_t pointer_index    = 0;
    int16_t dev_index         = -1;
-   udev_input_mouse_t *mouse = NULL;
 
    if (port >= MAX_USERS || !video_driver_has_focus())
       return NULL;
@@ -1506,13 +1508,19 @@ static void udev_init_touch_dev(udev_input_device_t *dev)
    {
       RARCH_WARN("[udev] Failed to get touchscreen limits.\n");
 
+      /* One slot, fed by the single-touch events */
+      memset(&abs_info, 0, sizeof(abs_info));
+      udev_touch_set_limits_from(&abs_info, &touch->info_slots);
       touch->info_slots.enabled = false;
    }
    else
       udev_touch_set_limits_from(&abs_info, &touch->info_slots);
 
+   touch->mt_slots = touch->info_slots.enabled
+                  && touch->info_slots.range > 1;
+
    /* Single-touch devices use ABS_X/Y, Multi-touch use ABS_MT_POSITION_X/Y */
-   if (abs_info.maximum == 0)
+   if (!touch->mt_slots)
    {
       /* TODO - Test for single-touch devices. */
       RARCH_WARN("[udev] Single-touch devices are currently untested.\n");
@@ -1608,9 +1616,15 @@ static void udev_init_touch_dev(udev_input_device_t *dev)
       udev_destroy_touch_dev(dev);
       return;
    }
+   for (iii = 0; iii < touch->info_slots.range; ++iii)
+   {
+      touch->staging[iii].tracking_id = UDEV_INPUT_TOUCH_TRACKING_ID_NONE;
+      touch->current[iii].tracking_id = UDEV_INPUT_TOUCH_TRACKING_ID_NONE;
+   }
 
-   /* Initialize touch device */
-   touch->current_slot      = UDEV_INPUT_TOUCH_SLOT_ID_NONE;
+   /* Initialize touch device; the kernel starts on slot 0 and does
+    * not announce it */
+   touch->current_slot      = 0;
    touch->is_touch_device   = true;
    touch->run_state_update  = false;
    udev_touch_ts_now(&touch->last_state_update);
@@ -1711,7 +1725,7 @@ static void udev_sync_touch(udev_input_device_t *dev)
    int32_t *mt_req_values;
    uint8_t *mt_request_data;
    size_t mt_request_data_size;
-   size_t slot_count;
+   int slot_count;
    udev_touch_ts_t now;
    udev_input_touch_t *touch = &dev->touch;
    udev_slot_state_t *staging = dev->touch.staging;
@@ -1754,6 +1768,11 @@ static void udev_sync_touch(udev_input_device_t *dev)
       staging[iii].tracking_id = mt_req_values[iii];
       udev_touch_ts_copy(&now, &staging[iii].td_time);
    }
+   /* Contacts begun or ended unseen are counted as they are now */
+   touch->staging_active = 0;
+   for (iii = 0; iii < slot_count; ++iii)
+      if (staging[iii].tracking_id >= 0)
+         touch->staging_active++;
 
    /* Request MT position on the x-axis for each slot */
    *mt_req_code = ABS_MT_POSITION_X;
@@ -1856,8 +1875,8 @@ static bool udev_translate_touch_pos(
     *   One way to fix this is to add or remove 0.5, but this needs floating
     *   point operations which might not be desirable.
     */
-   int32_t ma_pos_x   = (((((pointer_pos_x + src_touch->info_x_limits.min) * 0x7fff) / src_touch->info_x_limits.range) * VIDEO_SCALE_W(target_vp->full_dims)) / 0x7fff);
-   int32_t ma_pos_y   = (((((pointer_pos_y + src_touch->info_y_limits.min) * 0x7fff) / src_touch->info_y_limits.range) * VIDEO_SCALE_H(target_vp->full_dims)) / 0x7fff);
+   int32_t ma_pos_x   = (((((pointer_pos_x - src_touch->info_x_limits.min) * 0x7fff) / src_touch->info_x_limits.range) * VIDEO_SCALE_W(target_vp->full_dims)) / 0x7fff);
+   int32_t ma_pos_y   = (((((pointer_pos_y - src_touch->info_y_limits.min) * 0x7fff) / src_touch->info_y_limits.range) * VIDEO_SCALE_H(target_vp->full_dims)) / 0x7fff);
 
    /* Calculate relative offsets. */
    VIDEO_POS_ADD(*pointer_ma_rel, ma_pos_x - VIDEO_POS_X(*pointer_ma_pos),
@@ -2390,7 +2409,7 @@ static void udev_report_touch(udev_input_t *udev, udev_input_device_t *dev)
             /* Simulated pointer */
             /* Release the pointer only after all contacts are released */
             if (touch->pointer_enabled)
-               touch->pointer_btn_pp = (touch->staging_active == 0);
+               touch->pointer_btn_pp = (touch->staging_active > 0);
 
             /* Mouse section */
             if (touch->mouse_enabled)
@@ -2603,8 +2622,8 @@ static void udev_handle_touch(void *data,
       const struct input_event *event, udev_input_device_t *dev)
 {
    udev_input_t *udev        = (udev_input_t*)data;
-   udev_input_mouse_t *mouse = &dev->mouse;
    udev_input_touch_t *touch = &dev->touch;
+   udev_slot_state_t *st0    = touch->staging;
 
    /* struct input_event */
    /* { */
@@ -2657,16 +2676,18 @@ static void udev_handle_touch(void *data,
                }
                break;
             case ABS_X:
-               /* TODO - Currently using single-touch events as touch with id 0 */
+               /* Single-touch contact, kept in slot 0 */
+               if (touch->mt_slots)
+                  break;
                RARCH_DDBG("[udev] handle_touch: [0] ST_X to %d\n", event->value);
-               VIDEO_POS_PUT_X(touch->staging[0].pos, event->value);
-
-               /* Low priority event, mark the change. */
-               if (touch->staging[0].change == UDEV_TOUCH_CHANGE_NONE)
-                  touch->staging[0].change = UDEV_TOUCH_CHANGE_MOVE;
+               VIDEO_POS_PUT_X(st0->pos, event->value);
                /* Starting tracing, remember touchdown position. */
-               else if (touch->staging[0].change == UDEV_TOUCH_CHANGE_DOWN)
-                  VIDEO_POS_PUT_X(touch->staging[0].td_pos, event->value);
+               if (st0->change == UDEV_TOUCH_CHANGE_DOWN)
+                  VIDEO_POS_PUT_X(st0->td_pos, event->value);
+               /* Low priority event, mark the change of a held contact. */
+               else if (st0->change == UDEV_TOUCH_CHANGE_NONE
+                     && st0->tracking_id >= 0)
+                  st0->change = UDEV_TOUCH_CHANGE_MOVE;
                break;
             case ABS_MT_POSITION_X:
                RARCH_DDBG("[udev] handle_touch: [%d] MT_X to %d\n", touch->current_slot, event->value);
@@ -2679,15 +2700,15 @@ static void udev_handle_touch(void *data,
                   VIDEO_POS_PUT_X(touch->staging[touch->current_slot].td_pos, event->value);
                break;
             case ABS_Y:
-               /* TODO - Currently using single-touch events as touch with id 0 */
+               if (touch->mt_slots)
+                  break;
                RARCH_DDBG("[udev] handle_touch: [0] ST_Y to %d\n", event->value);
-               VIDEO_POS_PUT_Y(touch->staging[0].pos, event->value);
-               /* Low priority event, mark the change. */
-               if (touch->staging[0].change == UDEV_TOUCH_CHANGE_NONE)
-                  touch->staging[0].change = UDEV_TOUCH_CHANGE_MOVE;
-               /* Starting tracing, remember touchdown position. */
-               else if (touch->staging[0].change == UDEV_TOUCH_CHANGE_DOWN)
-                  VIDEO_POS_PUT_Y(touch->staging[0].td_pos, event->value);
+               VIDEO_POS_PUT_Y(st0->pos, event->value);
+               if (st0->change == UDEV_TOUCH_CHANGE_DOWN)
+                  VIDEO_POS_PUT_Y(st0->td_pos, event->value);
+               else if (st0->change == UDEV_TOUCH_CHANGE_NONE
+                     && st0->tracking_id >= 0)
+                  st0->change = UDEV_TOUCH_CHANGE_MOVE;
                break;
             case ABS_MT_POSITION_Y:
                RARCH_DDBG("[udev] handle_touch: [%d] MT_Y to %d\n", touch->current_slot, event->value);
@@ -2728,11 +2749,25 @@ static void udev_handle_touch(void *data,
       case EV_KEY:
          if (event->code == BTN_TOUCH)
          {
-            RARCH_DDBG("[udev] handle_touch: [%d] TOUCH %d\n", touch->current_slot, event->value);
+            /* Single-touch contact, kept in slot 0 */
+            if (touch->mt_slots)
+               break;
+            RARCH_DDBG("[udev] handle_touch: [0] TOUCH %d\n", event->value);
             if (event->value > 0)
-               touch->staging[touch->current_slot].change = UDEV_TOUCH_CHANGE_DOWN;
-            else
-               touch->staging[touch->current_slot].change = UDEV_TOUCH_CHANGE_UP;
+            {
+               if (st0->tracking_id < 0)
+               {
+                  st0->tracking_id = 0;
+                  st0->change      = UDEV_TOUCH_CHANGE_DOWN;
+                  st0->td_pos      = st0->pos;
+                  udev_touch_event_ts_copy(event, &st0->td_time);
+               }
+            }
+            else if (st0->tracking_id >= 0)
+            {
+               st0->tracking_id = UDEV_INPUT_TOUCH_TRACKING_ID_NONE;
+               st0->change      = UDEV_TOUCH_CHANGE_UP;
+            }
             break;
          }
          else
@@ -3036,8 +3071,7 @@ static int16_t udev_input_touch_state(
 
       case RETRO_DEVICE_POINTER:
       case RARCH_DEVICE_POINTER_SCREEN:
-         screen = (device == RARCH_DEVICE_MOUSE_SCREEN);
-         break;
+         screen = (device == RARCH_DEVICE_POINTER_SCREEN);
          switch (id)
          {
             case RETRO_DEVICE_ID_POINTER_X:
@@ -3552,7 +3586,6 @@ static void udev_input_handle_hotplug(udev_input_t *udev)
    const char *val_touchscreen       = NULL;
    const char *action                = NULL;
    const char *devnode               = NULL;
-   int check                         = 0;
    struct udev_device *dev           = udev_monitor_receive_device(
          udev->monitor);
 
@@ -3678,6 +3711,28 @@ static bool udev_input_poll_hotplug_available(struct udev_monitor *dev)
    return (poll(&fds, 1, 0) == 1) && (fds.revents & POLLIN);
 }
 
+#if defined(HAVE_EPOLL)
+#define UDEV_EVENT_DEVICE(e) ((udev_input_device_t*)(e).data.ptr)
+#elif defined(HAVE_KQUEUE)
+#define UDEV_EVENT_DEVICE(e) ((udev_input_device_t*)(e).udata)
+#endif
+
+static void udev_input_watch_monitor(udev_input_t *udev)
+{
+#if defined(HAVE_EPOLL)
+   struct epoll_event event;
+   event.events            = EPOLLIN;
+   event.data.ptr          = NULL;
+   udev->monitor_watched   = epoll_ctl(udev->fd, EPOLL_CTL_ADD,
+         udev_monitor_get_fd(udev->monitor), &event) == 0;
+#elif defined(HAVE_KQUEUE)
+   struct kevent event;
+   EV_SET(&event, udev_monitor_get_fd(udev->monitor), EVFILT_READ, EV_ADD,
+         0, 0, UDEV_KQ_UDATA(NULL));
+   udev->monitor_watched   = kevent(udev->fd, &event, 1, NULL, 0, NULL) == 0;
+#endif
+}
+
 static void udev_input_poll(void *data)
 {
    int i, ret;
@@ -3688,6 +3743,7 @@ static void udev_input_poll(void *data)
 #endif
    udev_input_mouse_t *mouse = NULL;
    udev_input_t *udev        = (udev_input_t*)data;
+   bool hotplugged           = false;
 
    /* this poll's viewport, for every event and read until the next */
    memset(&udev_vp, 0, sizeof(udev_vp));
@@ -3720,9 +3776,11 @@ static void udev_input_poll(void *data)
 #endif
    }
 
-   while (udev->monitor && udev_input_poll_hotplug_available(udev->monitor))
-      udev_input_handle_hotplug(udev);
+   if (udev->monitor && !udev->monitor_watched)
+      while (udev_input_poll_hotplug_available(udev->monitor))
+         udev_input_handle_hotplug(udev);
 
+rewait:
 #if defined(HAVE_EPOLL)
    ret = epoll_wait(udev->fd, events, ARRAY_SIZE(events), 0);
 #elif defined(HAVE_KQUEUE)
@@ -3736,6 +3794,20 @@ static void udev_input_poll(void *data)
    }
 #endif
 
+   /* A hotplug can take a device away: it comes first, and what was
+    * waited for before it is waited for again */
+   for (i = 0; i < ret; i++)
+   {
+      if (UDEV_EVENT_DEVICE(events[i]))
+         continue;
+      while (udev_input_poll_hotplug_available(udev->monitor))
+         udev_input_handle_hotplug(udev);
+      if (hotplugged)
+         return;
+      hotplugged = true;
+      goto rewait;
+   }
+
    for (i = 0; i < ret; i++)
    {
 #if defined(HAVE_EPOLL)
@@ -3747,11 +3819,7 @@ static void udev_input_poll(void *data)
       {
          int j, len;
          struct input_event input_events[32];
-#if defined(HAVE_EPOLL)
-         udev_input_device_t *device = (udev_input_device_t*)events[i].data.ptr;
-#elif defined(HAVE_KQUEUE)
-         udev_input_device_t *device = (udev_input_device_t*)events[i].udata;
-#endif
+         udev_input_device_t *device = UDEV_EVENT_DEVICE(events[i]);
 
          while ((len = (int)read(device->fd,
                      input_events, sizeof(input_events))) > 0)
@@ -4265,6 +4333,9 @@ static void *udev_input_init(const char *joypad_driver)
 #endif
 
    udev->fd  = fd;
+
+   if (udev->monitor)
+      udev_input_watch_monitor(udev);
 
    if (!open_devices(udev, UDEV_INPUT_KEYBOARD, udev_handle_keyboard, &denied))
       goto error;

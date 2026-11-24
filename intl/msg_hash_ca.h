@@ -261,7 +261,6 @@ static const struct
 #ifndef HAVE_DYNAMIC
    char s_e011fe61[48];
 #endif
-   char s_4e447c6c[43];
    char s_d9a51d02[22];
    char s_12e77e8f[9];
    char s_98760b94[40];
@@ -357,7 +356,9 @@ static const struct
    char s_314539a4[25];
    char s_8fc168f0[13];
    char s_213c44cf[20];
+   char s_4f4b0d00[11];
    char s_502f623c[8];
+   char s_223dfc81[8];
    char s_b6cd2ff0[51];
    char s_40e7aacd[6];
    char s_fe2b08f2[20];
@@ -1288,7 +1289,6 @@ static const struct
    char s_5b3c8098[31];
    char s_ceb820ad[10];
    char s_63af41a7[35];
-   char s_a4b769ca[32];
 #ifdef HAVE_MIST
    char s_53788998[28];
 #endif
@@ -1306,9 +1306,7 @@ static const struct
    char s_dcbf8b04[30];
    char s_dcbffdfe[29];
    char s_7816d5d5[37];
-   char s_2b1f17e8[30];
    char s_36c3acc7[18];
-   char s_b4c3612a[33];
    char s_f638f238[16];
    char s_f3358a59[29];
    char s_f8098721[62];
@@ -1694,6 +1692,7 @@ static const struct
    char s_2324cc29[34];
    char s_0d299e52[7];
    char s_92830f70[15];
+   char s_5502abed[12];
    char s_9ecf53d5[46];
    char s_b67675ad[12];
    char s_3361e11d[63];
@@ -1704,7 +1703,6 @@ static const struct
    char s_a38500d8[13];
    char s_9544161a[8];
    char s_76ac1944[34];
-   char s_ded7e809[42];
    char s_d8820ed7[82];
    char s_4c11d465[14];
    char s_50a04cd9[19];
@@ -1712,8 +1710,6 @@ static const struct
    char s_11121f30[32];
    char s_01badaa0[28];
    char s_6127cc52[32];
-   char s_9d52f73c[15];
-   char s_bc30b87a[31];
    char s_2fd5302f[30];
    char s_2dff21ec[28];
    char s_a2a28187[24];
@@ -1725,6 +1721,7 @@ static const struct
    char s_39b2f935[20];
    char s_f585917a[34];
    char s_2942bc3c[41];
+   char s_3794f2cd[6];
    char s_0a3c5b6b[43];
    char s_c46fdd49[37];
    char s_a2fd58a6[28];
@@ -1774,7 +1771,6 @@ static const struct
    char s_f24476fa[10];
    char s_97d90c67[10];
    char s_6d08238d[4];
-   char s_033bf99f[15];
    char s_8076aea7[28];
    char s_a00583cf[37];
    char s_e8a86d57[7];
@@ -1814,9 +1810,9 @@ static const struct
    char s_b71e6907[24];
    char s_d725639f[10];
    char s_ea5b5020[8];
-   char s_fef383d2[47];
    char s_4707850d[20];
    char s_cbddcf50[19];
+   char s_fc5ea9dc[7];
    char s_9abb40fc[30];
    char s_a9dc9f21[95];
    char s_6c786a36[34];
@@ -1911,6 +1907,7 @@ static const struct
    char s_9329c64c[11];
    char s_f8883f70[7];
    char s_09ba892e[13];
+   char s_047623ff[9];
    char s_58b9d895[19];
    char s_0a2aa953[8];
    char s_ffd0dac4[13];
@@ -2287,6 +2284,7 @@ static const struct
    char s_61b5b9d0[20];
    char s_313e6a7a[28];
    char s_579c3ea7[25];
+   char s_e29ee11f[11];
    char s_ccf131c5[28];
    char s_e5124bba[8];
    char s_875bc33e[11];
@@ -2561,8 +2559,10 @@ static const struct
    char s_52e3d6ea[47];
    char s_f387bafb[27];
    char s_2c868ae4[12];
+   char s_34a16f69[23];
+   char s_7706edf0[23];
    char s_7f065006[9];
-   char s_5c12d979[12];
+   char s_92c235ae[12];
    char s_284873ec[20];
    char s_3220e9be[7];
    char s_3242e549[21];
@@ -2603,7 +2603,6 @@ static const struct
    char s_33da1d6d[24];
    char s_33dae115[23];
    char s_b2b1563a[18];
-   char s_fa98dce0[27];
    char s_2bf7c29f[18];
    char s_48431da6[14];
    char s_d2fe3ed2[30];
@@ -2631,10 +2630,6 @@ static const struct
    char s_2a5f7cd7[40];
    char s_f90edcc2[75];
    char s_ad14307a[18];
-#if defined(RARCH_MOBILE)
-   char s_774121c7[97];
-   char s_774121c8[97];
-#endif
    char s_b0fb58d3[37];
    char s_b0fb58d4[37];
    char s_92a02470[43];
@@ -2652,12 +2647,10 @@ static const struct
 #endif
    char s_84c46931[37];
    char s_ebf10493[14];
-   char s_539d5393[7];
    char s_a64b3a0b[31];
    char s_83e8dc72[31];
    char s_7cf985f0[45];
    char s_0f5266ce[23];
-   char s_0f97fdc1[6];
    char s_ea2674d3[41];
    char s_ea2674d4[38];
    char s_2d8cb7ce[24];
@@ -2832,7 +2825,6 @@ static const struct
    char s_aa08c6d6[89];
 #endif
 #endif
-   char s_27aef25c[46];
 #ifdef _3DS
    char s_2873cef1[107];
    char s_b4816da6[57];
@@ -3391,7 +3383,6 @@ static const struct
    char s_7963c9c6[76];
    char s_ee3a489b[45];
    char s_236bd8d5[66];
-   char s_87c7d8b8[132];
 #ifdef HAVE_MIST
    char s_40e907c6[62];
 #endif
@@ -3409,9 +3400,7 @@ static const struct
    char s_c5a76d72[61];
    char s_c5a7e06c[60];
    char s_37d36d03[68];
-   char s_eadbaf16[61];
    char s_54eaf5f5[29];
-   char s_7de5d198[64];
    char s_3b573ee6[26];
    char s_dc1d6cc7[55];
    char s_28543dcf[70];
@@ -4102,7 +4091,6 @@ static const struct
    char s_5b059407[137];
    char s_36033606[174];
    char s_5d342d82[298];
-   char s_bd0312ce[114];
    char s_3ba8b64d[171];
    char s_d62ed5dc[331];
    char s_2e69508b[424];
@@ -4115,10 +4103,8 @@ static const struct
    char s_ecc9b2c5[370];
    char s_c2314d30[278];
 #if defined(RARCH_MOBILE)
-   char s_82c9e375[167];
-   char s_82c9e376[202];
+   char s_82c9e376[179];
 #endif
-   char s_73658ec1[167];
    char s_73658ec2[179];
    char s_8010a29e[142];
    char s_81120e85[142];
@@ -5251,7 +5237,6 @@ static const struct
 #ifndef HAVE_DYNAMIC
    "Recarrega sempre el nucli en executar contingut",
 #endif
-   "Soluci\303\263 per les desconnexions d\342\200\231Android",
    "Icona de l'Aplicaci\303\263",
    "Recursos",
    "Obre el panell de configuraci\303\263 de ASIO",
@@ -5347,6 +5332,8 @@ static const struct
    "Identificador del paquet",
    "Mem\303\262ria cau",
    "Permetre la c\303\240mera",
+   "Dispositiu",
+   "C\303\240mera",
    "C\303\240mera",
    "No es pot activar els assoliments amb aquest nucli",
    "Trucs",
@@ -6282,7 +6269,6 @@ static const struct
    "Acceleraci\303\263 del despla\303\247ament",
    "Aparen\303\247a",
    "Mostra \302\253Fitxer de configuraci\303\263\302\273",
-   "Mostra missatge de confirmaci\303\263",
 #ifdef HAVE_MIST
    "Mostra 'Administrar nuclis'",
 #endif
@@ -6300,9 +6286,7 @@ static const struct
    "Mostra \342\200\234Carrega el nucli\342\200\235",
    "Mostra \342\200\234Carrega el disc\342\200\235",
    "Mostra \342\200\234Actualitzador en l\303\255nia\342\200\235",
-   "Mostra \302\253Surt del RetroArch\302\273",
    "Mostrar Reiniciar",
-   "Mostra \302\253Reinicia el RetroArch\302\273",
    "Mostra 'Apagar'",
    "Mostra subetiquetes al men\303\272",
    "Mostra les etiquetes del men\303\272 nom\303\251s per la selecci\303\263 actual",
@@ -6691,6 +6675,7 @@ static const struct
    "Totes les llistes de reproducci\303\263",
    "Aplica",
    "Nucli associat",
+   "Per defecte",
    "Trieu una sola llista de reproducci\303\263 primer.",
    "Escollir...",
    "Est\303\240s segur que vols esborrar la llista de reproducci\303\263 \"%1\"?",
@@ -6701,7 +6686,6 @@ static const struct
    "<Pregunta'm>",
    "Versi\303\263",
    "No es pot esborrar aquest fitxer.",
-   "No es pot canviar el nom a aquest fitxer.",
    "S\342\200\231ha produ\303\257t un error en actualitzar l\342\200\231entrada de la llista de repr"
    "oducci\303\263.",
    "Shader actual",
@@ -6710,8 +6694,6 @@ static const struct
    "Esborrar llista de reproducci\303\263",
    "No mostris una altra vegada",
    "Descarrega totes les miniatures",
-   "Sistema sencer",
-   "Aquesta llista de reproducci\303\263",
    "Ja hi ha una baixada en curs.",
    "Obtingudes: %1 Fallades: %2",
    "Descarrega la miniatura",
@@ -6723,6 +6705,7 @@ static const struct
    "L'arxiu est\303\240 buit.",
    "L'adre\303\247a del fitxer est\303\240 buida.",
    "No es pot obrir el fitxer per llegir-lo.",
+   "Tipus",
    "No es pot obrir el fitxer per escriure-hi.",
    "(es fa servir per trobar miniatures)",
    "Creant llista de fitxers...",
@@ -6772,7 +6755,6 @@ static const struct
    "Mou avall",
    "Mou amunt",
    "Nom",
-   "Error de xarxa",
    "Nova llista de reproducci\303\263",
    "Element de la llista de reproducci\303\263",
    "Nucli:",
@@ -6819,9 +6801,9 @@ static const struct
    "Llistes de reproducci\303\263",
    "Car\303\240tula",
    "Logotip",
-   "Les miniatures s'han descarregat correctament.",
    "Captura de pantalla",
    "Pantalla de t\303\255tol",
+   "Nuclis",
    "Ha fallat l\342\200\231actualitzaci\303\263.",
    "El RetroArch s\342\200\231ha actualitzat correctament. Reinicieu l\342\200\231aplicaci\303\263 p"
    "er aplicar els canvis.",
@@ -6917,6 +6899,7 @@ static const struct
    "Puntuaci\303\263",
    "S\303\250rie",
    "Ambientaci\303\263",
+   "Etiqueta",
    "Valoraci\303\263 de TGDB",
    "Vehicle",
    "Estil visual",
@@ -7293,6 +7276,7 @@ static const struct
    "MM-DD-AAAA HH:MM:SS",
    "MM-DD-AAAA HH:MM:SS (AM/PM)",
    "MM-DD-AAAA HH:MM (AM/PM)",
+   "Autom\303\240tic",
    "Estil de la data i l\342\200\231hora",
    "AAAA-MM",
    "AAAA-MM-DD",
@@ -7569,6 +7553,8 @@ static const struct
    "Simulaci\303\263 de la l\303\255nia d'escaneig en moviment",
    "Disposici\303\263 de la pantalla",
    "Horitzontal",
+   "Al\303\247ada de la finestra",
+   "Amplada de la finestra",
    "Pantalla",
    "Pantalla %u",
    "Edita les pantalles",
@@ -7611,7 +7597,6 @@ static const struct
    "En paral\302\267lel (Complet)",
    "En paral\302\267lel (Meitat)",
    "Superior-Inferior",
-   "So est\303\250reo 3D i Pantalles",
    "Intercanviar Ulls",
    "Personalitzat",
    "Qualitat de la retransmissi\303\263",
@@ -7639,12 +7624,6 @@ static const struct
    "Augmenta la prioritat del fil de v\303\255deo",
    "Fes servir la mem\303\262ria interm\303\250dia pels arguments de Metal (Cal reiniciar)",
    "Antipampallugueig",
-#if defined(RARCH_MOBILE)
-   "Compensaci\303\263 de l'eix X del punt d'ancoratge de l'\303\240rea de visualitzaci\303\263 (ori"
-   "entaci\303\263 vertical)",
-   "Compensaci\303\263 de l'eix Y del punt d'ancoratge de l'\303\240rea de visualitzaci\303\263 (ori"
-   "entaci\303\263 vertical)",
-#endif
    "Compensa l'eix X del punt d'anclatge",
    "Compensa l'eix Y del punt d'anclatge",
    "Relaci\303\263 d'aspecte personalitzat (al\303\247ada)",
@@ -7662,12 +7641,10 @@ static const struct
 #endif
    "Mode de finestra a pantalla completa",
    "Mode finestra",
-   "Adjunt",
    "Al\303\247ada m\303\240xima de la finestra",
    "Amplada m\303\240xima de la finestra",
    "Utilitza una mida de finestra personalitzada",
    "Al\303\247ada de la finestra",
-   "Ocult",
    "Despla\303\247ament horitzontal de la pantalla",
    "Despla\303\247ament vertical de la pantalla",
    "Opacitat de la finestra",
@@ -7956,7 +7933,6 @@ static const struct
    "Desactiva el ERTM del senyal Bluetooth per corregir l'emparellament d'alguns dispositius",
 #endif
 #endif
-   "Escaneja dispositius bluetooth i connecta-hi.",
 #ifdef _3DS
    "Indica la carpeta de recursos de la pantalla inferior. La carpeta ha de tenir un fitxer \"bottom"
    "_menu.png\".",
@@ -8896,8 +8872,6 @@ static const struct
    "Canvia les opcions de l'aparen\303\247a del men\303\272.",
    "Mostra l\342\200\231opci\303\263 \302\253Fitxer de configuraci\303\263\302\273 al men\303\272 pr"
    "incipal.",
-   "Pregunta per confirmaci\303\263 abans de sortir, reiniciar o tancar el contingut. Si est\303\240"
-   " desactivat, aquestes accions seran immediates.",
 #ifdef HAVE_MIST
    "Mostra l\342\200\231opci\303\263 \302\253Gestiona els nuclis\302\273 al men\303\272 principal.",
 #endif
@@ -8922,9 +8896,7 @@ static const struct
    "l.",
    "Mostra l\342\200\231opci\303\263 \342\200\234Actualitzador en l\303\255nia\342\200\235 al men"
    "\303\272 principal.",
-   "Mostra l\342\200\231opci\303\263 \302\253Surt del RetroArch\302\273 al men\303\272 principal.",
    "Mostra l'opci\303\263 'Reiniciar'.",
-   "Mostra l\342\200\231opci\303\263 \302\253Reinicia el RetroArch\302\273 al men\303\272 principal.",
    "Mostra l'opci\303\263 'Apagar'.",
    "Mostra informaci\303\263 addicional pels elements del men\303\272.",
    "Mostra nom\303\251s les etiquetes per les entrades del men\303\272 seleccionades.",
@@ -10106,8 +10078,6 @@ static const struct
    "e. De costat a costat (complet) \303\251s adequat per a aplicacions de visualitzaci\303\263 amb "
    "auriculars i visualitzaci\303\263 amb els ulls creuats; De costat a costat (mig) i superior-infe"
    "rior s\303\263n adequats per a televisors 3D.",
-   "Modifica la manera com es mostren l'estereo 3D i les pantalles m\303\272ltiples, en el cas dels "
-   "nuclis que els admeten.",
    "Intercanvia les imatges de l'ull esquerre i del dret. Utilitza-ho per a la visualitzaci\303\263 "
    "amb visi\303\263 encreuada, o quan una pantalla mostri els ulls o les files invertits.",
    "Profunditat en bits de la sortida quan el HDR est\303\240 apagat. 10-bit elimina les bandes de c"
@@ -10153,16 +10123,10 @@ static const struct
    "\263 pot fer malb\303\251 alguns shaders, sobretot en maquinari m\303\251s antic o versions del "
    "sistema operatiu anteriors.",
 #if defined(RARCH_MOBILE)
-   "Posici\303\263 horitzontal de contingut si l'\303\240rea de visualitzaci\303\263 \303\251s m\303"
-   "\251s ampla que el contingut. 0.0 per l'extrem esquerre, 0.5 per centrat, 1.0 per per l'extrem d"
-   "ret.",
    "Estableix la posici\303\263 vertical del contingut si l'\303\240rea de visualitzaci\303\263 \303"
    "\251s m\303\251s alta que el contingut. 0,0 per l'extrem superior, 0,5 per a centrar, 1,0 per l'"
-   "extrem inferior. (Orientaci\303\263 vertical)",
+   "extrem inferior.",
 #endif
-   "Posici\303\263 horitzontal de contingut si l'\303\240rea de visualitzaci\303\263 \303\251s m\303"
-   "\251s ampla que el contingut. 0.0 per l'extrem esquerre, 0.5 per centrat, 1.0 per per l'extrem d"
-   "ret.",
    "Estableix la posici\303\263 vertical del contingut si l'\303\240rea de visualitzaci\303\263 \303"
    "\251s m\303\251s alta que el contingut. 0,0 per l'extrem superior, 0,5 per a centrar, 1,0 per l'"
    "extrem inferior.",
@@ -10912,7 +10876,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_ca_blob_check[
-      (sizeof(msg_hash_ca_blob) == (243481u
+      (sizeof(msg_hash_ca_blob) == (242679u
 #ifdef ANDROID
        + 281u
 #endif
@@ -11178,10 +11142,6 @@ typedef char msg_hash_ca_blob_check[
 #ifdef HAVE_ODROIDGO2
        + 12u
 #endif
-#if defined(RARCH_MOBILE)
-       + 97u
-       + 97u
-#endif
 #if defined (WIIU)
 #ifdef WIIU
        + 57u
@@ -11442,8 +11402,7 @@ typedef char msg_hash_ca_blob_check[
        + 85u
 #endif
 #if defined(RARCH_MOBILE)
-       + 167u
-       + 202u
+       + 179u
 #endif
 #if defined (WIIU)
 #ifdef WIIU
@@ -11722,7 +11681,6 @@ static const msg_hash_id_t msg_hash_ca_ids[] =
 #ifndef HAVE_DYNAMIC
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_ALWAYS_RELOAD_CORE_ON_RUN_CONTENT,
 #endif
-   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_ANDROID_INPUT_DISCONNECT_WORKAROUND,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_APPICON_SETTINGS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_ASSETS_DIRECTORY,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_AUDIO_ASIO_CONTROL_PANEL,
@@ -11818,7 +11776,9 @@ static const msg_hash_id_t msg_hash_ca_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_BUNDLE_IDENTIFIER,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_CACHE_DIRECTORY,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_CAMERA_ALLOW,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_CAMERA_DEVICE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_CAMERA_DRIVER,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_CAMERA_SETTINGS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_CANNOT_ACTIVATE_ACHIEVEMENTS_WITH_THIS_CORE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_CHEAT,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_CHEAT_ADDRESS,
@@ -12749,7 +12709,6 @@ static const msg_hash_id_t msg_hash_ca_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MENU_SCROLL_FAST,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MENU_SETTINGS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_CONFIGURATIONS,
-   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_CONFIRM,
 #ifdef HAVE_MIST
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_CORE_MANAGER_STEAM,
 #endif
@@ -12767,9 +12726,7 @@ static const msg_hash_id_t msg_hash_ca_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_LOAD_CORE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_LOAD_DISC,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_ONLINE_UPDATER,
-   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_QUIT_RETROARCH,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_REBOOT,
-   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_RESTART_RETROARCH,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_SHUTDOWN,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_SUBLABELS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_SUBLABELS_CURRENT_SELECTION_ONLY,
@@ -13155,6 +13112,7 @@ static const msg_hash_id_t msg_hash_ca_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_ALL_PLAYLISTS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_APPLY,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_ASSOCIATE_CORE,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_BIND_DEFAULT,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_CANNOT_ADD_TO_ALL_PLAYLISTS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_CHOOSE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_CONFIRM_DELETE_PLAYLIST,
@@ -13165,7 +13123,6 @@ static const msg_hash_id_t msg_hash_ca_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_CORE_SELECTION_ASK,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_CORE_VERSION,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_COULD_NOT_DELETE_FILE,
-   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_COULD_NOT_RENAME_FILE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_COULD_NOT_UPDATE_PLAYLIST_ENTRY,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_CURRENT_SHADER,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_CUSTOM_THEME,
@@ -13173,8 +13130,6 @@ static const msg_hash_id_t msg_hash_ca_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_DELETE_PLAYLIST,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_DONT_SHOW_AGAIN,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_DOWNLOAD_ALL_THUMBNAILS,
-   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_DOWNLOAD_ALL_THUMBNAILS_ENTIRE_SYSTEM,
-   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_DOWNLOAD_ALL_THUMBNAILS_THIS_PLAYLIST,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_DOWNLOAD_ALREADY_IN_PROGRESS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_DOWNLOAD_PLAYLIST_THUMBNAIL_PROGRESS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_DOWNLOAD_THUMBNAIL,
@@ -13186,6 +13141,7 @@ static const msg_hash_id_t msg_hash_ca_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_FILE_IS_EMPTY,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_FILE_PATH_IS_BLANK,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_FILE_READ_OPEN_FAILED,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_FILE_TYPE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_FILE_WRITE_OPEN_FAILED,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_FOR_THUMBNAILS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_GATHERING_LIST_OF_FILES,
@@ -13235,7 +13191,6 @@ static const msg_hash_id_t msg_hash_ca_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_MOVE_DOWN,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_MOVE_UP,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_NAME,
-   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_NETWORK_ERROR,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_NEW_PLAYLIST,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_PLAYLIST_ENTRY,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_PLAYLIST_ENTRY_CORE,
@@ -13274,9 +13229,9 @@ static const msg_hash_id_t msg_hash_ca_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_TAB_PLAYLISTS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_THUMBNAIL_BOXART,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_THUMBNAIL_LOGO,
-   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_THUMBNAIL_PACK_DOWNLOADED_SUCCESSFULLY,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_THUMBNAIL_SCREENSHOT,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_THUMBNAIL_TITLE_SCREEN,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_UPDATER_CORES,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_UPDATE_RETROARCH_FAILED,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_UPDATE_RETROARCH_FINISHED,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_UPDATE_RETROARCH_NIGHTLY,
@@ -13371,6 +13326,7 @@ static const msg_hash_id_t msg_hash_ca_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_SCORE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_SERIAL,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_SETTING,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_TAGS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_TGDB_RATING,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_VEHICULAR,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_VISUAL,
@@ -13747,6 +13703,7 @@ static const msg_hash_id_t msg_hash_ca_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_TIMEDATE_MDYYYY_HMS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_TIMEDATE_MDYYYY_HMS_AMPM,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_TIMEDATE_MDYYYY_HM_AMPM,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_TIMEDATE_MODE_AUTOMATIC,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_TIMEDATE_STYLE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_TIMEDATE_YM,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_TIMEDATE_YMD,
@@ -14021,8 +13978,10 @@ static const msg_hash_id_t msg_hash_ca_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCAN_SUBFRAMES,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_LAYOUT,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_LAYOUT_HORIZONTAL,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_PAGE_WINDOW_HEIGHT,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_PAGE_WINDOW_WIDTH,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_SELECTED,
-   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_WINDOW_MODE,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_SETTINGS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_XR_EDIT,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_XR_PITCH,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_XR_RESET,
@@ -14063,7 +14022,6 @@ static const msg_hash_id_t msg_hash_ca_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_STEREO_MODE_SBS_FULL,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_STEREO_MODE_SBS_HALF,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_STEREO_MODE_TOP_BOTTOM,
-   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_STEREO_SETTINGS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_STEREO_SWAP_EYES,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_STREAMING_MODE_CUSTOM,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_STREAM_QUALITY,
@@ -14091,10 +14049,6 @@ static const msg_hash_id_t msg_hash_ca_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_THREAD_PRIORITY,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_USE_METAL_ARG_BUFFERS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_VFILTER,
-#if defined(RARCH_MOBILE)
-   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_VIEWPORT_BIAS_PORTRAIT_X,
-   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_VIEWPORT_BIAS_PORTRAIT_Y,
-#endif
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_VIEWPORT_BIAS_X,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_VIEWPORT_BIAS_Y,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_VIEWPORT_CUSTOM_HEIGHT,
@@ -14112,12 +14066,10 @@ static const msg_hash_id_t msg_hash_ca_ids[] =
 #endif
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_WINDOWED_FULLSCREEN,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_WINDOWED_MODE_SETTINGS,
-   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_WINDOW_ATTACHED,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_WINDOW_AUTO_HEIGHT_MAX,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_WINDOW_AUTO_WIDTH_MAX,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_WINDOW_CUSTOM_SIZE_ENABLE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_WINDOW_HEIGHT,
-   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_WINDOW_HIDDEN,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_WINDOW_OFFSET_X,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_WINDOW_OFFSET_Y,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_WINDOW_OPACITY,
@@ -14285,7 +14237,6 @@ static const msg_hash_id_t msg_hash_ca_ids[] =
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_BLUETOOTH_ERTM_DISABLE,
 #endif
 #endif
-   (msg_hash_id_t)MENU_ENUM_SUBLABEL_BLUETOOTH_SETTINGS,
 #ifdef _3DS
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_BOTTOM_ASSETS_DIRECTORY,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_BOTTOM_FONT_COLOR_BLUE,
@@ -14843,7 +14794,6 @@ static const msg_hash_id_t msg_hash_ca_ids[] =
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_MENU_SCROLL_FAST,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_MENU_SETTINGS,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_MENU_SHOW_CONFIGURATIONS,
-   (msg_hash_id_t)MENU_ENUM_SUBLABEL_MENU_SHOW_CONFIRM,
 #ifdef HAVE_MIST
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_MENU_SHOW_CORE_MANAGER_STEAM,
 #endif
@@ -14861,9 +14811,7 @@ static const msg_hash_id_t msg_hash_ca_ids[] =
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_MENU_SHOW_LOAD_CORE,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_MENU_SHOW_LOAD_DISC,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_MENU_SHOW_ONLINE_UPDATER,
-   (msg_hash_id_t)MENU_ENUM_SUBLABEL_MENU_SHOW_QUIT_RETROARCH,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_MENU_SHOW_REBOOT,
-   (msg_hash_id_t)MENU_ENUM_SUBLABEL_MENU_SHOW_RESTART_RETROARCH,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_MENU_SHOW_SHUTDOWN,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_MENU_SHOW_SUBLABELS,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_MENU_SHOW_SUBLABELS_CURRENT_SELECTION_ONLY,
@@ -15551,7 +15499,6 @@ static const msg_hash_id_t msg_hash_ca_ids[] =
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_SHARED_CONTEXT,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_SMOOTH,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_STEREO_MODE,
-   (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_STEREO_SETTINGS,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_STEREO_SWAP_EYES,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_SWAPCHAIN_BIT_DEPTH,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_SWAP_INTERVAL,
@@ -15562,10 +15509,8 @@ static const msg_hash_id_t msg_hash_ca_ids[] =
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_THREAD_PRIORITY,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_USE_METAL_ARG_BUFFERS,
 #if defined(RARCH_MOBILE)
-   (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_PORTRAIT_X,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_PORTRAIT_Y,
 #endif
-   (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_X,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_Y,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_CUSTOM_HEIGHT,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_CUSTOM_WIDTH,

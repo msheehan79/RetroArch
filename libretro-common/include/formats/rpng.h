@@ -81,6 +81,13 @@ const uint32_t *rpng_apng_stream_next(rpng_apng_stream_t *s,
 bool rpng_apng_stream_set_argb(rpng_apng_stream_t *s, int argb);
 void rpng_apng_stream_rewind(rpng_apng_stream_t *s);
 
+/* Lend output storage for fully indexed, full-canvas SOURCE animations
+ * without PREVIOUS disposal. Stride is in pixels (0 means width). False
+ * leaves the previous output unchanged. Caller owns the buffer, which is
+ * written only by next(); NULL restores the private canvas. */
+bool rpng_apng_stream_set_output_stride(rpng_apng_stream_t *s,
+      uint32_t *out, unsigned stride);
+
 /* Progressive open over a partially-resident buffer: only the first
  * 'avail' bytes are guaranteed present.  Succeeds once the header and
  * at least one frame are in; move the bound with
@@ -106,8 +113,6 @@ size_t rpng_apng_stream_media_floor(const rpng_apng_stream_t *s);
 size_t rpng_apng_stream_consumed(const rpng_apng_stream_t *s);
 void rpng_apng_stream_next_span(const rpng_apng_stream_t *s,
       size_t *lo, size_t *hi);
-
-rpng_t *rpng_alloc(void);
 
 void rpng_free(rpng_t *rpng);
 

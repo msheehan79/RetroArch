@@ -817,6 +817,10 @@ static uint32_t gfx_ctx_go2_drm_get_flags(void *data)
 #if defined(HAVE_SLANG) && (defined(HAVE_SPIRV_CROSS) || defined(HAVE_RSLC))
       BIT32_SET(flags, GFX_CTX_FLAGS_SHADERS_SLANG);
 #endif
+#ifdef HAVE_GLSL
+      /* GLSL and Slang presets can share the same context. */
+      BIT32_SET(flags, GFX_CTX_FLAGS_SHADERS_GLSL);
+#endif
    }
    else
    {

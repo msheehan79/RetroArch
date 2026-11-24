@@ -76,7 +76,6 @@ enum thread_cmd
    CMD_POKE_SET_FBO_STATE,
    CMD_POKE_GET_FBO_STATE,
 
-   CMD_POKE_SET_ASPECT_RATIO,
    CMD_FONT_INIT,
    CMD_CUSTOM_COMMAND,
 
@@ -92,6 +91,7 @@ enum thread_cmd
    CMD_SUPPRESS_SCREENSAVER,
    CMD_POKE_SET_VIEW_COUNT,
    CMD_POKE_HW_CONTEXT_DESTROYING,
+   CMD_POKE_HW_CONTEXT_DESTROYED,
    CMD_POKE_SET_FRAME_FORMAT,
    CMD_POLL_PRESENTABLE, /* Re-asks the context, deferred: no frame needed. */
 
@@ -369,6 +369,7 @@ enum video_thread_vp_slot
 #define VIDEO_THREAD_STAT_F_PHASE_DISPLAY   (1 << 1)
 #define VIDEO_THREAD_STAT_F_LAT_DISPLAY     (1 << 2)
 #define VIDEO_THREAD_STAT_F_DISPLAY_PACING  (1 << 3)
+#define VIDEO_THREAD_STAT_F_PRESENT_IMMEDIATE (1 << 4)
 
 /* Cache-line padding, where two threads write fields that would
  * otherwise share a line. A line carrying a write from each is pulled
@@ -481,10 +482,19 @@ typedef struct thread_video
     * and from the clock otherwise, and always after that present's
     * completion so a late display report cannot pile repeats up. */
    retro_time_t next_present;
+   /* Video thread: a clock reading and its mark, which that thread's
+    * "now" is told from (video_thread_vt_now) */
+   retro_time_t      vt_time;
+   retro_perf_tick_t vt_mark;
+   /* Marks to a microsecond when the reading was taken; 0 while a
+    * mark's rate was not known */
+   retro_perf_tick_t vt_usec_marks;
    uint64_t frames_repeated;
    /* Whether the last repeat deadline came from a display timestamp
     * the driver reported (true) or from the clock (false). Stats. */
    bool phase_from_display;
+   /* The driver's present_immediate() after the last frame. Stats. */
+   bool present_immediate;
    /* The wrapped driver's answer to get_refresh_rate, polled on the
     * video thread after each frame; 0 when it has none. The presenter
     * paces on it in preference to the setting. Video thread only -
@@ -546,6 +556,9 @@ typedef struct thread_video
     * info at the push: the hold keeps the content's period over the
     * stopped core */
    bool menu_content_rate;
+   /* Display Pacing On VBlank Events may hold this frame, from the
+    * frame info at the push */
+   bool vblank_pacing;
    /* What the main thread writes every frame, kept off the lines the
     * video thread writes (see VIDEO_THREAD_LINE): the push's clock and
     * display pacing's moving averages and schedule, then the values it
@@ -566,6 +579,17 @@ typedef struct thread_video
    retro_time_t content_due;
    retro_time_t content_period;
    retro_time_t run_start;
+   /* The hold on the display's vblank events
+    * (video_thread_hold_vblank): its own due time, the display
+    * server's vblank clock, the frames it stands aside for (~0u: for
+    * good), the frames it has held since it last stood down, and the
+    * vblanks that came late for their frame. Main thread. */
+   retro_time_t vblank_due;
+   unsigned (*vblank_wait)(unsigned seen, unsigned timeout_us,
+         retro_time_t *at);
+   unsigned vblank_off;
+   unsigned vblank_held;
+   unsigned vblank_late;
    /* Frames Driver Pacing released, the driver's sleep in the hold's
     * place (video_thread_pace_hold). Main thread. */
    uint64_t driver_released;
@@ -829,6 +853,8 @@ typedef struct thread_video
        * core's declared maximum geometry. A core that hands over a
        * larger frame than it declared is clamped to this. */
       size_t   buffer_size;
+      /* Main thread: buffer_size / current bytes per pixel. */
+      size_t   pixel_capacity;
       struct video_thread_frame_slot
       {
          video_thread_movie_t movie;
@@ -859,6 +885,10 @@ typedef struct thread_video
          char msg[NAME_MAX_LENGTH];
 #ifdef HAVE_OZONE
          char menu_ozone_color_theme[32];
+#endif
+#ifdef HAVE_MENU
+         /* video_info.menu.msgbox points here when the frame has one */
+         char menu_msgbox[1024];
 #endif
 #ifdef HAVE_GFX_WIDGETS
          /* The on-screen panels' text for the widgets, which this
@@ -1017,6 +1047,10 @@ typedef struct thread_video
    unsigned char pad_ring[VIDEO_THREAD_LINE];
 
    retro_atomic_int_t deferred_tail;
+
+   unsigned char pad_aspect[VIDEO_THREAD_LINE];
+   /* Latest aspect index plus one; zero means no resize pending. */
+   retro_atomic_int_t aspect_ratio_pending;
 } thread_video_t;
 
 /**

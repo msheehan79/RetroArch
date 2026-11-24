@@ -74,6 +74,7 @@
 #endif
 
 #ifdef HAVE_AVF
+#include "../record/record_at_audio.c"
 #include "../camera/drivers/avfoundation.m"
 #include "../record/drivers/record_avfoundation.m"
 #endif
@@ -84,6 +85,7 @@
 #include "../record/record_gpu_capture_metal.m"
 #include "../record/record_mux_avfoundation.m"
 #include "../record/record_gpu_session_metal.m"
+#include "../record/record_at_resample.c"
 #include "../record/record_gpu_dispatch_metal.m"
 #endif
 #endif

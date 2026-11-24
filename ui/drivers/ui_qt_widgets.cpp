@@ -27,10 +27,13 @@
 #include <QResizeEvent>
 #include <QScreen>
 #include <QScrollBar>
+#include <QSlider>
+#include <QSpinBox>
 #include <QStackedLayout>
 #include <QStyle>
 #include <QStyleOption>
 #include <QTimer>
+#include <QWhatsThis>
 
 #include "ui_qt_widgets.h"
 #include "ui_qt.h"
@@ -44,14 +47,17 @@
  * hard error, so these must live outside the extern "C" block. */
 #include "../../config.def.h"
 #include "../../command.h"
+#include "../../driver.h"
 #include "../../core_info.h"
 #include "../../core_option_manager.h"
 #include "../../file_path_special.h"
 #include "../../msg_hash.h"
 #include "../../paths.h"
 #include "../../tasks/tasks_internal.h"
+#include "../../gfx/gfx_thumbnail_results.h"
 #include "../../verbosity.h"
 #include "../../version.h"
+#include "../../version_git.h"
 #include "../../gfx/video_display_server.h"
 #include "../../input/input_driver.h"
 #include "../../input/input_remapping.h"
@@ -128,10 +134,28 @@ static inline void add_sublabel_and_whats_this(
       widget->setToolTip(wrapped_tooltip(tmp));
 
    msg_hash_get_help_enum((enum msg_hash_enums)setting->enum_idx,
-         tmp, sizeof(tmp));
+      tmp, sizeof(tmp));
 
    if (!string_is_equal(tmp, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NO_INFORMATION_AVAILABLE)))
+   {
+      QAction *whatsThisAction;
       widget->setWhatsThis(tmp);
+      /* text fields keep their own edit menu; Shift+F1 still works */
+      if (     qobject_cast<QLineEdit*>(widget)
+            || qobject_cast<QAbstractSpinBox*>(widget))
+         return;
+      whatsThisAction = new QAction(
+      msg_hash_to_str(MENU_ENUM_LABEL_VALUE_QT_WHATS_THIS), widget);
+
+      QObject::connect(whatsThisAction, &QAction::triggered,
+            widget, [widget]()
+            {
+               QWhatsThis::enterWhatsThisMode();
+            });
+
+      widget->addAction(whatsThisAction);
+      widget->setContextMenuPolicy(Qt::ActionsContextMenu);
+   }
 }
 
 /* A setting's range is stored as float; converting a float outside
@@ -218,7 +242,26 @@ void FormLayout::addPasswordLineEdit(rarch_setting_t *setting)
 void FormLayout::addUIntSpinBox(rarch_setting_t *setting)
 {
    if (setting && setting->short_description)
-      addRow(form_label(setting), new UIntSpinBox(setting));
+   {
+      /* Small, discrete integer settings with a representation callback
+       * are enumerations, not numeric quantities. Use the same labels as
+       * RetroArch's menu instead of exposing their internal integer values. */
+      if (setting->actions && setting->actions->repr
+            && setting->step == 1.0f
+            && (setting->flags & SD_FLAG_ENFORCE_MINRANGE)
+            && (setting->flags & SD_FLAG_ENFORCE_MAXRANGE)
+            && setting->max >= setting->min
+            && (setting->max - setting->min) <= 32.0f)
+         addRow(form_label(setting), new UIntComboBox(setting,
+                  setting->min, setting->max));
+      else
+      {
+         UIntSpinBox *spinBox = new UIntSpinBox(setting);
+         if (setting->enum_idx == MENU_ENUM_LABEL_MENU_SCROLL_DELAY)
+            spinBox->setMaximumWidth(150);
+         addRow(form_label(setting), spinBox);
+      }
+   }
 }
 
 void FormLayout::addSizeSpinBox(rarch_setting_t *setting, unsigned scale)
@@ -231,6 +274,12 @@ void FormLayout::addFloatSpinBox(rarch_setting_t *setting)
 {
    if (setting && setting->short_description)
       addRow(form_label(setting), new FloatSpinBox(setting));
+}
+
+void FormLayout::addRefreshRateControl(rarch_setting_t *setting)
+{
+   if (setting && setting->short_description)
+      addRow(form_label(setting), new RefreshRateControl(setting));
 }
 
 void FormLayout::addDirectorySelector(rarch_setting_t *setting)
@@ -267,7 +316,24 @@ bool FormLayout::addBindButton(rarch_setting_t *setting)
    if (!setting || !setting->short_description)
       return false;
 
-   addRow(QString(setting->short_description), new BindButton(setting));
+   {
+      QWidget       *row = new QWidget();
+      QHBoxLayout   *box = new QHBoxLayout(row);
+      BindButton   *bind = new BindButton(setting);
+      QPushButton *reset = new QPushButton(
+            msg_hash_to_str(MENU_ENUM_LABEL_VALUE_QT_BIND_DEFAULT));
+      QPushButton *clear = new QPushButton(
+            msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CLEAR_SETTING));
+      box->setContentsMargins(0, 0, 0, 0);
+      box->addWidget(bind, 1);
+      box->addWidget(reset);
+      box->addWidget(clear);
+      reset->setAutoDefault(false);
+      clear->setAutoDefault(false);
+      connect(reset, SIGNAL(clicked()), bind, SLOT(setDefault()));
+      connect(clear, SIGNAL(clicked()), bind, SLOT(clear()));
+      addRow(QString(setting->short_description), row);
+   }
 
    return true;
 }
@@ -293,6 +359,30 @@ void SettingsGroup::addRow(QLayout *layout) { m_layout->addRow(layout); }
 void SettingsGroup::addRow(QString label, QLayout *layout)
 {
    m_layout->addRow(label, layout);
+}
+
+/* Add a path setting as a compact horizontal row. This avoids the wide label
+ * column reserved by QFormLayout and gives the editable path more room. */
+static void qt_settings_group_add_compact_path(SettingsGroup *group,
+      enum msg_hash_enums enum_idx, bool isDirectory)
+{
+   rarch_setting_t *setting = menu_setting_find_enum(enum_idx);
+   QHBoxLayout *row;
+   QLabel *textLabel;
+
+   if (!group || !setting || !setting->short_description)
+      return;
+
+   /* The setting's own (translated) label, as every other row uses. */
+   row       = new QHBoxLayout;
+   textLabel = new QLabel(form_label(setting));
+   textLabel->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Preferred);
+   row->addWidget(textLabel);
+   if (isDirectory)
+      row->addLayout(new DirectorySelector(setting));
+   else
+      row->addWidget(new StringLineEdit(setting));
+   group->addRow(row);
 }
 
 void SettingsGroup::addCheckBox(rarch_setting_t *setting)
@@ -343,6 +433,11 @@ void SettingsGroup::addUIntSpinBox(rarch_setting_t *setting)
 void SettingsGroup::addFloatSpinBox(rarch_setting_t *setting)
 {
    m_layout->addFloatSpinBox(setting);
+}
+
+void SettingsGroup::addRefreshRateControl(rarch_setting_t *setting)
+{
+   m_layout->addRefreshRateControl(setting);
 }
 
 void SettingsGroup::addFloatSliderAndSpinBox(rarch_setting_t *setting)
@@ -875,6 +970,102 @@ void IntSpinBox::paintEvent(QPaintEvent *event)
    QSpinBox::paintEvent(event);
 }
 
+RefreshRateControl::RefreshRateControl(rarch_setting_t *setting, QWidget *parent) :
+   QWidget(parent)
+   ,m_setting(setting)
+   ,m_slider(new QSlider(Qt::Horizontal, this))
+   ,m_spinBox(new QDoubleSpinBox(this))
+   ,m_scale(1)
+   ,m_synced(*setting->value.target.fraction)
+   ,m_dirty(false)
+{
+   setObjectName("refreshRateControl");
+   int i;
+   m_slider->setObjectName("refreshRateSlider");
+   QPushButton *setButton = new QPushButton(QObject::tr("Set"), this);
+   const char *fmt        = setting->aux.rounding_fraction;
+   /* "%.Nf" - read N directly instead of compiling a regex per widget. */
+   int decimals           = (fmt && fmt[0] == '%' && fmt[1] == '.'
+         && fmt[2] >= '0' && fmt[2] <= '9' && fmt[3] == 'f')
+      ? fmt[2] - '0' : 3;
+
+   for (i = 0; i < decimals; i++)
+      m_scale *= 10;
+   m_spinBox->setDecimals(decimals);
+   m_spinBox->setRange(
+         (setting->flags & SD_FLAG_ENFORCE_MINRANGE) ? setting->min : 0.0,
+         (setting->flags & SD_FLAG_ENFORCE_MAXRANGE) ? setting->max : 999.0);
+   m_spinBox->setSingleStep(setting->step > 0.0f ? setting->step : 0.001f);
+   m_spinBox->setValue(*setting->value.target.fraction);
+
+   m_slider->setRange(
+         (int)(m_spinBox->minimum() * m_scale),
+         (int)(m_spinBox->maximum() * m_scale));
+   m_slider->setSingleStep(qMax(1, (int)(m_spinBox->singleStep() * m_scale)));
+   m_slider->setPageStep(qMax(1, m_scale / 10));
+   m_slider->setValue((int)(m_spinBox->value() * m_scale));
+
+   setButton->setAutoDefault(false);
+   QHBoxLayout *layout = new QHBoxLayout(this);
+   layout->setContentsMargins(0, 0, 0, 0);
+   layout->addWidget(m_slider, 1);
+   layout->addWidget(m_spinBox);
+   layout->addWidget(setButton);
+
+   connect(m_slider, &QSlider::valueChanged, this, [this](int value)
+   {
+      m_dirty = true;
+      m_spinBox->setValue((double)value / m_scale);
+   });
+   /* QOverload needs Qt 5.7; the cast resolves the overload on every Qt. */
+   connect(m_spinBox,
+         static_cast<void (QDoubleSpinBox::*)(double)>(
+            &QDoubleSpinBox::valueChanged),
+         this, [this](double value)
+   {
+      m_dirty = true;
+      m_slider->setValue((int)(value * m_scale + 0.5));
+   });
+   connect(setButton, &QPushButton::clicked, this, [this]()
+   {
+      float refresh_rate = (float)m_spinBox->value();
+
+      /* Use the same driver path as the display-reported action. This also
+       * updates settings->floats.video_refresh_rate and emits RetroArch's
+       * standard refresh-rate OSD notification. */
+      driver_ctl(RARCH_DRIVER_CTL_SET_REFRESH_RATE, &refresh_rate);
+      command_event(CMD_EVENT_VIDEO_SET_BLOCKING_STATE, NULL);
+      m_dirty = false;
+      if (ui_qt_float_resync(&m_synced,
+               *m_setting->value.target.fraction))
+         syncValue();
+   });
+
+   add_sublabel_and_whats_this(m_spinBox, setting);
+}
+
+void RefreshRateControl::syncValue()
+{
+   float value = *m_setting->value.target.fraction;
+
+   QSignalBlocker sliderBlock(m_slider);
+   QSignalBlocker spinBlock(m_spinBox);
+   m_spinBox->setValue(value);
+   m_slider->setValue((int)(value * m_scale + 0.5));
+}
+
+void RefreshRateControl::paintEvent(QPaintEvent *event)
+{
+   QWidget::paintEvent(event);
+
+   /* The display-reported action updates the same RetroArch setting through
+    * the driver. Refresh this staged editor when that happens externally,
+    * but never overwrite an uncommitted value being edited here. */
+   if (!m_dirty && ui_qt_float_resync(&m_synced,
+            *m_setting->value.target.fraction))
+      syncValue();
+}
+
 FloatSpinBox::FloatSpinBox(msg_hash_enums enum_idx, QWidget *parent) :
     FloatSpinBox(menu_setting_find_enum(enum_idx), parent)
 {
@@ -899,6 +1090,11 @@ FloatSpinBox::FloatSpinBox(rarch_setting_t *setting, QWidget *parent) :
    setValue(*m_value);
    m_synced = *m_value;
    setSingleStep(setting->step);
+   /* Commit typed values when the user presses Return or leaves the
+    * field: with keyboard tracking off, QAbstractSpinBox emits
+    * valueChanged() exactly once at that point (and only if the value
+    * changed), instead of once per keystroke. */
+   setKeyboardTracking(false);
 
    connect(this, SIGNAL(valueChanged(double)), this, SLOT(onValueChanged(double)));
    add_sublabel_and_whats_this(this, m_setting);
@@ -909,6 +1105,11 @@ void FloatSpinBox::onValueChanged(double value)
    *m_value = (float)value;
    m_synced = *m_value;
 
+   /* Match the internal menu's ordinary float-setting path: update the
+    * setting value, then let its generic change handler mark the settings
+    * modified and run any descriptor-specific change callback. In
+    * particular, do not invoke the separate display-reported refresh-rate
+    * action when editing VIDEO_REFRESH_RATE. */
    setting_generic_handle_change(m_setting);
 }
 
@@ -1090,15 +1291,201 @@ void FloatSliderAndSpinBox::onSpinBoxValueChanged(double value)
    m_slider->update();
 }
 
+/* Qt's keys and RetroArch's, the keypad's apart; shifted symbols go
+ * to the key they are on (a US layout's). */
+struct bind_qt_key
+{
+   int qt;
+   unsigned rk;
+};
+
+static const struct bind_qt_key bind_qt_keys[] = {
+   { Qt::Key_Backspace,    RETROK_BACKSPACE },
+   { Qt::Key_Tab,          RETROK_TAB },
+   { Qt::Key_Backtab,      RETROK_TAB },
+   { Qt::Key_Clear,        RETROK_CLEAR },
+   { Qt::Key_Return,       RETROK_RETURN },
+   { Qt::Key_Enter,        RETROK_RETURN },
+   { Qt::Key_Pause,        RETROK_PAUSE },
+   { Qt::Key_Escape,       RETROK_ESCAPE },
+   { Qt::Key_Space,        RETROK_SPACE },
+   { Qt::Key_Exclam,       RETROK_1 },
+   { Qt::Key_QuoteDbl,     RETROK_QUOTE },
+   { Qt::Key_NumberSign,   RETROK_3 },
+   { Qt::Key_Dollar,       RETROK_4 },
+   { Qt::Key_Percent,      RETROK_5 },
+   { Qt::Key_Ampersand,    RETROK_7 },
+   { Qt::Key_Apostrophe,   RETROK_QUOTE },
+   { Qt::Key_ParenLeft,    RETROK_9 },
+   { Qt::Key_ParenRight,   RETROK_0 },
+   { Qt::Key_Asterisk,     RETROK_8 },
+   { Qt::Key_Plus,         RETROK_EQUALS },
+   { Qt::Key_Comma,        RETROK_COMMA },
+   { Qt::Key_Minus,        RETROK_MINUS },
+   { Qt::Key_Period,       RETROK_PERIOD },
+   { Qt::Key_Slash,        RETROK_SLASH },
+   { Qt::Key_Colon,        RETROK_SEMICOLON },
+   { Qt::Key_Semicolon,    RETROK_SEMICOLON },
+   { Qt::Key_Less,         RETROK_COMMA },
+   { Qt::Key_Equal,        RETROK_EQUALS },
+   { Qt::Key_Greater,      RETROK_PERIOD },
+   { Qt::Key_Question,     RETROK_SLASH },
+   { Qt::Key_At,           RETROK_2 },
+   { Qt::Key_BracketLeft,  RETROK_LEFTBRACKET },
+   { Qt::Key_Backslash,    RETROK_BACKSLASH },
+   { Qt::Key_BracketRight, RETROK_RIGHTBRACKET },
+   { Qt::Key_AsciiCircum,  RETROK_6 },
+   { Qt::Key_Underscore,   RETROK_MINUS },
+   { Qt::Key_QuoteLeft,    RETROK_BACKQUOTE },
+   { Qt::Key_BraceLeft,    RETROK_LEFTBRACKET },
+   { Qt::Key_Bar,          RETROK_BACKSLASH },
+   { Qt::Key_BraceRight,   RETROK_RIGHTBRACKET },
+   { Qt::Key_AsciiTilde,   RETROK_BACKQUOTE },
+   { Qt::Key_Delete,       RETROK_DELETE },
+   { Qt::Key_Up,           RETROK_UP },
+   { Qt::Key_Down,         RETROK_DOWN },
+   { Qt::Key_Right,        RETROK_RIGHT },
+   { Qt::Key_Left,         RETROK_LEFT },
+   { Qt::Key_Insert,       RETROK_INSERT },
+   { Qt::Key_Home,         RETROK_HOME },
+   { Qt::Key_End,          RETROK_END },
+   { Qt::Key_PageUp,       RETROK_PAGEUP },
+   { Qt::Key_PageDown,     RETROK_PAGEDOWN },
+   { Qt::Key_NumLock,      RETROK_NUMLOCK },
+   { Qt::Key_CapsLock,     RETROK_CAPSLOCK },
+   { Qt::Key_ScrollLock,   RETROK_SCROLLOCK },
+   { Qt::Key_Shift,        RETROK_LSHIFT },
+   { Qt::Key_Control,      RETROK_LCTRL },
+   { Qt::Key_Alt,          RETROK_LALT },
+   { Qt::Key_AltGr,        RETROK_RALT },
+   { Qt::Key_Meta,         RETROK_LSUPER },
+   { Qt::Key_Super_L,      RETROK_LSUPER },
+   { Qt::Key_Super_R,      RETROK_RSUPER },
+   { Qt::Key_Mode_switch,  RETROK_MODE },
+   { Qt::Key_Multi_key,    RETROK_COMPOSE },
+   { Qt::Key_Help,         RETROK_HELP },
+   { Qt::Key_Print,        RETROK_PRINT },
+   { Qt::Key_SysReq,       RETROK_SYSREQ },
+   { Qt::Key_Menu,         RETROK_MENU },
+   { Qt::Key_PowerOff,     RETROK_POWER },
+   { Qt::Key_Undo,         RETROK_UNDO }
+};
+
+/* the keypad's, numbers or what they do with Num Lock off */
+static const struct bind_qt_key bind_qt_keypad[] = {
+   { Qt::Key_0,        RETROK_KP0 },
+   { Qt::Key_Insert,   RETROK_KP0 },
+   { Qt::Key_1,        RETROK_KP1 },
+   { Qt::Key_End,      RETROK_KP1 },
+   { Qt::Key_2,        RETROK_KP2 },
+   { Qt::Key_Down,     RETROK_KP2 },
+   { Qt::Key_3,        RETROK_KP3 },
+   { Qt::Key_PageDown, RETROK_KP3 },
+   { Qt::Key_4,        RETROK_KP4 },
+   { Qt::Key_Left,     RETROK_KP4 },
+   { Qt::Key_5,        RETROK_KP5 },
+   { Qt::Key_Clear,    RETROK_KP5 },
+   { Qt::Key_6,        RETROK_KP6 },
+   { Qt::Key_Right,    RETROK_KP6 },
+   { Qt::Key_7,        RETROK_KP7 },
+   { Qt::Key_Home,     RETROK_KP7 },
+   { Qt::Key_8,        RETROK_KP8 },
+   { Qt::Key_Up,       RETROK_KP8 },
+   { Qt::Key_9,        RETROK_KP9 },
+   { Qt::Key_PageUp,   RETROK_KP9 },
+   { Qt::Key_Period,   RETROK_KP_PERIOD },
+   { Qt::Key_Comma,    RETROK_KP_PERIOD },
+   { Qt::Key_Delete,   RETROK_KP_PERIOD },
+   { Qt::Key_Slash,    RETROK_KP_DIVIDE },
+   { Qt::Key_Asterisk, RETROK_KP_MULTIPLY },
+   { Qt::Key_Minus,    RETROK_KP_MINUS },
+   { Qt::Key_Plus,     RETROK_KP_PLUS },
+   { Qt::Key_Enter,    RETROK_KP_ENTER },
+   { Qt::Key_Return,   RETROK_KP_ENTER },
+   { Qt::Key_Equal,    RETROK_KP_EQUALS }
+};
+
+/* A modifier's side, which only the platform's own code tells:
+ * macOS' virtual key, a Windows scan code (0x100 extended), an X11 or
+ * Wayland key code (evdev's plus 8). */
+static unsigned bind_qt_modifier_side(const QKeyEvent *ev)
+{
+#if defined(__APPLE__)
+   switch (ev->nativeVirtualKey())
+   {
+      case 56: return RETROK_LSHIFT;
+      case 60: return RETROK_RSHIFT;
+      case 59: return RETROK_LCTRL;
+      case 62: return RETROK_RCTRL;
+      case 58: return RETROK_LALT;
+      case 61: return RETROK_RALT;
+      case 55: return RETROK_LMETA;
+      case 54: return RETROK_RMETA;
+      case 57: return RETROK_CAPSLOCK;
+   }
+#elif defined(_WIN32)
+   switch (ev->nativeScanCode())
+   {
+      case 0x02A: return RETROK_LSHIFT;
+      case 0x036: return RETROK_RSHIFT;
+      case 0x01D: return RETROK_LCTRL;
+      case 0x11D: return RETROK_RCTRL;
+      case 0x038: return RETROK_LALT;
+      case 0x138: return RETROK_RALT;
+      case 0x15B: return RETROK_LSUPER;
+      case 0x15C: return RETROK_RSUPER;
+   }
+#else
+   switch (ev->nativeScanCode())
+   {
+      case 50:  return RETROK_LSHIFT;
+      case 62:  return RETROK_RSHIFT;
+      case 37:  return RETROK_LCTRL;
+      case 105: return RETROK_RCTRL;
+      case 64:  return RETROK_LALT;
+      case 108: return RETROK_RALT;
+      case 133: return RETROK_LSUPER;
+      case 134: return RETROK_RSUPER;
+   }
+#endif
+   return RETROK_UNKNOWN;
+}
+
+static unsigned bind_qt_key_to_retrok(const QKeyEvent *ev)
+{
+   size_t i;
+   int key = ev->key();
+   unsigned rk;
+
+   if ((rk = bind_qt_modifier_side(ev)) != RETROK_UNKNOWN)
+      return rk;
+   if (ev->modifiers() & Qt::KeypadModifier)
+      for (i = 0; i < ARRAY_SIZE(bind_qt_keypad); i++)
+         if (bind_qt_keypad[i].qt == key)
+            return bind_qt_keypad[i].rk;
+   if (key >= Qt::Key_A && key <= Qt::Key_Z)
+      return RETROK_a + (key - Qt::Key_A);
+   if (key >= Qt::Key_0 && key <= Qt::Key_9)
+      return RETROK_0 + (key - Qt::Key_0);
+   if (key >= Qt::Key_F1 && key <= Qt::Key_F15)
+      return RETROK_F1 + (key - Qt::Key_F1);
+   for (i = 0; i < ARRAY_SIZE(bind_qt_keys); i++)
+      if (bind_qt_keys[i].qt == key)
+         return bind_qt_keys[i].rk;
+   return RETROK_UNKNOWN;
+}
+
+BindButton *BindButton::s_capture     = NULL;
+unsigned    BindButton::s_captureWait = 0;
+bool        BindButton::s_captureSeen = false;
+bool        BindButton::s_captureMenu = false;
+
 BindButton::BindButton(rarch_setting_t *setting, QWidget *parent) :
    QPushButton(parent)
    ,m_setting(setting)
 {
-   char val_s[NAME_MAX_LENGTH];
-
-   setting->actions->repr(setting, val_s, sizeof(val_s));
-
-   setText(val_s);
+   refresh();
+   setAutoDefault(false);
 
    connect(this, SIGNAL(clicked(bool)), this, SLOT(onClicked(bool)));
 }
@@ -1108,12 +1495,114 @@ BindButton::BindButton(msg_hash_enums enum_idx, QWidget *parent) :
 {
 }
 
+/* gone mid-capture (the window torn down): nothing more is handed on */
+BindButton::~BindButton()
+{
+   if (s_capture == this)
+   {
+      s_capture = NULL;
+      input_driver_companion_keys_clear();
+   }
+}
+
+void BindButton::refresh(void)
+{
+   char val_s[NAME_MAX_LENGTH];
+   m_setting->actions->repr(m_setting, val_s, sizeof(val_s));
+   setText(val_s);
+}
+
 void BindButton::onClicked(bool checked)
 {
    (void)(checked);
 
-   m_setting->actions->ok(m_setting, 0, false);
+   if (s_capture)
+      return;
+   /* The menu runs the capture, so it is shown for it, and hidden
+    * again after. */
+   s_captureMenu = !(menu_state_get_ptr()->flags & MENU_ST_FLAG_ALIVE);
+   if (s_captureMenu)
+      command_event(CMD_EVENT_MENU_TOGGLE, NULL);
+   if (m_setting->actions->ok(m_setting, 0, false) != 0)
+      return;
+   s_capture     = this;
+   s_captureWait = 0;
+   s_captureSeen = false;
+   input_driver_companion_keys_clear();
+   setText(msg_hash_to_str(MSG_INPUT_BIND_PRESS));
+   grabKeyboard();
 }
+
+void BindButton::captureEnd(void)
+{
+   s_capture = NULL;
+   releaseKeyboard();
+   input_driver_companion_keys_clear();
+   if (     s_captureMenu
+         && (menu_state_get_ptr()->flags & MENU_ST_FLAG_ALIVE))
+      command_event(CMD_EVENT_MENU_TOGGLE, NULL);
+   refresh();
+}
+
+/* The menu's capture is under way on every frame it sets the flag:
+ * from the frame after the click, up to its end. One never started
+ * (the menu not running) is let go a few frames on. */
+void BindButton::captureIterate(void)
+{
+   if (!s_capture)
+      return;
+   if (menu_state_get_ptr()->flags & MENU_ST_FLAG_IS_BINDING)
+      s_captureSeen = true;
+   else if (s_captureSeen || ++s_captureWait > 4)
+      s_capture->captureEnd();
+}
+
+/* While capturing, every key here goes to the capture rather than to
+ * the window: no shortcut, focus move or click by keyboard. */
+bool BindButton::event(QEvent *event)
+{
+   if (s_capture == this)
+   {
+      switch (event->type())
+      {
+         case QEvent::ShortcutOverride:
+            event->accept();
+            return true;
+         case QEvent::KeyPress:
+         case QEvent::KeyRelease:
+            {
+               QKeyEvent *ev = static_cast<QKeyEvent*>(event);
+               if (!ev->isAutoRepeat())
+                  input_driver_companion_key(bind_qt_key_to_retrok(ev),
+                        event->type() == QEvent::KeyPress);
+            }
+            return true;
+         default:
+            break;
+      }
+   }
+   /* a bind set in RetroArch's own menu meanwhile */
+   else if (event->type() == QEvent::ActivationChange && isActiveWindow())
+      refresh();
+   return QPushButton::event(event);
+}
+
+void BindButton::setDefault(void)
+{
+   if (s_capture)
+      return;
+   m_setting->actions->start(m_setting);
+   refresh();
+}
+
+void BindButton::clear(void)
+{
+   if (s_capture)
+      return;
+   menu_setting_bind_clear(m_setting);
+   refresh();
+}
+
 
 ColorButton::ColorButton(rarch_setting_t *red, rarch_setting_t *green, rarch_setting_t *blue, QWidget *parent) :
    QToolButton(parent)
@@ -1342,7 +1831,7 @@ void MainWindow::onFileDropWidgetContextMenuRequested(const QPoint &pos)
       if (selectedAction == downloadThumbnailAction.data())
       {
          PlaylistEntry entry = getCurrentContentEntry();
-         QString system = QFileInfo(getCurrentPlaylistPath()).completeBaseName();
+         QString system = entry.thumbnailSystem;
          QString title  = entry.label;
 
          if (!title.isEmpty())
@@ -1353,6 +1842,7 @@ void MainWindow::onFileDropWidgetContextMenuRequested(const QPoint &pos)
                m_pendingThumbnailDownloadTypes.append(THUMBNAIL_SCREENSHOT);
                m_pendingThumbnailDownloadTypes.append(THUMBNAIL_TITLE);
                m_pendingThumbnailDownloadTypes.append(THUMBNAIL_LOGO);
+               m_pendingThumbnailDownloadPath = entry.path;
                downloadThumbnail(system, title);
             }
             else
@@ -2531,15 +3021,38 @@ private:
    }
 };
 
+class QtDisplayListCategory : public OptionsCategory
+{
+public:
+   QtDisplayListCategory(msg_hash_enums title, const QString &icon,
+         enum menu_displaylist_ctl_state state, QObject *parent = nullptr)
+      : OptionsCategory(parent), m_state(state)
+   {
+      setDisplayName(title);
+      setCategoryIcon(icon);
+   }
+
+   QVector<OptionsPage*> pages()
+   {
+      QVector<OptionsPage*> result;
+      result << new SimplePage(m_state, this);
+      return result;
+   }
+
+private:
+   enum menu_displaylist_ctl_state m_state;
+};
+
 ViewOptionsDialog::ViewOptionsDialog(MainWindow *mainwindow,
       QWidget *parent) :
    QDialog(mainwindow)
    ,m_optionsList(new QListWidget(this))
    ,m_optionsStack(new QStackedLayout)
+   ,m_categoryPagesWidget(new QWidget(this))
+   ,m_headerLabel(new QLabel(m_categoryPagesWidget))
+   ,m_currentCategoryIndex(-1)
 {
-   int width;
    QGridLayout        *layout = new QGridLayout(this);
-   QLabel      *m_headerLabel = new QLabel(this);
    /* Header label with large font and a bit of spacing
     * (align with group boxes) */
    QFont      headerLabelFont = m_headerLabel->font();
@@ -2571,6 +3084,12 @@ ViewOptionsDialog::ViewOptionsDialog(MainWindow *mainwindow,
    addCategory(new AudioCategory(this));
    addCategory(new InputCategory(this));
    addCategory(new LatencyCategory(this));
+   addCategory(new QtDisplayListCategory(
+         MENU_ENUM_LABEL_VALUE_ACCESSIBILITY_SETTINGS, "menu_accessibility",
+         DISPLAYLIST_ACCESSIBILITY_SETTINGS_LIST, this));
+   addCategory(new QtDisplayListCategory(
+         MENU_ENUM_LABEL_VALUE_POWER_MANAGEMENT_SETTINGS, "menu_power",
+         DISPLAYLIST_POWER_MANAGEMENT_SETTINGS_LIST, this));
    addCategory(new CoreCategory(this));
    addCategory(new ConfigurationCategory(this));
    addCategory(new SavingCategory(this));
@@ -2583,6 +3102,11 @@ ViewOptionsDialog::ViewOptionsDialog(MainWindow *mainwindow,
 #ifdef HAVE_CHEEVOS
    addCategory(new AchievementsCategory(this));
 #endif
+#if defined(HAVE_NETWORKING) && defined(HAVE_WIFI)
+   addCategory(new QtDisplayListCategory(
+         MENU_ENUM_LABEL_VALUE_WIFI_SETTINGS, "menu_network",
+         DISPLAYLIST_WIFI_SETTINGS_LIST, this));
+#endif
 #ifdef HAVE_NETWORKING
    /* Netplay and updater settings do not exist in a build without
     * networking; NetplayPage constructs CheckBoxes straight from the
@@ -2590,32 +3114,71 @@ ViewOptionsDialog::ViewOptionsDialog(MainWindow *mainwindow,
     * companion test's --disable-networking build at startup). */
    addCategory(new NetworkCategory(this));
 #endif
+#ifdef HAVE_MIST
+   addCategory(new QtDisplayListCategory(
+         MENU_ENUM_LABEL_VALUE_STEAM_SETTINGS, "menu_steam",
+         DISPLAYLIST_STEAM_SETTINGS_LIST, this));
+#endif
    addCategory(new PlaylistsCategory(this));
    addCategory(new UserCategory(this));
    addCategory(new DirectoryCategory(this));
+   addCategory(new InformationCategory(this));
 
-   width  =
-        m_optionsList->sizeHintForColumn(0)
-      + m_optionsList->frameWidth() * 2
-      + 5;
-   width += m_optionsList->verticalScrollBar()->sizeHint().width();
-
-   m_optionsList->setMaximumWidth(width);
-   m_optionsList->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Minimum);
+   /* The category list is also embedded in the Content Browser dock.
+    * Let it use the available width there instead of sizing it only to
+    * the longest category label. */
+   m_optionsList->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
 
    setWindowTitle(msg_hash_to_str(MENU_ENUM_LABEL_VALUE_QT_MENU_VIEW_OPTIONS_TITLE));
 
-   layout->addWidget(m_optionsList, 0, 0, 2, 1);
-   layout->addLayout(headerHLayout, 0, 1);
-   layout->addLayout(m_optionsStack, 1, 1);
+   QVBoxLayout *categoryPagesLayout = new QVBoxLayout(m_categoryPagesWidget);
+   categoryPagesLayout->setContentsMargins(0, 0, 0, 0);
+   categoryPagesLayout->addLayout(headerHLayout);
+   categoryPagesLayout->addLayout(m_optionsStack);
+
+   layout->addWidget(m_optionsList, 0, 0);
+   layout->addWidget(m_categoryPagesWidget, 0, 1);
 
    connect(m_optionsList, SIGNAL(currentRowChanged(int)),
-         m_optionsStack, SLOT(setCurrentIndex(int)));
+         this, SLOT(loadCategory(int)));
    connect(m_optionsList, SIGNAL(currentTextChanged(const QString&)),
          m_headerLabel, SLOT(setText(const QString&)));
 
    connect(this, SIGNAL(rejected()), this, SLOT(onRejected()));
+   if (m_optionsList->count() > 0)
+      m_optionsList->setCurrentRow(0);
 }
+
+#ifdef HAVE_MENU
+QListWidget *ViewOptionsDialog::categoryListWidget() const
+{
+   return m_optionsList;
+}
+
+QWidget *ViewOptionsDialog::categoryPagesWidget() const
+{
+   return m_categoryPagesWidget;
+}
+
+void ViewOptionsDialog::loadCategory(int index)
+{
+   if (index < 0 || index >= m_categoryList.size())
+      return;
+   if (m_currentCategoryIndex >= 0
+         && m_currentCategoryIndex < m_categoryList.size())
+      m_categoryList.at(m_currentCategoryIndex)->apply();
+   m_currentCategoryIndex = index;
+   m_optionsStack->setCurrentIndex(index);
+   m_categoryList.at(index)->load();
+}
+
+void ViewOptionsDialog::applyCurrentCategory()
+{
+   if (m_currentCategoryIndex >= 0
+         && m_currentCategoryIndex < m_categoryList.size())
+      m_categoryList.at(m_currentCategoryIndex)->apply();
+}
+#endif
 
 QIcon getIcon(OptionsCategory *category)
 {
@@ -2694,10 +3257,7 @@ ViewOptionsDialog::ViewOptionsDialog(MainWindow *mainwindow, QWidget *parent) :
 void ViewOptionsDialog::showDialog()
 {
 #ifdef HAVE_MENU
-   unsigned i;
-   size_t list_size = (size_t)m_categoryList.size();
-   for (i = 0; i < list_size; i++)
-      m_categoryList.at(i)->load();
+   loadCategory(m_optionsList->currentRow());
 #else
    m_viewOptionsWidget->loadViewOptions();
 #endif
@@ -2978,7 +3538,7 @@ void ViewOptionsWidget::loadViewOptions()
 
 void ViewOptionsWidget::showOrHideHighlightColor()
 {
-   if (m_mainwindow->theme() == MainWindow::THEME_DARK)
+   if (m_mainwindow->isDarkTheme())
    {
       m_highlightColorLabel->show();
       m_highlightColorPushButton->show();
@@ -5085,80 +5645,11 @@ void ShaderParamsDialog::onShaderParamDoubleSpinBoxValueChanged(double value)
 #endif
 #endif
 
-/* Thumbnail downloads. URLs, .partial handling, the pack extraction
- * and the file replacement rules are the companion core's
- * (companion_core_thumbnail_download / _pack_download); Qt keeps the
- * queues, counters and progress dialogs. Results arrive through the
- * driver's callback table as onCoreThumbnailDownloaded /
- * onCoreThumbnailPackFinished. */
-
-/* ---- Thumbnail Pack Download ---- */
-
-void MainWindow::onThumbnailPackDownloadCanceled()
-{
-   companion_core_download_cancel(ui_companion_qt_core());
-}
-
-void MainWindow::downloadAllThumbnails(QString system, QUrl url)
-{
-   QByteArray systemArray = system.toUtf8();
-
-   (void)url; /* the server layout is the core's */
-
-   if (!companion_core_thumbnail_pack_download(ui_companion_qt_core(),
-            systemArray.constData()))
-   {
-      RARCH_ERR("[Qt] Failed to start thumbnail pack download.\n");
-      return;
-   }
-
-   m_thumbnailPackDownloadProgressDialog->setWindowModality(Qt::NonModal);
-   m_thumbnailPackDownloadProgressDialog->setMinimumDuration(0);
-   m_thumbnailPackDownloadProgressDialog->setRange(0, 0);
-   m_thumbnailPackDownloadProgressDialog->setAutoClose(true);
-   m_thumbnailPackDownloadProgressDialog->setAutoReset(true);
-   m_thumbnailPackDownloadProgressDialog->setValue(0);
-   m_thumbnailPackDownloadProgressDialog->setLabelText(
-         QString(msg_hash_to_str(MSG_DOWNLOADING)) + "...");
-   m_thumbnailPackDownloadProgressDialog->setCancelButtonText(tr("Cancel"));
-   m_thumbnailPackDownloadProgressDialog->show();
-}
-
-void MainWindow::onCoreThumbnailPackFinished(int result)
-{
-   m_thumbnailPackDownloadProgressDialog->cancel();
-
-   switch ((enum companion_download_result)result)
-   {
-      case COMPANION_DL_OK:
-         RARCH_LOG("[Qt] Thumbnail pack extracted successfully.\n");
-         emit showInfoMessageDeferred(msg_hash_to_str(
-                  MENU_ENUM_LABEL_VALUE_QT_THUMBNAIL_PACK_DOWNLOADED_SUCCESSFULLY));
-         updateVisibleItems();
-         emit itemChanged(); /* reload thumbnail image */
-         return;
-      case COMPANION_DL_ERR_NETWORK:
-         emit showErrorMessageDeferred(msg_hash_to_str(
-                  MENU_ENUM_LABEL_VALUE_QT_NETWORK_ERROR));
-         return;
-      case COMPANION_DL_ERR_RENAME:
-         emit showErrorMessageDeferred(msg_hash_to_str(
-                  MENU_ENUM_LABEL_VALUE_QT_COULD_NOT_RENAME_FILE));
-         return;
-      case COMPANION_DL_ERR_DELETE:
-         emit showErrorMessageDeferred(msg_hash_to_str(
-                  MENU_ENUM_LABEL_VALUE_QT_COULD_NOT_DELETE_FILE));
-         return;
-      case COMPANION_DL_ERR_ARCHIVE_EMPTY:
-         emit showErrorMessageDeferred("Error: Archive is empty.");
-         return;
-      case COMPANION_DL_ERR_EXTRACT:
-      case COMPANION_DL_ERR_WRITE:
-      default:
-         emit showErrorMessageDeferred(msg_hash_to_str(MSG_DECOMPRESSION_FAILED));
-         return;
-   }
-}
+/* Thumbnail downloads. URLs and the file replacement rules are the
+ * companion core's
+ * (companion_core_thumbnail_download); Qt keeps the queues, counters
+ * and progress dialogs. Results arrive through the driver's callback
+ * table as onCoreThumbnailDownloaded. */
 
 /* ---- Single Thumbnail Download ---- */
 
@@ -5214,7 +5705,7 @@ void MainWindow::onSingleThumbnailDownloadFinishedInternal(
 void MainWindow::downloadThumbnail(QString system, QString title, QUrl url)
 {
    QString downloadType;
-   QByteArray systemArray, titleArray, typeArray;
+   QByteArray systemArray, titleArray, pathArray, typeArray;
 
    (void)url;
 
@@ -5224,13 +5715,14 @@ void MainWindow::downloadThumbnail(QString system, QString title, QUrl url)
    downloadType = m_pendingThumbnailDownloadTypes.takeFirst();
    systemArray  = system.toUtf8();
    titleArray   = title.toUtf8();
+   pathArray    = m_pendingThumbnailDownloadPath.toUtf8();
    typeArray    = downloadType.toUtf8();
 
    m_downloadingPlaylistThumbnails = false;
 
    if (!companion_core_thumbnail_download(ui_companion_qt_core(),
             systemArray.constData(), titleArray.constData(),
-            typeArray.constData()))
+            pathArray.constData(), typeArray.constData()))
    {
       RARCH_ERR("[Qt] Failed to start thumbnail download.\n");
       m_pendingThumbnailDownloadTypes.clear();
@@ -5294,6 +5786,7 @@ void MainWindow::onPlaylistThumbnailDownloadFinishedInternal(
       downloadNextPlaylistThumbnail(
             nextThumbnail.value("db_name"),
             nextThumbnail.value("label_noext"),
+            nextThumbnail.value("path"),
             nextThumbnail.value("type"));
    }
    else
@@ -5312,10 +5805,11 @@ void MainWindow::onPlaylistThumbnailDownloadFinishedInternal(
 }
 
 void MainWindow::downloadNextPlaylistThumbnail(
-      QString system, QString title, QString type, QUrl url)
+      QString system, QString title, QString path, QString type, QUrl url)
 {
    QByteArray systemArray = system.toUtf8();
    QByteArray titleArray  = title.toUtf8();
+   QByteArray pathArray   = path.toUtf8();
    QByteArray typeArray   = type.toUtf8();
 
    (void)url;
@@ -5324,7 +5818,7 @@ void MainWindow::downloadNextPlaylistThumbnail(
     * core reports every one it does start. */
    while (!companion_core_thumbnail_download(ui_companion_qt_core(),
             systemArray.constData(), titleArray.constData(),
-            typeArray.constData()))
+            pathArray.constData(), typeArray.constData()))
    {
       m_failedThumbnails++;
 
@@ -5339,6 +5833,7 @@ void MainWindow::downloadNextPlaylistThumbnail(
          QHash<QString, QString> next = m_pendingPlaylistThumbnails.takeAt(0);
          systemArray = next.value("db_name").toUtf8();
          titleArray  = next.value("label_noext").toUtf8();
+         pathArray   = next.value("path").toUtf8();
          typeArray   = next.value("type").toUtf8();
       }
    }
@@ -5372,8 +5867,9 @@ void MainWindow::downloadPlaylistThumbnails(QString playlistPath)
          m_playlistModel->index(i, 0).data(
                PlaylistModel::ENTRY).value<PlaylistEntry>();
 
-      hash["db_name"]     = itemEntry.dbName;
+      hash["db_name"]     = itemEntry.thumbnailSystem;
       hash["label_noext"] = itemEntry.labelNoExt;
+      hash["path"]        = itemEntry.path;
       hash["type"]        = THUMBNAIL_BOXART;
 
       hash2               = hash;
@@ -5409,6 +5905,7 @@ void MainWindow::downloadPlaylistThumbnails(QString playlistPath)
       downloadNextPlaylistThumbnail(
             firstThumbnail.value("db_name"),
             firstThumbnail.value("label_noext"),
+            firstThumbnail.value("path"),
             firstThumbnail.value("type"));
    }
 }
@@ -5445,6 +5942,9 @@ QWidget *AchievementsPage::widget()
    unsigned i;
    QWidget             *widget = new QWidget;
    QVBoxLayout         *layout = new QVBoxLayout;
+   QHBoxLayout *columnsLayout = new QHBoxLayout;
+   QVBoxLayout *leftColumn = new QVBoxLayout;
+   QVBoxLayout *rightColumn = new QVBoxLayout;
    settings_t*        settings = config_get_ptr();
    CheckBox   *enabledCheckBox = new CheckBox(MENU_ENUM_LABEL_CHEEVOS_ENABLE);
    file_list_t    *generalList = (file_list_t*)calloc(1, sizeof(*generalList));
@@ -5502,10 +6002,14 @@ QWidget *AchievementsPage::widget()
    onAchievementEnabledChanged(enabledCheckBox->checkState());
 
    layout->addWidget(enabledCheckBox);
-   layout->addWidget(m_generalGroup);
-   layout->addWidget(m_appearanceGroup);
-   layout->addWidget(m_visibilityGroup);
-
+   leftColumn->addWidget(m_generalGroup);
+   leftColumn->addWidget(m_appearanceGroup);
+   rightColumn->addWidget(m_visibilityGroup);
+   leftColumn->addStretch();
+   rightColumn->addStretch();
+   columnsLayout->addLayout(leftColumn, 1);
+   columnsLayout->addLayout(rightColumn, 1);
+   layout->addLayout(columnsLayout);
    layout->addStretch();
 
    widget->setLayout(layout);
@@ -5520,6 +6024,240 @@ void AchievementsPage::onAchievementEnabledChanged(int state)
    m_visibilityGroup->setDisabled(state == Qt::Unchecked);
 }
 
+static file_list_t *qt_displaylist_build(
+      enum menu_displaylist_ctl_state state);
+QPixmap getInvader(void);
+/* The desktop Information page presents the same live display lists as
+ * the internal menu. Rebuild them whenever the category is selected so
+ * display, input and network changes are reflected without restarting. */
+static void qt_information_clear_group(QWidget *group)
+{
+   QLayout *layout = group ? group->layout() : NULL;
+   QLayoutItem *item = NULL;
+
+   if (!layout)
+      return;
+
+   while ((item = layout->takeAt(0)) != NULL)
+   {
+      if (item->widget())
+         delete item->widget();
+      delete item;
+   }
+}
+
+static void qt_information_populate_group(QWidget *group,
+      enum menu_displaylist_ctl_state state)
+{
+   file_list_t *list;
+   QVBoxLayout *layout;
+   size_t i;
+
+   if (!group)
+      return;
+
+   qt_information_clear_group(group);
+   layout = qobject_cast<QVBoxLayout*>(group->layout());
+   if (!layout)
+      return;
+
+   list = qt_displaylist_build(state);
+   if (list)
+   {
+      for (i = 0; i < list->size; i++)
+      {
+         menu_file_list_cbs_t *cbs = (menu_file_list_cbs_t*)
+            file_list_get_actiondata_at_offset(list, i);
+         const char *entry = list->list[i].path;
+         QString text = entry ? QString::fromUtf8(entry).trimmed() : QString();
+         QLabel *label;
+
+#ifdef HAVE_MODELINE
+         if (state == DISPLAYLIST_DISPLAY_INFO
+               && cbs
+               && cbs->enum_idx == MENU_ENUM_LABEL_DISPLAY_EDID_INFORMATION)
+         {
+            QPushButton *button = new QPushButton(
+                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_DISPLAY_EDID_INFORMATION),
+                  group);
+            QWidget *details = new QWidget(group);
+            QVBoxLayout *detailsLayout = new QVBoxLayout(details);
+            detailsLayout->setContentsMargins(12, 4, 0, 4);
+            details->setVisible(false);
+            button->setCheckable(true);
+            layout->addWidget(button);
+            layout->addWidget(details);
+            QObject::connect(button, &QPushButton::toggled,
+                  [button, details](bool checked)
+            {
+               if (checked && details->layout()->count() == 0)
+                  qt_information_populate_group(details,
+                        DISPLAYLIST_DISPLAY_EDID_INFO);
+               details->setVisible(checked);
+            });
+            continue;
+         }
+#endif
+
+         if (text.isEmpty())
+            continue;
+
+         label = new QLabel(text, group);
+         label->setTextFormat(Qt::PlainText);
+         label->setWordWrap(true);
+         label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+         label->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+         layout->addWidget(label);
+      }
+      file_list_free(list);
+   }
+
+   if (layout->count() == 0)
+   {
+      QLabel *label = new QLabel(
+            msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NOT_AVAILABLE), group);
+      label->setTextFormat(Qt::PlainText);
+      label->setWordWrap(true);
+      label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+      layout->addWidget(label);
+   }
+   layout->addStretch();
+}
+
+InformationCategory::InformationCategory(QWidget *parent)
+   : OptionsCategory(parent)
+   , m_page(NULL)
+{
+   setDisplayName(MENU_ENUM_LABEL_VALUE_INFORMATION);
+   setCategoryIcon("menu_info");
+}
+
+QVector<OptionsPage*> InformationCategory::pages()
+{
+   QVector<OptionsPage*> pages;
+   m_page = new InformationPage(this);
+   pages << m_page;
+   return pages;
+}
+
+void InformationCategory::load()
+{
+   if (m_page)
+      m_page->load();
+}
+
+InformationPage::InformationPage(QObject *parent)
+   : OptionsPage(parent)
+   , m_widget(NULL)
+   , m_systemGroup(NULL)
+   , m_aboutGroup(NULL)
+   , m_displayGroup(NULL)
+   , m_inputGroup(NULL)
+   , m_networkGroup(NULL)
+{
+   setDisplayName(MENU_ENUM_LABEL_VALUE_INFORMATION);
+}
+
+QWidget *InformationPage::widget()
+{
+   QHBoxLayout *columns;
+   QVBoxLayout *left;
+   QVBoxLayout *right;
+
+   if (m_widget)
+      return m_widget;
+
+   m_widget = new QWidget;
+   columns = new QHBoxLayout(m_widget);
+   left = new QVBoxLayout;
+   right = new QVBoxLayout;
+
+   m_systemGroup = new QGroupBox(
+         msg_hash_to_str(MENU_ENUM_LABEL_VALUE_SYSTEM_INFORMATION), m_widget);
+   m_aboutGroup = new QGroupBox(
+         msg_hash_to_str(MENU_ENUM_LABEL_VALUE_QT_MENU_HELP_ABOUT), m_widget);
+   m_displayGroup = new QGroupBox(
+         msg_hash_to_str(MENU_ENUM_LABEL_VALUE_DISPLAY_INFORMATION), m_widget);
+   m_inputGroup = new QGroupBox(
+         msg_hash_to_str(MENU_ENUM_LABEL_VALUE_INPUT_INFORMATION), m_widget);
+   m_networkGroup = new QGroupBox(
+         msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NETWORK_INFORMATION), m_widget);
+
+   m_systemGroup->setLayout(new QVBoxLayout);
+   m_aboutGroup->setLayout(new QVBoxLayout);
+   m_displayGroup->setLayout(new QVBoxLayout);
+   m_inputGroup->setLayout(new QVBoxLayout);
+   m_networkGroup->setLayout(new QVBoxLayout);
+
+   left->addWidget(m_systemGroup);
+   left->addStretch();
+   right->addWidget(m_aboutGroup);
+   right->addWidget(m_displayGroup);
+   right->addWidget(m_inputGroup);
+   right->addWidget(m_networkGroup);
+   right->addStretch();
+
+   columns->addLayout(left, 1);
+   columns->addLayout(right, 1);
+   columns->setAlignment(Qt::AlignTop);
+
+   load();
+   return m_widget;
+}
+
+void InformationPage::load()
+{
+   if (!m_widget)
+      return;
+
+   qt_information_populate_group(m_systemGroup, DISPLAYLIST_SYSTEM_INFO);
+   qt_information_clear_group(m_aboutGroup);
+   {
+      QLabel *pixLabel = new QLabel(m_aboutGroup);
+      QLabel *aboutLabel = new QLabel(m_aboutGroup);
+      QString text = QString("RetroArch ")
+         + QString(PACKAGE_VERSION)
+         + QString("<br><br>")
+         + "<a href=\"https://www.libretro.com/\">www.libretro.com</a>"
+            "<br><br>"
+         + "<a href=\"https://www.retroarch.com/\">www.retroarch.com</a>"
+#ifdef HAVE_GIT_VERSION
+            "<br><br>"
+         + msg_hash_to_str(MENU_ENUM_LABEL_VALUE_SYSTEM_INFO_GIT_VERSION)
+         + QString(": ")
+         + retroarch_git_version
+#endif
+         + QString("<br>")
+         + msg_hash_to_str(MENU_ENUM_LABEL_VALUE_SYSTEM_INFO_BUILD_DATE)
+         + QString(": ")
+         + __DATE__;
+      QPixmap pix = getInvader();
+      pixLabel->setAlignment(Qt::AlignCenter);
+      pixLabel->setPixmap(pix);
+      aboutLabel->setText(text);
+      aboutLabel->setTextFormat(Qt::RichText);
+      aboutLabel->setAlignment(Qt::AlignCenter);
+      aboutLabel->setTextInteractionFlags(Qt::TextBrowserInteraction);
+      aboutLabel->setOpenExternalLinks(true);
+      m_aboutGroup->layout()->addWidget(pixLabel);
+      m_aboutGroup->layout()->addWidget(aboutLabel);
+   }
+   qt_information_populate_group(m_displayGroup, DISPLAYLIST_DISPLAY_INFO);
+   qt_information_populate_group(m_inputGroup, DISPLAYLIST_INPUT_INFO);
+   qt_information_populate_group(m_networkGroup, DISPLAYLIST_NETWORK_INFO);
+}
+
+static bool qt_list_has_entry(const file_list_t *list,
+      enum msg_hash_enums entry);
+static void qt_settings_group_add_list(SettingsGroup *group,
+      const file_list_t *list,
+      const enum msg_hash_enums *skip_entries, size_t skip_count,
+      const enum msg_hash_enums *only_entries, size_t only_count);
+static void qt_settings_group_add_displaylist(SettingsGroup *group,
+      enum menu_displaylist_ctl_state state,
+      const enum msg_hash_enums *skip_entries, size_t skip_count,
+      const enum msg_hash_enums *only_entries, size_t only_count);
+
 AudioCategory::AudioCategory(QWidget *parent) :
    OptionsCategory(parent)
 {
@@ -5532,8 +6270,6 @@ QVector<OptionsPage*> AudioCategory::pages()
    QVector<OptionsPage*> pages;
 
    pages << new AudioPage(this);
-   pages << new SimplePage(DISPLAYLIST_MENU_SOUNDS_LIST,
-         MENU_ENUM_LABEL_VALUE_MENU_SOUNDS, this);
 
    return pages;
 }
@@ -5545,80 +6281,146 @@ AudioPage::AudioPage(QObject *parent) :
 
 QWidget *AudioPage::widget()
 {
-   QWidget *widget                = new QWidget;
-   QVBoxLayout *layout            = new QVBoxLayout;
-   SettingsGroup *outputGroup     = new SettingsGroup("Output");
-   SettingsGroup *resamplerGroup  = new SettingsGroup("Resampler");
-   SettingsGroup *syncGroup       = new SettingsGroup(msg_hash_to_str(
-            MENU_ENUM_LABEL_VALUE_AUDIO_SYNC));
-   SettingsGroup *dspGroup        = new SettingsGroup("DSP plugin");
-   SettingsGroup *volumeGroup     = new SettingsGroup("Volume");
-   QGridLayout *volumeLayout      = new QGridLayout();
+   QWidget *widget             = new QWidget;
+   QVBoxLayout *layout         = new QVBoxLayout;
+   QHBoxLayout *columnsLayout  = new QHBoxLayout;
+   QVBoxLayout *leftColumn     = new QVBoxLayout;
+   QVBoxLayout *rightColumn    = new QVBoxLayout;
+   SettingsGroup *generalGroup = new SettingsGroup("General");
+   SettingsGroup *outputGroup  = new SettingsGroup("Output");
+   SettingsGroup *syncGroup    = new SettingsGroup(msg_hash_to_str(
+         MENU_ENUM_LABEL_VALUE_AUDIO_SYNC));
+   SettingsGroup *resamplerGroup = new SettingsGroup("Resampler");
+   SettingsGroup *volumeGroup  = new SettingsGroup("Volume");
+   SettingsGroup *menuSoundsGroup = new SettingsGroup(msg_hash_to_str(
+         MENU_ENUM_LABEL_VALUE_MENU_SOUNDS));
+   SettingsGroup *midiGroup = new SettingsGroup(
+         msg_hash_to_str(MENU_ENUM_LABEL_VALUE_MIDI_SETTINGS));
+   QGridLayout *volumeLayout   = new QGridLayout;
+   static const enum msg_hash_enums generalSkip[] = {
+      MENU_ENUM_LABEL_AUDIO_VOLUME,
+      MENU_ENUM_LABEL_AUDIO_MIXER_VOLUME,
+      MENU_ENUM_LABEL_AUDIO_MUTE,
+      MENU_ENUM_LABEL_AUDIO_MIXER_MUTE
+   };
+   static const enum msg_hash_enums outputSkip[] = {
+      MENU_ENUM_LABEL_AUDIO_OUTPUT_RATE,
+      MENU_ENUM_LABEL_AUDIO_RESAMPLER_DRIVER,
+      MENU_ENUM_LABEL_AUDIO_RESAMPLER_QUALITY,
+      MENU_ENUM_LABEL_AUDIO_RESAMPLER_HQ_OVERSAMPLING,
+      MENU_ENUM_LABEL_AUDIO_FASTPATH_S16,
+      MENU_ENUM_LABEL_AUDIO_FORMAT_NEGOTIATION
+   };
+   static const enum msg_hash_enums midiVolumeSkip[] = {
+      MENU_ENUM_LABEL_MIDI_VOLUME
+   };
+   static const enum msg_hash_enums resamplerEntries[] = {
+      MENU_ENUM_LABEL_AUDIO_OUTPUT_RATE,
+      MENU_ENUM_LABEL_AUDIO_RESAMPLER_DRIVER,
+      MENU_ENUM_LABEL_AUDIO_RESAMPLER_QUALITY,
+      MENU_ENUM_LABEL_AUDIO_RESAMPLER_HQ_OVERSAMPLING,
+      MENU_ENUM_LABEL_AUDIO_FASTPATH_S16,
+      MENU_ENUM_LABEL_AUDIO_FORMAT_NEGOTIATION
+   };
 
-   outputGroup->add(MENU_ENUM_LABEL_AUDIO_ENABLE);
-   outputGroup->add(MENU_ENUM_LABEL_AUDIO_DRIVER);
-   outputGroup->add(MENU_ENUM_LABEL_AUDIO_DEVICE);
-   outputGroup->add(MENU_ENUM_LABEL_AUDIO_LATENCY);
-   outputGroup->add(MENU_ENUM_LABEL_AUDIO_LATENCY_FLOOR);
-   outputGroup->add(MENU_ENUM_LABEL_AUDIO_OUTPUT_LAYOUT);
-   outputGroup->add(MENU_ENUM_LABEL_AUDIO_HEADPHONE_VIRTUAL_SURROUND);
-
-   resamplerGroup->add(MENU_ENUM_LABEL_AUDIO_RESAMPLER_DRIVER);
-   resamplerGroup->add(MENU_ENUM_LABEL_AUDIO_RESAMPLER_QUALITY);
-   resamplerGroup->add(MENU_ENUM_LABEL_AUDIO_OUTPUT_RATE);
-   resamplerGroup->add(MENU_ENUM_LABEL_AUDIO_RESAMPLER_HQ_OVERSAMPLING);
-   resamplerGroup->add(MENU_ENUM_LABEL_AUDIO_FASTPATH_S16);
-   resamplerGroup->add(MENU_ENUM_LABEL_AUDIO_FORMAT_NEGOTIATION);
-
-   syncGroup->add(MENU_ENUM_LABEL_AUDIO_SYNC);
-   syncGroup->add(MENU_ENUM_LABEL_AUDIO_MAX_TIMING_SKEW);
-   syncGroup->add(MENU_ENUM_LABEL_AUDIO_RATE_CONTROL_DELTA);
-   syncGroup->add(MENU_ENUM_LABEL_AUDIO_THREADED_PIPELINE);
-   syncGroup->add(MENU_ENUM_LABEL_AUDIO_PIPELINE_FILL_CAP);
-   syncGroup->add(MENU_ENUM_LABEL_AUDIO_SINK_RATE_ESTIMATION);
-   syncGroup->add(MENU_ENUM_LABEL_AUDIO_THREAD_PRIORITY);
-   syncGroup->add(MENU_ENUM_LABEL_AUDIO_TIME_STRETCH);
-   syncGroup->add(MENU_ENUM_LABEL_AUDIO_TIME_STRETCH_LOWPASS);
-
-   dspGroup->add(MENU_ENUM_LABEL_AUDIO_DSP_PLUGIN);
-
+   /* Build the ordinary controls from the same lists used by the menu.
+    * Action entries are ignored by the SettingsGroup helper. */
+   qt_settings_group_add_displaylist(generalGroup,
+         DISPLAYLIST_AUDIO_SETTINGS_LIST,
+         generalSkip, ARRAY_SIZE(generalSkip), NULL, 0);
+   {
+      file_list_t *outputList = qt_displaylist_build(
+            DISPLAYLIST_AUDIO_OUTPUT_SETTINGS_LIST);
+      qt_settings_group_add_list(outputGroup, outputList,
+            outputSkip, ARRAY_SIZE(outputSkip), NULL, 0);
+      qt_settings_group_add_list(resamplerGroup, outputList, NULL, 0,
+            resamplerEntries, ARRAY_SIZE(resamplerEntries));
+      if (outputList)
+         file_list_free(outputList);
+   }
+   qt_settings_group_add_displaylist(syncGroup,
+         DISPLAYLIST_AUDIO_SYNCHRONIZATION_SETTINGS_LIST, NULL, 0, NULL, 0);
+   qt_settings_group_add_displaylist(menuSoundsGroup,
+         DISPLAYLIST_MENU_SOUNDS_LIST, NULL, 0, NULL, 0);
+   qt_settings_group_add_displaylist(midiGroup,
+         DISPLAYLIST_MIDI_SETTINGS_LIST,
+         midiVolumeSkip, ARRAY_SIZE(midiVolumeSkip), NULL, 0);
+   {
+      rarch_setting_t *midiVolume = menu_setting_find_enum(
+            MENU_ENUM_LABEL_MIDI_VOLUME);
+      if (midiVolume && midiVolume->value.target.unsigned_integer)
+      {
+         QHBoxLayout *midiVolumeLayout = new QHBoxLayout;
+         QSlider *slider = new QSlider(Qt::Horizontal);
+         QSpinBox *spinBox = new QSpinBox;
+         slider->setRange((int)midiVolume->min, (int)midiVolume->max);
+         spinBox->setRange((int)midiVolume->min, (int)midiVolume->max);
+         slider->setValue((int)*midiVolume->value.target.unsigned_integer);
+         spinBox->setValue((int)*midiVolume->value.target.unsigned_integer);
+         /* The spin box is the single writer: the slider only feeds
+          * it, so each edit runs the change handler once (it ran twice
+          * when both widgets wrote the setting and echoed each other). */
+         QObject::connect(slider, &QSlider::valueChanged,
+               spinBox, &QSpinBox::setValue);
+         QObject::connect(spinBox,
+               static_cast<void (QSpinBox::*)(int)>(&QSpinBox::valueChanged),
+               [midiVolume, slider](int value)
+               {
+                  QSignalBlocker block(slider);
+                  *midiVolume->value.target.unsigned_integer = (unsigned)value;
+                  setting_generic_handle_change(midiVolume);
+                  slider->setValue(value);
+               });
+         midiVolumeLayout->addWidget(slider, 1);
+         midiVolumeLayout->addWidget(spinBox);
+         midiGroup->addRow(msg_hash_to_str(MENU_ENUM_LABEL_VALUE_MIDI_VOLUME),
+               midiVolumeLayout);
+      }
+   }
+#ifdef HAVE_MICROPHONE
+   {
+      SettingsGroup *microphoneGroup = new SettingsGroup(
+            msg_hash_to_str(MENU_ENUM_LABEL_VALUE_MICROPHONE_SETTINGS));
+      qt_settings_group_add_displaylist(microphoneGroup,
+            DISPLAYLIST_MICROPHONE_SETTINGS_LIST, NULL, 0, NULL, 0);
+      rightColumn->addWidget(microphoneGroup);
+   }
+#endif
+   /* Keep the two volume sliders and their mute buttons together. */
    volumeLayout->addWidget(new QLabel(
             msg_hash_to_str(MENU_ENUM_LABEL_VALUE_AUDIO_VOLUME), widget),
-         1, 1);
+         0, 0);
    volumeLayout->addWidget(new CheckableIcon(
             MENU_ENUM_LABEL_AUDIO_MUTE,
-            qApp->style()->standardIcon(QStyle::SP_MediaVolumeMuted)),
-         1, 2);
-   volumeLayout->addLayout(new FloatSliderAndSpinBox(MENU_ENUM_LABEL_AUDIO_VOLUME),
-         1, 3, 1, 1);
-
+            qApp->style()->standardIcon(QStyle::SP_MediaVolumeMuted)), 0, 1);
+   volumeLayout->addLayout(new FloatSliderAndSpinBox(
+            MENU_ENUM_LABEL_AUDIO_VOLUME), 0, 2);
    volumeLayout->addWidget(new QLabel(
             msg_hash_to_str(MENU_ENUM_LABEL_VALUE_AUDIO_MIXER_VOLUME), widget),
-         2, 1);
+         1, 0);
    volumeLayout->addWidget(new CheckableIcon(
             MENU_ENUM_LABEL_AUDIO_MIXER_MUTE,
-            qApp->style()->standardIcon(QStyle::SP_MediaVolumeMuted)),
-         2, 2);
+            qApp->style()->standardIcon(QStyle::SP_MediaVolumeMuted)), 1, 1);
    volumeLayout->addLayout(new FloatSliderAndSpinBox(
-            MENU_ENUM_LABEL_AUDIO_MIXER_VOLUME),
-         2, 3, 1, 1);
-
+            MENU_ENUM_LABEL_AUDIO_MIXER_VOLUME), 1, 2);
    volumeGroup->addRow(volumeLayout);
 
-   volumeGroup->add(MENU_ENUM_LABEL_AUDIO_FASTFORWARD_MUTE);
-   volumeGroup->add(MENU_ENUM_LABEL_AUDIO_FASTFORWARD_SPEEDUP);
-   volumeGroup->add(MENU_ENUM_LABEL_AUDIO_REWIND_MUTE);
+   leftColumn->addWidget(outputGroup);
+   leftColumn->addWidget(syncGroup);
+   leftColumn->addWidget(volumeGroup);
+   leftColumn->addWidget(generalGroup);
 
-   layout->addWidget(outputGroup);
-   layout->addWidget(resamplerGroup);
-   layout->addWidget(syncGroup);
-   layout->addWidget(dspGroup);
-   layout->addWidget(volumeGroup);
+   rightColumn->addWidget(resamplerGroup);
+   rightColumn->addWidget(menuSoundsGroup);
+   rightColumn->addWidget(midiGroup);
+   leftColumn->addStretch();
+   rightColumn->addStretch();
 
+   columnsLayout->addLayout(leftColumn, 1);
+   columnsLayout->addLayout(rightColumn, 1);
+   layout->addLayout(columnsLayout);
    layout->addStretch();
-
    widget->setLayout(layout);
-
    return widget;
 }
 
@@ -5644,27 +6446,44 @@ InputPage::InputPage(QObject *parent) :
 
 QWidget *InputPage::widget()
 {
-   unsigned i;
-   QWidget *widget       = new QWidget;
-   FormLayout *layout    = new FormLayout;
-   settings_t *settings  = config_get_ptr();
-   file_list_t *list     = (file_list_t*)calloc(1, sizeof(*list));
+   QWidget *widget             = new QWidget;
+   QVBoxLayout *layout         = new QVBoxLayout;
+   QHBoxLayout *columnsLayout  = new QHBoxLayout;
+   QVBoxLayout *leftColumn    = new QVBoxLayout;
+   QVBoxLayout *rightColumn   = new QVBoxLayout;
+   SettingsGroup *generalGroup = new SettingsGroup("General");
+   SettingsGroup *menuGroup    = new SettingsGroup(
+         msg_hash_to_str(MENU_ENUM_LABEL_VALUE_INPUT_MENU_SETTINGS));
+   SettingsGroup *turboGroup   = new SettingsGroup(
+         msg_hash_to_str(MENU_ENUM_LABEL_VALUE_INPUT_TURBO_FIRE_SETTINGS));
+   SettingsGroup *sensorGroup  = new SettingsGroup(
+         msg_hash_to_str(MENU_ENUM_LABEL_VALUE_INPUT_SENSOR_SETTINGS));
+   SettingsGroup *hapticGroup  = new SettingsGroup(
+         msg_hash_to_str(MENU_ENUM_LABEL_VALUE_INPUT_HAPTIC_FEEDBACK_SETTINGS));
 
-   menu_displaylist_build_list(list, settings,
-         DISPLAYLIST_INPUT_SETTINGS_LIST, true);
+   qt_settings_group_add_displaylist(generalGroup,
+         DISPLAYLIST_INPUT_SETTINGS_LIST, NULL, 0, NULL, 0);
+   qt_settings_group_add_displaylist(menuGroup,
+         DISPLAYLIST_INPUT_MENU_SETTINGS_LIST, NULL, 0, NULL, 0);
+   qt_settings_group_add_displaylist(turboGroup,
+         DISPLAYLIST_INPUT_TURBO_FIRE_SETTINGS_LIST, NULL, 0, NULL, 0);
+   qt_settings_group_add_displaylist(sensorGroup,
+         DISPLAYLIST_INPUT_SENSOR_SETTINGS_LIST, NULL, 0, NULL, 0);
+   qt_settings_group_add_displaylist(hapticGroup,
+         DISPLAYLIST_INPUT_HAPTIC_FEEDBACK_SETTINGS_LIST, NULL, 0, NULL, 0);
 
-   for (i = 0; i < list->size; i++)
-   {
-      menu_file_list_cbs_t *cbs = (menu_file_list_cbs_t*)
-         file_list_get_actiondata_at_offset(list, i);
-
-      layout->add(menu_setting_find_enum(cbs->enum_idx));
-   }
-
-   file_list_free(list);
-
+   leftColumn->addWidget(generalGroup);
+   rightColumn->addWidget(menuGroup);
+   rightColumn->addWidget(turboGroup);
+   rightColumn->addWidget(sensorGroup);
+   rightColumn->addWidget(hapticGroup);
+   leftColumn->addStretch();
+   rightColumn->addStretch();
+   columnsLayout->addLayout(leftColumn, 1);
+   columnsLayout->addLayout(rightColumn, 1);
+   layout->addLayout(columnsLayout);
+   layout->addStretch();
    widget->setLayout(layout);
-
    return widget;
 }
 
@@ -5779,41 +6598,57 @@ LatencyPage::LatencyPage(QObject *parent) :
 
 QWidget *LatencyPage::widget()
 {
-   QWidget                       *widget = new QWidget;
-   FormLayout                    *layout = new FormLayout;
-   SettingsGroup *runAheadGroup          = new SettingsGroup(
-           msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RUNAHEAD_MODE));
+   QWidget *widget            = new QWidget;
+   QVBoxLayout *layout        = new QVBoxLayout;
+   QHBoxLayout *contentLayout = new QHBoxLayout;
+   QVBoxLayout *leftColumn    = new QVBoxLayout;
+   SettingsGroup *latencyGroup = new SettingsGroup("Latency");
+   SettingsGroup *runAheadGroup = new SettingsGroup(
+         msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RUNAHEAD_MODE));
+   rarch_setting_t *hardSyncSetting = menu_setting_find_enum(
+         MENU_ENUM_LABEL_VIDEO_HARD_SYNC);
+   static const enum msg_hash_enums latencySkip[] = {
+      MENU_ENUM_LABEL_RUNAHEAD_MODE,
+      MENU_ENUM_LABEL_RUN_AHEAD_FRAMES,
+      MENU_ENUM_LABEL_PREEMPT_FRAMES,
+      MENU_ENUM_LABEL_RUN_AHEAD_HIDE_WARNINGS,
+      MENU_ENUM_LABEL_VIDEO_HARD_SYNC,
+      MENU_ENUM_LABEL_VIDEO_HARD_SYNC_FRAMES
+   };
+   static const enum msg_hash_enums runAheadEntries[] = {
+      MENU_ENUM_LABEL_RUNAHEAD_MODE,
+      MENU_ENUM_LABEL_RUN_AHEAD_FRAMES,
+      MENU_ENUM_LABEL_PREEMPT_FRAMES,
+      MENU_ENUM_LABEL_RUN_AHEAD_HIDE_WARNINGS
+   };
 
-   rarch_setting_t *hardSyncSetting      = menu_setting_find_enum(MENU_ENUM_LABEL_VIDEO_HARD_SYNC);
-
-   layout->add(menu_setting_find_enum(MENU_ENUM_LABEL_VIDEO_VSYNC));
-
-   if (hardSyncSetting)
    {
-      CheckableSettingsGroup *hardSyncGroup = new CheckableSettingsGroup(hardSyncSetting);
-
-      hardSyncGroup->add(MENU_ENUM_LABEL_VIDEO_HARD_SYNC_FRAMES);
-
-      layout->addRow(hardSyncGroup);
+      file_list_t *latencyList = qt_displaylist_build(
+            DISPLAYLIST_LATENCY_SETTINGS_LIST);
+      qt_settings_group_add_list(latencyGroup, latencyList,
+            latencySkip, ARRAY_SIZE(latencySkip), NULL, 0);
+      latencyGroup->add(MENU_ENUM_LABEL_INPUT_POLL_TYPE_BEHAVIOR);
+      qt_settings_group_add_list(runAheadGroup, latencyList, NULL, 0,
+            runAheadEntries, ARRAY_SIZE(runAheadEntries));
+      if (latencyList)
+         file_list_free(latencyList);
    }
 
-   layout->add(menu_setting_find_enum(MENU_ENUM_LABEL_VIDEO_MAX_SWAPCHAIN_IMAGES));
-   layout->add(menu_setting_find_enum(MENU_ENUM_LABEL_VIDEO_WAITABLE_SWAPCHAINS));
-   layout->add(menu_setting_find_enum(MENU_ENUM_LABEL_VIDEO_SCANLINE_SYNC));
-   layout->add(menu_setting_find_enum(MENU_ENUM_LABEL_VIDEO_SCANLINE_SYNC_OFFSET));
-   layout->add(menu_setting_find_enum(MENU_ENUM_LABEL_VIDEO_MAX_FRAME_LATENCY));
-   layout->add(menu_setting_find_enum(MENU_ENUM_LABEL_VIDEO_FRAME_DELAY));
-   layout->add(menu_setting_find_enum(MENU_ENUM_LABEL_VIDEO_FRAME_DELAY_AUTO));
-   layout->add(menu_setting_find_enum(MENU_ENUM_LABEL_AUDIO_LATENCY));
-   layout->add(menu_setting_find_enum(MENU_ENUM_LABEL_INPUT_POLL_TYPE_BEHAVIOR));
-
-   runAheadGroup->add(MENU_ENUM_LABEL_RUNAHEAD_MODE);
-   runAheadGroup->add(MENU_ENUM_LABEL_RUN_AHEAD_FRAMES);
-   runAheadGroup->add(MENU_ENUM_LABEL_RUN_AHEAD_HIDE_WARNINGS);
-   layout->addRow(runAheadGroup);
-
+   leftColumn->addWidget(latencyGroup);
+   if (hardSyncSetting)
+   {
+      CheckableSettingsGroup *hardSyncGroup =
+         new CheckableSettingsGroup(hardSyncSetting);
+      hardSyncGroup->add(MENU_ENUM_LABEL_VIDEO_HARD_SYNC_FRAMES);
+      leftColumn->addWidget(hardSyncGroup);
+   }
+   leftColumn->addWidget(runAheadGroup);
+   leftColumn->addStretch();
+   contentLayout->addLayout(leftColumn, 1);
+   contentLayout->addStretch(1);
+   layout->addLayout(contentLayout);
+   layout->addStretch();
    widget->setLayout(layout);
-
    return widget;
 }
 
@@ -5829,8 +6664,6 @@ QVector<OptionsPage*> NetworkCategory::pages()
    QVector<OptionsPage*> pages;
 
    pages << new NetplayPage(this);
-   pages << new SimplePage(DISPLAYLIST_UPDATER_SETTINGS_LIST,
-         MENU_ENUM_LABEL_VALUE_UPDATER_SETTINGS, this);
 
    return pages;
 }
@@ -5838,32 +6671,122 @@ QVector<OptionsPage*> NetworkCategory::pages()
 NetplayPage::NetplayPage(QObject *parent) :
    OptionsPage(parent)
 {
-   setDisplayName(MENU_ENUM_LABEL_VALUE_NETPLAY);
+   setDisplayName("General");
 }
 
 QWidget *NetplayPage::widget()
 {
    QWidget *widget            = new QWidget;
+   QVBoxLayout *mainLayout    = new QVBoxLayout;
+   QHBoxLayout *columnsLayout = new QHBoxLayout;
+   QVBoxLayout *leftColumn    = new QVBoxLayout;
+   QVBoxLayout *rightColumn   = new QVBoxLayout;
+   SettingsGroup *netplayGroup = new SettingsGroup("Netplay");
+   SettingsGroup *updaterGroup = new SettingsGroup(
+         msg_hash_to_str(MENU_ENUM_LABEL_VALUE_UPDATER_SETTINGS));
    QGridLayout *layout        = new QGridLayout;
    FormLayout *checksLayout   = new FormLayout;
-   QGroupBox *serverGroup     = new QGroupBox("Server");
+   SettingsGroup *serverGroup  = new SettingsGroup("Server");
    SettingsGroup *syncGroup   = new SettingsGroup("Synchronization");
    SettingsGroup *slaveGroup  = new SettingsGroup("Slave-Mode");
    SettingsGroup *inputGroup  = new SettingsGroup("Input Sharing");
    SettingsGroup *deviceGroup = new SettingsGroup("Device Request");
+   SettingsGroup *networkGroup = new SettingsGroup("Network Services");
+#ifdef HAVE_SMBCLIENT
+   SettingsGroup *smbGroup = new SettingsGroup(
+         msg_hash_to_str(MENU_ENUM_LABEL_VALUE_SMB_CLIENT_SETTINGS));
+#endif
+#ifdef HAVE_NFSCLIENT
+   SettingsGroup *nfsGroup = new SettingsGroup(
+         msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NFS_CLIENT_SETTINGS));
+#endif
    FormLayout *serverForm     = new FormLayout;
-   QHBoxLayout *serverLayout  = new QHBoxLayout;
-   QVBoxLayout *mainLayout    = new QVBoxLayout;
    QGridLayout *requestGrid   = new QGridLayout;
    unsigned i                 = 0;
    unsigned row               = 0;
    unsigned column            = 0;
+   static const enum msg_hash_enums networkSkip[] = {
+      MENU_ENUM_LABEL_NETPLAY_PUBLIC_ANNOUNCE,
+      MENU_ENUM_LABEL_NETPLAY_USE_MITM_SERVER,
+      MENU_ENUM_LABEL_NETPLAY_MITM_SERVER,
+      MENU_ENUM_LABEL_NETPLAY_CUSTOM_MITM_SERVER,
+      MENU_ENUM_LABEL_NETPLAY_IP_ADDRESS,
+      MENU_ENUM_LABEL_NETPLAY_TCP_UDP_PORT,
+      MENU_ENUM_LABEL_NETPLAY_MAX_CONNECTIONS,
+      MENU_ENUM_LABEL_NETPLAY_MAX_PING,
+      MENU_ENUM_LABEL_NETPLAY_PASSWORD,
+      MENU_ENUM_LABEL_NETPLAY_SPECTATE_PASSWORD,
+      MENU_ENUM_LABEL_NETPLAY_START_AS_SPECTATOR,
+      MENU_ENUM_LABEL_NETPLAY_FADE_CHAT,
+      MENU_ENUM_LABEL_NETPLAY_CHAT_COLOR_NAME,
+      MENU_ENUM_LABEL_NETPLAY_CHAT_COLOR_MSG,
+      MENU_ENUM_LABEL_NETPLAY_ALLOW_PAUSING,
+      MENU_ENUM_LABEL_NETPLAY_ALLOW_SLAVES,
+      MENU_ENUM_LABEL_NETPLAY_REQUIRE_SLAVES,
+      MENU_ENUM_LABEL_NETPLAY_CHECK_FRAMES,
+      MENU_ENUM_LABEL_NETPLAY_INPUT_LATENCY_FRAMES_MIN,
+      MENU_ENUM_LABEL_NETPLAY_INPUT_LATENCY_FRAMES_RANGE,
+      MENU_ENUM_LABEL_NETPLAY_NAT_TRAVERSAL,
+      MENU_ENUM_LABEL_NETPLAY_SHARE_DIGITAL,
+      MENU_ENUM_LABEL_NETPLAY_SHARE_ANALOG,
+      MENU_ENUM_LABEL_NETWORK_ON_DEMAND_THUMBNAILS,
+      MENU_ENUM_LABEL_NETPLAY_ANALOG_JOYPADS,
+      MENU_ENUM_LABEL_NETPLAY_LOCKSTEP,
+      MENU_ENUM_LABEL_NETPLAY_REQUEST_DEVICES,
+#ifdef HAVE_SMBCLIENT
+      MENU_ENUM_LABEL_SMB_CLIENT_SETTINGS,
+#endif
+#ifdef HAVE_NFSCLIENT
+      MENU_ENUM_LABEL_NFS_CLIENT_SETTINGS,
+#endif
+   };
 
    checksLayout->add(menu_setting_find_enum(MENU_ENUM_LABEL_NETPLAY_PUBLIC_ANNOUNCE));
    checksLayout->add(menu_setting_find_enum(MENU_ENUM_LABEL_NETPLAY_START_AS_SPECTATOR));
    checksLayout->add(menu_setting_find_enum(MENU_ENUM_LABEL_NETPLAY_FADE_CHAT));
    checksLayout->add(menu_setting_find_enum(MENU_ENUM_LABEL_NETPLAY_ALLOW_PAUSING));
+   checksLayout->add(menu_setting_find_enum(MENU_ENUM_LABEL_NETPLAY_ANALOG_JOYPADS));
+   checksLayout->add(menu_setting_find_enum(MENU_ENUM_LABEL_NETPLAY_LOCKSTEP));
    checksLayout->add(menu_setting_find_enum(MENU_ENUM_LABEL_NETWORK_ON_DEMAND_THUMBNAILS));
+   {
+      const enum msg_hash_enums colorSettings[] = {
+         MENU_ENUM_LABEL_NETPLAY_CHAT_COLOR_NAME,
+         MENU_ENUM_LABEL_NETPLAY_CHAT_COLOR_MSG
+      };
+      unsigned c;
+      for (c = 0; c < ARRAY_SIZE(colorSettings); c++)
+      {
+         rarch_setting_t *colorSetting = menu_setting_find_enum(colorSettings[c]);
+         if (colorSetting && colorSetting->value.target.unsigned_integer)
+         {
+            QPushButton *colorButton = new QPushButton;
+            const auto updateColorButton = [colorSetting, colorButton]()
+            {
+               const unsigned color = *colorSetting->value.target.unsigned_integer & 0xFFFFFF;
+               colorButton->setText(QString("#%1").arg(color, 6, 16, QChar('0')).toUpper());
+               colorButton->setStyleSheet(QString("background-color: #%1;").arg(color, 6, 16, QChar('0')));
+            };
+            updateColorButton();
+            QObject::connect(colorButton, &QPushButton::clicked,
+                  [colorSetting, updateColorButton]()
+                  {
+                     const QColor initial((int)((*colorSetting->value.target.unsigned_integer >> 16) & 0xFF),
+                           (int)((*colorSetting->value.target.unsigned_integer >> 8) & 0xFF),
+                           (int)(*colorSetting->value.target.unsigned_integer & 0xFF));
+                     const QColor chosen = QColorDialog::getColor(initial, nullptr);
+                     if (chosen.isValid())
+                     {
+                        *colorSetting->value.target.unsigned_integer =
+                           (unsigned)((chosen.red() << 16) | (chosen.green() << 8) | chosen.blue());
+                        setting_generic_handle_change(colorSetting);
+                        updateColorButton();
+                     }
+                  });
+            checksLayout->addRow(colorSetting->short_description
+                  ? colorSetting->short_description : "Chat Color", colorButton);
+         }
+      }
+   }
 
    serverForm->add(menu_setting_find_enum(MENU_ENUM_LABEL_NETPLAY_IP_ADDRESS));
    serverForm->add(menu_setting_find_enum(MENU_ENUM_LABEL_NETPLAY_TCP_UDP_PORT));
@@ -5876,12 +6799,12 @@ QWidget *NetplayPage::widget()
    {
       QGroupBox *mitmGroup = createMitmServerGroup();
       if (mitmGroup)
-         serverLayout->addWidget(mitmGroup);
+         serverGroup->addRow(mitmGroup);
    }
-   serverLayout->addSpacing(30);
-   serverLayout->addLayout(serverForm);
-
-   serverGroup->setLayout(serverLayout);
+   /* Keep address/password fields at full width beneath the relay
+    * selection controls; placing the two forms side-by-side squeezed
+    * the editable fields into a narrow column. */
+   serverGroup->addRow(serverForm);
 
    slaveGroup->add(MENU_ENUM_LABEL_NETPLAY_ALLOW_SLAVES);
    slaveGroup->add(MENU_ENUM_LABEL_NETPLAY_REQUIRE_SLAVES);
@@ -5914,10 +6837,47 @@ QWidget *NetplayPage::widget()
    layout->addWidget(inputGroup, 3, 0, 1, 1);
    layout->addWidget(deviceGroup, 4, 0, 1, 2);
 
-   mainLayout->addLayout(layout);
+   netplayGroup->addRow(layout);
 
-   mainLayout->addStretch();
+   /* Keep the Network category in sync with the internal menu list.
+    * The entries already represented by the custom Netplay controls above
+    * are excluded; all remaining ordinary settings are added here. */
+   qt_settings_group_add_displaylist(networkGroup,
+         DISPLAYLIST_NETWORK_SETTINGS_LIST, networkSkip,
+         ARRAY_SIZE(networkSkip), NULL, 0);
+#ifdef HAVE_SMBCLIENT
+   qt_settings_group_add_displaylist(smbGroup,
+         DISPLAYLIST_SMB_CLIENT_SETTINGS_LIST, NULL, 0, NULL, 0);
+   networkGroup->addRow(smbGroup);
+#endif
+#ifdef HAVE_NFSCLIENT
+   qt_settings_group_add_displaylist(nfsGroup,
+         DISPLAYLIST_NFS_CLIENT_SETTINGS_LIST, NULL, 0, NULL, 0);
+   networkGroup->addRow(nfsGroup);
+#endif
 
+   {
+      static const enum msg_hash_enums updaterPathSkip[] = {
+         MENU_ENUM_LABEL_CORE_UPDATER_BUILDBOT_URL,
+         MENU_ENUM_LABEL_BUILDBOT_ASSETS_URL
+      };
+      qt_settings_group_add_displaylist(updaterGroup,
+            DISPLAYLIST_UPDATER_SETTINGS_LIST, updaterPathSkip,
+            ARRAY_SIZE(updaterPathSkip), NULL, 0);
+      qt_settings_group_add_compact_path(updaterGroup,
+            MENU_ENUM_LABEL_CORE_UPDATER_BUILDBOT_URL, false);
+      qt_settings_group_add_compact_path(updaterGroup,
+            MENU_ENUM_LABEL_BUILDBOT_ASSETS_URL, false);
+   }
+
+   leftColumn->addWidget(netplayGroup);
+   rightColumn->addWidget(networkGroup);
+   rightColumn->addWidget(updaterGroup);
+   leftColumn->addStretch();
+   rightColumn->addStretch();
+   columnsLayout->addLayout(leftColumn, 1);
+   columnsLayout->addLayout(rightColumn, 1);
+   mainLayout->addLayout(columnsLayout);
    widget->setLayout(mainLayout);
 
    return widget;
@@ -5996,7 +6956,6 @@ QVector<OptionsPage*> OnscreenDisplayCategory::pages()
    QVector<OptionsPage*> pages;
 
    pages << new OverlayPage(this);
-   pages << new NotificationsPage(this);
 
    return pages;
 }
@@ -6052,6 +7011,9 @@ QWidget *NotificationsPage::widget()
    notificationsGroup->add(MENU_ENUM_LABEL_NOTIFICATION_SHOW_AUTOCONFIG);
    notificationsGroup->add(MENU_ENUM_LABEL_NOTIFICATION_SHOW_AUTOCONFIG_FAILS);
    notificationsGroup->add(MENU_ENUM_LABEL_NOTIFICATION_SHOW_REMAP_LOAD);
+#ifdef HAVE_CORE_SIGNING_TEST_KEY
+   notificationsGroup->add(MENU_ENUM_LABEL_NOTIFICATION_SHOW_CORE_SIGNING_TEST_KEY);
+#endif
    notificationsGroup->add(MENU_ENUM_LABEL_NOTIFICATION_SHOW_CONFIG_OVERRIDE_LOAD);
    notificationsGroup->add(MENU_ENUM_LABEL_NOTIFICATION_SHOW_SET_INITIAL_DISK);
    notificationsGroup->add(MENU_ENUM_LABEL_NOTIFICATION_SHOW_SAVE_STATE);
@@ -6063,6 +7025,19 @@ QWidget *NotificationsPage::widget()
    notificationsGroup->add(MENU_ENUM_LABEL_NOTIFICATION_SHOW_REFRESH_RATE);
    notificationsGroup->add(MENU_ENUM_LABEL_NOTIFICATION_SHOW_NETPLAY_EXTRA);
    notificationsGroup->add(MENU_ENUM_LABEL_NOTIFICATION_SHOW_WHEN_MENU_IS_ALIVE);
+   {
+      SettingsGroup *notificationViewsGroup = new SettingsGroup("Additional Notification Options");
+      static const enum msg_hash_enums notificationViewsEntries[] = {
+         MENU_ENUM_LABEL_STATISTICS_HIDE_IN_MENU,
+         MENU_ENUM_LABEL_NOTIFICATION_SHOW_PATCH_APPLIED,
+         MENU_ENUM_LABEL_NOTIFICATION_SHOW_DISK_CONTROL
+      };
+      qt_settings_group_add_displaylist(notificationViewsGroup,
+            DISPLAYLIST_ONSCREEN_NOTIFICATIONS_VIEWS_SETTINGS_LIST,
+            NULL, 0, notificationViewsEntries,
+            ARRAY_SIZE(notificationViewsEntries));
+      notificationsGroup->addRow(notificationViewsGroup);
+   }
 
    layout->addWidget(notificationsGroup);
 
@@ -6076,48 +7051,93 @@ QWidget *NotificationsPage::widget()
 OverlayPage::OverlayPage(QObject *parent) :
    OptionsPage(parent)
 {
-   setDisplayName(MENU_ENUM_LABEL_VALUE_ONSCREEN_OVERLAY_SETTINGS);
+   setDisplayName("General");
 }
 
 QWidget *OverlayPage::widget()
 {
-   QWidget                      *widget = new QWidget;
+   QWidget *widget = new QWidget;
+   QVBoxLayout *layout = new QVBoxLayout;
+   QHBoxLayout *columnsLayout = new QHBoxLayout;
+   QVBoxLayout *leftColumn = new QVBoxLayout;
+   QVBoxLayout *rightColumn = new QVBoxLayout;
+
 #if defined(HAVE_OVERLAY)
-   QVBoxLayout                  *layout = new QVBoxLayout;
+   {
+      CheckableSettingsGroup *overlayGroup = new CheckableSettingsGroup(
+            MENU_ENUM_LABEL_INPUT_OVERLAY_ENABLE);
 
-   CheckableSettingsGroup *overlayGroup = new CheckableSettingsGroup(
-         MENU_ENUM_LABEL_INPUT_OVERLAY_ENABLE);
+      overlayGroup->add(MENU_ENUM_LABEL_OVERLAY_AUTOLOAD_PREFERRED);
+      overlayGroup->add(MENU_ENUM_LABEL_INPUT_OVERLAY_AUTO_ROTATE);
+      overlayGroup->add(MENU_ENUM_LABEL_INPUT_OVERLAY_HIDE_IN_MENU);
+      overlayGroup->add(MENU_ENUM_LABEL_INPUT_OVERLAY_HIDE_WHEN_GAMEPAD_CONNECTED);
+      overlayGroup->add(MENU_ENUM_LABEL_INPUT_OVERLAY_SHOW_MOUSE_CURSOR);
+      overlayGroup->add(MENU_ENUM_LABEL_INPUT_OVERLAY_SHOW_INPUTS);
+      overlayGroup->add(MENU_ENUM_LABEL_INPUT_OVERLAY_SHOW_INPUTS_PORT);
+      overlayGroup->add(MENU_ENUM_LABEL_OVERLAY_PRESET);
+      overlayGroup->add(MENU_ENUM_LABEL_OVERLAY_OPACITY);
+      overlayGroup->add(MENU_ENUM_LABEL_OVERLAY_SCALE_LANDSCAPE);
+      overlayGroup->add(MENU_ENUM_LABEL_OVERLAY_ASPECT_ADJUST_LANDSCAPE);
+      overlayGroup->add(MENU_ENUM_LABEL_OVERLAY_X_SEPARATION_LANDSCAPE);
+      overlayGroup->add(MENU_ENUM_LABEL_OVERLAY_Y_SEPARATION_LANDSCAPE);
+      overlayGroup->add(MENU_ENUM_LABEL_OVERLAY_X_OFFSET_LANDSCAPE);
+      overlayGroup->add(MENU_ENUM_LABEL_OVERLAY_Y_OFFSET_LANDSCAPE);
+      overlayGroup->add(MENU_ENUM_LABEL_OVERLAY_SCALE_PORTRAIT);
+      overlayGroup->add(MENU_ENUM_LABEL_OVERLAY_ASPECT_ADJUST_PORTRAIT);
+      overlayGroup->add(MENU_ENUM_LABEL_OVERLAY_X_SEPARATION_PORTRAIT);
+      overlayGroup->add(MENU_ENUM_LABEL_OVERLAY_X_OFFSET_PORTRAIT);
+      overlayGroup->add(MENU_ENUM_LABEL_OVERLAY_Y_OFFSET_PORTRAIT);
+      {
+         static const enum msg_hash_enums overlayExtraEntries[] = {
+            MENU_ENUM_LABEL_INPUT_OVERLAY_BEHIND_MENU,
+            MENU_ENUM_LABEL_INPUT_OVERLAY_DPAD_DIAGONAL_SENSITIVITY,
+            MENU_ENUM_LABEL_INPUT_OVERLAY_ABXY_DIAGONAL_SENSITIVITY,
+            MENU_ENUM_LABEL_INPUT_OVERLAY_DPAD_METHOD,
+            MENU_ENUM_LABEL_INPUT_OVERLAY_ABXY_METHOD,
+            MENU_ENUM_LABEL_INPUT_OVERLAY_CONTACT_SCALE,
+            MENU_ENUM_LABEL_INPUT_OVERLAY_ANALOG_RECENTER_ZONE,
+            MENU_ENUM_LABEL_INPUT_OVERLAY_AUTO_SCALE,
+            MENU_ENUM_LABEL_OVERLAY_Y_SEPARATION_PORTRAIT,
+            MENU_ENUM_LABEL_INPUT_OVERLAY_POINTER_ENABLE
+         };
+         qt_settings_group_add_displaylist(overlayGroup,
+               DISPLAYLIST_ONSCREEN_OVERLAY_SETTINGS_LIST,
+               NULL, 0, overlayExtraEntries,
+               ARRAY_SIZE(overlayExtraEntries));
+      }
+      {
+         SettingsGroup *lightgunGroup = new SettingsGroup(
+               msg_hash_to_str(MENU_ENUM_LABEL_VALUE_OVERLAY_LIGHTGUN_SETTINGS));
+         SettingsGroup *mouseGroup = new SettingsGroup(
+               msg_hash_to_str(MENU_ENUM_LABEL_VALUE_OVERLAY_MOUSE_SETTINGS));
+         SettingsGroup *oskGroup = new SettingsGroup(
+               msg_hash_to_str(MENU_ENUM_LABEL_VALUE_OSK_OVERLAY_SETTINGS));
+         qt_settings_group_add_displaylist(lightgunGroup,
+               DISPLAYLIST_OVERLAY_LIGHTGUN_SETTINGS_LIST, NULL, 0, NULL, 0);
+         qt_settings_group_add_displaylist(mouseGroup,
+               DISPLAYLIST_OVERLAY_MOUSE_SETTINGS_LIST, NULL, 0, NULL, 0);
+         qt_settings_group_add_displaylist(oskGroup,
+               DISPLAYLIST_OSK_OVERLAY_SETTINGS_LIST, NULL, 0, NULL, 0);
+         overlayGroup->addRow(lightgunGroup);
+         overlayGroup->addRow(mouseGroup);
+         overlayGroup->addRow(oskGroup);
+      }
 
-   overlayGroup->add(MENU_ENUM_LABEL_OVERLAY_AUTOLOAD_PREFERRED);
-   overlayGroup->add(MENU_ENUM_LABEL_INPUT_OVERLAY_AUTO_ROTATE);
-   overlayGroup->add(MENU_ENUM_LABEL_INPUT_OVERLAY_HIDE_IN_MENU);
-   overlayGroup->add(MENU_ENUM_LABEL_INPUT_OVERLAY_HIDE_WHEN_GAMEPAD_CONNECTED);
-   overlayGroup->add(MENU_ENUM_LABEL_INPUT_OVERLAY_SHOW_MOUSE_CURSOR);
-
-   overlayGroup->add(MENU_ENUM_LABEL_INPUT_OVERLAY_SHOW_INPUTS);
-   overlayGroup->add(MENU_ENUM_LABEL_INPUT_OVERLAY_SHOW_INPUTS_PORT);
-
-   overlayGroup->add(MENU_ENUM_LABEL_OVERLAY_PRESET);
-   overlayGroup->add(MENU_ENUM_LABEL_OVERLAY_OPACITY);
-   overlayGroup->add(MENU_ENUM_LABEL_OVERLAY_SCALE_LANDSCAPE);
-   overlayGroup->add(MENU_ENUM_LABEL_OVERLAY_ASPECT_ADJUST_LANDSCAPE);
-   overlayGroup->add(MENU_ENUM_LABEL_OVERLAY_X_SEPARATION_LANDSCAPE);
-   overlayGroup->add(MENU_ENUM_LABEL_OVERLAY_Y_SEPARATION_LANDSCAPE);
-   overlayGroup->add(MENU_ENUM_LABEL_OVERLAY_X_OFFSET_LANDSCAPE);
-   overlayGroup->add(MENU_ENUM_LABEL_OVERLAY_Y_OFFSET_LANDSCAPE);
-   overlayGroup->add(MENU_ENUM_LABEL_OVERLAY_SCALE_PORTRAIT);
-   overlayGroup->add(MENU_ENUM_LABEL_OVERLAY_ASPECT_ADJUST_PORTRAIT);
-   overlayGroup->add(MENU_ENUM_LABEL_OVERLAY_X_SEPARATION_PORTRAIT);
-   overlayGroup->add(MENU_ENUM_LABEL_OVERLAY_X_OFFSET_PORTRAIT);
-   overlayGroup->add(MENU_ENUM_LABEL_OVERLAY_Y_OFFSET_PORTRAIT);
-
-   layout->addWidget(overlayGroup);
-
-   layout->addStretch();
-
-   widget->setLayout(layout);
+      rightColumn->addWidget(overlayGroup);
+   }
 #endif
 
+   {
+      NotificationsPage *notificationsPage = new NotificationsPage(this);
+      leftColumn->addWidget(notificationsPage->widget());
+   }
+
+   leftColumn->addStretch();
+   rightColumn->addStretch();
+   columnsLayout->addLayout(leftColumn, 1);
+   columnsLayout->addLayout(rightColumn, 1);
+   layout->addLayout(columnsLayout);
+   widget->setLayout(layout);
    return widget;
 }
 
@@ -6143,25 +7163,50 @@ PlaylistsPage::PlaylistsPage(QObject *parent) :
 
 QWidget *PlaylistsPage::widget()
 {
-   QWidget *widget                 = new QWidget;
-   FormLayout *layout              = new FormLayout;
-   CheckableSettingsGroup *history = new CheckableSettingsGroup(
+   QWidget *widget = new QWidget;
+   QVBoxLayout *layout = new QVBoxLayout;
+   QHBoxLayout *contentLayout = new QHBoxLayout;
+   QVBoxLayout *leftColumn = new QVBoxLayout;
+   CheckableSettingsGroup *historyGroup = new CheckableSettingsGroup(
          MENU_ENUM_LABEL_HISTORY_LIST_ENABLE);
+   SettingsGroup *playlistGroup = new SettingsGroup("Playlist");
+   SettingsGroup *scanningGroup = new SettingsGroup("Scanning");
+   SettingsGroup *additionalGroup = new SettingsGroup("Additional Settings");
+   static const enum msg_hash_enums playlistSkip[] = {
+      MENU_ENUM_LABEL_HISTORY_LIST_ENABLE,
+      MENU_ENUM_LABEL_CONTENT_HISTORY_SIZE,
+      MENU_ENUM_LABEL_PLAYLIST_ENTRY_RENAME,
+      MENU_ENUM_LABEL_PLAYLIST_SORT_ALPHABETICAL,
+      MENU_ENUM_LABEL_PLAYLIST_USE_OLD_FORMAT,
+      MENU_ENUM_LABEL_PLAYLIST_COMPRESSION,
+      MENU_ENUM_LABEL_PLAYLIST_SHOW_SUBLABELS,
+      MENU_ENUM_LABEL_PLAYLIST_FUZZY_ARCHIVE_MATCH,
+      MENU_ENUM_LABEL_SCAN_WITHOUT_CORE_MATCH
+   };
 
-   history->add(MENU_ENUM_LABEL_CONTENT_HISTORY_SIZE);
+   historyGroup->add(MENU_ENUM_LABEL_CONTENT_HISTORY_SIZE);
 
-   layout->addRow(history);
+   playlistGroup->add(MENU_ENUM_LABEL_PLAYLIST_ENTRY_RENAME);
+   playlistGroup->add(MENU_ENUM_LABEL_PLAYLIST_SORT_ALPHABETICAL);
+   playlistGroup->add(MENU_ENUM_LABEL_PLAYLIST_USE_OLD_FORMAT);
+   playlistGroup->add(MENU_ENUM_LABEL_PLAYLIST_COMPRESSION);
+   playlistGroup->add(MENU_ENUM_LABEL_PLAYLIST_SHOW_SUBLABELS);
+   playlistGroup->add(MENU_ENUM_LABEL_PLAYLIST_FUZZY_ARCHIVE_MATCH);
+   scanningGroup->add(MENU_ENUM_LABEL_SCAN_WITHOUT_CORE_MATCH);
+   qt_settings_group_add_displaylist(additionalGroup,
+         DISPLAYLIST_PLAYLIST_SETTINGS_LIST,
+         playlistSkip, ARRAY_SIZE(playlistSkip), NULL, 0);
 
-   layout->add(menu_setting_find_enum(MENU_ENUM_LABEL_PLAYLIST_ENTRY_RENAME));
-   layout->add(menu_setting_find_enum(MENU_ENUM_LABEL_PLAYLIST_SORT_ALPHABETICAL));
-   layout->add(menu_setting_find_enum(MENU_ENUM_LABEL_PLAYLIST_USE_OLD_FORMAT));
-   layout->add(menu_setting_find_enum(MENU_ENUM_LABEL_PLAYLIST_COMPRESSION));
-   layout->add(menu_setting_find_enum(MENU_ENUM_LABEL_PLAYLIST_SHOW_SUBLABELS));
-   layout->add(menu_setting_find_enum(MENU_ENUM_LABEL_PLAYLIST_FUZZY_ARCHIVE_MATCH));
-   layout->add(menu_setting_find_enum(MENU_ENUM_LABEL_SCAN_WITHOUT_CORE_MATCH));
-
+   leftColumn->addWidget(historyGroup);
+   leftColumn->addWidget(playlistGroup);
+   leftColumn->addWidget(scanningGroup);
+   leftColumn->addWidget(additionalGroup);
+   leftColumn->addStretch();
+   contentLayout->addLayout(leftColumn, 1);
+   contentLayout->addStretch(1);
+   layout->addLayout(contentLayout);
+   layout->addStretch();
    widget->setLayout(layout);
-
    return widget;
 }
 
@@ -6188,36 +7233,56 @@ RecordingPage::RecordingPage(QObject *parent) :
 
 QWidget *RecordingPage::widget()
 {
-   QWidget              * widget = new QWidget;
-   QVBoxLayout           *layout = new QVBoxLayout;
+   QWidget *widget             = new QWidget;
+   QVBoxLayout *layout         = new QVBoxLayout;
+   QHBoxLayout *columnsLayout  = new QHBoxLayout;
+   QVBoxLayout *leftColumn     = new QVBoxLayout;
    SettingsGroup *recordingGroup = new SettingsGroup("Recording");
    SettingsGroup *streamingGroup = new SettingsGroup("Streaming");
-   QHBoxLayout               *hl = new QHBoxLayout;
+   QHBoxLayout *streamingModeLayout = new QHBoxLayout;
+   static const enum msg_hash_enums recordingSkip[] = {
+      MENU_ENUM_LABEL_STREAMING_MODE,
+      MENU_ENUM_LABEL_VIDEO_STREAM_QUALITY,
+      MENU_ENUM_LABEL_STREAM_CONFIG,
+      MENU_ENUM_LABEL_STREAMING_TITLE,
+      MENU_ENUM_LABEL_STREAMING_URL,
+      MENU_ENUM_LABEL_UDP_STREAM_PORT,
+      MENU_ENUM_LABEL_RECORDING_OUTPUT_DIRECTORY
+   };
+   static const enum msg_hash_enums streamingEntries[] = {
+      MENU_ENUM_LABEL_STREAM_CONFIG,
+      MENU_ENUM_LABEL_STREAMING_TITLE,
+      MENU_ENUM_LABEL_STREAMING_URL,
+      MENU_ENUM_LABEL_UDP_STREAM_PORT
+   };
 
-   recordingGroup->add(MENU_ENUM_LABEL_VIDEO_RECORD_QUALITY);
-   recordingGroup->add(MENU_ENUM_LABEL_RECORD_CONFIG);
-   recordingGroup->add(MENU_ENUM_LABEL_VIDEO_RECORD_THREADS);
-   recordingGroup->add(MENU_ENUM_LABEL_RECORDING_OUTPUT_DIRECTORY);
-   recordingGroup->add(MENU_ENUM_LABEL_VIDEO_POST_FILTER_RECORD);
-   recordingGroup->add(MENU_ENUM_LABEL_VIDEO_GPU_RECORD);
+   file_list_t *recordingList  = qt_displaylist_build(
+         DISPLAYLIST_RECORDING_SETTINGS_LIST);
 
-   hl->addWidget(new UIntRadioButtons(MENU_ENUM_LABEL_STREAMING_MODE));
-   hl->addWidget(new UIntRadioButtons(MENU_ENUM_LABEL_VIDEO_STREAM_QUALITY));
+   qt_settings_group_add_list(recordingGroup, recordingList,
+         recordingSkip, ARRAY_SIZE(recordingSkip), NULL, 0);
+   qt_settings_group_add_compact_path(recordingGroup,
+         MENU_ENUM_LABEL_RECORDING_OUTPUT_DIRECTORY, true);
 
-   streamingGroup->addRow(hl);
+   /* These compact radio controls are retained from the original page. */
+   streamingModeLayout->addWidget(
+         new UIntRadioButtons(MENU_ENUM_LABEL_STREAMING_MODE));
+   streamingModeLayout->addWidget(
+         new UIntRadioButtons(MENU_ENUM_LABEL_VIDEO_STREAM_QUALITY));
+   streamingGroup->addRow(streamingModeLayout);
+   qt_settings_group_add_list(streamingGroup, recordingList, NULL, 0,
+         streamingEntries, ARRAY_SIZE(streamingEntries));
+   if (recordingList)
+      file_list_free(recordingList);
 
-   streamingGroup->add(MENU_ENUM_LABEL_STREAM_CONFIG);
-   streamingGroup->add(MENU_ENUM_LABEL_STREAMING_TITLE);
-   streamingGroup->add(MENU_ENUM_LABEL_STREAMING_URL);
-   streamingGroup->add(MENU_ENUM_LABEL_UDP_STREAM_PORT);
-
-   layout->addWidget(recordingGroup);
-   layout->addWidget(streamingGroup);
-
+   leftColumn->addWidget(recordingGroup);
+   leftColumn->addWidget(streamingGroup);
+   leftColumn->addStretch();
+   columnsLayout->addLayout(leftColumn, 1);
+   columnsLayout->addStretch(1);
+   layout->addLayout(columnsLayout);
    layout->addStretch();
-
    widget->setLayout(layout);
-
    return widget;
 }
 
@@ -6244,54 +7309,107 @@ SavingPage::SavingPage(QObject *parent) :
 
 QWidget *SavingPage::widget()
 {
-   QWidget                             *widget = new QWidget;
-   FormLayout                          *layout = new FormLayout;
-   SettingsGroup                   *savesGroup = new SettingsGroup("Saves");
-   SettingsGroup              *savestatesGroup = new SettingsGroup("Savestates");
-   CheckableSettingsGroup *autoSavestatesGroup = new CheckableSettingsGroup(
-         MENU_ENUM_LABEL_SAVESTATE_AUTO_SAVE);
-   SettingsGroup                 *saveRamGroup = new SettingsGroup("SaveRAM");
-   SettingsGroup          *systemFilesDirGroup = new SettingsGroup("System Files");
-   SettingsGroup          *screenshotsDirGroup = new SettingsGroup("Screenshots");
-   SettingsGroup          *runtimeLogGroup     = new SettingsGroup("Runtime Log");
+   QWidget *widget             = new QWidget;
+   QVBoxLayout *layout         = new QVBoxLayout;
+   QHBoxLayout *columnsLayout  = new QHBoxLayout;
+   QVBoxLayout *leftColumn     = new QVBoxLayout;
+   QVBoxLayout *rightColumn    = new QVBoxLayout;
+   SettingsGroup *savesGroup   = new SettingsGroup("Save Files");
+   SettingsGroup *saveRamGroup = new SettingsGroup("SaveRAM");
+   SettingsGroup *systemFilesDirGroup = new SettingsGroup("System Files");
+   SettingsGroup *screenshotsDirGroup = new SettingsGroup("Screenshots");
+   SettingsGroup *savestatesGroup = new SettingsGroup("Savestates");
+   SettingsGroup *replayGroup  = new SettingsGroup("Replays");
+   SettingsGroup *runtimeLogGroup = new SettingsGroup("Runtime Log");
+   static const enum msg_hash_enums savesEntries[] = {
+      MENU_ENUM_LABEL_SORT_SAVEFILES_ENABLE,
+      MENU_ENUM_LABEL_SORT_SAVEFILES_BY_CONTENT_ENABLE,
+      MENU_ENUM_LABEL_SAVEFILES_IN_CONTENT_DIR_ENABLE,
+      MENU_ENUM_LABEL_SAVE_FILE_COMPRESSION,
+      MENU_ENUM_LABEL_SAVE_COMPRESSION_CODEC
+   };
+   static const enum msg_hash_enums saveRamEntries[] = {
+      MENU_ENUM_LABEL_BLOCK_SRAM_OVERWRITE,
+      MENU_ENUM_LABEL_AUTOSAVE_INTERVAL
+   };
+   static const enum msg_hash_enums screenshotEntries[] = {
+      MENU_ENUM_LABEL_VIDEO_GPU_SCREENSHOT,
+      MENU_ENUM_LABEL_SORT_SCREENSHOTS_BY_CONTENT_ENABLE,
+      MENU_ENUM_LABEL_SCREENSHOTS_IN_CONTENT_DIR_ENABLE
+   };
+   static const enum msg_hash_enums savestateEntries[] = {
+      MENU_ENUM_LABEL_SORT_SAVESTATES_ENABLE,
+      MENU_ENUM_LABEL_SORT_SAVESTATES_BY_CONTENT_ENABLE,
+      MENU_ENUM_LABEL_SAVESTATES_IN_CONTENT_DIR_ENABLE,
+      MENU_ENUM_LABEL_SAVESTATE_AUTO_SAVE,
+      MENU_ENUM_LABEL_SAVESTATE_AUTO_LOAD,
+      MENU_ENUM_LABEL_SAVESTATE_THUMBNAIL_ENABLE,
+      MENU_ENUM_LABEL_SAVESTATE_FILE_COMPRESSION,
+      MENU_ENUM_LABEL_SAVESTATE_AUTOMATIC_INTERVAL,
+      MENU_ENUM_LABEL_SAVESTATE_AUTO_INDEX,
+      MENU_ENUM_LABEL_SAVESTATE_MAX_KEEP
+   };
+   static const enum msg_hash_enums replayEntries[] = {
+      MENU_ENUM_LABEL_REPLAY_AUTO_INDEX,
+      MENU_ENUM_LABEL_REPLAY_MAX_KEEP,
+      MENU_ENUM_LABEL_REPLAY_CHECKPOINT_INTERVAL,
+      MENU_ENUM_LABEL_REPLAY_CHECKPOINT_DESERIALIZE
+   };
+   static const enum msg_hash_enums runtimeEntries[] = {
+      MENU_ENUM_LABEL_CONTENT_RUNTIME_LOG,
+      MENU_ENUM_LABEL_CONTENT_RUNTIME_LOG_AGGREGATE
+   };
 
-   savesGroup->add(MENU_ENUM_LABEL_SORT_SAVEFILES_ENABLE);
-   savesGroup->add(MENU_ENUM_LABEL_SORT_SAVEFILES_BY_CONTENT_ENABLE);
-   savesGroup->add(MENU_ENUM_LABEL_SAVEFILES_IN_CONTENT_DIR_ENABLE);
+   file_list_t *savingList = qt_displaylist_build(
+         DISPLAYLIST_SAVING_SETTINGS_LIST);
 
-   savestatesGroup->add(MENU_ENUM_LABEL_SAVESTATE_AUTO_INDEX);
-
-   autoSavestatesGroup->add(MENU_ENUM_LABEL_SAVESTATE_AUTO_LOAD);
-
-   savestatesGroup->addRow(autoSavestatesGroup);
-   savestatesGroup->add(MENU_ENUM_LABEL_SAVESTATE_THUMBNAIL_ENABLE);
-   savestatesGroup->add(MENU_ENUM_LABEL_SORT_SAVESTATES_ENABLE);
-   savestatesGroup->add(MENU_ENUM_LABEL_SORT_SAVESTATES_BY_CONTENT_ENABLE);
-   savestatesGroup->add(MENU_ENUM_LABEL_SAVESTATES_IN_CONTENT_DIR_ENABLE);
-   savestatesGroup->add(MENU_ENUM_LABEL_SAVESTATE_FILE_COMPRESSION);
-
-   saveRamGroup->add(MENU_ENUM_LABEL_BLOCK_SRAM_OVERWRITE);
-   saveRamGroup->add(MENU_ENUM_LABEL_AUTOSAVE_INTERVAL);
-   saveRamGroup->add(MENU_ENUM_LABEL_SAVE_FILE_COMPRESSION);
-
+   qt_settings_group_add_list(savesGroup,
+         savingList, NULL, 0,
+         savesEntries, ARRAY_SIZE(savesEntries));
+   qt_settings_group_add_list(saveRamGroup,
+         savingList, NULL, 0,
+         saveRamEntries, ARRAY_SIZE(saveRamEntries));
    systemFilesDirGroup->add(MENU_ENUM_LABEL_SYSTEMFILES_IN_CONTENT_DIR_ENABLE);
+   qt_settings_group_add_list(screenshotsDirGroup,
+         savingList, NULL, 0,
+         screenshotEntries, ARRAY_SIZE(screenshotEntries));
+   qt_settings_group_add_list(savestatesGroup,
+         savingList, NULL, 0,
+         savestateEntries, ARRAY_SIZE(savestateEntries));
+   qt_settings_group_add_list(replayGroup,
+         savingList, NULL, 0,
+         replayEntries, ARRAY_SIZE(replayEntries));
+   qt_settings_group_add_list(runtimeLogGroup,
+         savingList, NULL, 0,
+         runtimeEntries, ARRAY_SIZE(runtimeEntries));
+   if (savingList)
+      file_list_free(savingList);
 
-   screenshotsDirGroup->add(MENU_ENUM_LABEL_VIDEO_GPU_SCREENSHOT);
-   screenshotsDirGroup->add(MENU_ENUM_LABEL_SORT_SCREENSHOTS_BY_CONTENT_ENABLE);
-   screenshotsDirGroup->add(MENU_ENUM_LABEL_SCREENSHOTS_IN_CONTENT_DIR_ENABLE);
+   leftColumn->addWidget(savesGroup);
+   leftColumn->addWidget(saveRamGroup);
+   leftColumn->addWidget(systemFilesDirGroup);
+   leftColumn->addWidget(screenshotsDirGroup);
+   leftColumn->addWidget(replayGroup);
 
-   runtimeLogGroup->add(MENU_ENUM_LABEL_CONTENT_RUNTIME_LOG);
-   runtimeLogGroup->add(MENU_ENUM_LABEL_CONTENT_RUNTIME_LOG_AGGREGATE);
+   rightColumn->addWidget(savestatesGroup);
+   rightColumn->addWidget(runtimeLogGroup);
+#ifdef HAVE_CLOUDSYNC
+   {
+      SettingsGroup *cloudSyncGroup = new SettingsGroup(
+            msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SETTINGS));
+      qt_settings_group_add_displaylist(cloudSyncGroup,
+            DISPLAYLIST_CLOUD_SYNC_SETTINGS_LIST, NULL, 0, NULL, 0);
+      rightColumn->addWidget(cloudSyncGroup);
+   }
+#endif
 
-   layout->addRow(savesGroup);
-   layout->addRow(savestatesGroup);
-   layout->addRow(saveRamGroup);
-   layout->addRow(systemFilesDirGroup);
-   layout->addRow(screenshotsDirGroup);
-   layout->addRow(runtimeLogGroup);
-
+   leftColumn->addStretch();
+   rightColumn->addStretch();
+   columnsLayout->addLayout(leftColumn, 1);
+   columnsLayout->addLayout(rightColumn, 1);
+   layout->addLayout(columnsLayout);
+   layout->addStretch();
    widget->setLayout(layout);
-
    return widget;
 }
 
@@ -6327,55 +7445,90 @@ UserInterfacePage::UserInterfacePage(QObject *parent) :
 
 QWidget *UserInterfacePage::widget()
 {
-   QWidget                     * widget = new QWidget;
-   QVBoxLayout                  *layout = new QVBoxLayout;
-   SettingsGroup             *menuGroup = new SettingsGroup("Menu");
-   SettingsGroup            *inputGroup = new SettingsGroup("Input");
-   SettingsGroup             *miscGroup = new SettingsGroup("Miscellaneous");
+   QWidget *widget = new QWidget;
+   QVBoxLayout *layout = new QVBoxLayout;
+   QHBoxLayout *columnsLayout = new QHBoxLayout;
+   QVBoxLayout *leftColumn = new QVBoxLayout;
+   QVBoxLayout *rightColumn = new QVBoxLayout;
+   SettingsGroup *menuGroup = new SettingsGroup("Menu");
+   SettingsGroup *inputGroup = new SettingsGroup("Input");
+   SettingsGroup *miscGroup = new SettingsGroup("Miscellaneous");
+   SettingsGroup *behaviorGroup = new SettingsGroup("Behavior");
+   SettingsGroup *fileBrowserGroup = new SettingsGroup(
+         msg_hash_to_str(MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_SETTINGS));
+   SettingsGroup *mediaPlayerGroup = new SettingsGroup(
+         msg_hash_to_str(MENU_ENUM_LABEL_VALUE_MEDIA_PLAYER_SETTINGS));
    CheckableSettingsGroup *desktopGroup = new CheckableSettingsGroup(
          MENU_ENUM_LABEL_DESKTOP_MENU_ENABLE);
-   rarch_setting_t           *kioskMode = menu_setting_find_enum(
+   static const enum msg_hash_enums uiGeneralEntries[] = {
+      MENU_ENUM_LABEL_PAUSE_ON_DISCONNECT,
+      MENU_ENUM_LABEL_MENU_SAVESTATE_RESUME,
+      MENU_ENUM_LABEL_MENU_INSERT_DISK_RESUME,
+      MENU_ENUM_LABEL_QUIT_ON_CLOSE_CONTENT,
+      MENU_ENUM_LABEL_MENU_REMEMBER_SELECTION,
+      MENU_ENUM_LABEL_MENU_STARTUP_PAGE,
+      MENU_ENUM_LABEL_CONFIRM_QUIT,
+      MENU_ENUM_LABEL_CONFIRM_CLOSE,
+      MENU_ENUM_LABEL_CONFIRM_RESET,
+      MENU_ENUM_LABEL_THREAD_PREFER_FAST_CORES,
+      MENU_ENUM_LABEL_VIDEO_THREAD_PRIORITY,
+      MENU_ENUM_LABEL_MAIN_THREAD_PRIORITY,
+      MENU_ENUM_LABEL_MENU_SCREENSAVER_TIMEOUT,
+      MENU_ENUM_LABEL_MENU_SCREENSAVER_ANIMATION,
+      MENU_ENUM_LABEL_MENU_SCREENSAVER_ANIMATION_SPEED,
+      MENU_ENUM_LABEL_APPICON_SETTINGS
+   };
+   rarch_setting_t *kioskMode = menu_setting_find_enum(
          MENU_ENUM_LABEL_MENU_ENABLE_KIOSK_MODE);
 
    menuGroup->add(MENU_ENUM_LABEL_SHOW_ADVANCED_SETTINGS);
 
-   /* only on XMB and Ozone*/
+   /* only on XMB and Ozone */
    if (kioskMode)
    {
       CheckableSettingsGroup *kioskGroup = new CheckableSettingsGroup(kioskMode, widget);
-
       kioskGroup->add(MENU_ENUM_LABEL_MENU_KIOSK_MODE_PASSWORD);
-
       menuGroup->addRow(kioskGroup);
    }
 
    menuGroup->add(MENU_ENUM_LABEL_NAVIGATION_WRAPAROUND);
    menuGroup->add(MENU_ENUM_LABEL_PAUSE_LIBRETRO);
-
-   inputGroup->add(MENU_ENUM_LABEL_MOUSE_ENABLE);
-   inputGroup->add(MENU_ENUM_LABEL_POINTER_ENABLE);
-
-   menuGroup->addRow(inputGroup);
    menuGroup->add(MENU_ENUM_LABEL_THREADED_DATA_RUNLOOP_ENABLE);
-
-   miscGroup->add(MENU_ENUM_LABEL_PAUSE_NONACTIVE);
-   miscGroup->add(MENU_ENUM_LABEL_VIDEO_DISABLE_COMPOSITION);
-
    menuGroup->add(MENU_ENUM_LABEL_UI_COMPANION_ENABLE);
    menuGroup->add(MENU_ENUM_LABEL_UI_COMPANION_START_ON_BOOT);
    menuGroup->add(MENU_ENUM_LABEL_UI_MENUBAR_ENABLE);
    menuGroup->add(MENU_ENUM_LABEL_MENU_SCROLL_FAST);
 
-   /* layout->add(MENU_ENUM_LABEL_DESKTOP_MENU_ENABLE); */
+   inputGroup->add(MENU_ENUM_LABEL_MOUSE_ENABLE);
+   inputGroup->add(MENU_ENUM_LABEL_POINTER_ENABLE);
+   menuGroup->addRow(inputGroup);
+
+   miscGroup->add(MENU_ENUM_LABEL_PAUSE_NONACTIVE);
+   miscGroup->add(MENU_ENUM_LABEL_VIDEO_DISABLE_COMPOSITION);
    desktopGroup->add(MENU_ENUM_LABEL_UI_COMPANION_TOGGLE);
 
-   layout->addWidget(menuGroup);
-   layout->addWidget(miscGroup);
-   layout->addWidget(desktopGroup);
-   layout->addStretch();
+   qt_settings_group_add_displaylist(behaviorGroup,
+         DISPLAYLIST_USER_INTERFACE_SETTINGS_LIST,
+         NULL, 0, uiGeneralEntries, ARRAY_SIZE(uiGeneralEntries));
+   qt_settings_group_add_displaylist(fileBrowserGroup,
+         DISPLAYLIST_MENU_FILE_BROWSER_SETTINGS_LIST, NULL, 0, NULL, 0);
+   qt_settings_group_add_displaylist(mediaPlayerGroup,
+         DISPLAYLIST_MEDIA_PLAYER_SETTINGS_LIST, NULL, 0, NULL, 0);
 
+   leftColumn->addWidget(menuGroup);
+   leftColumn->addWidget(behaviorGroup);
+
+   rightColumn->addWidget(fileBrowserGroup);
+   rightColumn->addWidget(mediaPlayerGroup);
+   rightColumn->addWidget(miscGroup);
+   rightColumn->addWidget(desktopGroup);
+
+   leftColumn->addStretch();
+   rightColumn->addStretch();
+   columnsLayout->addLayout(leftColumn, 1);
+   columnsLayout->addLayout(rightColumn, 1);
+   layout->addLayout(columnsLayout);
    widget->setLayout(layout);
-
    return widget;
 }
 
@@ -6396,6 +7549,7 @@ QWidget *ViewsPage::widget()
    OptionsPage *quickPage     = new SimplePage(
          DISPLAYLIST_QUICK_MENU_VIEWS_SETTINGS_LIST,
          MENU_ENUM_LABEL_VALUE_QUICK_MENU_VIEWS_SETTINGS, this);
+   QWidget *quickPageWidget;
    SettingsGroup *mainMenu    = new SettingsGroup("Main Menu");
    SettingsGroup *settings    = new SettingsGroup("Settings");
    SettingsGroup *tabs        = new SettingsGroup("Tabs");
@@ -6477,7 +7631,9 @@ QWidget *ViewsPage::widget()
    startScreen->add(MENU_ENUM_LABEL_RGUI_SHOW_START_SCREEN);
 
    quickMenu->layout()->setContentsMargins(0, 0, 0, 0);
-   quickMenu->addRow(quickPage->widget());
+   quickPageWidget = quickPage->widget();
+   quickPageWidget->setObjectName("quickMenuPage");
+   quickMenu->addRow(quickPageWidget);
 
    leftLayout->addRow(mainMenu);
    leftLayout->addRow(settings);
@@ -6489,8 +7645,8 @@ QWidget *ViewsPage::widget()
    rightLayout->addWidget(status);
    rightLayout->addStretch();
 
-   mainLayout->addLayout(leftLayout);
-   mainLayout->addLayout(rightLayout);
+   mainLayout->addLayout(leftLayout, 1);
+   mainLayout->addLayout(rightLayout, 1);
 
    widget->setLayout(mainLayout);
 
@@ -6503,53 +7659,95 @@ AppearancePage::AppearancePage(QObject *parent) :
    setDisplayName(MENU_ENUM_LABEL_VALUE_MENU_SETTINGS);
 }
 
+static bool qt_setting_list_contains(enum msg_hash_enums setting,
+      const enum msg_hash_enums *entries, size_t count);
+
 QWidget *AppearancePage::widget()
 {
    unsigned i;
-   QWidget            * widget = new QWidget;
-   FormLayout          *layout = new FormLayout;
-   file_list_t           *list = (file_list_t*)calloc(1, sizeof(*list));
-   settings_t *settings        = config_get_ptr();
+   QWidget *widget = new QWidget;
+   QVBoxLayout *layout = new QVBoxLayout;
+   QHBoxLayout *columnsLayout = new QHBoxLayout;
+   QVBoxLayout *leftColumn = new QVBoxLayout;
+   QVBoxLayout *rightColumn = new QVBoxLayout;
+   SettingsGroup *appearanceGroup = new SettingsGroup("Appearance");
+   SettingsGroup *tickerGroup = new SettingsGroup("Ticker");
+   SettingsGroup *thumbnailGroup = new SettingsGroup("Thumbnails");
+   file_list_t *list = (file_list_t*)calloc(1, sizeof(*list));
+   settings_t *settings = config_get_ptr();
+   static const enum msg_hash_enums tickerEntries[] = {
+      MENU_ENUM_LABEL_MENU_TICKER_TYPE,
+      MENU_ENUM_LABEL_MENU_TICKER_SPEED,
+      MENU_ENUM_LABEL_MENU_TICKER_SMOOTH
+   };
+   static const enum msg_hash_enums thumbnailEntries[] = {
+      MENU_ENUM_LABEL_MATERIALUI_MENU_THUMBNAIL_VIEW_PORTRAIT,
+      MENU_ENUM_LABEL_MATERIALUI_MENU_THUMBNAIL_VIEW_LANDSCAPE,
+      MENU_ENUM_LABEL_MATERIALUI_DUAL_THUMBNAIL_LIST_VIEW_ENABLE,
+      MENU_ENUM_LABEL_MATERIALUI_THUMBNAIL_BACKGROUND_ENABLE,
+      MENU_ENUM_LABEL_MENU_RGUI_INLINE_THUMBNAILS,
+      MENU_ENUM_LABEL_THUMBNAILS,
+      MENU_ENUM_LABEL_LEFT_THUMBNAILS,
+      MENU_ENUM_LABEL_ICON_THUMBNAILS,
+      MENU_ENUM_LABEL_XMB_VERTICAL_THUMBNAILS,
+      MENU_ENUM_LABEL_MENU_XMB_THUMBNAIL_SCALE_FACTOR,
+      MENU_ENUM_LABEL_OZONE_THUMBNAIL_SCALE_FACTOR,
+      MENU_ENUM_LABEL_MENU_THUMBNAIL_UPSCALE_THRESHOLD,
+      MENU_ENUM_LABEL_MENU_RGUI_SWAP_THUMBNAILS,
+      MENU_ENUM_LABEL_MENU_RGUI_THUMBNAIL_DOWNSCALER,
+      MENU_ENUM_LABEL_MENU_RGUI_THUMBNAIL_DITHER,
+      MENU_ENUM_LABEL_MENU_RGUI_THUMBNAIL_DELAY,
+      MENU_ENUM_LABEL_MENU_THUMBNAIL_BACKGROUND_ENABLE,
+      MENU_ENUM_LABEL_MENU_THUMBNAIL_PREVIEW_AUDIO,
+      MENU_ENUM_LABEL_MENU_THUMBNAIL_PREVIEW_THREADS
+   };
 
-   menu_displaylist_build_list(
-         list, settings, DISPLAYLIST_MENU_SETTINGS_LIST, true);
-
-   /* TODO/FIXME - we haven't yet figured out how to
-    * put a radio button setting next to another radio
-    * button on the same row */
+   menu_displaylist_build_list(list, settings,
+         DISPLAYLIST_MENU_SETTINGS_LIST, true);
 
    for (i = 0; i < list->size; i++)
    {
       menu_file_list_cbs_t *cbs = (menu_file_list_cbs_t*)
          file_list_get_actiondata_at_offset(list, i);
+      enum msg_hash_enums entry = cbs->enum_idx;
 
-      switch (cbs->enum_idx)
+      if (qt_setting_list_contains(entry, tickerEntries,
+               ARRAY_SIZE(tickerEntries)))
+         tickerGroup->add(entry);
+      else if (qt_setting_list_contains(entry, thumbnailEntries,
+               ARRAY_SIZE(thumbnailEntries)))
+         thumbnailGroup->add(entry);
+      else
       {
-         /* TODO/FIXME - this is a dirty hack - if we
-          * detect this setting, we instead replace it with a
-          * color button and ignore the other two font color
-          * settings since they are already covered by this one
-          * color button */
-         case MENU_ENUM_LABEL_MENU_FONT_COLOR_RED:
-            /* TODO/FIXME - localize */
-            layout->addUIntColorButton("Menu Font Color: ",
-                  MENU_ENUM_LABEL_MENU_FONT_COLOR_RED,
-                  MENU_ENUM_LABEL_MENU_FONT_COLOR_GREEN,
-                  MENU_ENUM_LABEL_MENU_FONT_COLOR_BLUE);
-            break;
-         case MENU_ENUM_LABEL_MENU_FONT_COLOR_GREEN:
-         case MENU_ENUM_LABEL_MENU_FONT_COLOR_BLUE:
-            break;
-         default:
-            layout->add(menu_setting_find_enum(cbs->enum_idx));
-            break;
+         switch (entry)
+         {
+            case MENU_ENUM_LABEL_MENU_FONT_COLOR_RED:
+               appearanceGroup->addUIntColorButton("Menu Font Color: ",
+                     MENU_ENUM_LABEL_MENU_FONT_COLOR_RED,
+                     MENU_ENUM_LABEL_MENU_FONT_COLOR_GREEN,
+                     MENU_ENUM_LABEL_MENU_FONT_COLOR_BLUE);
+               break;
+            case MENU_ENUM_LABEL_MENU_FONT_COLOR_GREEN:
+            case MENU_ENUM_LABEL_MENU_FONT_COLOR_BLUE:
+               break;
+            default:
+               appearanceGroup->add(entry);
+               break;
+         }
       }
    }
 
    file_list_free(list);
 
+   leftColumn->addWidget(appearanceGroup);
+   leftColumn->addWidget(tickerGroup);
+   rightColumn->addWidget(thumbnailGroup);
+   leftColumn->addStretch();
+   rightColumn->addStretch();
+   columnsLayout->addLayout(leftColumn, 1);
+   columnsLayout->addLayout(rightColumn, 1);
+   layout->addLayout(columnsLayout);
    widget->setLayout(layout);
-
    return widget;
 }
 
@@ -6572,7 +7770,16 @@ void DesktopMenuPage::load()
 
 QWidget *DesktopMenuPage::widget()
 {
-   return m_widget;
+   QWidget *page       = new QWidget;
+   QGridLayout *layout = new QGridLayout;
+   /* m_widget in the top-left cell; the stretch factors keep it at half
+    * width and top-aligned, without nested column layouts. */
+   layout->addWidget(m_widget, 0, 0);
+   layout->setColumnStretch(0, 1);
+   layout->setColumnStretch(1, 1);
+   layout->setRowStretch(1, 1);
+   page->setLayout(layout);
+   return page;
 }
 
 UserCategory::UserCategory(QWidget *parent) :
@@ -6587,7 +7794,6 @@ QVector<OptionsPage*> UserCategory::pages()
    QVector<OptionsPage*> pages;
 
    pages << new UserPage(this);
-   pages << new AccountsPage(this);
 
    return pages;
 }
@@ -6604,6 +7810,21 @@ QWidget *UserPage::widget()
 
    layout->add(menu_setting_find_enum(MENU_ENUM_LABEL_NETPLAY_NICKNAME));
    layout->add(menu_setting_find_enum(MENU_ENUM_LABEL_USER_LANGUAGE));
+   layout->add(menu_setting_find_enum(MENU_ENUM_LABEL_KEYCHAIN_PASSPHRASE));
+   {
+      SettingsGroup *privacyGroup = new SettingsGroup(
+            msg_hash_to_str(MENU_ENUM_LABEL_VALUE_PRIVACY_SETTINGS));
+      qt_settings_group_add_displaylist(privacyGroup,
+            DISPLAYLIST_PRIVACY_SETTINGS_LIST, NULL, 0, NULL, 0);
+      layout->addRow(privacyGroup);
+   }
+   {
+      SettingsGroup *accountsGroup = new SettingsGroup(
+            msg_hash_to_str(MENU_ENUM_LABEL_VALUE_ACCOUNTS_LIST));
+      AccountsPage *accountsPage = new AccountsPage(this);
+      accountsGroup->addRow(accountsPage->widget());
+      layout->addRow(accountsGroup);
+   }
 
    widget->setLayout(layout);
 
@@ -6651,9 +7872,104 @@ QWidget *AccountsPage::widget()
 
    layout->addStretch();
 
+   widget->setAttribute(Qt::WA_TranslucentBackground);
+   widget->setAutoFillBackground(false);
    widget->setLayout(layout);
 
    return widget;
+}
+
+/* Populate a Qt SettingsGroup from an existing RetroArch menu display list.
+ * This keeps the menu's conditional/platform-specific settings as the source
+ * of truth while allowing the desktop UI to arrange them into groups. */
+static bool qt_setting_list_contains(enum msg_hash_enums setting,
+      const enum msg_hash_enums *entries, size_t count)
+{
+   size_t i;
+
+   for (i = 0; i < count; i++)
+      if (entries[i] == setting)
+         return true;
+
+   return false;
+}
+
+/* Build a menu display list once; a page that splits one list into
+ * several groups walks the same build for each group instead of
+ * rebuilding (and re-copying every label of) the whole list per group. */
+static file_list_t *qt_displaylist_build(
+      enum menu_displaylist_ctl_state state)
+{
+   file_list_t *list = (file_list_t*)calloc(1, sizeof(*list));
+   if (list)
+      menu_displaylist_build_list(list, config_get_ptr(), state, true);
+   return list;
+}
+
+static bool qt_list_has_entry(const file_list_t *list,
+      enum msg_hash_enums entry)
+{
+   size_t i;
+
+   if (!list)
+      return false;
+
+   for (i = 0; i < list->size; i++)
+   {
+      const menu_file_list_cbs_t *cbs = (const menu_file_list_cbs_t*)
+         list->list[i].actiondata;
+      if (cbs && cbs->enum_idx == entry)
+         return true;
+   }
+
+   return false;
+}
+
+static void qt_settings_group_add_list(SettingsGroup *group,
+      const file_list_t *list,
+      const enum msg_hash_enums *skip_entries, size_t skip_count,
+      const enum msg_hash_enums *only_entries, size_t only_count)
+{
+   size_t i;
+
+   if (!list)
+      return;
+
+   for (i = 0; i < list->size; i++)
+   {
+      rarch_setting_t *setting;
+      const menu_file_list_cbs_t *cbs = (const menu_file_list_cbs_t*)
+         list->list[i].actiondata;
+
+      if (!cbs)
+         continue;
+
+      if (only_count && !qt_setting_list_contains(cbs->enum_idx,
+               only_entries, only_count))
+         continue;
+
+      if (qt_setting_list_contains(cbs->enum_idx,
+               skip_entries, skip_count))
+         continue;
+
+      if ((setting = menu_setting_find_enum(cbs->enum_idx)))
+         group->add(setting);
+   }
+}
+
+static void qt_settings_group_add_displaylist(SettingsGroup *group,
+      enum menu_displaylist_ctl_state state,
+      const enum msg_hash_enums *skip_entries, size_t skip_count,
+      const enum msg_hash_enums *only_entries, size_t only_count)
+{
+   file_list_t *list = qt_displaylist_build(state);
+
+   if (!list)
+      return;
+
+   qt_settings_group_add_list(group, list,
+         skip_entries, skip_count, only_entries, only_count);
+   file_list_free(list);
 }
 
 VideoCategory::VideoCategory(QWidget *parent) :
@@ -6668,7 +7984,6 @@ QVector<OptionsPage*> VideoCategory::pages()
    QVector<OptionsPage*> pages;
 
    pages << new VideoPage(this);
-   pages << new CrtSwitchresPage(this);
 
    return pages;
 }
@@ -6676,192 +7991,335 @@ QVector<OptionsPage*> VideoCategory::pages()
 VideoPage::VideoPage(QObject *parent) :
    OptionsPage(parent)
    ,m_resolutionCombo(new QComboBox())
+   ,m_crtSuperResolutionCombo(NULL)
 {
 }
 
 QWidget *VideoPage::widget()
 {
-   QWidget               *widget       = new QWidget;
+   QWidget *widget = new QWidget;
+   QVBoxLayout *layout = new QVBoxLayout;
+   QHBoxLayout *columnsLayout = new QHBoxLayout;
+   QVBoxLayout *leftColumn = new QVBoxLayout;
+   QVBoxLayout *rightColumn = new QVBoxLayout;
 
-   QVBoxLayout        *layout          = new QVBoxLayout;
-
-   SettingsGroup *outputGroup          = new SettingsGroup("Output");
-   SettingsGroup *aspectGroup          = new SettingsGroup("Scaling");
-
-   SettingsGroup *fullscreenGroup      = new SettingsGroup("Fullscreen Mode");
-   SettingsGroup *windowedGroup        = new SettingsGroup("Windowed Mode");
-
-   QHBoxLayout *fullcreenSizeLayout    = new QHBoxLayout;
-   FormLayout *leftFullscreenSizeForm  = new FormLayout;
-   FormLayout *rightFullscreenSizeForm = new FormLayout;
-
-   QHBoxLayout *windowedSizeLayout     = new QHBoxLayout;
-   FormLayout *leftWindowedSizeForm    = new FormLayout;
-   FormLayout *rightWindowedSizeForm   = new FormLayout;
-   QHBoxLayout *windowedCustomSizeLayout   = new QHBoxLayout;
-   FormLayout *leftWindowedCustomSizeForm  = new FormLayout;
-   FormLayout *rightWindowedCustomSizeForm = new FormLayout;
+   SettingsGroup *outputGroup = new SettingsGroup("Output");
+   SettingsGroup *aspectGroup = new SettingsGroup("Scaling");
+   SettingsGroup *fullscreenGroup = new SettingsGroup("Fullscreen Mode");
+   SettingsGroup *windowedGroup = new SettingsGroup("Windowed Mode");
+   SettingsGroup *syncGroup = new SettingsGroup("Synchronization");
+   SettingsGroup *miscGroup = new SettingsGroup("Miscellaneous");
+   SettingsGroup *stereo3dGroup = new SettingsGroup(
+         msg_hash_to_str(MENU_ENUM_LABEL_VALUE_VIDEO_STEREO_SETTINGS));
+   SettingsGroup *gameScreensGroup = new SettingsGroup(
+         msg_hash_to_str(MENU_ENUM_LABEL_VALUE_VIDEO_GAME_SCREENS_SETTINGS));
+#ifdef HAVE_OPENXR
+   SettingsGroup *headsetGroup = new SettingsGroup(
+         msg_hash_to_str(MENU_ENUM_LABEL_VALUE_VIDEO_HEADSET_SETTINGS));
+#endif
+   CheckableSettingsGroup *vSyncGroup =
+      new CheckableSettingsGroup(MENU_ENUM_LABEL_VIDEO_VSYNC);
 #if defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)
-   CheckableSettingsGroup *savePosGroup    = new CheckableSettingsGroup(MENU_ENUM_LABEL_VIDEO_WINDOW_SAVE_POSITION);
+   CheckableSettingsGroup *windowCustomSizeGroup =
+      new CheckableSettingsGroup(MENU_ENUM_LABEL_VIDEO_WINDOW_SAVE_POSITION);
 #else
-   CheckableSettingsGroup *savePosGroup    = new CheckableSettingsGroup(MENU_ENUM_LABEL_VIDEO_WINDOW_CUSTOM_SIZE_ENABLE);
+   CheckableSettingsGroup *windowCustomSizeGroup =
+      new CheckableSettingsGroup(MENU_ENUM_LABEL_VIDEO_WINDOW_CUSTOM_SIZE_ENABLE);
+#endif
+   QHBoxLayout *fullscreenSizeLayout = new QHBoxLayout;
+   FormLayout *leftFullscreenSizeForm = new FormLayout;
+   FormLayout *rightFullscreenSizeForm = new FormLayout;
+   QHBoxLayout *windowedSizeLayout = new QHBoxLayout;
+   FormLayout *leftWindowedSizeForm = new FormLayout;
+   FormLayout *rightWindowedSizeForm = new FormLayout;
+   QHBoxLayout *windowedCustomSizeLayout = new QHBoxLayout;
+   FormLayout *leftWindowedCustomSizeForm = new FormLayout;
+   FormLayout *rightWindowedCustomSizeForm = new FormLayout;
+   unsigned i, size = 0;
+   bool hasCrtSwitchres;
+   /* One build of the top-level video list serves the CRT probe and the
+    * Miscellaneous / Video Filter split (it was built three times). */
+   file_list_t *videoList = qt_displaylist_build(
+         DISPLAYLIST_VIDEO_SETTINGS_LIST);
+   struct video_display_config *resolutionList =
+      (struct video_display_config*)video_display_server_get_resolution_list(&size);
+
+   static const enum msg_hash_enums outputSkip[] = {
+      MENU_ENUM_LABEL_SCREEN_RESOLUTION,
+      MENU_ENUM_LABEL_VIDEO_REFRESH_RATE_AUTO,
+      MENU_ENUM_LABEL_VIDEO_REFRESH_RATE_POLLED
+   };
+   static const enum msg_hash_enums scalingSkip[] = {
+      MENU_ENUM_LABEL_VIDEO_ASPECT_RATIO_INDEX,
+      MENU_ENUM_LABEL_VIDEO_ASPECT_RATIO,
+      MENU_ENUM_LABEL_VIDEO_VIEWPORT_CUSTOM_X,
+      MENU_ENUM_LABEL_VIDEO_VIEWPORT_CUSTOM_Y,
+      MENU_ENUM_LABEL_VIDEO_VIEWPORT_CUSTOM_WIDTH,
+      MENU_ENUM_LABEL_VIDEO_VIEWPORT_CUSTOM_HEIGHT
+   };
+   static const enum msg_hash_enums fullscreenSkip[] = {
+      MENU_ENUM_LABEL_VIDEO_FULLSCREEN_X,
+      MENU_ENUM_LABEL_VIDEO_FULLSCREEN_Y
+   };
+   static const enum msg_hash_enums windowedSkip[] = {
+#if defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)
+      MENU_ENUM_LABEL_VIDEO_WINDOW_SAVE_POSITION,
+#else
+      MENU_ENUM_LABEL_VIDEO_WINDOW_CUSTOM_SIZE_ENABLE,
+#endif
+      MENU_ENUM_LABEL_VIDEO_SCALE,
+      MENU_ENUM_LABEL_VIDEO_WINDOW_WIDTH,
+      MENU_ENUM_LABEL_VIDEO_WINDOW_HEIGHT,
+      MENU_ENUM_LABEL_VIDEO_WINDOW_AUTO_WIDTH_MAX,
+      MENU_ENUM_LABEL_VIDEO_WINDOW_AUTO_HEIGHT_MAX,
+      MENU_ENUM_LABEL_VIDEO_WINDOW_OPACITY
+   };
+   static const enum msg_hash_enums syncSkip[] = {
+      MENU_ENUM_LABEL_VIDEO_VSYNC,
+      MENU_ENUM_LABEL_VIDEO_SWAP_INTERVAL,
+      MENU_ENUM_LABEL_VIDEO_SHADER_SUBFRAMES,
+      MENU_ENUM_LABEL_VIDEO_SCAN_SUBFRAMES,
+      MENU_ENUM_LABEL_VIDEO_BLACK_FRAME_INSERTION,
+      MENU_ENUM_LABEL_VIDEO_BFI_DARK_FRAMES,
+      MENU_ENUM_LABEL_VIDEO_ADAPTIVE_VSYNC,
+      MENU_ENUM_LABEL_VIDEO_HARD_SYNC,
+      MENU_ENUM_LABEL_VIDEO_HARD_SYNC_FRAMES,
+      MENU_ENUM_LABEL_VIDEO_FRAME_DELAY_AUTO,
+      MENU_ENUM_LABEL_VIDEO_FRAME_DELAY
+   };
+   static const enum msg_hash_enums crtSwitchresSkip[] = {
+      MENU_ENUM_LABEL_CRT_SWITCH_RESOLUTION_SUPER
+   };
+   static const enum msg_hash_enums filterEntries[] = {
+      MENU_ENUM_LABEL_VIDEO_FILTER_ENABLE,
+      MENU_ENUM_LABEL_VIDEO_FILTER_THREADS,
+      MENU_ENUM_LABEL_VIDEO_FILTER,
+#if defined(DINGUX)
+      MENU_ENUM_LABEL_VIDEO_DINGUX_IPU_FILTER_TYPE,
+#if defined(RS90) || defined(MIYOO)
+      MENU_ENUM_LABEL_VIDEO_DINGUX_RS90_SOFTFILTER_TYPE,
+#endif
+#endif
+   };
+
+   hasCrtSwitchres = qt_list_has_entry(videoList,
+         MENU_ENUM_LABEL_CRT_SWITCHRES_SETTINGS);
+#ifdef HAVE_TEMPORAL_UPSCALER
+   /* Only built where it can be shown: an unshown, unparented group
+    * would leak. */
+   SettingsGroup *dlssNrGroup = new SettingsGroup("DLSS Noise Reduction");
+   /* Do not gate this group on the runtime-dependent display list. The
+    * menu list is rebuilt only after a full restart when the DLSS runtime
+    * becomes available, while Qt can expose the settings immediately. */
+   dlssNrGroup->add(MENU_ENUM_LABEL_VIDEO_DLSS_NR_ENABLE);
+   dlssNrGroup->add(MENU_ENUM_LABEL_VIDEO_DLSS_NR_PRESET);
+   dlssNrGroup->add(MENU_ENUM_LABEL_VIDEO_DLSS_NR_STYLE);
+   dlssNrGroup->add(MENU_ENUM_LABEL_VIDEO_DLSS_NR_INTENSITY);
+   dlssNrGroup->add(MENU_ENUM_LABEL_VIDEO_DLSS_NR_LOCAL_STRUCTURE);
+   dlssNrGroup->add(MENU_ENUM_LABEL_VIDEO_DLSS_NR_LOCAL_TONE);
+   {
+      rarch_setting_t *skinStructure = menu_setting_find_enum(
+            MENU_ENUM_LABEL_VIDEO_DLSS_NR_SKIN_STRUCTURE);
+      if (skinStructure)
+         dlssNrGroup->addRow(form_label(skinStructure),
+               new IntSpinBox(skinStructure));
+   }
+   dlssNrGroup->add(MENU_ENUM_LABEL_VIDEO_DLSS_NR_AUTO_MASK);
 #endif
 
-   SettingsGroup *hdrGroup             = new SettingsGroup("HDR");
-   QHBoxLayout *hdrLayout              = new QHBoxLayout;
+   qt_settings_group_add_displaylist(outputGroup,
+         DISPLAYLIST_VIDEO_OUTPUT_SETTINGS_LIST,
+         outputSkip, ARRAY_SIZE(outputSkip), NULL, 0);
 
-   SettingsGroup *syncGroup            = new SettingsGroup("Synchronization");
-   CheckableSettingsGroup *vSyncGroup  = new CheckableSettingsGroup(MENU_ENUM_LABEL_VIDEO_VSYNC);
-
-   QHBoxLayout *outputScalingLayout    = new QHBoxLayout;
-   QHBoxLayout *modeLayout             = new QHBoxLayout;
-   QHBoxLayout *syncMiscLayout         = new QHBoxLayout;
-
-   SettingsGroup *miscGroup            = new SettingsGroup("Miscellaneous");
-   SettingsGroup *stereo3dGroup        = new SettingsGroup("Stereo 3D and Screens");
-   SettingsGroup *filterGroup          = new SettingsGroup("Video Filter");
-
-   unsigned i, size                    = 0;
-   struct video_display_config *list   = (struct video_display_config*) video_display_server_get_resolution_list(&size);
-
-   if (list)
+   if (resolutionList)
    {
       for (i = 0; i < size; i++)
       {
-         char val_d[NAME_MAX_LENGTH], str[NAME_MAX_LENGTH];
-         snprintf(str, sizeof(str), "%dx%d (%d Hz)",
-               VIDEO_SCALE_W(list[i].dims), VIDEO_SCALE_H(list[i].dims),
-               list[i].refreshrate);
-         snprintf(val_d, sizeof(val_d), "%d", i);
-
-         m_resolutionCombo->addItem(str);
-
-         if (list[i].current)
-            m_resolutionCombo->setCurrentIndex(i);
+         /* Format straight into the QString the combo keeps, instead of
+          * a stack buffer that addItem() then copies and converts. */
+         m_resolutionCombo->addItem(QString::asprintf("%dx%d (%d Hz)",
+               VIDEO_SCALE_W(resolutionList[i].dims),
+               VIDEO_SCALE_H(resolutionList[i].dims),
+               resolutionList[i].refreshrate));
+         if (resolutionList[i].current)
+            m_resolutionCombo->setCurrentIndex((int)i);
       }
-
-      free(list);
+      free(resolutionList);
    }
 
-   outputGroup->add(MENU_ENUM_LABEL_VIDEO_DRIVER);
-   outputGroup->add(MENU_ENUM_LABEL_VIDEO_THREADED);
-   outputGroup->add(MENU_ENUM_LABEL_VIDEO_THREADED_PRESENT_REPEAT);
-   outputGroup->add(MENU_ENUM_LABEL_VIDEO_THREADED_DISPLAY_PACING);
-   outputGroup->add(MENU_ENUM_LABEL_VIDEO_DXGI_PRESENT);
-   outputGroup->add(MENU_ENUM_LABEL_VIDEO_MONITOR_INDEX);
-   outputGroup->add(MENU_ENUM_LABEL_VIDEO_ROTATION);
-   outputGroup->add(MENU_ENUM_LABEL_SCREEN_ORIENTATION);
-   outputGroup->addRow(msg_hash_to_str(MENU_ENUM_LABEL_VALUE_SCREEN_RESOLUTION), m_resolutionCombo);
-   outputGroup->add(MENU_ENUM_LABEL_VIDEO_AUTOSWITCH_REFRESH_RATE);
-   outputGroup->add(MENU_ENUM_LABEL_VIDEO_AUTOSWITCH_PAL_THRESHOLD);
+   if (m_resolutionCombo->count() > 0)
+      outputGroup->addRow(msg_hash_to_str(MENU_ENUM_LABEL_VALUE_SCREEN_RESOLUTION),
+            m_resolutionCombo);
+   {
+      rarch_setting_t *refreshAction = menu_setting_find_enum(
+            MENU_ENUM_LABEL_VIDEO_REFRESH_RATE_POLLED);
+      if (refreshAction)
+      {
+         char refreshText[64] = {0};
+         QPushButton *refreshButton = new QPushButton;
+         if (refreshAction->actions && refreshAction->actions->repr)
+            refreshAction->actions->repr(refreshAction, refreshText,
+                  sizeof(refreshText));
+         refreshButton->setText(QString::fromUtf8(refreshText));
+         QObject::connect(refreshButton, &QPushButton::clicked,
+               [refreshAction, refreshButton]()
+               {
+                  if (refreshAction->actions && refreshAction->actions->ok)
+                     refreshAction->actions->ok(refreshAction, 0, false);
+                  char value[64] = {0};
+                  if (refreshAction->actions && refreshAction->actions->repr)
+                     refreshAction->actions->repr(refreshAction, value,
+                           sizeof(value));
+                  refreshButton->setText(QString::fromUtf8(value));
+               });
+         outputGroup->addRow(msg_hash_to_str(
+                  MENU_ENUM_LABEL_VALUE_VIDEO_REFRESH_RATE_POLLED),
+               refreshButton);
+      }
+   }
 
-   fullscreenGroup->add(MENU_ENUM_LABEL_VIDEO_FULLSCREEN);
-   fullscreenGroup->add(MENU_ENUM_LABEL_VIDEO_WINDOWED_FULLSCREEN);
-   fullscreenGroup->add(MENU_ENUM_LABEL_VIDEO_FSE_NEGOTIATION);
-
-   leftFullscreenSizeForm->addRow("Width:", new UIntSpinBox(MENU_ENUM_LABEL_VIDEO_FULLSCREEN_X));
-   rightFullscreenSizeForm->addRow("Height:", new UIntSpinBox(MENU_ENUM_LABEL_VIDEO_FULLSCREEN_Y));
-
-   fullcreenSizeLayout->addLayout(leftFullscreenSizeForm);
-   fullcreenSizeLayout->addLayout(rightFullscreenSizeForm);
-
-   fullscreenGroup->addRow(fullcreenSizeLayout);
-
-   aspectGroup->add(MENU_ENUM_LABEL_VIDEO_SCALE_INTEGER);
+   qt_settings_group_add_displaylist(aspectGroup,
+         DISPLAYLIST_VIDEO_SCALING_SETTINGS_LIST,
+         scalingSkip, ARRAY_SIZE(scalingSkip), NULL, 0);
    aspectGroup->addRow(new AspectRatioGroup("Aspect Ratio"));
-   aspectGroup->add(MENU_ENUM_LABEL_VIDEO_VIEWPORT_BIAS_X);
-   aspectGroup->add(MENU_ENUM_LABEL_VIDEO_VIEWPORT_BIAS_Y);
-   aspectGroup->add(MENU_ENUM_LABEL_VIDEO_CROP_OVERSCAN);
 
-   leftWindowedSizeForm->addRow("Scale:", new UIntSpinBox(MENU_ENUM_LABEL_VIDEO_SCALE));
-   leftWindowedSizeForm->addRow("Max Width:", new UIntSpinBox(MENU_ENUM_LABEL_VIDEO_WINDOW_AUTO_WIDTH_MAX));
+   qt_settings_group_add_displaylist(fullscreenGroup,
+         DISPLAYLIST_VIDEO_FULLSCREEN_MODE_SETTINGS_LIST,
+         fullscreenSkip, ARRAY_SIZE(fullscreenSkip), NULL, 0);
+   leftFullscreenSizeForm->addRow("Width:",
+         new UIntSpinBox(MENU_ENUM_LABEL_VIDEO_FULLSCREEN_X));
+   rightFullscreenSizeForm->addRow("Height:",
+         new UIntSpinBox(MENU_ENUM_LABEL_VIDEO_FULLSCREEN_Y));
+   fullscreenSizeLayout->addLayout(leftFullscreenSizeForm);
+   fullscreenSizeLayout->addLayout(rightFullscreenSizeForm);
+   fullscreenGroup->addRow(fullscreenSizeLayout);
 
-   rightWindowedSizeForm->addRow("Opacity:", new UIntSpinBox(MENU_ENUM_LABEL_VIDEO_WINDOW_OPACITY));
-   rightWindowedSizeForm->addRow("Max Height:", new UIntSpinBox(MENU_ENUM_LABEL_VIDEO_WINDOW_AUTO_HEIGHT_MAX));
-
+   qt_settings_group_add_displaylist(windowedGroup,
+         DISPLAYLIST_VIDEO_WINDOWED_MODE_SETTINGS_LIST,
+         windowedSkip, ARRAY_SIZE(windowedSkip), NULL, 0);
+   leftWindowedSizeForm->addRow("Scale:",
+         new UIntSpinBox(MENU_ENUM_LABEL_VIDEO_SCALE));
+   leftWindowedSizeForm->addRow("Max Width:",
+         new UIntSpinBox(MENU_ENUM_LABEL_VIDEO_WINDOW_AUTO_WIDTH_MAX));
+   rightWindowedSizeForm->addRow("Opacity:",
+         new UIntSpinBox(MENU_ENUM_LABEL_VIDEO_WINDOW_OPACITY));
+   rightWindowedSizeForm->addRow("Max Height:",
+         new UIntSpinBox(MENU_ENUM_LABEL_VIDEO_WINDOW_AUTO_HEIGHT_MAX));
    windowedSizeLayout->addLayout(leftWindowedSizeForm);
    windowedSizeLayout->addLayout(rightWindowedSizeForm);
-
    windowedGroup->addRow(windowedSizeLayout);
-
-   leftWindowedCustomSizeForm->addRow("Width:", new UIntSpinBox(MENU_ENUM_LABEL_VIDEO_WINDOW_WIDTH));
-   rightWindowedCustomSizeForm->addRow("Height:", new UIntSpinBox(MENU_ENUM_LABEL_VIDEO_WINDOW_HEIGHT));
-
+   leftWindowedCustomSizeForm->addRow("Width:",
+         new UIntSpinBox(MENU_ENUM_LABEL_VIDEO_WINDOW_WIDTH));
+   rightWindowedCustomSizeForm->addRow("Height:",
+         new UIntSpinBox(MENU_ENUM_LABEL_VIDEO_WINDOW_HEIGHT));
    windowedCustomSizeLayout->addLayout(leftWindowedCustomSizeForm);
    windowedCustomSizeLayout->addLayout(rightWindowedCustomSizeForm);
+   windowCustomSizeGroup->addRow(windowedCustomSizeLayout);
+   windowedGroup->addRow(windowCustomSizeGroup);
 
-   savePosGroup->addRow(windowedCustomSizeLayout);
-   windowedGroup->addRow(savePosGroup);
-
-   windowedGroup->add(MENU_ENUM_LABEL_VIDEO_WINDOW_SHOW_DECORATIONS);
-   windowedGroup->add(MENU_ENUM_LABEL_UI_MENUBAR_ENABLE);
-
+   /* Keep the dependent VSync and hard-sync controls grouped with their
+    * master switches. The remaining synchronization settings come from the
+    * live menu display list. */
    vSyncGroup->add(MENU_ENUM_LABEL_VIDEO_SWAP_INTERVAL);
    vSyncGroup->add(MENU_ENUM_LABEL_VIDEO_SHADER_SUBFRAMES);
    vSyncGroup->add(MENU_ENUM_LABEL_VIDEO_SCAN_SUBFRAMES);
    vSyncGroup->add(MENU_ENUM_LABEL_VIDEO_BLACK_FRAME_INSERTION);
+   vSyncGroup->add(MENU_ENUM_LABEL_VIDEO_BFI_DARK_FRAMES);
    vSyncGroup->add(MENU_ENUM_LABEL_VIDEO_ADAPTIVE_VSYNC);
    vSyncGroup->add(MENU_ENUM_LABEL_VIDEO_FRAME_DELAY);
    vSyncGroup->add(MENU_ENUM_LABEL_VIDEO_FRAME_DELAY_AUTO);
    syncGroup->addRow(vSyncGroup);
-
-   rarch_setting_t *hardSyncSetting = menu_setting_find_enum(MENU_ENUM_LABEL_VIDEO_HARD_SYNC);
-
-   if (hardSyncSetting)
    {
-      CheckableSettingsGroup *hardSyncGroup = new CheckableSettingsGroup(hardSyncSetting);
-
-      hardSyncGroup->add(MENU_ENUM_LABEL_VIDEO_HARD_SYNC_FRAMES);
-
-      syncGroup->addRow(hardSyncGroup);
+      rarch_setting_t *hardSyncSetting =
+         menu_setting_find_enum(MENU_ENUM_LABEL_VIDEO_HARD_SYNC);
+      if (hardSyncSetting)
+      {
+         CheckableSettingsGroup *hardSyncGroup =
+            new CheckableSettingsGroup(hardSyncSetting);
+         hardSyncGroup->add(MENU_ENUM_LABEL_VIDEO_HARD_SYNC_FRAMES);
+         syncGroup->addRow(hardSyncGroup);
+      }
    }
+   qt_settings_group_add_displaylist(syncGroup,
+         DISPLAYLIST_VIDEO_SYNCHRONIZATION_SETTINGS_LIST,
+         syncSkip, ARRAY_SIZE(syncSkip), NULL, 0);
 
-   syncGroup->add(MENU_ENUM_LABEL_VIDEO_MAX_SWAPCHAIN_IMAGES);
-   syncGroup->add(MENU_ENUM_LABEL_VIDEO_WAITABLE_SWAPCHAINS);
-   syncGroup->add(MENU_ENUM_LABEL_VIDEO_SCANLINE_SYNC);
-   syncGroup->add(MENU_ENUM_LABEL_VRR_RUNLOOP_ENABLE);
+   qt_settings_group_add_displaylist(stereo3dGroup,
+         DISPLAYLIST_VIDEO_STEREO_SETTINGS_LIST, NULL, 0, NULL, 0);
+   qt_settings_group_add_displaylist(gameScreensGroup,
+         DISPLAYLIST_VIDEO_GAME_SCREENS_SETTINGS_LIST, NULL, 0, NULL, 0);
+#ifdef HAVE_OPENXR
+   qt_settings_group_add_displaylist(headsetGroup,
+         DISPLAYLIST_VIDEO_HEADSET_SETTINGS_LIST, NULL, 0, NULL, 0);
+#endif
+   qt_settings_group_add_list(miscGroup, videoList,
+         filterEntries, ARRAY_SIZE(filterEntries), NULL, 0);
 
-   miscGroup->add(MENU_ENUM_LABEL_SUSPEND_SCREENSAVER_ENABLE);
-   miscGroup->add(MENU_ENUM_LABEL_VIDEO_GPU_SCREENSHOT);
-   miscGroup->add(MENU_ENUM_LABEL_VIDEO_SMOOTH);
-   miscGroup->add(MENU_ENUM_LABEL_VIDEO_SHADER_DELAY);
+   leftColumn->addWidget(outputGroup);
+   leftColumn->addWidget(windowedGroup);
+   leftColumn->addWidget(fullscreenGroup);
+   leftColumn->addWidget(syncGroup);
 
+   rightColumn->addWidget(aspectGroup);
+#ifdef HAVE_TEMPORAL_UPSCALER
+   if (dlssNrGroup->layout()->count() > 0)
+      rightColumn->addWidget(dlssNrGroup);
+   else
+      delete dlssNrGroup;
+#endif
    if (video_driver_get_disp_flags() & VIDEO_FLAG_HDR_SUPPORT)
    {
-      hdrGroup->add(MENU_ENUM_LABEL_VIDEO_HDR_ENABLE);
-      hdrGroup->add(MENU_ENUM_LABEL_MENU_HDR_BRIGHTNESS_NITS);
-      hdrGroup->add(MENU_ENUM_LABEL_VIDEO_HDR_PAPER_WHITE_NITS);
-      hdrGroup->add(MENU_ENUM_LABEL_VIDEO_HDR_SCANLINES);
-
-      hdrLayout->addWidget(hdrGroup);
+      SettingsGroup *hdrGroup = new SettingsGroup("HDR");
+      qt_settings_group_add_displaylist(hdrGroup,
+            DISPLAYLIST_VIDEO_HDR_SETTINGS_LIST, NULL, 0, NULL, 0);
+      rightColumn->addWidget(hdrGroup);
    }
-
-   syncMiscLayout->addWidget(syncGroup);
-   syncMiscLayout->addWidget(miscGroup);
-
-   stereo3dGroup->add(MENU_ENUM_LABEL_VIDEO_STEREO_SWAP_EYES);
-   stereo3dGroup->add(MENU_ENUM_LABEL_VIDEO_STEREO_MODE);
-   stereo3dGroup->add(MENU_ENUM_LABEL_VIDEO_SCREEN_LAYOUT);
-
-#ifdef HAVE_VIDEO_FILTER
-   filterGroup->add(MENU_ENUM_LABEL_VIDEO_FILTER_ENABLE);
-   filterGroup->add(MENU_ENUM_LABEL_VIDEO_FILTER_THREADS);
-   filterGroup->add(MENU_ENUM_LABEL_VIDEO_FILTER);
+   if (hasCrtSwitchres)
+   {
+      SettingsGroup *crtSwitchresGroup = new SettingsGroup(
+            msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CRT_SWITCHRES_SETTINGS));
+      m_crtSuperResolutionCombo = new QComboBox;
+      qt_settings_group_add_displaylist(crtSwitchresGroup,
+            DISPLAYLIST_CRT_SWITCHRES_SETTINGS_LIST,
+            crtSwitchresSkip, ARRAY_SIZE(crtSwitchresSkip), NULL, 0);
+      m_crtSuperResolutionCombo->addItem(msg_hash_to_str(MSG_NATIVE), 0);
+      m_crtSuperResolutionCombo->addItem("1920", 1920);
+      m_crtSuperResolutionCombo->addItem("2560", 2560);
+      m_crtSuperResolutionCombo->addItem("3840", 3840);
+      crtSwitchresGroup->addRow(
+            msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CRT_SWITCH_RESOLUTION_SUPER),
+            m_crtSuperResolutionCombo);
+#if (QT_VERSION > QT_VERSION_CHECK(6, 0, 0))
+      connect(m_crtSuperResolutionCombo, &QComboBox::currentIndexChanged,
+            this, &VideoPage::onCrtSuperResolutionComboIndexChanged);
+#else
+      connect(m_crtSuperResolutionCombo, SIGNAL(currentIndexChanged(int)),
+            this, SLOT(onCrtSuperResolutionComboIndexChanged(int)));
 #endif
+      rightColumn->addWidget(crtSwitchresGroup);
+   }
+   rightColumn->addWidget(miscGroup);
+#if defined(HAVE_VIDEO_FILTER) || defined(DINGUX)
+   {
+      SettingsGroup *filterGroup = new SettingsGroup("Video Filter");
+      qt_settings_group_add_list(filterGroup, videoList, NULL, 0,
+            filterEntries, ARRAY_SIZE(filterEntries));
+      rightColumn->addWidget(filterGroup);
+   }
+#endif
+   rightColumn->addWidget(stereo3dGroup);
+   rightColumn->addWidget(gameScreensGroup);
+#ifdef HAVE_OPENXR
+   rightColumn->addWidget(headsetGroup);
+#endif
+   if (videoList)
+      file_list_free(videoList);
 
-   modeLayout->addWidget(fullscreenGroup);
-   modeLayout->addWidget(windowedGroup);
-
-   outputScalingLayout->addWidget(outputGroup);
-   outputScalingLayout->addWidget(aspectGroup);
-
-   layout->addLayout(outputScalingLayout);
-   layout->addLayout(modeLayout);
-   layout->addLayout(hdrLayout);
-   layout->addLayout(syncMiscLayout);
-   layout->addWidget(stereo3dGroup);
-   layout->addWidget(filterGroup);
-
+   leftColumn->addStretch();
+   rightColumn->addStretch();
+   columnsLayout->addLayout(leftColumn, 1);
+   columnsLayout->addLayout(rightColumn, 1);
+   layout->addLayout(columnsLayout);
    layout->addStretch();
 
 #if (QT_VERSION > QT_VERSION_CHECK(6, 0, 0))
@@ -6873,7 +8331,6 @@ QWidget *VideoPage::widget()
 #endif
 
    widget->setLayout(layout);
-
    return widget;
 }
 
@@ -6969,35 +8426,15 @@ void AspectRatioGroup::onAspectRadioClicked(bool checked)
    setChecked(true);
 }
 
-CrtSwitchresPage::CrtSwitchresPage(QObject *parent) :
-   OptionsPage(parent)
-   ,m_crtSuperResolutionCombo(new QComboBox())
+
+void VideoPage::onCrtSuperResolutionComboIndexChanged(int index)
 {
-   setDisplayName(MENU_ENUM_LABEL_VALUE_CRT_SWITCHRES_SETTINGS);
-}
+   settings_t *settings = config_get_ptr();
+   (void)(index);
 
-QWidget *CrtSwitchresPage::widget()
-{
-   QWidget *widget    = new QWidget;
-   FormLayout *layout = new FormLayout;
-
-   m_crtSuperResolutionCombo->addItem(msg_hash_to_str(MSG_NATIVE), 0);
-   m_crtSuperResolutionCombo->addItem("1920", 1920);
-   m_crtSuperResolutionCombo->addItem("2560", 2560);
-   m_crtSuperResolutionCombo->addItem("3840", 3840);
-
-   layout->add(menu_setting_find_enum(MENU_ENUM_LABEL_CRT_SWITCH_RESOLUTION));
-   layout->addRow(msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CRT_SWITCH_RESOLUTION_SUPER), m_crtSuperResolutionCombo);
-   layout->add(menu_setting_find_enum(MENU_ENUM_LABEL_CRT_SWITCH_HIRES_MENU));
-   layout->add(menu_setting_find_enum(MENU_ENUM_LABEL_CRT_SWITCH_X_AXIS_CENTERING));
-   layout->add(menu_setting_find_enum(MENU_ENUM_LABEL_CRT_SWITCH_VERTICAL_ADJUST));
-   layout->add(menu_setting_find_enum(MENU_ENUM_LABEL_CRT_SWITCH_RESOLUTION_USE_CUSTOM_REFRESH_RATE));
-
-   connect(m_crtSuperResolutionCombo, SIGNAL(currentIndexChanged(int)), this, SLOT(onCrtSuperResolutionComboIndexChanged(int)));
-
-   widget->setLayout(layout);
-
-   return widget;
+   if (m_crtSuperResolutionCombo)
+      settings->uints.crt_switch_resolution_super =
+         m_crtSuperResolutionCombo->currentData().value<unsigned>();
 }
 
 void VideoPage::onResolutionComboIndexChanged(const QString &text)
@@ -7015,15 +8452,6 @@ void VideoPage::onResolutionComboIndexChanged(int index)
          NULL, 0, 0, 0);
 }
 
-void CrtSwitchresPage::onCrtSuperResolutionComboIndexChanged(int index)
-{
-   settings_t *settings = config_get_ptr();
-   (void)(index);
-
-   settings->uints.crt_switch_resolution_super =
-   m_crtSuperResolutionCombo->currentData().value<unsigned>();
-}
-
 AspectRatioRadioButton::AspectRatioRadioButton(unsigned min, unsigned max, QWidget *parent) :
    QRadioButton(parent)
    ,m_min(min)
@@ -7032,6 +8460,85 @@ AspectRatioRadioButton::AspectRatioRadioButton(unsigned min, unsigned max, QWidg
 }
 
 /* DRIVERS */
+
+DriversPage::DriversPage(QObject *parent) :
+   OptionsPage(parent)
+{
+}
+
+QWidget *DriversPage::widget()
+{
+   QWidget *widget = new QWidget;
+   QVBoxLayout *layout = new QVBoxLayout;
+   QHBoxLayout *contentLayout = new QHBoxLayout;
+   QVBoxLayout *leftColumn = new QVBoxLayout;
+   SettingsGroup *graphicsGroup = new SettingsGroup("Graphics & Menu");
+   SettingsGroup *inputGroup = new SettingsGroup("Input");
+   SettingsGroup *audioGroup = new SettingsGroup("Audio");
+   SettingsGroup *otherGroup = new SettingsGroup("Other Devices");
+   static const enum msg_hash_enums graphicsEntries[] = {
+      MENU_ENUM_LABEL_MENU_DRIVER,
+      MENU_ENUM_LABEL_VIDEO_DRIVER,
+#if defined(HAVE_RSLC) && defined(HAVE_GLSLANG)
+      MENU_ENUM_LABEL_VIDEO_SHADER_COMPILER
+#endif
+   };
+   static const enum msg_hash_enums inputEntries[] = {
+      MENU_ENUM_LABEL_INPUT_DRIVER,
+      MENU_ENUM_LABEL_JOYPAD_DRIVER
+   };
+   static const enum msg_hash_enums audioEntries[] = {
+      MENU_ENUM_LABEL_AUDIO_DRIVER,
+#ifdef HAVE_MICROPHONE
+      MENU_ENUM_LABEL_MICROPHONE_DRIVER,
+#endif
+      MENU_ENUM_LABEL_MIDI_DRIVER
+   };
+   static const enum msg_hash_enums otherEntries[] = {
+      MENU_ENUM_LABEL_RECORD_DRIVER,
+#ifdef HAVE_COMPANION_WIMP
+      MENU_ENUM_LABEL_UI_COMPANION_DRIVER,
+#endif
+#ifdef HAVE_BLUETOOTH
+      MENU_ENUM_LABEL_BLUETOOTH_DRIVER,
+#endif
+#if defined(HAVE_LAKKA) || defined(HAVE_WIFI)
+      MENU_ENUM_LABEL_WIFI_DRIVER,
+#endif
+      MENU_ENUM_LABEL_CAMERA_DRIVER,
+      MENU_ENUM_LABEL_LOCATION_DRIVER
+   };
+
+   file_list_t *driverList = qt_displaylist_build(
+         DISPLAYLIST_DRIVER_SETTINGS_LIST);
+
+   qt_settings_group_add_list(graphicsGroup,
+         driverList, NULL, 0,
+         graphicsEntries, ARRAY_SIZE(graphicsEntries));
+   qt_settings_group_add_list(inputGroup,
+         driverList, NULL, 0,
+         inputEntries, ARRAY_SIZE(inputEntries));
+   qt_settings_group_add_list(audioGroup,
+         driverList, NULL, 0,
+         audioEntries, ARRAY_SIZE(audioEntries));
+   qt_settings_group_add_list(otherGroup,
+         driverList, NULL, 0,
+         otherEntries, ARRAY_SIZE(otherEntries));
+   if (driverList)
+      file_list_free(driverList);
+
+   leftColumn->addWidget(graphicsGroup);
+   leftColumn->addWidget(inputGroup);
+   leftColumn->addWidget(audioGroup);
+   leftColumn->addWidget(otherGroup);
+   leftColumn->addStretch();
+   contentLayout->addLayout(leftColumn, 1);
+   contentLayout->addStretch(1);
+   layout->addLayout(contentLayout);
+   layout->addStretch();
+   widget->setLayout(layout);
+   return widget;
+}
 
 DriversCategory::DriversCategory(QWidget *parent) :
    OptionsCategory(parent)
@@ -7043,8 +8550,7 @@ DriversCategory::DriversCategory(QWidget *parent) :
 QVector<OptionsPage*> DriversCategory::pages()
 {
    QVector<OptionsPage*> pages;
-   pages << new SimplePage(DISPLAYLIST_DRIVER_SETTINGS_LIST,
-         MENU_ENUM_LABEL_VALUE_DRIVER_SETTINGS, this);
+   pages << new DriversPage(this);
    return pages;
 }
 
@@ -7098,6 +8604,58 @@ QVector<OptionsPage*> CoreCategory::pages()
 
 /* LOGGING */
 
+class QtDisplayListGroupPage : public OptionsPage
+{
+public:
+   QtDisplayListGroupPage(enum menu_displaylist_ctl_state state,
+         const QString &title, QObject *parent = 0,
+         enum menu_displaylist_ctl_state secondState = DISPLAYLIST_NONE,
+         const QString &secondTitle = QString(),
+         enum menu_displaylist_ctl_state thirdState = DISPLAYLIST_NONE,
+         const QString &thirdTitle = QString())
+      : OptionsPage(parent), m_state(state), m_title(title),
+        m_secondState(secondState), m_secondTitle(secondTitle),
+        m_thirdState(thirdState), m_thirdTitle(thirdTitle)
+   {
+      setDisplayName(title);
+   }
+
+   QWidget *widget()
+   {
+      QWidget *page = new QWidget;
+      QHBoxLayout *columns = new QHBoxLayout;
+      QVBoxLayout *left = new QVBoxLayout;
+      SettingsGroup *first = new SettingsGroup(m_title);
+      qt_settings_group_add_displaylist(first, m_state, NULL, 0, NULL, 0);
+      left->addWidget(first);
+      if (m_secondState != DISPLAYLIST_NONE)
+      {
+         SettingsGroup *second = new SettingsGroup(m_secondTitle);
+         qt_settings_group_add_displaylist(second, m_secondState, NULL, 0, NULL, 0);
+         left->addWidget(second);
+      }
+      if (m_thirdState != DISPLAYLIST_NONE)
+      {
+         SettingsGroup *third = new SettingsGroup(m_thirdTitle);
+         qt_settings_group_add_displaylist(third, m_thirdState, NULL, 0, NULL, 0);
+         left->addWidget(third);
+      }
+      left->addStretch();
+      columns->addLayout(left, 1);
+      columns->addStretch(1);
+      page->setLayout(columns);
+      return page;
+   }
+
+private:
+   enum menu_displaylist_ctl_state m_state;
+   QString m_title;
+   enum menu_displaylist_ctl_state m_secondState;
+   QString m_secondTitle;
+   enum menu_displaylist_ctl_state m_thirdState;
+   QString m_thirdTitle;
+};
+
 LoggingCategory::LoggingCategory(QWidget *parent) :
    OptionsCategory(parent)
 {
@@ -7108,7 +8666,8 @@ LoggingCategory::LoggingCategory(QWidget *parent) :
 QVector<OptionsPage*> LoggingCategory::pages()
 {
    QVector<OptionsPage*> pages;
-   pages << new SimplePage(DISPLAYLIST_LOGGING_SETTINGS_LIST, this);
+   pages << new QtDisplayListGroupPage(DISPLAYLIST_LOGGING_SETTINGS_LIST,
+         msg_hash_to_str(MENU_ENUM_LABEL_VALUE_LOGGING_SETTINGS), this);
    return pages;
 }
 
@@ -7141,10 +8700,12 @@ FrameThrottleCategory::FrameThrottleCategory(QWidget *parent) :
 QVector<OptionsPage*> FrameThrottleCategory::pages()
 {
    QVector<OptionsPage*> pages;
-   pages << new SimplePage(DISPLAYLIST_FRAME_THROTTLE_SETTINGS_LIST,
-         MENU_ENUM_LABEL_VALUE_FRAME_THROTTLE_SETTINGS, this);
-   pages << new SimplePage(DISPLAYLIST_REWIND_SETTINGS_LIST,
-         MENU_ENUM_LABEL_VALUE_REWIND_SETTINGS, this);
+   pages << new QtDisplayListGroupPage(DISPLAYLIST_FRAME_THROTTLE_SETTINGS_LIST,
+         msg_hash_to_str(MENU_ENUM_LABEL_VALUE_FRAME_THROTTLE_SETTINGS), this,
+         DISPLAYLIST_REWIND_SETTINGS_LIST,
+         msg_hash_to_str(MENU_ENUM_LABEL_VALUE_REWIND_SETTINGS),
+         DISPLAYLIST_FRAME_TIME_COUNTER_SETTINGS_LIST,
+         msg_hash_to_str(MENU_ENUM_LABEL_VALUE_FRAME_TIME_COUNTER_SETTINGS));
    return pages;
 }
 
@@ -7227,6 +8788,7 @@ bool PlaylistModel::setData(const QModelIndex &index, const QVariant &value, int
       rowEntry.labelNoExt = QFileInfo(value.toString()).completeBaseName();
 
       m_contents.replace(index.row(), rowEntry);
+      m_thumbnailPaths.remove(index.row());
       emit dataChanged(index, index, { role });
       return true;
    }
@@ -7247,6 +8809,12 @@ QVariant PlaylistModel::headerData(int section,
 void PlaylistModel::setThumbnailType(const ThumbnailType type)
 {
    m_thumbnailType = type;
+   m_thumbnailPaths.clear();
+}
+
+void PlaylistModel::clearThumbnailPaths()
+{
+   m_thumbnailPaths.clear();
 }
 
 void PlaylistModel::setThumbnailCacheLimit(int limit)
@@ -7299,24 +8867,25 @@ bool PlaylistModel::isSupportedImage(const QString path) const
    return image_texture_get_type(pathArray.constData()) != IMAGE_TYPE_NONE;
 }
 
-QString PlaylistModel::getRepositoryThumbnailPath(const QString playlistName,
-      const QString labelNoExt, const QString type) const
+QString PlaylistModel::getThumbnailSavePath(const PlaylistEntry &entry,
+      const QString type) const
 {
    char path[PATH_MAX_LENGTH];
-   QByteArray dbArray    = playlistName.toUtf8();
+   QByteArray dbArray    = entry.thumbnailSystem.toUtf8();
    QByteArray typeArray  = type.toUtf8();
-   QByteArray labelArray = labelNoExt.toUtf8();
+   QByteArray labelArray = entry.labelNoExt.toUtf8();
+   QByteArray pathArray  = entry.path.toUtf8();
 
-   companion_core_thumbnail_path(ui_companion_qt_core(),
+   companion_core_thumbnail_save_path(ui_companion_qt_core(),
          dbArray.constData(), typeArray.constData(), labelArray.constData(),
-         NULL, path, sizeof(path));
+         pathArray.constData(), path, sizeof(path));
    return QString::fromUtf8(path);
 }
 
 QString PlaylistModel::getThumbnailPath(const PlaylistEntry &entry, QString type) const
 {
    char path[PATH_MAX_LENGTH];
-   QByteArray dbArray    = entry.dbName.toUtf8();
+   QByteArray dbArray    = entry.thumbnailSystem.toUtf8();
    QByteArray typeArray  = type.toUtf8();
    QByteArray labelArray = entry.labelNoExt.toUtf8();
    QByteArray pathArray  = entry.path.toUtf8();
@@ -7329,21 +8898,33 @@ QString PlaylistModel::getThumbnailPath(const PlaylistEntry &entry, QString type
 
 QString PlaylistModel::getCurrentTypeThumbnailPath(const QModelIndex &index) const
 {
+   QString path;
+   QHash<int, QString>::const_iterator it =
+      m_thumbnailPaths.constFind(index.row());
+
+   if (it != m_thumbnailPaths.constEnd())
+      return it.value();
+
    switch (m_thumbnailType)
    {
       case THUMBNAIL_TYPE_BOXART:
-         return getThumbnailPath(index, THUMBNAIL_BOXART);
+         path = getThumbnailPath(index, THUMBNAIL_BOXART);
+         break;
       case THUMBNAIL_TYPE_SCREENSHOT:
-         return getThumbnailPath(index, THUMBNAIL_SCREENSHOT);
+         path = getThumbnailPath(index, THUMBNAIL_SCREENSHOT);
+         break;
       case THUMBNAIL_TYPE_TITLE_SCREEN:
-         return getThumbnailPath(index, THUMBNAIL_TITLE);
+         path = getThumbnailPath(index, THUMBNAIL_TITLE);
+         break;
       case THUMBNAIL_TYPE_LOGO:
-         return getThumbnailPath(index, THUMBNAIL_LOGO);
+         path = getThumbnailPath(index, THUMBNAIL_LOGO);
+         break;
       default:
          break;
    }
 
-   return QString();
+   m_thumbnailPaths.insert(index.row(), path);
+   return path;
 }
 
 void PlaylistModel::reloadThumbnail(const QModelIndex &index)
@@ -7364,6 +8945,7 @@ void PlaylistModel::reloadSystemThumbnails(const QString system)
 	   + QString("/") + system;
    QList<QString>             keys = m_cache.keys();
 
+   m_thumbnailPaths.clear();
    for (i = 0; i < keys.size(); i++)
    {
       QString key = keys.at(i);
@@ -7381,6 +8963,7 @@ void PlaylistModel::reloadThumbnailPath(const QString path)
 {
    QList<QString> keys = m_cache.keys();
    int i;
+   m_thumbnailPaths.clear();
    for (i = 0; i < keys.size(); i++)
       if (keys.at(i).startsWith(path + QLatin1Char('@')))
          m_cache.remove(keys.at(i));
@@ -7997,13 +9580,11 @@ void MainWindow::onPlaylistWidgetContextMenuRequested(const QPoint&)
    QScopedPointer<QMenu> menu;
    QScopedPointer<QMenu> associateMenu;
    QScopedPointer<QMenu> hiddenPlaylistsMenu;
-   QScopedPointer<QMenu> downloadAllThumbnailsMenu;
    QScopedPointer<QAction> hideAction;
    QScopedPointer<QAction> newPlaylistAction;
    QScopedPointer<QAction> deletePlaylistAction;
    QScopedPointer<QAction> renamePlaylistAction;
-   QScopedPointer<QAction> downloadAllThumbnailsEntireSystemAction;
-   QScopedPointer<QAction> downloadAllThumbnailsThisPlaylistAction;
+   QScopedPointer<QAction> downloadAllThumbnailsAction;
    QPointer<QAction> selectedAction;
    QPoint cursorPos                    = QCursor::pos();
    settings_t *settings                = config_get_ptr();
@@ -8148,25 +9729,9 @@ void MainWindow::onPlaylistWidgetContextMenuRequested(const QPoint&)
 
    if (!specialPlaylist)
    {
-      downloadAllThumbnailsMenu.reset(new QMenu(
-		msg_hash_to_str(MENU_ENUM_LABEL_VALUE_QT_DOWNLOAD_ALL_THUMBNAILS), this));
-      downloadAllThumbnailsMenu->setObjectName("downloadAllThumbnailsMenu");
-
-      downloadAllThumbnailsThisPlaylistAction.reset(
-		      new QAction(msg_hash_to_str(
-		MENU_ENUM_LABEL_VALUE_QT_DOWNLOAD_ALL_THUMBNAILS_THIS_PLAYLIST),
-			      downloadAllThumbnailsMenu.data()));
-      downloadAllThumbnailsEntireSystemAction.reset(
-		      new QAction(msg_hash_to_str(
-		MENU_ENUM_LABEL_VALUE_QT_DOWNLOAD_ALL_THUMBNAILS_ENTIRE_SYSTEM),
-			      downloadAllThumbnailsMenu.data()));
-
-      downloadAllThumbnailsMenu->addAction(
-		      downloadAllThumbnailsThisPlaylistAction.data());
-      downloadAllThumbnailsMenu->addAction(
-		      downloadAllThumbnailsEntireSystemAction.data());
-
-      menu->addMenu(downloadAllThumbnailsMenu.data());
+      downloadAllThumbnailsAction.reset(new QAction(msg_hash_to_str(
+		MENU_ENUM_LABEL_VALUE_QT_DOWNLOAD_ALL_THUMBNAILS), this));
+      menu->addAction(downloadAllThumbnailsAction.data());
    }
 
    selectedAction = menu->exec(cursorPos);
@@ -8190,7 +9755,11 @@ void MainWindow::onPlaylistWidgetContextMenuRequested(const QPoint&)
          if (showMessageBox(QString(msg_hash_to_str(MENU_ENUM_LABEL_VALUE_QT_CONFIRM_DELETE_PLAYLIST)).arg(selectedItem->text()), MainWindow::MSGBOX_TYPE_QUESTION_YESNO, Qt::ApplicationModal, false))
          {
             if (currentPlaylistFile.remove())
+            {
+               QByteArray pathArray = currentPlaylistFile.fileName().toUtf8();
+               gfx_thumbnail_results_forget(pathArray.constData());
                reloadPlaylists();
+            }
             else
                showMessageBox(msg_hash_to_str(MENU_ENUM_LABEL_VALUE_QT_COULD_NOT_DELETE_FILE), MainWindow::MSGBOX_TYPE_ERROR, Qt::ApplicationModal, false);
          }
@@ -8255,18 +9824,8 @@ void MainWindow::onPlaylistWidgetContextMenuRequested(const QPoint&)
          }
       }
    }
-   else if (selectedItem && !specialPlaylist && selectedAction->parent() == downloadAllThumbnailsMenu.data())
-   {
-      if (selectedAction == downloadAllThumbnailsEntireSystemAction.data())
-      {
-         int row = m_listWidget->row(selectedItem);
-
-         if (row >= 0)
-            downloadAllThumbnails(currentPlaylistFileInfo.completeBaseName());
-      }
-      else if (selectedAction == downloadAllThumbnailsThisPlaylistAction.data())
-         downloadPlaylistThumbnails(currentPlaylistPath);
-   }
+   else if (selectedItem && selectedAction == downloadAllThumbnailsAction.data())
+      downloadPlaylistThumbnails(currentPlaylistPath);
 
    setCoreActions();
 }
@@ -8532,11 +10091,17 @@ QString MainWindow::getPlaylistDefaultCore(QString plName)
 
 void MainWindow::getPlaylistFiles()
 {
+   int i;
    settings_t *settings = config_get_ptr();
    QDir playlistDir(settings->paths.directory_playlist);
 
    m_playlistFiles = playlistDir.entryList(
          QDir::NoDotAndDotDot | QDir::Readable | QDir::Files, QDir::Name);
+   for (i = m_playlistFiles.count() - 1; i >= 0; i--)
+      if (m_playlistFiles.at(i).endsWith(
+            FILE_PATH_LPL_EXTENSION FILE_PATH_THUMBS_EXTENSION,
+            Qt::CaseInsensitive))
+         m_playlistFiles.removeAt(i);
 }
 
 /* Copy the companion core's currently loaded playlist into the pending
@@ -8556,6 +10121,7 @@ void PlaylistModel::appendEntriesFromCore()
    for (i = 0; i < playlistSize; i++)
    {
       PlaylistEntry rowEntry;
+      char system[NAME_MAX_LENGTH];
       const struct playlist_entry *pl_row = companion_core_entry(core, i);
 
       if (!pl_row || !pl_row->path || !*pl_row->path)
@@ -8590,6 +10156,9 @@ void PlaylistModel::appendEntriesFromCore()
          rowEntry.dbName.remove(".lpl");
       }
 
+      companion_core_entry_thumbnail_system(core, i, system, sizeof(system));
+      rowEntry.thumbnailSystem = system;
+
       if (playlistName && *playlistName)
       {
          rowEntry.plName      = playlistName;
@@ -8600,7 +10169,9 @@ void PlaylistModel::appendEntriesFromCore()
    }
 }
 
-void PlaylistModel::startNextPendingPlaylist()
+/* @append: the playlists loaded before keep their thumbnail matches
+ * in the core, so every one of All Playlists does. */
+void PlaylistModel::startNextPendingPlaylist(bool append)
 {
    while (!m_pendingPaths.isEmpty())
    {
@@ -8609,7 +10180,10 @@ void PlaylistModel::startNextPendingPlaylist()
       /* The parse is driven from the runloop by companion_core_iterate()
        * under a time budget; onCorePlaylistChanged() fires when it is
        * done. Nothing blocks here, however large the playlist. */
-      if (companion_core_select_playlist_path(ui_companion_qt_core(),
+      if (append
+            ? companion_core_append_playlist_path(ui_companion_qt_core(),
+               pathArray.constData())
+            : companion_core_select_playlist_path(ui_companion_qt_core(),
                pathArray.constData()))
          return;
       /* Unreadable path: skip it and try the next one. */
@@ -8619,6 +10193,7 @@ void PlaylistModel::startNextPendingPlaylist()
    beginResetModel();
    m_contents          = m_pendingContents;
    m_pendingContents.clear();
+   m_thumbnailPaths.clear();
    m_loadingPlaylists  = false;
    endResetModel();
 
@@ -8630,7 +10205,7 @@ void PlaylistModel::onCorePlaylistChanged()
    if (!m_loadingPlaylists)
       return;
    appendEntriesFromCore();
-   startNextPendingPlaylist();
+   startNextPendingPlaylist(true);
 }
 
 bool PlaylistModel::isLoadingPlaylists() const
@@ -8650,7 +10225,7 @@ void PlaylistModel::addPlaylistItems(const QStringList &paths, bool add)
    m_pendingContents.clear();
    m_loadingPlaylists = true;
 
-   startNextPendingPlaylist();
+   startNextPendingPlaylist(false);
 }
 
 void PlaylistModel::addDir(QString path, QFlags<QDir::Filter> showHidden)
@@ -8670,6 +10245,7 @@ void PlaylistModel::addDir(QString path, QFlags<QDir::Filter> showHidden)
    beginResetModel();
 
    m_contents.clear();
+   m_thumbnailPaths.clear();
 
    for (i = 0; i < dirList.count(); i++)
    {
@@ -8683,6 +10259,7 @@ void PlaylistModel::addDir(QString path, QFlags<QDir::Filter> showHidden)
       rowEntry.label      = filePath;
       rowEntry.labelNoExt = fileInfo.completeBaseName();
       rowEntry.dbName     = fileInfo.dir().dirName();
+      rowEntry.thumbnailSystem = rowEntry.dbName;
 
       m_contents.append(rowEntry);
    }

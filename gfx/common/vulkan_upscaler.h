@@ -34,6 +34,20 @@ RETRO_BEGIN_DECLS
  * here blocks: images and features a frame in flight may still use are
  * retired over the next frames. */
 typedef struct vulkan_upscaler vulkan_upscaler_t;
+bool vulkan_upscaler_pending(vulkan_upscaler_t *up);
+
+/* Retained graphics owners for a pending SDK job. An instance may be
+ * shared by two devices during core handoff; each device owns a reference
+ * to it. Releases use their saved dispatch, never the next core's globals. */
+typedef struct vulkan_upscaler_instance vulkan_upscaler_instance_t;
+typedef struct vulkan_upscaler_device vulkan_upscaler_device_t;
+vulkan_upscaler_instance_t *vulkan_upscaler_instance_new(VkInstance instance,
+      PFN_vkGetInstanceProcAddr gipa);
+void vulkan_upscaler_instance_release(vulkan_upscaler_instance_t *owner);
+vulkan_upscaler_device_t *vulkan_upscaler_device_new(
+      vulkan_upscaler_instance_t *instance, VkDevice device,
+      PFN_vkGetDeviceProcAddr gdpa);
+void vulkan_upscaler_device_release(vulkan_upscaler_device_t *owner);
 
 /* The frame the upscaler reads: the core's color image as set_image
  * handed it over, and what it produces: the output image, in
@@ -75,6 +89,17 @@ vulkan_upscaler_t *vulkan_upscaler_init(enum video_temporal_upscaler kind,
       const VkPhysicalDeviceMemoryProperties *memory_properties,
       const char *dir);
 
+vulkan_upscaler_t *vulkan_upscaler_init_async(VkInstance instance,
+      VkPhysicalDevice gpu, VkDevice device,
+      PFN_vkGetInstanceProcAddr gipa, PFN_vkGetDeviceProcAddr gdpa,
+      const VkPhysicalDeviceMemoryProperties *memory_properties,
+      const char *dir, vulkan_upscaler_device_t *owner, unsigned queue_family);
+/* Frontend-owned, once prepared: append before this frame's evaluation.
+ * Its allocator retires behind the same frame fences as the upscaler. */
+VkCommandBuffer vulkan_upscaler_take_commands(vulkan_upscaler_t *up);
+/* Queue-owner only, behind the last frame using the SR-only SDK session. */
+VkResult vulkan_upscaler_signal_reload(vulkan_upscaler_t *up, VkQueue queue);
+
 /* The mode's render sizes for an output of @out_dims: what it wants,
  * and the range it accepts, each VIDEO_SCALE_PACK. @mode is
  * video_upscaler_mode()'s word. */
@@ -96,6 +121,7 @@ void vulkan_upscaler_frame_done(vulkan_upscaler_t *up);
 
 /* The device is idle (context teardown): everything released. */
 void vulkan_upscaler_free(vulkan_upscaler_t *up);
+void vulkan_upscaler_reset(vulkan_upscaler_t *up);
 
 /* What the backends share: an output image of their own, the layout
  * moves around a dispatch, and the ring that retires an image and

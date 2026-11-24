@@ -725,11 +725,18 @@ static void retro_task_regular_reset(void)
 static bool retro_task_regular_init(void) { return true; }
 static void retro_task_regular_deinit(void) { }
 
+/* Findable until its callback runs, as on the threaded runners. */
 static bool retro_task_regular_find(retro_task_finder_t func, void *user_data)
 {
    retro_task_t *task = tasks_running.front;
 
    for (; task; task = task->next)
+   {
+      if (func(task, user_data))
+         return true;
+   }
+
+   for (task = tasks_finished.front; task; task = task->next)
    {
       if (func(task, user_data))
          return true;
@@ -2822,8 +2829,14 @@ static void retro_task_threaded_gather(void)
  * running or parked, or one finished and not yet retired. */
 static bool task_threaded_busy(void)
 {
+   /* A finishing task counts itself finished before it stops counting
+    * as running, and goes on the finished stack only after both; the
+    * gather moves it to the retire list before it stops counting as
+    * finished. The count, not the stack, so a finish between the
+    * running count and the stack is never seen as nothing at all. */
    return retro_atomic_load_acquire_int(&tasks_running_count)
          > retro_atomic_load_acquire_int(&tasks_scheduled_count)
+      || retro_atomic_load_acquire_int(&tasks_finished_count)
       || retro_atomic_load_acquire_ptr(&task_finished_stack)
       || task_retire.front;
 }

@@ -54,9 +54,16 @@ struct http_handle
    /* Streaming sink, used by task_push_http_download_file(): the
     * body is written straight to disk as it arrives instead of being
     * accumulated and then written in one go.  NULL for every other
-    * entry point. */
+    * entry point.  sink_temp is the file written, renamed over
+    * sink_path at the end; NULL when sink_path is written itself.
+    * Both names share sink_path's allocation. */
    RFILE *sink_file;
    char  *sink_path;
+   char  *sink_temp;
+   /* The start of an error response's body, for the callback: kept
+    * from the sink's spans, never written to the file. */
+   char  *error_body;
+   size_t error_body_len;
    /* Resume of an interrupted sink download (see task_http_resume()).
     * validator is the first response's strong ETag or Last-Modified,
     * owned; sink_written is the file's length so far; attempt_base is
@@ -71,6 +78,7 @@ struct http_handle
    bool headers_accept_err;
    bool sink_failed;
    bool attempt_started;       /* first body bytes of this attempt seen */
+   bool error_response;        /* this response is an error, not the file */
    bool resumable;             /* the first response allows a Range resume */
    /* Full request URL, owned.  This was a char[NAME_MAX_LENGTH]
     * filled by strlcpy, but task_http_finder() compares the stored
@@ -91,6 +99,10 @@ struct http_handle
 };
 
 typedef struct http_handle http_handle_t;
+
+#define TASK_HTTP_ERR_WRITE "Download failed: cannot write the file."
+#define TASK_HTTP_ERR_TEMP  "Download failed: cannot create a " \
+   "temporary file beside the existing one."
 
 /* "Download failed." plus, when the transport never got as far as a
  * status, the stage that failed and the library's code for it, so a
@@ -163,6 +175,35 @@ static bool task_http_range_starts_at(const char *v, uint64_t start)
    return task_http_parse_u64(&v, &n) && *v == '-' && n == start;
 }
 
+/* What a download to a file keeps of an error response for its
+ * callback: the start of the body, enough for a server's error message.
+ * Copied out of the receive buffer as it arrives, once, and handed to
+ * the callback as is; the rest is drained, so the connection can be
+ * reused.  A successful download hands its callback no body at all. */
+#define TASK_HTTP_ERROR_BODY_MAX 4096
+
+static void task_http_error_body_append(http_handle_t *http,
+      const struct net_http_span *spans, size_t count)
+{
+   size_t i;
+   if (!http->error_body)
+   {
+      if (!(http->error_body = (char*)malloc(TASK_HTTP_ERROR_BODY_MAX + 1)))
+         return;
+      http->error_body_len = 0;
+   }
+   for (i = 0; i < count
+         && http->error_body_len < TASK_HTTP_ERROR_BODY_MAX; i++)
+   {
+      size_t n = spans[i].len;
+      if (n > TASK_HTTP_ERROR_BODY_MAX - http->error_body_len)
+         n = TASK_HTTP_ERROR_BODY_MAX - http->error_body_len;
+      memcpy(http->error_body + http->error_body_len, spans[i].data, n);
+      http->error_body_len += n;
+   }
+   http->error_body[http->error_body_len] = '\0';
+}
+
 /* The first body bytes of an attempt: decide what the response means for
  * the file.  On the first attempt, note whether a resume will be possible
  * later.  On a resume, a 206 must continue exactly where the file ends;
@@ -190,6 +231,7 @@ static bool task_http_attempt_begin(http_handle_t *http)
       }
       if (len && !task_http_parse_u64(&len, &http->expected_total))
          http->expected_total = 0;
+      http->error_response = (status < 200 || status > 299);
       return true;
    }
    if (status == 206)
@@ -211,25 +253,43 @@ static bool task_http_attempt_begin(http_handle_t *http)
    return false;
 }
 
-/* Sink callback: append the run of decoded body bytes to the output
- * file.  Returning false aborts the transfer, which is how a full
- * disk surfaces as a failed download rather than a truncated core. */
-static bool task_http_file_sink(void *userdata, const void *data, size_t len)
+/* Sink callback: append the runs of decoded body bytes to the output
+ * file, as net_http received them, with one gathered write: a chunked
+ * body's chunks go to the kernel from where they were received,
+ * without being slid together first.  Returning false aborts the
+ * transfer, which is how a full disk surfaces as a failed download
+ * rather than a truncated core. */
+static bool task_http_file_sink_spans(void *userdata,
+      const struct net_http_span *spans, size_t count)
 {
+   struct retro_vfs_span v[NET_HTTP_SINK_SPANS_MAX];
    http_handle_t *http = (http_handle_t*)userdata;
-   if (!http->sink_file)
+   size_t total        = 0;
+   size_t i;
+   if (!http->sink_file || count > NET_HTTP_SINK_SPANS_MAX)
       return false;
    if (!http->attempt_started && !task_http_attempt_begin(http))
    {
       http->sink_failed = true;
       return false;
    }
-   if (filestream_write(http->sink_file, data, (int64_t)len) != (int64_t)len)
+   if (http->error_response)
+   {
+      task_http_error_body_append(http, spans, count);
+      return true;
+   }
+   for (i = 0; i < count; i++)
+   {
+      v[i].data = spans[i].data;
+      v[i].len  = spans[i].len;
+      total    += spans[i].len;
+   }
+   if (filestream_writev(http->sink_file, v, count) != (int64_t)total)
    {
       http->sink_failed = true;
       return false;
    }
-   http->sink_written += len;
+   http->sink_written += total;
    return true;
 }
 
@@ -263,7 +323,7 @@ static bool task_http_resume(http_handle_t *http, uint8_t flg)
    snprintf(headers, sizeof(headers), "Range: bytes=%s-\r\nIf-Range: %s\r\n",
          offset, http->validator);
    net_http_connection_set_headers(conn, headers);
-   net_http_connection_set_sink(conn, task_http_file_sink, http);
+   net_http_connection_set_sink_spans(conn, task_http_file_sink_spans, http);
 
    net_http_delete(http->handle);
    http->handle            = NULL;
@@ -275,23 +335,40 @@ static bool task_http_resume(http_handle_t *http, uint8_t flg)
    return true;
 }
 
-/* Close the output file, removing it unless the transfer succeeded.
- * A partial file left behind would otherwise be indistinguishable
- * from a good one on the next run. */
-static void task_http_sink_close(http_handle_t *http, bool keep)
+/* Close the output file and put it in place if @keep, otherwise
+ * remove it, leaving a file already at the path alone.  A partial file
+ * left behind would otherwise be indistinguishable from a good one on
+ * the next run.  Returns true when the download is in place. */
+static bool task_http_sink_close(http_handle_t *http, bool keep)
 {
    if (http->sink_file)
    {
-      filestream_close(http->sink_file);
+      if (filestream_close(http->sink_file) != 0)
+         keep = false;
       http->sink_file = NULL;
    }
+   if (http->sink_temp)
+   {
+      int ret = filestream_finish_atomic_temp(http->sink_path,
+            http->sink_temp, keep);
+      /* A VFS that cannot rename over a file (Android SAF): the
+       * temporary file holds the whole body, so it is copied over. */
+      if (ret == 1)
+      {
+         ret = filestream_copy(http->sink_temp, http->sink_path);
+         filestream_delete(http->sink_temp);
+      }
+      keep = (ret == 0);
+      http->sink_temp = NULL;
+   }
+   else if (http->sink_path && !keep)
+      filestream_delete(http->sink_path);
    if (http->sink_path)
    {
-      if (!keep)
-         filestream_delete(http->sink_path);
       free(http->sink_path);
       http->sink_path = NULL;
    }
+   return keep;
 }
 
 static int task_http_con_iterate_transfer(http_handle_t *http)
@@ -410,7 +487,7 @@ static void task_http_transfer_handler(retro_task_t *task)
    http_handle_t        *http = (http_handle_t*)task->state;
    uint8_t flg                = task_get_flags(task);
 
-   if ((flg & RETRO_TASK_FLG_CANCELLED) > 0)
+   if ((flg & RETRO_TASK_FLG_CANCELLED) > 0 || http->error)
       goto task_finished;
 
    switch (http->status)
@@ -450,9 +527,17 @@ task_finished:
              && !http->sink_failed
              && !net_http_error(http->handle)
              && ((flg & RETRO_TASK_FLG_CANCELLED) == 0);
-      task_http_sink_close(http, ok);
-      if (!ok && !task_get_error(task))
-         task_set_error(task, task_http_failure_string(http->handle));
+      if (!task_http_sink_close(http, ok) && !task_get_error(task))
+      {
+         if ((flg & RETRO_TASK_FLG_CANCELLED) > 0)
+            task_set_error(task,
+                  strldup("Task cancelled.", sizeof("Task cancelled.")));
+         else if (ok)
+            task_set_error(task, strldup(TASK_HTTP_ERR_WRITE,
+                     sizeof(TASK_HTTP_ERR_WRITE)));
+         else
+            task_set_error(task, task_http_failure_string(http->handle));
+      }
    }
 
    if (http->handle)
@@ -462,14 +547,23 @@ task_finished:
 
       if (!tmp)
          tmp = (char*)net_http_data(http->handle, &_len, true);
+      /* An HTTP error response to a download: its start, for the
+       * callback to log, handed over as kept */
+      if (!tmp && http->error_body && http->error_body_len)
+      {
+         tmp              = http->error_body;
+         _len             = http->error_body_len;
+         http->error_body = NULL;
+      }
 
       if ((flg & RETRO_TASK_FLG_CANCELLED) > 0)
       {
          if (tmp)
             free(tmp);
 
-         task_set_error(task,
-               strldup("Task cancelled.", sizeof("Task cancelled.")));
+         if (!task_get_error(task))
+            task_set_error(task,
+                  strldup("Task cancelled.", sizeof("Task cancelled.")));
       }
       else
       {
@@ -517,9 +611,11 @@ task_finished:
       }
       net_http_delete(http->handle);
    }
-   else if (http->error)
+   else if (http->error && !task_get_error(task))
       task_set_error(task, strldup("Internal error.",
                sizeof("Internal error.")));
+   free(http->error_body);
+   http->error_body = NULL;
 
    /* Deliberately NOT freeing `http` here.
     *
@@ -575,6 +671,7 @@ static void task_http_transfer_cleanup(retro_task_t *task)
          net_http_connection_free(http->connection.handle);
       free(http->connection_url);
       free(http->validator);
+      free(http->error_body);
       free(http);
    }
 }
@@ -597,7 +694,7 @@ static bool task_http_finder(retro_task_t *task, void *user_data)
 static void *task_push_http_transfer_generic_titled(
       struct http_connection_t *conn,
       const char *url, bool mute, bool headers_accept_err,
-      const char *title, const char *sink_path,
+      const char *title, const char *sink_path, bool sink_in_place,
       retro_task_callback_t cb, void *user_data)
 {
    retro_task_t  *t        = NULL;
@@ -646,6 +743,10 @@ static void *task_push_http_transfer_generic_titled(
    http->headers_accept_err = headers_accept_err;
    http->sink_file           = NULL;
    http->sink_path           = NULL;
+   http->sink_temp           = NULL;
+   http->error_body          = NULL;
+   http->error_body_len      = 0;
+   http->error_response      = false;
    http->sink_failed         = false;
    http->validator           = NULL;
    http->sink_written        = 0;
@@ -660,19 +761,65 @@ static void *task_push_http_transfer_generic_titled(
     * push rather than surfacing megabytes later, and arm the sink
     * before net_http_new() consumes the connection in
     * cb_http_conn_default(). */
-   if (sink_path)
+   if (sink_path && sink_in_place)
    {
-      if (!(http->sink_path = strdup(sink_path)))
+      /* The caller's own staging file: written straight to */
+      size_t _len = strlen(sink_path) + 1;
+      if (!(http->sink_path = (char*)malloc(_len)))
          goto error;
+      memcpy(http->sink_path, sink_path, _len);
       if (!(http->sink_file = filestream_open(sink_path,
                   RETRO_VFS_FILE_ACCESS_WRITE,
-                  RETRO_VFS_FILE_ACCESS_HINT_NONE)))
+                  RETRO_VFS_FILE_ACCESS_HINT_SEQUENTIAL_BULK)))
          goto error;
-      net_http_connection_set_sink(conn, task_http_file_sink, http);
+      net_http_connection_set_sink_spans(conn,
+            task_http_file_sink_spans, http);
+   }
+   else if (sink_path)
+   {
+      /* One allocation: the path, then its temporary name */
+      size_t _len = strlen(sink_path) + 1;
+      if (!(http->sink_path = (char*)malloc(_len * 2 + sizeof(".tmp") - 1)))
+         goto error;
+      memcpy(http->sink_path, sink_path, _len);
+      if (filestream_atomic_temp_name(http->sink_path + _len,
+               _len + sizeof(".tmp") - 1, sink_path))
+      {
+         http->sink_temp = http->sink_path + _len;
+         http->sink_file = filestream_open(http->sink_temp,
+               RETRO_VFS_FILE_ACCESS_WRITE,
+               RETRO_VFS_FILE_ACCESS_HINT_SEQUENTIAL_BULK);
+      }
+      if (!http->sink_file)
+      {
+         http->sink_temp = NULL;
+         /* No file to lose: write it in place.  Otherwise the task
+          * fails as soon as it runs, leaving that file alone. */
+         if (!path_is_valid(sink_path))
+         {
+            if (!(http->sink_file = filestream_open(sink_path,
+                        RETRO_VFS_FILE_ACCESS_WRITE,
+                        RETRO_VFS_FILE_ACCESS_HINT_SEQUENTIAL_BULK)))
+               goto error;
+         }
+         else
+         {
+            free(http->sink_path);
+            http->sink_path = NULL;
+            http->error     = true;
+         }
+      }
+      if (http->sink_file)
+         net_http_connection_set_sink_spans(conn,
+               task_http_file_sink_spans, http);
    }
 
    if (!(t = task_init()))
       goto error;
+
+   if (http->error)
+      task_set_error(t, strldup(TASK_HTTP_ERR_TEMP,
+               sizeof(TASK_HTTP_ERR_TEMP)));
 
    t->handler              = task_http_transfer_handler;
    t->state                = http;
@@ -722,7 +869,8 @@ static void *task_push_http_transfer_generic(
       retro_task_callback_t cb, void *user_data)
 {
    return task_push_http_transfer_generic_titled(
-         conn, url, mute, headers_accept_err, NULL, NULL, cb, user_data);
+         conn, url, mute, headers_accept_err, NULL, NULL, false,
+         cb, user_data);
 }
 
 void* task_push_http_transfer(const char *url, bool mute,
@@ -734,6 +882,43 @@ void* task_push_http_transfer(const char *url, bool mute,
             net_http_connection_new(url, type ? type : "GET", NULL),
             url, mute, false, cb, user_data);
    return NULL;
+}
+
+/* @a then @b, composed once and handed to @conn */
+static bool task_http_take_headers(struct http_connection_t *conn,
+      const char *a, const char *b)
+{
+   size_t a_len = strlen(a);
+   size_t b_len = strlen(b);
+   char  *h     = (char*)malloc(a_len + b_len + 1);
+
+   if (!h)
+      return false;
+   memcpy(h, a, a_len);
+   memcpy(h + a_len, b, b_len + 1);
+   net_http_connection_take_headers(conn, h);
+   return true;
+}
+
+/* "Destination: @dest" ahead of @headers, composed once */
+static bool task_http_take_destination(struct http_connection_t *conn,
+      const char *dest, const char *headers)
+{
+   size_t d_len = strlen(dest);
+   size_t h_len = headers ? strlen(headers) : 0;
+   size_t _len  = STRLEN_CONST("Destination: ");
+   char  *h     = (char*)malloc(_len + d_len + 2 + h_len + 1);
+
+   if (!h)
+      return false;
+   memcpy(h, "Destination: ", _len);
+   memcpy(h + _len, dest, d_len);
+   _len      += d_len;
+   h[_len++]  = '\r';
+   h[_len++]  = '\n';
+   memcpy(h + _len, headers ? headers : "", h_len + 1);
+   net_http_connection_take_headers(conn, h);
+   return true;
 }
 
 void *task_push_webdav_stat(const char *url, bool mute, const char *headers,
@@ -777,8 +962,6 @@ void* task_push_webdav_put_stream(const char *url,
       const char *headers, retro_task_callback_t cb, void *user_data)
 {
    struct http_connection_t *conn;
-   char                      expect[1024]; /* TODO/FIXME - check size */
-   size_t                    _len;
 
    if (!url || !*url || !source)
       return NULL;
@@ -786,11 +969,11 @@ void* task_push_webdav_put_stream(const char *url,
    if (!(conn = net_http_connection_new(url, "PUT", NULL)))
       return NULL;
 
-   _len = strlcpy_lit(expect, "Expect: 100-continue\r\n", sizeof(expect));
-   if (headers)
+   if (headers && !task_http_take_headers(conn,
+            "Expect: 100-continue\r\n", headers))
    {
-      strlcpy(expect + _len, headers, sizeof(expect) - _len);
-      net_http_connection_set_headers(conn, expect);
+      net_http_connection_free(conn);
+      return NULL;
    }
 
    net_http_connection_set_content_source(conn, NULL, len,
@@ -823,9 +1006,7 @@ static void *task_push_webdav_to_destination(const char *url,
       const char *method, const char *dest, bool mute, const char *headers,
       retro_task_callback_t cb, void *userdata)
 {
-   size_t _len;
    struct http_connection_t *conn;
-   char dest_header[PATH_MAX_LENGTH + 512];
 
    if (!url || !*url)
       return NULL;
@@ -833,14 +1014,11 @@ static void *task_push_webdav_to_destination(const char *url,
    if (!(conn = net_http_connection_new(url, method, NULL)))
       return NULL;
 
-   _len  = strlcpy_lit(dest_header, "Destination: ", sizeof(dest_header));
-   _len += strlcpy(dest_header + _len, dest,   sizeof(dest_header) - _len);
-   _len += strlcpy_lit(dest_header + _len, "\r\n", sizeof(dest_header) - _len);
-
-   if (headers)
-      strlcpy(dest_header + _len, headers, sizeof(dest_header) - _len);
-
-   net_http_connection_set_headers(conn, dest_header);
+   if (!task_http_take_destination(conn, dest, headers))
+   {
+      net_http_connection_free(conn);
+      return NULL;
+   }
 
    return task_push_http_transfer_generic(conn, url, mute, false, cb, userdata);
 }
@@ -894,7 +1072,7 @@ void* task_push_http_transfer_file(const char* url, bool mute,
    /* should be using type but some callers now rely on type being ignored */
    return task_push_http_transfer_generic_titled(
          net_http_connection_new(url, "GET", NULL),
-         url, mute, false, tmp, NULL, cb, transfer_data);
+         url, mute, false, tmp, NULL, false, cb, transfer_data);
 }
 
 void* task_push_http_transfer_with_user_agent(const char *url, bool mute,
@@ -1041,8 +1219,10 @@ void *task_push_http_transfer_with_source(const char *url,
  *
  * The completion callback receives an http_transfer_data_t with
  * status and headers populated but data == NULL and len == 0 -- the
- * body is already on disk.  The partial file is removed unless the
- * transfer finished cleanly with a 2xx.
+ * body is already on disk.  The body goes to a temporary file beside
+ * @path, which replaces @path only once the transfer has finished
+ * cleanly with a 2xx; otherwise it is removed and @path is left as
+ * it was.
  *
  * The output directory must exist; this does not create it.
  **/
@@ -1050,9 +1230,37 @@ void *task_push_http_download_file(const char *url, const char *path,
       bool mute, const char *title,
       retro_task_callback_t cb, void *user_data)
 {
+   return task_push_http_download_file_with_headers(url, path, mute,
+         title, NULL, cb, user_data);
+}
+
+static void *task_push_http_download(const char *url,
+      const char *path, bool mute, const char *title, const char *headers,
+      bool in_place, retro_task_callback_t cb, void *user_data)
+{
+   struct http_connection_t *conn;
    if (!url || !*url || !path || !*path)
       return NULL;
-   return task_push_http_transfer_generic_titled(
-         net_http_connection_new(url, "GET", NULL),
-         url, mute, false, title, path, cb, user_data);
+   if (!(conn = net_http_connection_new(url, "GET", NULL)))
+      return NULL;
+   if (headers)
+      net_http_connection_set_headers(conn, headers);
+   return task_push_http_transfer_generic_titled(conn,
+         url, mute, false, title, path, in_place, cb, user_data);
+}
+
+void *task_push_http_download_file_with_headers(const char *url,
+      const char *path, bool mute, const char *title, const char *headers,
+      retro_task_callback_t cb, void *user_data)
+{
+   return task_push_http_download(url, path, mute, title, headers,
+         false, cb, user_data);
+}
+
+void *task_push_http_download_staged_file(const char *url,
+      const char *path, bool mute, const char *title, const char *headers,
+      retro_task_callback_t cb, void *user_data)
+{
+   return task_push_http_download(url, path, mute, title, headers,
+         true, cb, user_data);
 }

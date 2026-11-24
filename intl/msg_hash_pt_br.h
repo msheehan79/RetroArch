@@ -261,7 +261,6 @@ static const struct
 #ifndef HAVE_DYNAMIC
    char s_e011fe61[55];
 #endif
-   char s_4e447c6c[39];
    char s_d9a51d02[21];
    char s_12e77e8f[9];
    char s_98760b94[30];
@@ -309,6 +308,7 @@ static const struct
    char s_1bf49fce[49];
    char s_11e34db0[51];
    char s_0058b881[7];
+   char s_7bc3f4b6[9];
    char s_14ec7b7e[10];
    char s_005cc6dc[14];
    char s_00614813[5];
@@ -344,7 +344,9 @@ static const struct
    char s_bbb615a1[28];
    char s_314539a4[24];
    char s_213c44cf[17];
+   char s_4f4b0d00[12];
    char s_502f623c[8];
+   char s_223dfc81[8];
    char s_b6cd2ff0[52];
    char s_40e7aacd[9];
    char s_fe2b08f2[22];
@@ -579,6 +581,7 @@ static const struct
    char s_145f5880[15];
    char s_b1b9fd35[43];
    char s_0cc72b4d[31];
+   char s_9c10150b[9];
    char s_9af4bf52[19];
    char s_e5d096ab[16];
    char s_b3d0e60e[31];
@@ -727,6 +730,7 @@ static const struct
    char s_db16b335[25];
    char s_10358d4e[18];
    char s_0ad18744[12];
+   char s_7a3aee46[24];
    char s_0b7c8e91[23];
    char s_0bf63b67[26];
    char s_36b2a31c[9];
@@ -858,6 +862,7 @@ static const struct
    char s_56e1b336[20];
    char s_313d15c0[9];
    char s_e9f0dd82[44];
+   char s_1b46171b[20];
    char s_0bd714f7[6];
    char s_0bebb490[11];
    char s_72765a06[17];
@@ -975,6 +980,7 @@ static const struct
    char s_800197ff[26];
    char s_93d13126[7];
    char s_7785c81e[43];
+   char s_48da9f69[16];
    char s_38cf005e[52];
    char s_7e9108fa[10];
    char s_f455cf63[11];
@@ -1029,6 +1035,8 @@ static const struct
    char s_bd07998f[16];
    char s_4e2f19db[29];
    char s_9e66791a[9];
+   char s_3e981328[15];
+   char s_d5d699bd[32];
    char s_168d155d[30];
    char s_c64d260f[10];
 #ifdef HAVE_LAKKA_SWITCH
@@ -1193,7 +1201,6 @@ static const struct
    char s_5b3c8098[24];
    char s_ceb820ad[11];
    char s_63af41a7[36];
-   char s_a4b769ca[32];
 #ifdef HAVE_MIST
    char s_53788998[29];
 #endif
@@ -1211,9 +1218,7 @@ static const struct
    char s_dcbf8b04[27];
    char s_dcbffdfe[25];
    char s_7816d5d5[29];
-   char s_2b1f17e8[28];
    char s_36c3acc7[20];
-   char s_b4c3612a[32];
    char s_f638f238[19];
    char s_f3358a59[29];
    char s_f8098721[49];
@@ -1288,6 +1293,7 @@ static const struct
    char s_df62d56f[6];
    char s_e2f55a9b[4];
    char s_9f2cc577[19];
+   char s_dc216f95[28];
    char s_026e5a83[12];
    char s_42b8ffbf[9];
    char s_64702d9a[33];
@@ -1559,6 +1565,7 @@ static const struct
    char s_2324cc29[19];
    char s_0d299e52[8];
    char s_92830f70[17];
+   char s_5502abed[8];
    char s_9ecf53d5[62];
    char s_b67675ad[13];
    char s_3361e11d[64];
@@ -1569,7 +1576,6 @@ static const struct
    char s_a38500d8[14];
    char s_9544161a[8];
    char s_76ac1944[38];
-   char s_ded7e809[39];
    char s_d8820ed7[51];
    char s_4c11d465[17];
    char s_50a04cd9[19];
@@ -1577,8 +1583,6 @@ static const struct
    char s_11121f30[8];
    char s_01badaa0[28];
    char s_6127cc52[27];
-   char s_9d52f73c[17];
-   char s_bc30b87a[27];
    char s_2fd5302f[36];
    char s_2dff21ec[23];
    char s_a2a28187[18];
@@ -1591,6 +1595,7 @@ static const struct
    char s_39b2f935[23];
    char s_f585917a[38];
    char s_2942bc3c[49];
+   char s_3794f2cd[5];
    char s_0a3c5b6b[53];
    char s_c46fdd49[34];
    char s_a2fd58a6[31];
@@ -1640,7 +1645,6 @@ static const struct
    char s_f24476fa[16];
    char s_97d90c67[15];
    char s_6d08238d[5];
-   char s_033bf99f[13];
    char s_8076aea7[27];
    char s_a00583cf[30];
    char s_e8a86d57[9];
@@ -1680,9 +1684,9 @@ static const struct
    char s_094e2bc9[6];
    char s_d725639f[13];
    char s_ea5b5020[9];
-   char s_fef383d2[33];
    char s_4707850d[16];
    char s_cbddcf50[16];
+   char s_fc5ea9dc[9];
    char s_9abb40fc[24];
    char s_a9dc9f21[115];
    char s_6c786a36[32];
@@ -1777,6 +1781,7 @@ static const struct
    char s_9329c64c[5];
    char s_f8883f70[18];
    char s_09ba892e[14];
+   char s_047623ff[9];
    char s_58b9d895[21];
    char s_0a2aa953[10];
    char s_ffd0dac4[7];
@@ -2136,6 +2141,7 @@ static const struct
    char s_61b5b9d0[20];
    char s_313e6a7a[28];
    char s_579c3ea7[25];
+   char s_e29ee11f[12];
    char s_ccf131c5[22];
    char s_e5124bba[8];
    char s_875bc33e[11];
@@ -2243,6 +2249,7 @@ static const struct
 #endif
 #endif
    char s_f4341e25[44];
+   char s_b9942e59[12];
    char s_e09bad69[8];
    char s_f66c7b67[8];
    char s_cc973e8a[7];
@@ -2297,6 +2304,7 @@ static const struct
    char s_4b582a0c[37];
    char s_61213f1d[19];
    char s_95e4b29f[75];
+   char s_4d5d23af[15];
    char s_fa462638[7];
    char s_29f97e35[5];
    char s_569b0627[6];
@@ -2351,6 +2359,8 @@ static const struct
    char s_69b801ef[7];
    char s_a40653a7[28];
    char s_52e3d6ea[47];
+   char s_34a16f69[17];
+   char s_7706edf0[18];
    char s_3253994e[7];
    char s_580e244f[7];
    char s_a9c8430e[23];
@@ -2395,10 +2405,6 @@ static const struct
    char s_214b7699[11];
    char s_f90edcc2[61];
    char s_ad14307a[31];
-#if defined(RARCH_MOBILE)
-   char s_774121c7[69];
-   char s_774121c8[69];
-#endif
    char s_b0fb58d3[55];
    char s_b0fb58d4[55];
    char s_92a02470[44];
@@ -2566,7 +2572,6 @@ static const struct
    char s_aa08c6d6[79];
 #endif
 #endif
-   char s_27aef25c[49];
 #ifdef _3DS
    char s_2873cef1[89];
    char s_b4816da6[45];
@@ -2919,6 +2924,7 @@ static const struct
    char s_ece34ee9[264];
    char s_8b8a59ad[147];
    char s_f426bf8c[61];
+   char s_a7f838ad[11];
    char s_f88b978c[165];
    char s_47df0525[63];
    char s_03e272fc[63];
@@ -3054,7 +3060,6 @@ static const struct
    char s_7963c9c6[65];
    char s_ee3a489b[57];
    char s_236bd8d5[64];
-   char s_87c7d8b8[125];
 #ifdef HAVE_MIST
    char s_40e907c6[57];
 #endif
@@ -3072,9 +3077,7 @@ static const struct
    char s_c5a76d72[55];
    char s_c5a7e06c[53];
    char s_37d36d03[65];
-   char s_eadbaf16[56];
    char s_54eaf5f5[30];
-   char s_7de5d198[60];
    char s_3b573ee6[29];
    char s_dc1d6cc7[58];
    char s_28543dcf[60];
@@ -3678,10 +3681,8 @@ static const struct
    char s_7e96b5ce[56];
    char s_c2314d30[226];
 #if defined(RARCH_MOBILE)
-   char s_82c9e375[188];
-   char s_82c9e376[166];
+   char s_82c9e376[139];
 #endif
-   char s_73658ec1[139];
    char s_73658ec2[139];
    char s_8010a29e[142];
    char s_81120e85[143];
@@ -4747,7 +4748,6 @@ static const struct
 #ifndef HAVE_DYNAMIC
    "Sempre recarregar o n\303\272cleo na execu\303\247\303\243o de conte\303\272do",
 #endif
-   "Corrigir os desconectamentos (Android)",
    "\303\215cone do aplicativo",
    "Recursos",
    "Abrir Painel de Controle ASIO",
@@ -4795,6 +4795,7 @@ static const struct
    "Carrega automaticamente arquivos de remapeamento",
    "Carregar automaticamente predefini\303\247\303\265es de shader",
    "Voltar",
+   "Cancelar",
    "Confirmar",
    "Informa\303\247\303\265es",
    "Sair",
@@ -4830,6 +4831,8 @@ static const struct
    "URL de recursos do Buildbot",
    "Identificador do pacote",
    "Permitir c\303\242mera",
+   "Dispositivo",
+   "C\303\242mera",
    "C\303\242mera",
    "Conquistas n\303\243o podem ser ativadas com este n\303\272cleo",
    "Trapa\303\247a",
@@ -5067,6 +5070,7 @@ static const struct
    "Baixar n\303\272cleo",
    "Configura\303\247\303\265es do Atualizador de N\303\272cleos",
    "Mostrar n\303\272cleos experimentais",
+   "Cancelar",
    "Arquitetura da CPU",
    "N\303\272cleos da CPU",
    "Frequ\303\252ncia m\303\241xima do n\303\272cleo",
@@ -5216,6 +5220,7 @@ static const struct
    "Por n\303\272mero de jogadores",
    "Por distribuidora",
    "Por regi\303\243o",
+   "Por m\303\252s de lan\303\247amento",
    "Por ano de lan\303\247amento",
    "Por suporte de vibra\303\247\303\243o",
    "Por nota",
@@ -5348,6 +5353,7 @@ static const struct
    "Bot\303\243o Y (esquerda)",
    "Tecla %s",
    "Tipo de mapeamento para controle no teclado",
+   "%s (n\303\243o conectado)",
    "Todas",
    "Teclado %s",
    "Aux A da pistola",
@@ -5465,6 +5471,7 @@ static const struct
    "Mostrar Entradas da Porta",
    "Tocado",
    "Mostrar Cursor do Mouse com Sobreposi\303\247\303\243o",
+   "%s (jogador %u)",
    "Comportamento de Sondagem (Requer renicializa\303\247\303\243o)",
    "Mais cedo",
    "Mais tarde",
@@ -5519,6 +5526,8 @@ static const struct
    "JIT dispon\303\255vel",
    "Salvar os perfis de controle",
    "Controle",
+   "Teclado %d: %s",
+   "Teclado: todos os teclados (%s)",
    "Chave de transmiss\303\243o da Kick",
    "Servi\303\247os",
 #ifdef HAVE_LAKKA_SWITCH
@@ -5683,7 +5692,6 @@ static const struct
    "Acelera\303\247\303\243o de Rolagem",
    "Apar\303\252ncia",
    "Mostrar \"Arquivo de configura\303\247\303\243o\"",
-   "Mostrar Caixas de Confirma\303\247\303\243o",
 #ifdef HAVE_MIST
    "Mostrar 'Gerenciar n\303\272cleos'",
 #endif
@@ -5701,9 +5709,7 @@ static const struct
    "Mostrar \"Carregar n\303\272cleo\"",
    "Mostrar \"Carregar disco\"",
    "Mostrar \"Atualizador Online\"",
-   "Mostrar \"Sair do RetroArch\"",
    "Mostrar \"Reiniciar\"",
-   "Mostrar \"Reiniciar o RetroArch\"",
    "Mostrar \"Desligar\"",
    "Mostrar Sub-r\303\263tulos do Menu",
    "Apenas mostrar sub-etiquetas no item selecionado",
@@ -5778,6 +5784,7 @@ static const struct
    "Parar",
    "\342\200\246",
    "Suporte para mouse",
+   "Mouse: todos os mouses (%s)",
    "Multim\303\255dia",
    "M\303\272sicas",
    "Filtrar extens\303\265es desconhecidas",
@@ -6052,6 +6059,7 @@ static const struct
    "Todas as playlists",
    "Aplicar",
    "Associar n\303\272cleo",
+   "Padr\303\243o",
    "Por favor, primeiro escolha uma \303\272nica lista de reprodu\303\247\303\243o.",
    "&Escolher...",
    "Tem certeza de que deseja excluir a lista de reprodu\303\247\303\243o \"%1\"?",
@@ -6062,7 +6070,6 @@ static const struct
    "<Me pergunte>",
    "Vers\303\243o",
    "N\303\243o foi poss\303\255vel excluir o arquivo.",
-   "N\303\243o foi poss\303\255vel renomear o arquivo.",
    "Erro ao atualizar o item da lista de reprodu\303\247\303\243o.",
    "Sombreador atual",
    "Tema personalizado",
@@ -6070,8 +6077,6 @@ static const struct
    "Excluir",
    "N\303\243o mostrar isto novamente",
    "Baixar todas as miniaturas",
-   "Sistema completo",
-   "Esta lista de reprodu\303\247\303\243o",
    "Um download j\303\241 est\303\241 em progresso.",
    "Obtidas: %1 Falhou: %2",
    "Baixar miniaturas",
@@ -6084,6 +6089,7 @@ static const struct
    "O arquivo est\303\241 vazio.",
    "O caminho do arquivo est\303\241 em branco.",
    "N\303\243o foi poss\303\255vel abrir o arquivo para leitura.",
+   "Tipo",
    "N\303\243o foi poss\303\255vel abrir o arquivo para ser gravado.",
    "(usado para encontrar miniaturas)",
    "Coletando lista de arquivos...",
@@ -6133,7 +6139,6 @@ static const struct
    "Move para baixo",
    "Move para cima",
    "Nome",
-   "Erro de rede",
    "Nova lista de reprodu\303\247\303\243o",
    "Item da lista de reprodu\303\247\303\243o",
    "N\303\272cleo:",
@@ -6181,9 +6186,9 @@ static const struct
    "Subir",
    "Arte da capa",
    "Logotipo",
-   "Miniaturas baixadas com sucesso.",
    "Captura de tela",
    "Tela de t\303\255tulo",
+   "N\303\272cleos",
    "Falha na atualiza\303\247\303\243o.",
    "O RetroArch foi atualizado com sucesso. Por favor, reinicie o aplicativo para que as altera\303"
    "\247\303\265es entrem em vigor.",
@@ -6279,6 +6284,7 @@ static const struct
    "Nota",
    "N\303\272mero de s\303\251rie",
    "Ambienta\303\247\303\243o",
+   "Etiqueta",
    "Classifica\303\247\303\243o TGDB",
    "Ve\303\255culos",
    "Vis\303\243o",
@@ -6638,6 +6644,7 @@ static const struct
    "MM-DD-AAAA HH:MM:SS",
    "MM-DD-AAAA HH:MM:SS (AM/PM)",
    "MM-DD-AAAA HH:MM (AM/PM)",
+   "Autom\303\241tico",
    "Estilo da data e hora",
    "AAAA-MM",
    "AAAA-MM-DD",
@@ -6745,6 +6752,7 @@ static const struct
 #endif
 #endif
    "Desativar composi\303\247\303\243o da \303\241rea de trabalho",
+   "Intensidade",
    "Padr\303\243o",
    "Padr\303\243o",
    "V\303\255deo",
@@ -6801,6 +6809,7 @@ static const struct
    "Posi\303\247\303\243o Y da notifica\303\247\303\243o na tela",
    "\303\215ndice de monitor",
    "Habilitar tela cheia sobre o entalhe (\342\200\234notch\342\200\235) em dispositivos Android",
+   "Notifica\303\247\303\265es",
    "Pausar",
    "Alta",
    "Baixa",
@@ -6855,6 +6864,8 @@ static const struct
    "Escala",
    "Sincroniza\303\247\303\243o de Scanline",
    "Simula\303\247\303\243o do rolamento da linha de varredura",
+   "Altura da janela",
+   "Largura da janela",
    "Escala",
    "V\303\255deo",
    "Sombreadores de v\303\255deo",
@@ -6899,10 +6910,6 @@ static const struct
    "Desempenho",
    "Usar Buffers de Argumento do Metal (Requer renicializa\303\247\303\243o)",
    "Reduzir tremula\303\247\303\243o de v\303\255deo",
-#if defined(RARCH_MOBILE)
-   "Deslocamento do \303\202ncora da Viewport no Eixo X (Orienta\303\247\303\243o Retrato)",
-   "Deslocamento do \303\202ncora da Viewport no Eixo Y (Orienta\303\247\303\243o Retrato)",
-#endif
    "Deslocamento do eixo X do ponto de \303\242ncora da viewport",
    "Deslocamento do eixo Y do ponto de \303\242ncora da viewport",
    "Altura personalizada da propor\303\247\303\243o de tela",
@@ -7121,7 +7128,6 @@ static const struct
    "Desativa o ERTM do Bluetooth para corrigir o pareamento de alguns dispositivos",
 #endif
 #endif
-   "Procura por dispositivos bluetooth e os conecta.",
 #ifdef _3DS
    "Diret\303\263rio dos recursos da tela inferior. O diret\303\263rio precisa ter um \"bottom_menu."
    "png\".",
@@ -7638,6 +7644,7 @@ static const struct
    "Seleciona a porta do dispositivo de entrada para monitorar quando 'Mostrar Entradas na Sobreposi"
    "\303\247\303\243o' estiver definido como 'F\303\255sico (Controle)'.",
    "Mostra o cursor do mouse ao usar uma sobreposi\303\247\303\243o na tela.",
+   "Jogador %u",
    "Influencia como a sondagem de entrada \303\251 feita no RetroArch. Definir como \"Mais cedo\" ou"
    " \"Mais tarde\" pode reduzir a lat\303\252ncia, dependendo das suas configura\303\247\303\265es.",
    "A combina\303\247\303\243o dos bot\303\265es do controle para sair do RetroArch.",
@@ -7867,8 +7874,6 @@ static const struct
    "Velocidade m\303\241xima do cursor ao manter uma dire\303\247\303\243o para rolar.",
    "Altera as configura\303\247\303\265es da apar\303\252ncia da tela do menu.",
    "Mostre a op\303\247\303\243o \"Arquivo de configura\303\247\303\243o\" no menu principal.",
-   "Pede confirma\303\247\303\243o antes de sair, reiniciar ou fechar o conte\303\272do. Quando desa"
-   "tivada, essas a\303\247\303\265es acontecem imediatamente.",
 #ifdef HAVE_MIST
    "Mostra a op\303\247\303\243o \"Gerenciar n\303\272cleos\" no menu principal.",
 #endif
@@ -7889,9 +7894,7 @@ static const struct
    "Mostra a op\303\247\303\243o \"Carregar n\303\272cleo\" no menu principal.",
    "Mostra a op\303\247\303\243o \"Carregar disco\" no menu principal.",
    "Mostre a op\303\247\303\243o \"Atualiza\303\247\303\265es e downloads\" no menu principal.",
-   "Mostre a op\303\247\303\243o \"Sair do RetroArch\" no menu principal.",
    "Mostra a op\303\247\303\243o \"Reiniciar\".",
-   "Mostre a op\303\247\303\243o \"Reiniciar o RetroArch\" no menu principal.",
    "Mostra a op\303\247\303\243o \"Desligar\".",
    "Mostre as informa\303\247\303\265es adicionais para os itens do menu.",
    "Exibe apenas a sub-etiqueta do item atualmente selecionado.",
@@ -8854,16 +8857,9 @@ static const struct
    "xigir isso. Isso pode causar problemas com alguns shaders, especialmente em hardware antigo ou v"
    "ers\303\265es antigas do sistema operacional.",
 #if defined(RARCH_MOBILE)
-   "Posi\303\247\303\243o horizontal do conte\303\272do quando a viewport \303\251 mais larga que o "
-   "conte\303\272do. 0.0 \303\251 totalmente \303\240 esquerda, 0.5 \303\251 centralizado, 1.0 \303"
-   "\251 totalmente \303\240 direita. (Orienta\303\247\303\243o Retrato)",
    "Posi\303\247\303\243o vertical do conte\303\272do quando a viewport \303\251 mais alta que o con"
-   "te\303\272do. 0.0 \303\251 no topo, 0.5 \303\251 centralizado, 1.0 \303\251 na parte inferior. ("
-   "Orienta\303\247\303\243o Retrato)",
+   "te\303\272do. 0.0 \303\251 no topo, 0.5 \303\251 o centro, 1.0 \303\251 na parte inferior.",
 #endif
-   "Posi\303\247\303\243o horizontal do conte\303\272do quando a viewport \303\251 mais larga que o "
-   "conte\303\272do. 0.0 \303\251 \303\240 esquerda, 0.5 \303\251 o centro, 1.0 \303\251 \303\240 di"
-   "reita.",
    "Posi\303\247\303\243o vertical do conte\303\272do quando a viewport \303\251 mais alta que o con"
    "te\303\272do. 0.0 \303\251 no topo, 0.5 \303\251 o centro, 1.0 \303\251 na parte inferior.",
    "Personaliza a altura da janela de exibi\303\247\303\243o que \303\251 usada se a propor\303\247"
@@ -9528,7 +9524,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_pt_br_blob_check[
-      (sizeof(msg_hash_pt_br_blob) == (193642u
+      (sizeof(msg_hash_pt_br_blob) == (193242u
 #ifdef ANDROID
        + 352u
 #endif
@@ -9757,10 +9753,6 @@ typedef char msg_hash_pt_br_blob_check[
 #ifdef HAVE_ODROIDGO2
        + 11u
 #endif
-#if defined(RARCH_MOBILE)
-       + 69u
-       + 69u
-#endif
 #if defined (WIIU)
 #ifdef WIIU
        + 60u
@@ -9970,8 +9962,7 @@ typedef char msg_hash_pt_br_blob_check[
        + 59u
 #endif
 #if defined(RARCH_MOBILE)
-       + 188u
-       + 166u
+       + 139u
 #endif
 #if defined (WIIU)
 #ifdef WIIU
@@ -10249,7 +10240,6 @@ static const msg_hash_id_t msg_hash_pt_br_ids[] =
 #ifndef HAVE_DYNAMIC
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_ALWAYS_RELOAD_CORE_ON_RUN_CONTENT,
 #endif
-   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_ANDROID_INPUT_DISCONNECT_WORKAROUND,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_APPICON_SETTINGS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_ASSETS_DIRECTORY,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_AUDIO_ASIO_CONTROL_PANEL,
@@ -10297,6 +10287,7 @@ static const msg_hash_id_t msg_hash_pt_br_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_AUTO_REMAPS_ENABLE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_AUTO_SHADERS_ENABLE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_BASIC_MENU_CONTROLS_BACK,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_BASIC_MENU_CONTROLS_CANCEL,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_BASIC_MENU_CONTROLS_CONFIRM,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_BASIC_MENU_CONTROLS_INFO,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_BASIC_MENU_CONTROLS_QUIT,
@@ -10332,7 +10323,9 @@ static const msg_hash_id_t msg_hash_pt_br_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_BUILDBOT_ASSETS_URL,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_BUNDLE_IDENTIFIER,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_CAMERA_ALLOW,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_CAMERA_DEVICE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_CAMERA_DRIVER,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_CAMERA_SETTINGS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_CANNOT_ACTIVATE_ACHIEVEMENTS_WITH_THIS_CORE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_CHEAT,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_CHEAT_ADDRESS,
@@ -10567,6 +10560,7 @@ static const msg_hash_id_t msg_hash_pt_br_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_CORE_UPDATER_LIST,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_CORE_UPDATER_SETTINGS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_CORE_UPDATER_SHOW_EXPERIMENTAL_CORES,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_CORE_WARNING_CANCEL,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_CPU_ARCHITECTURE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_CPU_CORES,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_CPU_MANAGED_MAX_FREQ,
@@ -10715,6 +10709,7 @@ static const msg_hash_id_t msg_hash_pt_br_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_EXPLORE_BY_PLAYER_COUNT,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_EXPLORE_BY_PUBLISHER,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_EXPLORE_BY_REGION,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_EXPLORE_BY_RELEASE_MONTH,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_EXPLORE_BY_RELEASE_YEAR,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_EXPLORE_BY_RUMBLE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_EXPLORE_BY_SCORE,
@@ -10846,6 +10841,7 @@ static const msg_hash_id_t msg_hash_pt_br_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_INPUT_JOYPAD_Y,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_INPUT_KEY,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_INPUT_KEYBOARD_GAMEPAD_MAPPING_TYPE,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_INPUT_KEYBOARD_INDEX_ABSENT,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_INPUT_KEYBOARD_INDEX_ALL,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_INPUT_KEYBOARD_KEY,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_INPUT_LIGHTGUN_AUX_A,
@@ -10963,6 +10959,7 @@ static const msg_hash_id_t msg_hash_pt_br_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_SHOW_INPUTS_PORT,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_SHOW_INPUTS_TOUCHED,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_SHOW_MOUSE_CURSOR,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_INPUT_PLAYS_AS_ADD_ITEM,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_INPUT_POLL_TYPE_BEHAVIOR,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_INPUT_POLL_TYPE_BEHAVIOR_EARLY,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_INPUT_POLL_TYPE_BEHAVIOR_LATE,
@@ -11017,6 +11014,8 @@ static const msg_hash_id_t msg_hash_pt_br_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_JIT_AVAILABLE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_JOYPAD_AUTOCONFIG_DIR,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_JOYPAD_DRIVER,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_KEYBOARD_DEVICE_NAME,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_KEYBOARD_SYSTEM_NAME,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_KICK_STREAM_KEY,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_LAKKA_SERVICES,
 #ifdef HAVE_LAKKA_SWITCH
@@ -11181,7 +11180,6 @@ static const msg_hash_id_t msg_hash_pt_br_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MENU_SCROLL_FAST,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MENU_SETTINGS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_CONFIGURATIONS,
-   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_CONFIRM,
 #ifdef HAVE_MIST
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_CORE_MANAGER_STEAM,
 #endif
@@ -11199,9 +11197,7 @@ static const msg_hash_id_t msg_hash_pt_br_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_LOAD_CORE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_LOAD_DISC,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_ONLINE_UPDATER,
-   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_QUIT_RETROARCH,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_REBOOT,
-   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_RESTART_RETROARCH,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_SHUTDOWN,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_SUBLABELS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_SUBLABELS_CURRENT_SELECTION_ONLY,
@@ -11276,6 +11272,7 @@ static const msg_hash_id_t msg_hash_pt_br_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MIXER_ACTION_STOP,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MORE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MOUSE_ENABLE,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MOUSE_SYSTEM_NAME,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MULTIMEDIA_SETTINGS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_MUSIC_TAB,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_NAVIGATION_BROWSER_FILTER_SUPPORTED_EXTENSIONS_ENABLE,
@@ -11547,6 +11544,7 @@ static const msg_hash_id_t msg_hash_pt_br_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_ALL_PLAYLISTS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_APPLY,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_ASSOCIATE_CORE,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_BIND_DEFAULT,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_CANNOT_ADD_TO_ALL_PLAYLISTS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_CHOOSE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_CONFIRM_DELETE_PLAYLIST,
@@ -11557,7 +11555,6 @@ static const msg_hash_id_t msg_hash_pt_br_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_CORE_SELECTION_ASK,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_CORE_VERSION,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_COULD_NOT_DELETE_FILE,
-   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_COULD_NOT_RENAME_FILE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_COULD_NOT_UPDATE_PLAYLIST_ENTRY,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_CURRENT_SHADER,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_CUSTOM_THEME,
@@ -11565,8 +11562,6 @@ static const msg_hash_id_t msg_hash_pt_br_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_DELETE_PLAYLIST,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_DONT_SHOW_AGAIN,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_DOWNLOAD_ALL_THUMBNAILS,
-   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_DOWNLOAD_ALL_THUMBNAILS_ENTIRE_SYSTEM,
-   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_DOWNLOAD_ALL_THUMBNAILS_THIS_PLAYLIST,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_DOWNLOAD_ALREADY_IN_PROGRESS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_DOWNLOAD_PLAYLIST_THUMBNAIL_PROGRESS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_DOWNLOAD_THUMBNAIL,
@@ -11579,6 +11574,7 @@ static const msg_hash_id_t msg_hash_pt_br_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_FILE_IS_EMPTY,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_FILE_PATH_IS_BLANK,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_FILE_READ_OPEN_FAILED,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_FILE_TYPE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_FILE_WRITE_OPEN_FAILED,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_FOR_THUMBNAILS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_GATHERING_LIST_OF_FILES,
@@ -11628,7 +11624,6 @@ static const msg_hash_id_t msg_hash_pt_br_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_MOVE_DOWN,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_MOVE_UP,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_NAME,
-   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_NETWORK_ERROR,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_NEW_PLAYLIST,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_PLAYLIST_ENTRY,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_PLAYLIST_ENTRY_CORE,
@@ -11667,9 +11662,9 @@ static const msg_hash_id_t msg_hash_pt_br_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_TAB_FILE_BROWSER_UP,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_THUMBNAIL_BOXART,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_THUMBNAIL_LOGO,
-   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_THUMBNAIL_PACK_DOWNLOADED_SUCCESSFULLY,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_THUMBNAIL_SCREENSHOT,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_THUMBNAIL_TITLE_SCREEN,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_UPDATER_CORES,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_UPDATE_RETROARCH_FAILED,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_UPDATE_RETROARCH_FINISHED,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_QT_UPDATE_RETROARCH_NIGHTLY,
@@ -11764,6 +11759,7 @@ static const msg_hash_id_t msg_hash_pt_br_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_SCORE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_SERIAL,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_SETTING,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_TAGS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_TGDB_RATING,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_VEHICULAR,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_VISUAL,
@@ -12123,6 +12119,7 @@ static const msg_hash_id_t msg_hash_pt_br_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_TIMEDATE_MDYYYY_HMS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_TIMEDATE_MDYYYY_HMS_AMPM,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_TIMEDATE_MDYYYY_HM_AMPM,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_TIMEDATE_MODE_AUTOMATIC,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_TIMEDATE_STYLE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_TIMEDATE_YM,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_TIMEDATE_YMD,
@@ -12230,6 +12227,7 @@ static const msg_hash_id_t msg_hash_pt_br_ids[] =
 #endif
 #endif
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_DISABLE_COMPOSITION,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_DLSS_NR_INTENSITY,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_DLSS_NR_PRESET_DEFAULT,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_DLSS_NR_STYLE_DEFAULT,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_DRIVER,
@@ -12284,6 +12282,7 @@ static const msg_hash_id_t msg_hash_pt_br_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_MESSAGE_POS_Y,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_MONITOR_INDEX,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_NOTCH_WRITE_OVER,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_NOTIFICATIONS_WINDOW,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_EDIT_PAUSE_ON,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_EDIT_SMOOTHING_HIGH,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_EDIT_SMOOTHING_LOW,
@@ -12338,6 +12337,8 @@ static const msg_hash_id_t msg_hash_pt_br_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCALING_SETTINGS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCANLINE_SYNC,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCAN_SUBFRAMES,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_PAGE_WINDOW_HEIGHT,
+   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_PAGE_WINDOW_WIDTH,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_XR_SCALE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SETTINGS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_SHADERS_ENABLE,
@@ -12382,10 +12383,6 @@ static const msg_hash_id_t msg_hash_pt_br_ids[] =
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_TEMPORAL_UPSCALER_QUALITY_PERFORMANCE,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_USE_METAL_ARG_BUFFERS,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_VFILTER,
-#if defined(RARCH_MOBILE)
-   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_VIEWPORT_BIAS_PORTRAIT_X,
-   (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_VIEWPORT_BIAS_PORTRAIT_Y,
-#endif
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_VIEWPORT_BIAS_X,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_VIEWPORT_BIAS_Y,
    (msg_hash_id_t)MENU_ENUM_LABEL_VALUE_VIDEO_VIEWPORT_CUSTOM_HEIGHT,
@@ -12552,7 +12549,6 @@ static const msg_hash_id_t msg_hash_pt_br_ids[] =
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_BLUETOOTH_ERTM_DISABLE,
 #endif
 #endif
-   (msg_hash_id_t)MENU_ENUM_SUBLABEL_BLUETOOTH_SETTINGS,
 #ifdef _3DS
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_BOTTOM_ASSETS_DIRECTORY,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_BOTTOM_FONT_COLOR_BLUE,
@@ -12905,6 +12901,7 @@ static const msg_hash_id_t msg_hash_pt_br_ids[] =
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_INPUT_OVERLAY_SHOW_INPUTS,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_INPUT_OVERLAY_SHOW_INPUTS_PORT,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_INPUT_OVERLAY_SHOW_MOUSE_CURSOR,
+   (msg_hash_id_t)MENU_ENUM_SUBLABEL_INPUT_PLAYS_AS_PLAYER,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_INPUT_POLL_TYPE_BEHAVIOR,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_INPUT_QUIT_GAMEPAD_COMBO,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_INPUT_REMAPPING_DIRECTORY,
@@ -13040,7 +13037,6 @@ static const msg_hash_id_t msg_hash_pt_br_ids[] =
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_MENU_SCROLL_FAST,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_MENU_SETTINGS,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_MENU_SHOW_CONFIGURATIONS,
-   (msg_hash_id_t)MENU_ENUM_SUBLABEL_MENU_SHOW_CONFIRM,
 #ifdef HAVE_MIST
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_MENU_SHOW_CORE_MANAGER_STEAM,
 #endif
@@ -13058,9 +13054,7 @@ static const msg_hash_id_t msg_hash_pt_br_ids[] =
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_MENU_SHOW_LOAD_CORE,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_MENU_SHOW_LOAD_DISC,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_MENU_SHOW_ONLINE_UPDATER,
-   (msg_hash_id_t)MENU_ENUM_SUBLABEL_MENU_SHOW_QUIT_RETROARCH,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_MENU_SHOW_REBOOT,
-   (msg_hash_id_t)MENU_ENUM_SUBLABEL_MENU_SHOW_RESTART_RETROARCH,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_MENU_SHOW_SHUTDOWN,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_MENU_SHOW_SUBLABELS,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_MENU_SHOW_SUBLABELS_CURRENT_SELECTION_ONLY,
@@ -13664,10 +13658,8 @@ static const msg_hash_id_t msg_hash_pt_br_ids[] =
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_SYNCHRONIZATION_SETTINGS,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_USE_METAL_ARG_BUFFERS,
 #if defined(RARCH_MOBILE)
-   (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_PORTRAIT_X,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_PORTRAIT_Y,
 #endif
-   (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_X,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_Y,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_CUSTOM_HEIGHT,
    (msg_hash_id_t)MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_CUSTOM_WIDTH,

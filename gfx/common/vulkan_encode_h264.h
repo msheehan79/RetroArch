@@ -2,15 +2,9 @@
 #ifndef RARCH_VULKAN_ENCODE_H264_H
 #define RARCH_VULKAN_ENCODE_H264_H
 #include "vulkan_encode_pool.h"
+#include "vulkan_encode_packet.h"
 #include "vulkan_encode_h264_submit.h"
 RETRO_BEGIN_DECLS
-enum vulkan_encode_result
-{
-   VULKAN_ENCODE_ERROR = -1,
-   VULKAN_ENCODE_OK,
-   VULKAN_ENCODE_BUSY,
-   VULKAN_ENCODE_END
-};
 typedef struct vulkan_encode_h264 vulkan_encode_h264_t;
 typedef struct vulkan_encode_h264_ops
 {
@@ -26,15 +20,6 @@ typedef struct vulkan_encode_h264_open
    unsigned slots, producer_family, gop, qp;
    bool storage_image_extended_formats;
 } vulkan_encode_h264_open_t;
-typedef struct vulkan_encode_packet
-{
-   const void *data;
-   size_t size;
-   uint64_t timestamp, duration;
-   unsigned slot;
-   bool keyframe;
-} vulkan_encode_packet_t;
-
 /* One worker owns encoder and queue. Device/dispatch remain borrowed until
  * free. Producer borrows fixed pool images and timelines through retirement.
  * No B frames, frame-path allocations or waits. */
@@ -56,6 +41,10 @@ int vulkan_encode_h264_submit(vulkan_encode_h264_t *encoder, unsigned slot,
 /* One oldest-frame check, or repeated borrow until release. */
 int vulkan_encode_h264_poll(vulkan_encode_h264_t *encoder,
       vulkan_encode_packet_t *packet);
+/* Blocks the worker until the oldest frame's GPU work completes, which
+ * poll and a refused submit both wait for, or @timeout_ns passes. False,
+ * without waiting, when no GPU work stands in the way. */
+bool vulkan_encode_h264_wait(vulkan_encode_h264_t *encoder, uint64_t timeout_ns);
 bool vulkan_encode_h264_release(vulkan_encode_h264_t *encoder);
 int vulkan_encode_h264_finish(vulkan_encode_h264_t *encoder);
 /* Error/cancel drain: one bounded check per active transaction, discards

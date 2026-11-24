@@ -47,6 +47,9 @@
 #include <utime.h>
 #endif
 
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 #include <boolean.h>
 #include <compat/strl.h>
 #include <retro_miscellaneous.h>
@@ -58,8 +61,20 @@
 #include "../../../configuration.h"
 #include "../../../runloop.h"
 #include "../../../core_option_manager.h"
+#include "../../../gfx/gfx_thumbnail_results.h"
 #include "../companion_core.h"
 
+extern char stub_match_push_path[];
+extern unsigned stub_match_pushes;
+extern unsigned stub_match_bare_pushes;
+extern void stub_core_info_find_set(const char *path, const char *databases);
+#ifdef HAVE_NETWORKING
+#include "../../../tasks/tasks_internal.h"
+extern char stub_http_url[PATH_MAX_LENGTH];
+extern char stub_http_path[PATH_MAX_LENGTH];
+extern retro_task_callback_t stub_http_cb;
+extern void *stub_http_ud;
+#endif
 extern settings_t test_settings;
 extern runloop_state_t test_runloop;
 extern int  stub_calls_load_with_new_core;
@@ -86,10 +101,12 @@ static void sleep_briefly_ms(long ns) { struct timespec ts; ts.tv_sec = 0; ts.tv
 #endif
 
 static int  playlist_changed, playlists_changed, browse_changed;
+static int  thumbnails_changed;
 
 static void on_playlists_changed(void *ud) { (void)ud; playlists_changed++; }
 static void on_playlist_changed(void *ud)  { (void)ud; playlist_changed++; }
 static void on_browse_changed(void *ud)    { (void)ud; browse_changed++; }
+static void on_thumbnails_changed(void *ud) { (void)ud; thumbnails_changed++; }
 
 /* The listing is enumerated off the UI thread and lands in iterate():
  * spin it until the browse callback fires (or a timeout). */
@@ -121,7 +138,20 @@ static void writef(const char *path, const char *text)
    fclose(f);
 }
 
+static bool file_is(const char *path, const char *text)
+{
+   char buf[64];
+   size_t n;
+   FILE *f = fopen(path, "rb");
+   if (!f)
+      return false;
+   n = fread(buf, 1, sizeof(buf), f);
+   fclose(f);
+   return n == strlen(text) && !memcmp(buf, text, n);
+}
+
 #include <formats/image.h>
+#include <streams/image_texture_file.h>
 static void write_tga_rgba(const char *path, unsigned w, unsigned h, uint32_t argb)
 {
    FILE *f = fopen(path, "wb");
@@ -258,6 +288,7 @@ static companion_core_t *make_core(void)
    cb.on_playlists_changed = on_playlists_changed;
    cb.on_playlist_changed  = on_playlist_changed;
    cb.on_browse_changed    = on_browse_changed;
+   cb.on_thumbnails_changed = on_thumbnails_changed;
    return companion_core_new(&cb, NULL);
 }
 
@@ -349,8 +380,477 @@ static void test_thumbnail_path(void)
    n = companion_core_thumbnail_path(c, "Whatever", COMPANION_THUMB_BOXART,
          "cover", img, out, sizeof(out));
    CHECK(n > 0 && string_is_equal(out, img), "image content is its own thumbnail");
+   /* '"' is replaced as the downloader replaces it */
+   fixture(want, sizeof(want),
+         "thumbnails/Nintendo - Nintendo Entertainment System/Named_Boxarts/Say _Hi_ (USA).png");
+   writef(want, "png");
+   n = companion_core_thumbnail_path(c, "Nintendo - Nintendo Entertainment System",
+         COMPANION_THUMB_BOXART, "Say \"Hi\" (USA)", "/x", out, sizeof(out));
+   CHECK(n > 0 && string_is_equal(out, want), "\" sanitised to _: %s", out);
+   /* then the content file name */
+   fixture(want, sizeof(want),
+         "thumbnails/Nintendo - Nintendo Entertainment System/Named_Boxarts/Kid Icarus (USA).png");
+   writef(want, "png");
+   n = companion_core_thumbnail_path(c, "Nintendo - Nintendo Entertainment System",
+         COMPANION_THUMB_BOXART, "kid icarus", "/roms/nes/Kid Icarus (USA).nes",
+         out, sizeof(out));
+   CHECK(n > 0 && string_is_equal(out, want), "the file name after the label: %s", out);
+   /* an entry without a label, as Qt passes it */
+   n = companion_core_thumbnail_path(c, "Nintendo - Nintendo Entertainment System",
+         COMPANION_THUMB_BOXART, "/roms/nes/Kid Icarus (USA).nes",
+         "/roms/nes/Kid Icarus (USA).nes", out, sizeof(out));
+   CHECK(n > 0 && string_is_equal(out, want), "no label: the file stem: %s", out);
+   /* then the match the thumbnail task stored, if the menu shows it */
+   {
+      size_t rec;
+      gfx_thumbnail_results_t *t = gfx_thumbnail_results_new();
+      rec = gfx_thumbnail_results_add(t, "/roms/nes/m.nes", "Metroid (U) [!]", "",
+            "Nintendo - Nintendo Entertainment System");
+      gfx_thumbnail_results_set(t, rec, GFX_THUMBNAIL_RESULT_BOXARTS,
+            "Metroid (Europe).png");
+      rec = gfx_thumbnail_results_add(t, "/roms/nes/k.nes", "Kirby (U)", "",
+            "Nintendo - Nintendo Entertainment System");
+      gfx_thumbnail_results_set(t, rec, GFX_THUMBNAIL_RESULT_BOXARTS,
+            "Kirby (Europe).jpg");
+      gfx_thumbnail_results_sort(t);
+      gfx_thumbnail_results_open("/pl/companion.lpl");
+      gfx_thumbnail_results_install("/pl/companion.lpl", t, NULL, true);
+   }
+   fixture(want, sizeof(want),
+         "thumbnails/Nintendo - Nintendo Entertainment System/Named_Boxarts/Metroid (Europe).png");
+   writef(want, "png");
+   n = companion_core_thumbnail_path(c, "Nintendo - Nintendo Entertainment System",
+         COMPANION_THUMB_BOXART, "Metroid (U) [!]", "/roms/nes/m.nes", out, sizeof(out));
+   CHECK(n > 0 && string_is_equal(out, want), "then the stored match: %s", out);
+   fixture(want, sizeof(want),
+         "thumbnails/Nintendo - Nintendo Entertainment System/Named_Boxarts/Kirby (Europe).jpg");
+   writef(want, "jpg");
+   n = companion_core_thumbnail_path(c, "Nintendo - Nintendo Entertainment System",
+         COMPANION_THUMB_BOXART, "Kirby (U)", "/roms/nes/k.nes", out, sizeof(out));
+   CHECK(n > 0 && string_ends_with(out, "Named_Boxarts/Kirby (U).png"),
+         "a non-PNG match only with playlist_allow_non_png: %s", out);
+   test_settings.bools.playlist_allow_non_png = true;
+   n = companion_core_thumbnail_path(c, "Nintendo - Nintendo Entertainment System",
+         COMPANION_THUMB_BOXART, "Kirby (U)", "/roms/nes/k.nes", out, sizeof(out));
+   CHECK(n > 0 && string_is_equal(out, want), "a non-PNG match when allowed: %s", out);
+   test_settings.bools.playlist_allow_non_png = false;
+   gfx_thumbnail_results_deinit();
    companion_core_free(c);
 }
+
+/* A one-entry playlist without a db_name. */
+static void write_row_lpl(const char *rel, const char *path,
+      const char *label, const char *core_path, const char *core_name)
+{
+   char p[512];
+   char buf[1024];
+   fixture(p, sizeof(p), rel);
+   snprintf(buf, sizeof(buf),
+         "{\n  \"version\": \"1.5\",\n  \"items\": [\n"
+         "    {\n      \"path\": \"%s\",\n      \"label\": \"%s\",\n"
+         "      \"core_path\": \"%s\",\n      \"core_name\": \"%s\",\n"
+         "      \"crc32\": \"\",\n      \"db_name\": \"\"\n    }\n  ]\n}\n",
+         path, label, core_path, core_name);
+   writef(p, buf);
+}
+
+/* Entry @i's art as a companion looks it up, with the system the
+ * entry resolves to. */
+static size_t entry_boxart(companion_core_t *c, size_t i,
+      char *sys, size_t sys_len, char *out, size_t len)
+{
+   const struct playlist_entry *e = companion_core_entry(c, i);
+   companion_core_entry_thumbnail_system(c, i, sys, sys_len);
+   if (!e)
+      return 0;
+   return companion_core_thumbnail_path(c, sys, COMPANION_THUMB_BOXART,
+         e->label, e->path, out, len);
+}
+
+/* History and favourites rows without a db_name find the match the
+ * thumbnail task stored, under the system it stored it: the core's
+ * database, else the content's folder (as the menu). */
+static void test_entry_thumbnail_system(void)
+{
+   static const char *const nes = "Nintendo - Nintendo Entertainment System";
+   companion_core_t *c = make_core();
+   char p[512], sys[NAME_MAX_LENGTH];
+   char out[512], want[512];
+   gfx_thumbnail_results_t *t;
+   size_t rec, n;
+
+   fixture(p, sizeof(p), "hist"); mkdirp(p);
+   write_row_lpl("hist/content_history.lpl", "/roms/nes/zelda.nes",
+         "Legend of Zelda, The (U) [!]", "/cores/fceumm_libretro.so", "FCEUmm");
+   write_row_lpl("hist/content_favorites.lpl",
+         "/roms/Nintendo - Nintendo Entertainment System/Tetris (U) [!].nes",
+         "Tetris (U) [!]", "/cores/nodb_libretro.so", "NoDB");
+   fixture(p, sizeof(p), "fav2"); mkdirp(p);
+   write_row_lpl("fav2/content_favorites.lpl", "/roms/My.Roms/Rygar.nes",
+         "rygar_dump", "/cores/nodb_libretro.so", "NoDB");
+   write_row_lpl("hist/Collection.lpl", "/roms/nes/smb.nes",
+         "super mario bros", "DETECT", "DETECT");
+   stub_core_info_find_set("/cores/fceumm_libretro.so",
+         "Nintendo - Nintendo Entertainment System|Nintendo - Family Computer Disk System");
+
+   t   = gfx_thumbnail_results_new();
+   rec = gfx_thumbnail_results_add(t, "/roms/nes/zelda.nes",
+         "Legend of Zelda, The (U) [!]", "", nes);
+   gfx_thumbnail_results_set(t, rec, GFX_THUMBNAIL_RESULT_BOXARTS,
+         "Legend of Zelda, The (USA).png");
+   gfx_thumbnail_results_sort(t);
+   fixture(p, sizeof(p), "hist/content_history.lpl");
+   gfx_thumbnail_results_open(p);
+   gfx_thumbnail_results_install(p, t, NULL, true);
+   t   = gfx_thumbnail_results_new();
+   rec = gfx_thumbnail_results_add(t,
+         "/roms/Nintendo - Nintendo Entertainment System/Tetris (U) [!].nes",
+         "Tetris (U) [!]", "", nes);
+   gfx_thumbnail_results_set(t, rec, GFX_THUMBNAIL_RESULT_BOXARTS,
+         "Tetris (USA).png");
+   gfx_thumbnail_results_sort(t);
+   fixture(p, sizeof(p), "hist/content_favorites.lpl");
+   gfx_thumbnail_results_open(p);
+   gfx_thumbnail_results_install(p, t, NULL, true);
+   t   = gfx_thumbnail_results_new();
+   rec = gfx_thumbnail_results_add(t, "/roms/My.Roms/Rygar.nes",
+         "rygar_dump", "", "My.Roms");
+   gfx_thumbnail_results_set(t, rec, GFX_THUMBNAIL_RESULT_BOXARTS,
+         "Rygar (USA).png");
+   gfx_thumbnail_results_sort(t);
+   fixture(p, sizeof(p), "fav2/content_favorites.lpl");
+   gfx_thumbnail_results_open(p);
+   gfx_thumbnail_results_install(p, t, NULL, true);
+
+   fixture(want, sizeof(want), "thumbnails/Nintendo - Nintendo Entertainment System/Named_Boxarts/Legend of Zelda, The (USA).png");
+   writef(want, "png");
+   fixture(want, sizeof(want), "thumbnails/Nintendo - Nintendo Entertainment System/Named_Boxarts/Tetris (USA).png");
+   writef(want, "png");
+   fixture(p, sizeof(p), "thumbnails/My.Roms"); mkdirp(p);
+   fixture(p, sizeof(p), "thumbnails/My.Roms/Named_Boxarts"); mkdirp(p);
+   fixture(want, sizeof(want), "thumbnails/My.Roms/Named_Boxarts/Rygar (USA).png");
+   writef(want, "png");
+
+   /* History: the core's first database */
+   fixture(p, sizeof(p), "hist/content_history.lpl");
+   CHECK(companion_core_select_playlist_path(c, p) && iterate_until_loaded(c),
+         "select %s", p);
+   entry_boxart(c, 0, sys, sizeof(sys), out, sizeof(out));
+   fixture(want, sizeof(want), "thumbnails/Nintendo - Nintendo Entertainment System/Named_Boxarts/Legend of Zelda, The (USA).png");
+   CHECK(string_is_equal(sys, nes), "history row: its core's database (got '%s')", sys);
+   CHECK(string_is_equal(out, want), "history row: the stored match: %s", out);
+
+   /* Favourites, a core without a database: the content's folder */
+   fixture(p, sizeof(p), "hist/content_favorites.lpl");
+   CHECK(companion_core_select_playlist_path(c, p) && iterate_until_loaded(c),
+         "select %s", p);
+   entry_boxart(c, 0, sys, sizeof(sys), out, sizeof(out));
+   fixture(want, sizeof(want), "thumbnails/Nintendo - Nintendo Entertainment System/Named_Boxarts/Tetris (USA).png");
+   CHECK(string_is_equal(sys, nes), "favourites row: the content's folder (got '%s')", sys);
+   CHECK(string_is_equal(out, want), "favourites row: the stored match: %s", out);
+   n = companion_core_entry_thumbnail_system(c, 0, sys, sizeof(sys));
+   CHECK(n == strlen(sys), "content folder: returns the length written (%u, wrote %u)",
+         (unsigned)n, (unsigned)strlen(sys));
+
+   /* A folder with a dot: looked up under the name as it is */
+   fixture(p, sizeof(p), "fav2/content_favorites.lpl");
+   CHECK(companion_core_select_playlist_path(c, p) && iterate_until_loaded(c),
+         "select %s", p);
+   entry_boxart(c, 0, sys, sizeof(sys), out, sizeof(out));
+   fixture(want, sizeof(want), "thumbnails/My.Roms/Named_Boxarts/Rygar (USA).png");
+   CHECK(string_is_equal(sys, "My.Roms"), "dotted folder kept whole (got '%s')", sys);
+   CHECK(string_is_equal(out, want), "dotted folder: the stored match: %s", out);
+
+   /* A collection row: the playlist's name */
+   fixture(p, sizeof(p), "hist/Collection.lpl");
+   CHECK(companion_core_select_playlist_path(c, p) && iterate_until_loaded(c),
+         "select %s", p);
+   companion_core_entry_thumbnail_system(c, 0, sys, sizeof(sys));
+   CHECK(string_is_equal(sys, "Collection"), "collection row: its playlist (got '%s')", sys);
+
+   stub_core_info_find_set(NULL, NULL);
+   gfx_thumbnail_results_deinit();
+   companion_core_free(c);
+}
+
+static void test_thumbnail_match_push(void)
+{
+   char pl[PATH_MAX_LENGTH];
+   companion_core_t *c = make_core();
+
+   fixture(pl, sizeof(pl), "Match.lpl");
+   writef(pl, "{\"version\": \"1.5\", \"items\": []}\n");
+   stub_match_push_path[0] = '\0';
+   CHECK(companion_core_select_playlist_path(c, pl) && iterate_until_loaded(c),
+         "select %s", pl);
+   CHECK(string_is_equal(stub_match_push_path, pl),
+         "a loaded playlist asks for its thumbnail matches: %s",
+         stub_match_push_path);
+   thumbnails_changed = 0;
+   companion_core_notify_thumbnails(c, "/elsewhere/Other.lpl");
+   CHECK(thumbnails_changed == 0, "another playlist's matches: no notice");
+   companion_core_notify_thumbnails(c, pl);
+   CHECK(thumbnails_changed == 1, "the shown playlist's matches: %d notices",
+         thumbnails_changed);
+   companion_core_free(c);
+}
+
+/* Installs a table naming @path's row @rom "<file name> (Hold).png" */
+static void hold_table(const char *path, const char *rom)
+{
+   char name[64];
+   size_t rec;
+   gfx_thumbnail_results_t *t = gfx_thumbnail_results_new();
+   snprintf(name, sizeof(name), "%s (Hold).png", path_basename(rom));
+   rec = gfx_thumbnail_results_add(t, rom, "L", "", "Sys");
+   gfx_thumbnail_results_set(t, rec, GFX_THUMBNAIL_RESULT_BOXARTS, name);
+   gfx_thumbnail_results_sort(t);
+   gfx_thumbnail_results_install(path, t, NULL, true);
+}
+
+static bool hold_shows(const char *rom)
+{
+   char name[64];
+   const char *got = gfx_thumbnail_results_lookup(rom, "L", "Sys",
+         GFX_THUMBNAIL_RESULT_BOXARTS, false);
+   snprintf(name, sizeof(name), "%s (Hold).png", path_basename(rom));
+   return got && string_is_equal(got, name);
+}
+
+static void open_others(unsigned from, unsigned n)
+{
+   char p[64];
+   for (; n; n--, from++)
+   {
+      snprintf(p, sizeof(p), "/elsewhere/%u.lpl", from);
+      gfx_thumbnail_results_open(p);
+   }
+}
+
+/* The shown playlist keeps its stored matches whatever else opens,
+ * also after the store starts over. */
+static void test_thumbnail_hold(void)
+{
+   char pl[PATH_MAX_LENGTH];
+   companion_core_t *c = make_core();
+
+   gfx_thumbnail_results_deinit();
+   fixture(pl, sizeof(pl), "playlists/Nintendo - Nintendo Entertainment System.lpl");
+   stub_match_pushes = 0;
+   CHECK(companion_core_select_playlist_path(c, pl) && iterate_until_loaded(c),
+         "select %s", pl);
+   hold_table(pl, "/roms/nes/metroid.nes");
+   open_others(0, 6);
+   CHECK(hold_shows("/roms/nes/metroid.nes"),
+         "held: the row's stored match outlives six other opens");
+   companion_core_iterate(c, 2000);
+   companion_core_iterate(c, 2000);
+   CHECK(stub_match_pushes == 1, "one push while the store keeps it: %u",
+         stub_match_pushes);
+
+   gfx_thumbnail_results_deinit();
+   companion_core_iterate(c, 2000);
+   companion_core_iterate(c, 2000);
+   CHECK(stub_match_pushes == 2,
+         "the store started over: one push again, not %u",
+         stub_match_pushes - 1);
+   hold_table(pl, "/roms/nes/metroid.nes");
+   open_others(0, 6);
+   CHECK(hold_shows("/roms/nes/metroid.nes"), "and held again");
+
+   companion_core_free(c);
+   open_others(6, 4);
+   CHECK(!hold_shows("/roms/nes/metroid.nes"), "released with the playlist");
+   gfx_thumbnail_results_deinit();
+}
+
+/* All Playlists pushes and holds every playlist it lists. */
+static void test_thumbnail_hold_all(void)
+{
+   char nes[512];
+   char gen[512];
+   companion_core_t *c = make_core();
+
+   gfx_thumbnail_results_deinit();
+   fixture(nes, sizeof(nes), "playlists/Nintendo - Nintendo Entertainment System.lpl");
+   fixture(gen, sizeof(gen), "playlists/Sega - Mega Drive - Genesis.lpl");
+   companion_core_refresh_playlists(c);
+   stub_match_pushes = 0;
+   CHECK(companion_core_select_playlist(c, 0) && iterate_until_loaded(c),
+         "select All Playlists");
+   CHECK(stub_match_pushes == 2, "one push per playlist: %u",
+         stub_match_pushes);
+   hold_table(nes, "/roms/nes/alpha.nes");
+   hold_table(gen, "/roms/gen/sonic.md");
+   open_others(0, 6);
+   CHECK(hold_shows("/roms/nes/alpha.nes") && hold_shows("/roms/gen/sonic.md"),
+         "every listed playlist held");
+
+   gfx_thumbnail_results_deinit();
+   companion_core_iterate(c, 2000);
+   companion_core_iterate(c, 2000);
+   CHECK(stub_match_pushes == 4, "the store started over: each pushed once more: %u",
+         stub_match_pushes);
+
+   CHECK(companion_core_select_playlist_path(c, nes) && iterate_until_loaded(c),
+         "leave for one playlist");
+   hold_table(nes, "/roms/nes/alpha.nes");
+   hold_table(gen, "/roms/gen/sonic.md");
+   open_others(6, 4);
+   CHECK(hold_shows("/roms/nes/alpha.nes") && !hold_shows("/roms/gen/sonic.md"),
+         "leaving All Playlists releases the others");
+   companion_core_free(c);
+   gfx_thumbnail_results_deinit();
+}
+
+/* Qt lists All Playlists one playlist after another: each stays held. */
+static void test_thumbnail_hold_append(void)
+{
+   char nes[512];
+   char gen[512];
+   companion_core_t *c = make_core();
+
+   gfx_thumbnail_results_deinit();
+   fixture(nes, sizeof(nes), "playlists/Nintendo - Nintendo Entertainment System.lpl");
+   fixture(gen, sizeof(gen), "playlists/Sega - Mega Drive - Genesis.lpl");
+   stub_match_pushes      = 0;
+   stub_match_bare_pushes = 0;
+   CHECK(   companion_core_select_playlist_path(c, nes) && iterate_until_loaded(c)
+         && companion_core_append_playlist_path(c, gen) && iterate_until_loaded(c),
+         "list two playlists in turn");
+   CHECK(stub_match_pushes == 2 && stub_match_bare_pushes == 0,
+         "one push per playlist, with its parsed playlist: %u, %u bare",
+         stub_match_pushes, stub_match_bare_pushes);
+   hold_table(nes, "/roms/nes/alpha.nes");
+   hold_table(gen, "/roms/gen/sonic.md");
+   open_others(0, 6);
+   CHECK(hold_shows("/roms/nes/alpha.nes") && hold_shows("/roms/gen/sonic.md"),
+         "every listed playlist held");
+   thumbnails_changed = 0;
+   companion_core_notify_thumbnails(c, nes);
+   CHECK(thumbnails_changed == 1, "the first playlist's matches: %d notices",
+         thumbnails_changed);
+
+   gfx_thumbnail_results_deinit();
+   companion_core_iterate(c, 2000);
+   companion_core_iterate(c, 2000);
+   CHECK(stub_match_pushes == 4, "the store started over: each pushed once more: %u",
+         stub_match_pushes);
+   CHECK(stub_match_bare_pushes == 1,
+         "the earlier playlist by its path, not kept parsed: %u bare",
+         stub_match_bare_pushes);
+   hold_table(nes, "/roms/nes/alpha.nes");
+   hold_table(gen, "/roms/gen/sonic.md");
+   open_others(0, 6);
+   CHECK(hold_shows("/roms/nes/alpha.nes") && hold_shows("/roms/gen/sonic.md"),
+         "and both held again");
+
+   CHECK(companion_core_select_playlist_path(c, nes) && iterate_until_loaded(c),
+         "select one playlist");
+   hold_table(nes, "/roms/nes/alpha.nes");
+   hold_table(gen, "/roms/gen/sonic.md");
+   open_others(6, 4);
+   CHECK(hold_shows("/roms/nes/alpha.nes") && !hold_shows("/roms/gen/sonic.md"),
+         "selecting one releases the others");
+
+   /* An append is a plain select with a parse pending, */
+   CHECK(   companion_core_append_playlist_path(c, gen)
+         && companion_core_append_playlist_path(c, gen)
+         && iterate_until_loaded(c)
+         && string_is_equal(companion_core_selected_playlist_path(c), gen),
+         "append while a parse is pending");
+   thumbnails_changed = 0;
+   companion_core_notify_thumbnails(c, nes);
+   CHECK(thumbnails_changed == 0, "the one listed before is let go: %d notices",
+         thumbnails_changed);
+   /* for All Playlists, */
+   companion_core_refresh_playlists(c);
+   CHECK(   companion_core_append_playlist_path(c,
+               COMPANION_ALL_PLAYLISTS_TOKEN)
+         && iterate_until_loaded(c) && companion_core_entry_count(c) == 5,
+         "append All Playlists: its 5 entries, got %u",
+         (unsigned)companion_core_entry_count(c));
+   stub_match_bare_pushes = 0;
+   gfx_thumbnail_results_deinit();
+   companion_core_iterate(c, 2000);
+   companion_core_iterate(c, 2000);
+   CHECK(stub_match_bare_pushes == 0,
+         "and keeps no earlier playlist by its path: %u bare",
+         stub_match_bare_pushes);
+   /* and in All Playlists */
+   CHECK(   companion_core_append_playlist_path(c, gen)
+         && iterate_until_loaded(c) && companion_core_entry_count(c) == 2,
+         "append in All Playlists: one playlist's 2 entries, got %u",
+         (unsigned)companion_core_entry_count(c));
+   hold_table(nes, "/roms/nes/alpha.nes");
+   hold_table(gen, "/roms/gen/sonic.md");
+   open_others(10, 4);
+   CHECK(!hold_shows("/roms/nes/alpha.nes") && hold_shows("/roms/gen/sonic.md"),
+         "and leaves it, releasing the others");
+   companion_core_free(c);
+   gfx_thumbnail_results_deinit();
+}
+
+#ifdef HAVE_NETWORKING
+static bool file_holds(const char *path, const char *text)
+{
+   char buf[64];
+   size_t n;
+   FILE *f = fopen(path, "rb");
+   if (!f)
+      return false;
+   n = fread(buf, 1, sizeof(buf) - 1, f);
+   fclose(f);
+   buf[n] = '\0';
+   return string_is_equal(buf, text);
+}
+
+static bool download(companion_core_t *c, const char *label,
+      const char *content_path)
+{
+   http_transfer_data_t data;
+   if (!companion_core_thumbnail_download(c, "DL", label, content_path, "Named_Boxarts"))
+      return false;
+   /* The body streams to the file; the callback gets no data */
+   writef(stub_http_path, "png");
+   memset(&data, 0, sizeof(data));
+   data.status = 200;
+   stub_http_cb(NULL, &data, stub_http_ud, NULL);
+   return true;
+}
+
+/* A download lands where the display looks first, by the name the
+ * server is asked for, and never on another file. */
+static void test_thumbnail_download(void)
+{
+   char p[PATH_MAX_LENGTH];
+   const char *rom      = "/roms/Foo (USA).nes";
+   companion_core_t *c = make_core();
+
+   fixture(p, sizeof(p), "thumbnails/DL");
+   mkdirp(p);
+   fixture(p, sizeof(p), "thumbnails/DL/Named_Boxarts");
+   mkdirp(p);
+   fixture(p, sizeof(p), "thumbnails/DL/Named_Boxarts/X.jpg");
+   writef(p, "jpg");
+   CHECK(download(c, "X", "/roms/x.nes"), "labelled: started");
+   CHECK(string_ends_with(stub_http_url, "/DL/Named_Boxarts/X.png"),
+         "labelled: url %s", stub_http_url);
+   CHECK(file_holds(p, "jpg"), "the .jpg beside it keeps its bytes");
+   fixture(p, sizeof(p), "thumbnails/DL/Named_Boxarts/X.png");
+   CHECK(file_holds(p, "png"), "saved as X.png");
+
+   /* Qt's label-less form: the label is the path */
+   CHECK(download(c, rom, rom), "label-less: started");
+   CHECK(string_ends_with(stub_http_url, "/DL/Named_Boxarts/Foo (USA).png"),
+         "label-less: the file stem is asked for: %s", stub_http_url);
+   companion_core_thumbnail_path(c, "DL", "Named_Boxarts", rom, rom,
+         p, sizeof(p));
+   CHECK(string_ends_with(p, "/DL/Named_Boxarts/Foo (USA).png")
+         && file_holds(p, "png"), "saved where it is shown: %s", p);
+   companion_core_free(c);
+}
+#endif
 
 static void test_browser(void)
 {
@@ -691,7 +1191,7 @@ static void test_backend_scenario(void)
 static void test_rename_add_install(void)
 {
    companion_core_t *c = make_core();
-   char gen[512], out[PATH_MAX_LENGTH], hist[512], p[512], sub[512];
+   char gen[512], out[512], hist[512], p[512], sub[512];
    const char *paths[2];
    size_t n;
    companion_core_refresh_playlists(c);
@@ -750,7 +1250,7 @@ static void test_rename_add_install(void)
       write_tga_rgba(img, 64, 32, 0xff336699u);
       test_settings.uints.desktop_menu_thumbnail_max_size = 16;
       CHECK(companion_core_thumbnail_install(c, "Sega - Genesis", COMPANION_THUMB_BOXART,
-               "a", img, out, sizeof(out)), "install");
+               "a", "/roms/gen/a.md", img, out, sizeof(out)), "install");
       CHECK(string_ends_with(out, "Sega - Genesis/Named_Boxarts/a.png"), "at the repository path: %s", out);
       CHECK(path_is_valid(out), "png written");
       {
@@ -761,6 +1261,143 @@ static void test_rename_add_install(void)
       }
       test_settings.uints.desktop_menu_thumbnail_max_size = 0;
    }
+   companion_core_free(c);
+}
+
+static void test_rename_cache(void)
+{
+   companion_core_t *c = make_core();
+   char out[512];
+   companion_core_refresh_playlists(c);
+   fixture(out, sizeof(out), "playlists/Sega - Genesis.lpl");
+   /* A cache follows its playlist, there and back */
+   {
+      char from[512];
+      char to[512];
+      char back[512];
+      char again[512];
+      strlcpy(from, out, sizeof(from));
+      strlcat(from, ".thumbs", sizeof(from));
+      writef(from, "{}");
+      CHECK(companion_core_playlist_rename(c, out, "Sega - Genesis 2", to, sizeof(to)),
+            "rename with a cache");
+      strlcpy(back, to, sizeof(back));
+      strlcat(back, ".thumbs", sizeof(back));
+      CHECK(path_is_valid(back) && !path_is_valid(from), "its .lpl.thumbs moves with it");
+      CHECK(companion_core_playlist_rename(c, to, "Sega - Genesis", again, sizeof(again))
+            && string_is_equal(again, out), "and back: %s", again);
+      CHECK(path_is_valid(from) && !path_is_valid(back), "and its cache with it");
+      remove(from);
+   }
+   companion_core_free(c);
+}
+
+static void test_install_names(void)
+{
+   companion_core_t *c = make_core();
+   char out[512], img[512], jpg[512], shown[512];
+   fixture(img, sizeof(img), "drop.tga");
+   write_tga_rgba(img, 64, 32, 0xff336699u);
+   /* an existing X.jpg keeps its bytes: the drop goes to X.png, shown
+    * first from then on */
+   fixture(jpg, sizeof(jpg), "thumbnails/Sega - Genesis/Named_Boxarts/X.jpg");
+   writef(jpg, "not a png");
+   CHECK(companion_core_thumbnail_install(c, "Sega - Genesis", COMPANION_THUMB_BOXART,
+            "X", "/roms/gen/other.md", img, out, sizeof(out)),
+         "install beside an X.jpg");
+   CHECK(string_ends_with(out, "Named_Boxarts/X.png"), "saved as X.png: %s", out);
+   CHECK(file_is(jpg, "not a png"), "X.jpg unchanged");
+   companion_core_thumbnail_path(c, "Sega - Genesis", COMPANION_THUMB_BOXART,
+         "X", "/roms/gen/other.md", shown, sizeof(shown));
+   CHECK(string_is_equal(shown, out), "then shown: %s", shown);
+   /* a label-less entry: saved under its file stem, where it is looked up */
+   CHECK(companion_core_thumbnail_install(c, "Sega - Genesis", COMPANION_THUMB_BOXART,
+            "Yoshi.md", "/roms/gen/Yoshi.md", img, out, sizeof(out)),
+         "install, no label");
+   CHECK(string_ends_with(out, "Named_Boxarts/Yoshi.png"), "saved under the stem: %s", out);
+   companion_core_thumbnail_path(c, "Sega - Genesis", COMPANION_THUMB_BOXART,
+         "Yoshi.md", "/roms/gen/Yoshi.md", shown, sizeof(shown));
+   CHECK(string_is_equal(shown, out) && path_is_valid(shown), "then shown: %s", shown);
+   /* Qt passes the path as the label */
+   companion_core_thumbnail_save_path(c, "Sega - Genesis", COMPANION_THUMB_BOXART,
+         "/roms/gen/Yoshi.md", "/roms/gen/Yoshi.md", shown, sizeof(shown));
+   CHECK(string_is_equal(shown, out), "Qt's save path: %s", shown);
+   companion_core_free(c);
+}
+
+/* Fills @buf with 'Z', then asks for the path in a buffer of @len. */
+static size_t bounds_path(companion_core_t *c, bool display, char *buf,
+      size_t size, size_t len)
+{
+   memset(buf, 'Z', size);
+   if (display)
+      return companion_core_thumbnail_path(c, "Bounds",
+            COMPANION_THUMB_BOXART, "bounds", "/roms/gen/bounds.md", buf, len);
+   return companion_core_thumbnail_save_path(c, "Bounds",
+         COMPANION_THUMB_BOXART, "bounds", "/roms/gen/bounds.md", buf, len);
+}
+
+static bool bounds_untouched(const char *buf, size_t from, size_t size)
+{
+   for (; from < size; from++)
+      if (buf[from] != 'Z')
+         return false;
+   return true;
+}
+
+/* A thumbnail path that does not fit, ".png" included, is no path:
+ * nothing past the buffer, never a name cut short of its .png, and
+ * install writes nothing. */
+static void test_thumbnail_path_bounds(void)
+{
+   static char buf[PATH_MAX_LENGTH], full[PATH_MAX_LENGTH];
+   companion_core_t *c = make_core();
+   char img[512];
+   size_t n, d, t, i;
+
+   n = bounds_path(c, false, full, sizeof(full), sizeof(full));
+   d = n - (sizeof("/bounds.png") - 1);
+   CHECK(n > 16 && string_ends_with(full, "/Bounds/Named_Boxarts/bounds.png"),
+         "full save path: %s", full);
+
+   CHECK(!bounds_path(c, false, buf, sizeof(buf), d + 3) && !*buf
+         && bounds_untouched(buf, d + 3, sizeof(buf)),
+         "save path, folder + name past the buffer: none");
+   CHECK(!bounds_path(c, false, buf, sizeof(buf), n) && !*buf
+         && bounds_untouched(buf, n, sizeof(buf)),
+         "save path, no room for the .png's NUL: none (got %s)", buf);
+   CHECK(!bounds_path(c, false, buf, sizeof(buf), n - 2) && !*buf,
+         "save path, .png cut short: none (got %s)", buf);
+   CHECK(bounds_path(c, false, buf, sizeof(buf), n + 1) == n
+         && string_is_equal(buf, full), "save path, exact fit: %s", buf);
+   CHECK(!bounds_path(c, true, buf, sizeof(buf), d - 4) && !*buf
+         && bounds_untouched(buf, d - 4, sizeof(buf)),
+         "display path, folder past the buffer: none");
+   CHECK(!bounds_path(c, true, buf, sizeof(buf), d + 3) && !*buf
+         && bounds_untouched(buf, d + 3, sizeof(buf)),
+         "display path, folder + name past the buffer: none");
+   CHECK(!bounds_path(c, true, buf, sizeof(buf), n) && !*buf,
+         "display path, no room for the .png: none (got %s)", buf);
+
+   /* A playlist's database name (folders and all) that leaves
+    * bounds.png two bytes short of a PATH_MAX_LENGTH buffer: install
+    * creates and writes nothing. */
+   t = PATH_MAX_LENGTH - 2 - (n - 4 - STRLEN_CONST("Bounds"));
+   strlcpy(buf, "Bounds", sizeof(buf));
+   for (i = STRLEN_CONST("Bounds"); i < t; i++)
+      buf[i] = ((i - STRLEN_CONST("Bounds")) % 100) ? 'd' : '/';
+   buf[t - 1] = 'd';
+   buf[t]     = '\0';
+   CHECK(companion_core_thumbnail_dir(c, buf, COMPANION_THUMB_BOXART,
+            full, sizeof(full)) + (n - d) - 4 == PATH_MAX_LENGTH - 2,
+         "long database name sized as meant");
+   fixture(img, sizeof(img), "bounds.tga");
+   write_tga_rgba(img, 8, 8, 0xff336699u);
+   CHECK(!companion_core_thumbnail_install(c, buf,
+            COMPANION_THUMB_BOXART, "bounds", "/roms/gen/bounds.md", img,
+            full, sizeof(full)), "install with no room for .png: refused");
+   fixture(full, sizeof(full), "thumbnails/Bounds");
+   CHECK(!path_is_directory(full), "install created nothing");
    companion_core_free(c);
 }
 
@@ -1026,7 +1663,14 @@ static void test_hidden_new_delete(void)
    /* it parses as an empty playlist */
    CHECK(companion_core_select_playlist_path(c, out) && iterate_until_loaded(c), "the new playlist parses");
    CHECK(companion_core_entry_count(c) == 0, "and is empty (%u)", (unsigned)companion_core_entry_count(c));
-   CHECK(companion_core_playlist_delete(c, out), "delete");
+   {
+      char thumbs[PATH_MAX_LENGTH];
+      strlcpy(thumbs, out, sizeof(thumbs));
+      strlcat(thumbs, ".thumbs", sizeof(thumbs));
+      writef(thumbs, "{}");
+      CHECK(companion_core_playlist_delete(c, out), "delete");
+      CHECK(!path_is_valid(thumbs), "its .lpl.thumbs goes with it");
+   }
    CHECK(!path_is_valid(out), "file gone");
    CHECK(companion_core_playlist_count(c) == n0, "listing back to %u", (unsigned)n0);
    {
@@ -1426,6 +2070,313 @@ static void test_dock_model(void)
    settings->bools.desktop_menu_save_dock_positions = false;
 }
 
+/* A bulk add pushes what it has not seen without a search of every
+ * entry; what it has seen takes the full push. Both together must do
+ * exactly what the full push does for each file: the same playlist from
+ * new files, files already there for the same core (moved to the top)
+ * and for another (added beside), a file twice in one add, and a folder
+ * added twice. */
+static void bulk_seed(const char *rel, const char *many)
+{
+   char path[512], buf[4096];
+   int  off = 0, i;
+   static const int   ids[4]   = { 5, 10, 15, 20 };
+   static const char *cores[4] = { "DETECT", "DETECT", "DETECT", "/cores/other_libretro.so" };
+   fixture(path, sizeof(path), rel);
+   off += snprintf(buf + off, sizeof(buf) - off,
+         "{\n  \"version\": \"1.5\",\n  \"items\": [\n");
+   for (i = 0; i < 4; i++)
+      off += snprintf(buf + off, sizeof(buf) - off,
+            "    { \"path\": \"%s/f%02d.bin\", \"label\": \"f%02d\", \"core_path\": \"%s\","
+            " \"core_name\": \"DETECT\", \"crc32\": \"00000000|crc\", \"db_name\": \"Bulk.lpl\" }%s\n",
+            many, ids[i], ids[i], cores[i], i < 3 ? "," : "");
+   snprintf(buf + off, sizeof(buf) - off, "  ]\n}\n");
+   writef(path, buf);
+}
+
+static playlist_t *bulk_open(const char *rel)
+{
+   char path[512];
+   playlist_config_t config;
+   memset(&config, 0, sizeof(config));
+   config.capacity = 1000;
+   fixture(path, sizeof(path), rel);
+   playlist_config_set_path(&config, path);
+   return playlist_init(&config);
+}
+
+static void test_bulk_add_matches_pushes(void)
+{
+   companion_core_t *c = make_core();
+   char many[512], p[512], f03[512], f10[512], f20[512], pa[512];
+   const char *paths[6];
+   size_t i, na, nb = 0;
+   playlist_t *a, *b;
+   fixture(p, sizeof(p), "bulk"); mkdirp(p);
+   fixture(p, sizeof(p), "bulk/a"); mkdirp(p);
+   fixture(p, sizeof(p), "bulk/b"); mkdirp(p);
+   fixture(many, sizeof(many), "bulk/many"); mkdirp(many);
+   for (i = 0; i < 40; i++)
+   {
+      snprintf(p, sizeof(p), "%s/f%02u.bin", many, (unsigned)i);
+      writef(p, "x");
+   }
+   bulk_seed("bulk/a/Bulk.lpl", many);
+   bulk_seed("bulk/b/Bulk.lpl", many);
+   snprintf(f03, sizeof(f03), "%s/f03.bin", many);
+   snprintf(f10, sizeof(f10), "%s/f10.bin", many);
+   snprintf(f20, sizeof(f20), "%s/f20.bin", many);
+   paths[0] = many; paths[1] = f10; paths[2] = f20;
+   paths[3] = f03;  paths[4] = f03; paths[5] = many;
+
+   fixture(pa, sizeof(pa), "bulk/a/Bulk.lpl");
+   na = companion_core_playlist_add_files(c, pa, paths, 6, NULL, NULL);
+
+   /* the same, a full push per file, folders walked as the add walks them */
+   if ((b = bulk_open("bulk/b/Bulk.lpl")))
+   {
+      for (i = 0; i < 6; i++)
+      {
+         struct string_list *list = NULL;
+         size_t k, cnt = 1;
+         if (path_is_directory(paths[i]))
+         {
+            list = dir_list_new(paths[i], NULL, true, false, false, false);
+            cnt  = list ? list->size : 0;
+         }
+         for (k = 0; k < cnt; k++)
+         {
+            const char *one = list ? list->elems[k].data : paths[i];
+            char label[NAME_MAX_LENGTH];
+            fill_pathname(label, path_basename(one), "", sizeof(label));
+            if (companion_core_playlist_push(c, b, one, label, "DETECT",
+                     "DETECT", "Bulk.lpl"))
+               nb++;
+         }
+         string_list_free(list);
+      }
+      playlist_write_file(b);
+      playlist_free(b);
+   }
+   CHECK(na == nb, "bulk add counted %u, full pushes %u", (unsigned)na, (unsigned)nb);
+
+   a = bulk_open("bulk/a/Bulk.lpl");
+   b = bulk_open("bulk/b/Bulk.lpl");
+   CHECK(a && b, "both playlists load");
+   if (a && b)
+   {
+      CHECK(playlist_size(a) == playlist_size(b), "bulk add %u entries, full pushes %u",
+            (unsigned)playlist_size(a), (unsigned)playlist_size(b));
+      CHECK(playlist_size(a) == 41, "the 40 files, and f20 for another core besides (got %u)",
+            (unsigned)playlist_size(a));
+      for (i = 0; i < playlist_size(a) && i < playlist_size(b); i++)
+      {
+         const struct playlist_entry *ea = NULL, *eb = NULL;
+         playlist_get_index(a, i, &ea);
+         playlist_get_index(b, i, &eb);
+         if (!ea || !eb
+               || !string_is_equal(ea->path, eb->path)
+               || !string_is_equal(ea->label, eb->label)
+               || !string_is_equal(ea->core_path, eb->core_path)
+               || !string_is_equal(ea->db_name, eb->db_name))
+         {
+            CHECK(false, "entry %u: bulk add %s (%s), full pushes %s (%s)", (unsigned)i,
+                  ea ? ea->path : "-", ea ? ea->core_path : "-",
+                  eb ? eb->path : "-", eb ? eb->core_path : "-");
+            break;
+         }
+      }
+   }
+   playlist_free(a);
+   playlist_free(b);
+   companion_core_free(c);
+}
+
+/* --- search and delete --------------------------------------------------- */
+
+static int  delete_told;
+static bool delete_told_ok;
+static char delete_told_path[512];
+
+static void on_delete_finished(void *ud, const char *path, bool ok)
+{
+   (void)ud;
+   delete_told++;
+   delete_told_ok = ok;
+   strlcpy(delete_told_path, path, sizeof(delete_told_path));
+}
+
+static companion_core_t *make_core_delete(void)
+{
+   companion_callbacks_t cb;
+   memset(&cb, 0, sizeof(cb));
+   cb.on_browse_changed  = on_browse_changed;
+   cb.on_delete_finished = on_delete_finished;
+   return companion_core_new(&cb, NULL);
+}
+
+static bool wait_delete(companion_core_t *core, int before)
+{
+   int i;
+   for (i = 0; i < 200000 && delete_told == before; i++)
+   {
+      companion_core_iterate(core, 1000);
+      if (delete_told == before)
+         sleep_briefly_ms(100000);
+   }
+   return delete_told != before;
+}
+
+/* The landed listing holds a row named @name. */
+static bool browse_has(companion_core_t *c, const char *name)
+{
+   size_t i, n = companion_core_browse_count(c);
+   for (i = 0; i < n; i++)
+      if (string_is_equal(companion_core_browse_name(c, i), name))
+         return true;
+   return false;
+}
+
+static void test_browser_search(void)
+{
+   companion_core_t *c = make_core();
+   char base[512], p[512];
+   size_t i, n;
+   fixture(base, sizeof(base), "search");
+   mkdirp(base);
+   snprintf(p, sizeof(p), "%s/Sub", base);        mkdirp(p);
+   snprintf(p, sizeof(p), "%s/Sub/Deeper", base); mkdirp(p);
+   snprintf(p, sizeof(p), "%s/Alpha.NES", base);  writef(p, "a");
+   snprintf(p, sizeof(p), "%s/Sub/beta.sfc", base); writef(p, "b");
+   snprintf(p, sizeof(p), "%s/Sub/Deeper/Alpha Two.gb", base); writef(p, "c");
+   /* katakana, and a Latin-1 capital */
+   snprintf(p, sizeof(p), "%s/\xe3\x82\xac\xe3\x83\xb3\xe3\x83\x80\xe3\x83\xa0.txt", base); writef(p, "k");
+   snprintf(p, sizeof(p), "%s/\xc3\x89" "cole.txt", base); writef(p, "e");
+#ifndef _WIN32
+   /* a loop back to the top: followed, the walk would never end */
+   snprintf(p, sizeof(p), "%s/Sub/loop", base);
+   CHECK(symlink("..", p) == 0, "loop link made");
+#endif
+   CHECK(companion_core_browse_open(c, base), "open");
+   CHECK(wait_browse(c), "listing lands");
+   CHECK(!companion_core_browse_is_search(c), "a folder's listing is no search");
+
+   CHECK(companion_core_browse_search(c, "alpha"), "search");
+   CHECK(wait_browse(c), "search lands");
+   CHECK(companion_core_browse_is_search(c), "a search's listing says so");
+   n = companion_core_browse_count(c);
+   CHECK(n == 2, "case folded, both folders deep, no parent row: %u rows", (unsigned)n);
+   CHECK(browse_has(c, "Alpha.NES") && browse_has(c, "Alpha Two.gb"), "the two matches");
+   for (i = 0; i < n; i++)
+      CHECK(!strstr(companion_core_browse_path(c, i), "/loop/"), "nothing through the link: %s",
+            companion_core_browse_path(c, i));
+   CHECK(string_is_equal(companion_core_browse_dir(c), base), "the search keeps its folder");
+
+   CHECK(companion_core_browse_search(c, "  ALPHA   two "), "two words");
+   CHECK(wait_browse(c), "lands");
+   CHECK(companion_core_browse_count(c) == 1 && browse_has(c, "Alpha Two.gb"), "every word must be there");
+
+   CHECK(companion_core_browse_search(c, "\xe3\x81\x8c\xe3\x82\x93\xe3\x81\xa0\xe3\x82\x80"), "hiragana");
+   CHECK(wait_browse(c), "lands");
+   CHECK(companion_core_browse_count(c) == 1, "hiragana finds the katakana name");
+
+   CHECK(companion_core_browse_search(c, "\xc3\xa9" "COLE"), "small e acute");
+   CHECK(wait_browse(c), "lands");
+   CHECK(companion_core_browse_count(c) == 1, "Latin-1 case folded");
+
+   CHECK(companion_core_browse_search(c, "sub"), "a folder's name");
+   CHECK(wait_browse(c), "lands");
+   CHECK(companion_core_browse_count(c) == 1 && companion_core_browse_is_dir(c, 0), "the folder, as a folder");
+
+   /* superseded: only the later search lands */
+   browse_changed = 0;
+   CHECK(companion_core_browse_search(c, "alpha"), "search one");
+   CHECK(companion_core_browse_search(c, "beta"), "search two right after");
+   CHECK(wait_browse(c), "lands");
+   sleep_briefly_ms(20000000);
+   companion_core_iterate(c, 1000);
+   CHECK(browse_changed == 1, "the superseded search never delivered (%d)", browse_changed);
+   CHECK(companion_core_browse_count(c) == 1 && browse_has(c, "beta.sfc"), "the later one");
+
+   /* asked for before the folder just opened has landed: that folder */
+   CHECK(companion_core_browse_search(c, ""), "cleared");
+   CHECK(wait_browse(c), "lands");
+   snprintf(p, sizeof(p), "%s/Sub", base);
+   CHECK(companion_core_browse_open(c, p), "open Sub");
+   CHECK(companion_core_browse_search(c, "alpha"), "search right after");
+   CHECK(wait_browse(c), "lands");
+   CHECK(string_is_equal(companion_core_browse_dir(c), p), "in the folder just opened");
+   CHECK(companion_core_browse_count(c) == 1 && browse_has(c, "Alpha Two.gb"),
+         "only what is under it");
+   CHECK(companion_core_browse_open(c, base), "back");
+
+   CHECK(companion_core_browse_search(c, ""), "cleared");
+   CHECK(wait_browse(c), "lands");
+   CHECK(!companion_core_browse_is_search(c), "the folder as it is again");
+   CHECK(browse_has(c, "..") && browse_has(c, "Sub") && browse_has(c, "Alpha.NES"), "with its parent row");
+   companion_core_free(c);
+}
+
+static void test_browser_delete(void)
+{
+   companion_core_t *c = make_core_delete();
+   char base[512], out[512], p[512], q[512];
+   int before;
+   fixture(base, sizeof(base), "del");
+   fixture(out,  sizeof(out),  "del_out");
+   mkdirp(out);
+   snprintf(p, sizeof(p), "%s/precious.txt", out); writef(p, "keep");
+   mkdirp(base);
+   snprintf(p, sizeof(p), "%s/x", base);           mkdirp(p);
+   snprintf(p, sizeof(p), "%s/x/y", base);         mkdirp(p);
+   snprintf(p, sizeof(p), "%s/x/y/z.txt", base);   writef(p, "z");
+   snprintf(p, sizeof(p), "%s/x/.hidden", base);   writef(p, "h");
+   snprintf(p, sizeof(p), "%s/keep.txt", base);    writef(p, "k");
+#ifndef _WIN32
+   /* links out of the folder, to a folder and to a file */
+   snprintf(p, sizeof(p), "%s/x/outdir", base);
+   CHECK(symlink(out, p) == 0, "folder link made");
+   snprintf(p, sizeof(p), "%s/x/outfile", base);
+   snprintf(q, sizeof(q), "%s/precious.txt", out);
+   CHECK(symlink(q, p) == 0, "file link made");
+#endif
+   CHECK(companion_core_browse_open(c, base), "open");
+   CHECK(wait_browse(c), "listing lands");
+
+   before = delete_told;
+   snprintf(p, sizeof(p), "%s/x", base);
+   CHECK(companion_core_browse_delete(c, p), "delete a folder");
+   CHECK(wait_delete(c, before), "told it finished");
+   CHECK(delete_told_ok && string_is_equal(delete_told_path, p), "told it went through, for that path");
+   CHECK(!path_is_valid(p), "the folder and everything in it are gone");
+   snprintf(q, sizeof(q), "%s/precious.txt", out);
+   CHECK(file_is(q, "keep"), "what a link pointed to outside it is not");
+   snprintf(q, sizeof(q), "%s/keep.txt", base);
+   CHECK(file_is(q, "k"), "nor is its neighbour");
+   CHECK(companion_core_browse_count(c) == 2 && browse_has(c, "keep.txt"), "the folder is listed again");
+
+#ifndef _WIN32
+   {
+      struct stat st;
+      snprintf(p, sizeof(p), "%s/link", base);
+      CHECK(symlink(out, p) == 0, "a link in the listing");
+      before = delete_told;
+      CHECK(companion_core_browse_delete(c, p), "delete the link");
+      CHECK(wait_delete(c, before) && delete_told_ok, "told it went through");
+      CHECK(lstat(p, &st) != 0, "the link is gone");
+      snprintf(q, sizeof(q), "%s/precious.txt", out);
+      CHECK(file_is(q, "keep"), "what it pointed to is not");
+   }
+#endif
+
+   before = delete_told;
+   snprintf(p, sizeof(p), "%s/never-there", base);
+   CHECK(companion_core_browse_delete(c, p), "a missing path is still asked for");
+   CHECK(wait_delete(c, before) && !delete_told_ok, "and told it failed");
+   CHECK(!companion_core_browse_delete(c, "/"), "a file system's root is refused");
+   companion_core_free(c);
+}
+
 int main(void)
 {
    setup();
@@ -1433,13 +2384,27 @@ int main(void)
    test_select_and_entries();
    test_all_playlists();
    test_thumbnail_path();
+   test_entry_thumbnail_system();
+   test_thumbnail_match_push();
+   test_thumbnail_hold();
+   test_thumbnail_hold_all();
+   test_thumbnail_hold_append();
+#ifdef HAVE_NETWORKING
+   test_thumbnail_download();
+#endif
    test_browser();
+   test_browser_search();
+   test_browser_delete();
    test_browser_sort();
    test_sort_without_metadata();
    test_sort_then_folders_only();
    test_backend_scenario();
    test_sort_callback_reentrancy();
    test_rename_add_install();
+   test_bulk_add_matches_pushes();
+   test_rename_cache();
+   test_install_names();
+   test_thumbnail_path_bounds();
    test_options_and_shader_params();
    test_settings_table();
    test_shortcuts();

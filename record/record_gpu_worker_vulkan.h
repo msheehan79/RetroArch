@@ -15,6 +15,21 @@ enum record_gpu_worker_vulkan_result
 };
 typedef struct record_gpu_worker_vulkan record_gpu_worker_vulkan_t;
 
+typedef struct record_gpu_worker_vulkan_encoder_ops
+{
+   int (*submit)(void *encoder, unsigned slot, uint64_t timestamp,
+         uint64_t duration, uint64_t ready, bool keyframe);
+   int (*poll)(void *encoder, vulkan_encode_packet_t *packet);
+   bool (*release)(void *encoder);
+   int (*finish)(void *encoder);
+   bool (*wait)(void *encoder, uint64_t timeout_ns);
+} record_gpu_worker_vulkan_encoder_ops_t;
+
+/* Codec factories supply immutable dispatch borrowed through worker free. */
+record_gpu_worker_vulkan_t *record_gpu_worker_vulkan_new_encoder(
+      record_gpu_queue_t *queue, void *encoder,
+      const record_gpu_worker_vulkan_encoder_ops_t *ops);
+
 /* One worker owns this pump and the fresh encoder. Queue and encoder
  * are borrowed until free. The encoder pool must match the queue's slots.
  * Open/close the encoder on that worker, outside the display frame path. */
@@ -29,6 +44,10 @@ int record_gpu_worker_vulkan_step(record_gpu_worker_vulkan_t *worker,
 /* Worker-only: outstanding work needs a completion retry. After BUSY,
  * schedule a delayed retry when true; otherwise await producer input/close. */
 bool record_gpu_worker_vulkan_retry_needed(const record_gpu_worker_vulkan_t *w);
+/* Blocks until the encoder's oldest GPU work completes or @timeout_ns
+ * passes; false, without waiting, when the retry is not waiting on it. */
+bool record_gpu_worker_vulkan_wait(const record_gpu_worker_vulkan_t *w,
+      uint64_t timeout_ns);
 bool record_gpu_worker_vulkan_release(record_gpu_worker_vulkan_t *worker);
 /* Normal teardown after END, or before the first input was taken. */
 bool record_gpu_worker_vulkan_free(record_gpu_worker_vulkan_t *worker);

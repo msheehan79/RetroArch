@@ -30,8 +30,11 @@
 
 #include <boolean.h>
 #include <formats/video_hw_frame.h>
+#include <formats/video_audio_track.h>
 
 RETRO_BEGIN_DECLS
+
+struct data_transfer;
 
 enum image_process_code
 {
@@ -145,7 +148,11 @@ enum texture_gpu_format
    TEXTURE_GPU_FORMAT_SCRGB,
    /* 8-bit YCbCr 4:2:0 on ->planar (I420 or NV12), converted to RGB
     * on the GPU: whether load_texture and update_texture take one. */
-   TEXTURE_GPU_FORMAT_YUV420
+   TEXTURE_GPU_FORMAT_YUV420,
+   /* Capability, not a storage format: YUV420 uploads consume padded
+    * rows without a separate API upload per row. A decoder may lend
+    * its padded planes instead of packing another frame with this. */
+   TEXTURE_GPU_FORMAT_YUV420_STRIDED
 };
 
 /* Numeric mip layout reported by a loader without decoding.  Offsets are
@@ -344,24 +351,25 @@ bool image_texture_scale(struct texture_image *img,
 bool image_texture_load_buffer(struct texture_image *img,
    enum image_type_enum type, void *s, size_t len);
 
-/* The loader run to completion over a whole buffer or a file, with
- * @req naming what the caller takes (NULL: the ordinary image). The
- * abort hook is asked between steps; it may be NULL. False leaves
- * @img empty. */
+/* The loader run to completion over a whole buffer, with @req naming
+ * what the caller takes (NULL: the ordinary image). The abort hook is
+ * asked between steps; it may be NULL. False leaves @img empty. Loading
+ * by path - image_texture_load and the rest - is in
+ * <streams/image_texture_file.h>. */
 bool image_texture_load_buffer_request(struct texture_image *img,
       enum image_type_enum type, const void *buf, size_t len,
       const image_texture_request_t *req,
       bool (*should_abort)(void *ud), void *ud);
-bool image_texture_load_request(struct texture_image *img,
-      const char *path, const image_texture_request_t *req,
-      bool (*should_abort)(void *ud), void *ud);
 
-/* image_texture_load_request answering, from the bytes it read, whether
- * the file is an animated PNG: 1 yes, 0 a still, -1 not a PNG or no
- * decode. Spares a caller that keeps an animation's bytes a second
- * read of every still to ask. @png_probe may be NULL. */
-bool image_texture_load_request_ex(struct texture_image *img,
-      const char *path, const image_texture_request_t *req,
+/* image_texture_load_buffer_request over bytes @keep, a data_transfer,
+ * holds: an image that can go on reading them (a compressed texture)
+ * takes @keep, frees it with itself and sets *@kept; *@png_probe, where
+ * not NULL, says whether the bytes are an animated PNG - 1 yes, 0 a
+ * still, -1 not a PNG or no decode. @keep and @kept may be NULL. */
+bool image_texture_load_buffer_probe(struct data_transfer *keep,
+      bool *kept, struct texture_image *img,
+      enum image_type_enum type, const void *buf, size_t len,
+      const image_texture_request_t *req,
       bool (*should_abort)(void *ud), void *ud, int *png_probe);
 
 /* Run @fn for every index below @n, across the cores at once where
@@ -382,27 +390,14 @@ void image_texture_set_run_ex(unsigned n,
       void (*thread_done)(void));
 
 /* Decode the @n files @paths name into @imgs together, each as
- * image_texture_load_request does with @req; a path that is NULL,
- * empty or unreadable leaves its image empty. Returns how many
- * decoded. In formats/image_texture_set.c. */
+ * image_texture_load_request (<streams/image_texture_file.h>) does with
+ * @req; a path that is NULL, empty or unreadable leaves its image
+ * empty. Returns how many decoded. In formats/image_texture_set.c. */
 unsigned image_texture_load_set(const char *const *paths,
       struct texture_image *imgs, unsigned n,
       const image_texture_request_t *req);
 
-/* ->pix10 is an ask on the way in and an answer on the way out: set
- * it before the call to have a decoder that can emit XRGB2101010 do
- * so, and read it after to find out whether it did. Clear on entry
- * means the ordinary 8-bit image, as before. */
-bool image_texture_load(struct texture_image *img, const char *path);
 
-/* image_texture_load with an abort hook: both decode stages are
- * incremental (one chunk / one pass per step) and @should_abort is
- * asked between steps; returning true abandons the decode, which then
- * fails cleanly. For decodes on worker threads that must stop promptly
- * at shutdown or when their result is no longer wanted. @should_abort
- * may be NULL. */
-bool image_texture_load_ex(struct texture_image *img, const char *path,
-      bool (*should_abort)(void *ud), void *ud);
 void image_texture_free(struct texture_image *img);
 
 /* Force a CPU decode of a compressed texture_image into ->pixels (RGBA8).
@@ -641,6 +636,46 @@ void image_transfer_anim_stream_set_want_fp16(void *stream,
 bool image_transfer_anim_stream_is_fp16(const void *stream,
       enum image_type_enum type);
 
+/* 8-bit 4:2:0 SDR video sources: whether the stream can hand its
+ * frames out as their decoded planes rather than converted pixels, so
+ * the caller's GPU does the colour conversion - known from the
+ * container before any decode. With set_planar on, each frame goes
+ * into the caller's frame (image_transfer_anim_stream_set_output) as
+ * packed I420 of the stream's size (IMAGE_PIXFMT_FRAME_SIZE of
+ * IMAGE_PIXFMT_I420) instead; set_planar is false where the stream
+ * cannot. planar_yuv is the IMAGE_YUV_FLAG_* (BT709, FULL_RANGE) of
+ * the last frame so decoded. A frame that cannot be handed out so
+ * ends the stream there. */
+bool image_transfer_anim_stream_can_planar(const void *stream,
+      enum image_type_enum type);
+bool image_transfer_anim_stream_set_planar(void *stream,
+      enum image_type_enum type, bool planar);
+/* Opt in after set_planar. Consume synchronously unless retain_planar
+ * extends the borrow through an immutable decoder-frame lease. Where the
+ * decoder can lend its current planes, next() leaves the output slot
+ * untouched and borrowed_planar() describes the frame instead. Otherwise
+ * the packed-slot fallback remains. The borrow lasts until the next
+ * decode, seek, rewind or stream free; consume it before any of those. */
+/* Without @strided, borrow only tightly packed planes: a backend that
+ * otherwise uploads each row separately keeps the packed fallback. */
+bool image_transfer_anim_stream_borrow_planar(void *stream,
+      enum image_type_enum type, bool strided);
+/* Retain the last packed frame when it can outlive decoder progress.
+ * Acquire on the decode owner. On success release(*owner) exactly once on
+ * any thread, including after stream free. False keeps the copy fallback. */
+bool image_transfer_anim_stream_retain_pixels(void *stream,
+      enum image_type_enum type, void **owner, void (**release)(void*));
+
+/* Extend the current planar borrow beyond the next decode. The decoder
+ * owner acquires it; release(*owner) may run on any thread after the reader
+ * finishes, including after stream free. False keeps the copy fallback. */
+bool image_transfer_anim_stream_retain_planar(const void *stream,
+      enum image_type_enum type, void **owner, void (**release)(void*));
+const struct texture_planar *image_transfer_anim_stream_borrowed_planar(
+      const void *stream, enum image_type_enum type);
+unsigned image_transfer_anim_stream_planar_yuv(const void *stream,
+      enum image_type_enum type);
+
 bool image_transfer_anim_stream_set_output(void *stream,
       enum image_type_enum type, uint32_t *out);
 
@@ -765,6 +800,12 @@ int64_t image_transfer_anim_stream_start_ns(void *stream, enum image_type_enum t
  * MP4 and WebM. Still-image decoding and decoder-specific raw seek
  * coordinates do not change. Generic seeks below use movie time. */
 int64_t image_transfer_anim_stream_frame_time_ns(void *stream, enum image_type_enum type);
+
+/* Decoder owner: enumerate audio without allocating, reading or seeking.
+ * Ordinals skip non-audio tracks; out->index retains the demux index.
+ * Borrowed fields expire with the stream/input. Clears out on failure. */
+bool image_transfer_anim_stream_audio_track(const void *stream,
+      enum image_type_enum type, unsigned ordinal, video_audio_track_t *out);
 
 bool image_transfer_anim_stream_seekable(void *stream, enum image_type_enum type);
 bool image_transfer_anim_stream_seek_begin(void *stream,

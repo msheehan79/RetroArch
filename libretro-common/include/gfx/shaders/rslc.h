@@ -48,7 +48,20 @@
  * stage's gl_ClipDistance / gl_CullDistance (sized by the highest
  * constant element written; HLSL and MSL refuse them yet), in / out
  * interface blocks, RSLC_STAGE_GEOMETRY (SPIR-V and GLSL only), and
- * storage buffers with the atomic builtins (SPIR-V and GLSL only).
+ * storage buffers with the atomic builtins (SPIR-V and GLSL only),
+ * and what a generated stage says: #version 420 to 440 for the same
+ * dialect, gl_WorkGroupSize, and a uniform block that says std430
+ * (placed as glslang places it under GL_EXT_scalar_block_layout) or
+ * ends in an array of unstated length
+ * (GL_EXT_uniform_buffer_unsized_array; SPIR-V only), a block member
+ * that says its layout(offset) (SPIR-V only),
+ * gl_FragStencilRefARB (SPIR-V only), and one multisampled image read
+ * and written a sample at a time: sampler2DMS and image2DMS with their
+ * i and u forms (SPIR-V only), the two-channel and 16-bit image
+ * formats, and a write-only image that leaves its format out (SPIR-V
+ * only), and specialization constants: layout(constant_id) on a global
+ * const bool, int, uint or float, and local_size_x_id to _z_id (SPIR-V
+ * only; never folded to their defaults).
  * Without it
  * none of that is accepted, nothing is compiled in for it, and every
  * destination is word for word what it was. RSLC_NO_DXBC omits the
@@ -94,7 +107,8 @@ enum rslc_base
    RSLC_BASE_BOOL,
    RSLC_BASE_INT,
    RSLC_BASE_UINT,
-   RSLC_BASE_FLOAT
+   RSLC_BASE_FLOAT,
+   RSLC_BASE_DOUBLE   /* RSLC_EXTENDED: a 64-bit scalar, never a constant; SPIR-V only */
 };
 
 #define RSLC_MAX_SAMPLERS 16
@@ -270,6 +284,15 @@ struct rslc_remap
    enum rslc_remap_where where;
    enum rslc_remap_wrap  wrap;
    bool        linear;
+   /* Rewrite sampled colours rather than coordinates. The three vec4s
+    * hold matrix rows: rect.w enables it, clamp.w is the signed power.
+    * Sampler coordinates, filtering, levels and size queries are unchanged. */
+   bool        colour;
+   /* Sample an R8 atlas: Y rows, Cb rows, Cr rows, then one tag row.
+    * The tag's first byte is (BT709 << 1) | full_range. Chroma rows use
+    * ceil(width/2) texels and ceil(height/2) rows. The three vec4s hold
+    * the viewer colour transform, applied after RGB8 tap filtering. */
+   bool        planar;
 };
 
 /* How the printed destinations name the interface.  A driver binds

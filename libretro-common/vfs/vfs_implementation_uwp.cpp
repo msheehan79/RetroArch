@@ -42,6 +42,7 @@
 
 #include <vfs/vfs.h>
 #include <vfs/vfs_implementation.h>
+#include <vfs/vfs_implementation_file.h>
 #include <libretro.h>
 #include <encodings/utf.h>
 #include <compat/strl.h>
@@ -245,6 +246,53 @@ int64_t retro_vfs_file_write_impl(libretro_vfs_implementation_file* stream, cons
     return write(stream->fd, s, (size_t)len);
 }
 
+
+/* No gathered write here: one write per piece, as the C backend does
+ * where the platform has no writev() */
+int64_t retro_vfs_file_writev_impl(libretro_vfs_implementation_file *stream,
+      const struct retro_vfs_span *spans, size_t count)
+{
+   int64_t total = 0;
+   size_t  i;
+   if (!stream || (count && !spans))
+      return -1;
+   for (i = 0; i < count; i++)
+   {
+      int64_t one;
+      if (!spans[i].len)
+         continue;
+      if ((one = retro_vfs_file_write_impl(stream, spans[i].data,
+                  spans[i].len)) < 0)
+         return total ? total : -1;
+      total += one;
+      if ((uint64_t)one < spans[i].len)
+         break;
+   }
+   return total;
+}
+
+/* No positional I/O here: one handle, one position. The caller seeks and
+ * reads, as the C backend's callers do where it answers -1. */
+int64_t retro_vfs_file_read_at_impl(libretro_vfs_implementation_file *stream,
+      void *s, uint64_t len, int64_t offset)
+{
+   (void)stream;
+   (void)s;
+   (void)len;
+   (void)offset;
+   return -1;
+}
+
+int64_t retro_vfs_file_write_at_impl(libretro_vfs_implementation_file *stream,
+      const void *s, uint64_t len, int64_t offset)
+{
+   (void)stream;
+   (void)s;
+   (void)len;
+   (void)offset;
+   return -1;
+}
+
 int retro_vfs_file_flush_impl(libretro_vfs_implementation_file* stream)
 {
     if (stream && fflush(stream->fp) == 0)
@@ -288,6 +336,15 @@ libretro_vfs_implementation_file* retro_vfs_file_open_impl(
 
     if (!stream)
         return NULL;
+
+    /* A stable open promises what this backend can't keep (a handle no
+     * one else can write through, a regular file vouched for by its
+     * handle), so it is refused rather than quietly opened */
+    if (hints & RETRO_VFS_FILE_ACCESS_HINT_IMPL_STABLE)
+    {
+        free(stream);
+        return NULL;
+    }
 
     stream->fd        = 0;
     stream->hints     = hints;
@@ -710,6 +767,23 @@ const char *retro_vfs_file_get_path_impl(libretro_vfs_implementation_file *strea
    return stream->orig_path;
 }
 
+/* Neither is answerable from inside the app container. */
+int retro_vfs_file_get_real_path_impl(libretro_vfs_implementation_file *stream,
+      char *s, size_t len)
+{
+   (void)stream;
+   (void)s;
+   (void)len;
+   return -1;
+}
+
+int retro_vfs_resolve_path_impl(char *s, size_t len)
+{
+   (void)s;
+   (void)len;
+   return -1;
+}
+
 int64_t retro_vfs_file_get_sparse_granularity_impl(
       libretro_vfs_implementation_file *stream)
 {
@@ -758,6 +832,84 @@ const uint8_t *retro_vfs_file_get_mapped_ptr_impl(
     * is installed, and this file replaces vfs_implementation.c
     * wholesale on UWP, so leaving it out is a link error rather than
     * a fallback. */
+   (void)stream;
+   if (len)
+      *len = 0;
+   return NULL;
+}
+
+bool retro_vfs_file_identity_impl(libretro_vfs_implementation_file *stream,
+      struct retro_vfs_file_identity *id)
+{
+   /* Only a stable or descriptor-path stream has one, and this backend
+    * opens neither. Defined because it replaces vfs_implementation.c. */
+   (void)stream;
+   if (id)
+      memset(id, 0, sizeof(*id));
+   return false;
+}
+
+libretro_vfs_implementation_file *retro_vfs_file_open_stable_impl(
+      const char *path, struct retro_vfs_file_identity *id)
+{
+   /* No stable open on this backend: see retro_vfs_file_open_impl() */
+   (void)path;
+   if (id)
+      memset(id, 0, sizeof(*id));
+   return NULL;
+}
+
+int retro_vfs_stat_identity_impl(const char *path,
+      struct retro_vfs_file_identity *id)
+{
+   /* Not on this backend: it can't be told */
+   (void)path;
+   if (id)
+      memset(id, 0, sizeof(*id));
+   return -1;
+}
+
+bool retro_vfs_file_volume_impl(libretro_vfs_implementation_file *stream,
+      unsigned want, struct retro_vfs_volume *vol)
+{
+   /* Not on this backend */
+   (void)stream;
+   (void)want;
+   if (vol)
+      memset(vol, 0, sizeof(*vol));
+   return false;
+}
+
+int retro_vfs_stat_volume_impl(const char *path, unsigned want,
+      struct retro_vfs_volume *vol)
+{
+   (void)path;
+   (void)want;
+   if (vol)
+      memset(vol, 0, sizeof(*vol));
+   return -1;
+}
+
+size_t retro_vfs_file_verity_measure_impl(
+      libretro_vfs_implementation_file *stream, uint8_t *digest, size_t cap)
+{
+   /* No fs-verity here */
+   (void)stream;
+   (void)digest;
+   (void)cap;
+   return 0;
+}
+
+int retro_vfs_file_verity_enable_impl(
+      libretro_vfs_implementation_file *stream)
+{
+   return stream ? 0 : -1;
+}
+
+const uint8_t *retro_vfs_file_map_impl(libretro_vfs_implementation_file *stream,
+      int64_t *len)
+{
+   /* No mapping on this backend, as retro_vfs_file_get_mapped_ptr_impl */
    (void)stream;
    if (len)
       *len = 0;
@@ -1038,7 +1190,7 @@ struct retro_vfs_copy_handle *retro_vfs_copy_begin_impl(
     if (!h->in)
         goto fail;
     h->out = retro_vfs_file_open_impl(dst, RETRO_VFS_FILE_ACCESS_WRITE,
-            RETRO_VFS_FILE_ACCESS_HINT_NONE);
+            RETRO_VFS_FILE_ACCESS_HINT_SEQUENTIAL_BULK);
     if (!h->out)
         goto fail;
     return h;
@@ -1256,6 +1408,48 @@ bool retro_vfs_dirent_is_dir_impl(libretro_vfs_implementation_dir* rdir)
 #endif
     const WIN32_FIND_DATA* entry = (const WIN32_FIND_DATA*)&rdir->entry;
     return entry->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY;
+}
+
+/* A symbolic link or junction, by its reparse tag; another reparse
+ * point (a cloud placeholder) is the file itself. */
+#define UWP_REPARSE_TAG_SYMLINK     0xA000000CUL
+#define UWP_REPARSE_TAG_MOUNT_POINT 0xA0000003UL
+#define UWP_FIND_DATA_IS_LINK(fd) \
+   (   ((fd)->dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) \
+    && (   (unsigned long)(fd)->dwReserved0 == UWP_REPARSE_TAG_SYMLINK \
+        || (unsigned long)(fd)->dwReserved0 == UWP_REPARSE_TAG_MOUNT_POINT))
+
+bool retro_vfs_dirent_is_link_impl(libretro_vfs_implementation_dir *rdir)
+{
+   if (!rdir)
+      return false;
+#ifdef HAVE_SMBCLIENT
+   if (rdir->smb_handle)
+      return false;
+#endif
+   return UWP_FIND_DATA_IS_LINK(&rdir->entry);
+}
+
+bool retro_vfs_path_is_link_impl(const char *path)
+{
+   WIN32_FIND_DATAW fd;
+   HANDLE h;
+   wchar_t *path_wide;
+   bool link = false;
+   if (!path || !*path)
+      return false;
+   if (!(path_wide = utf8_to_utf16_string_alloc(path)))
+      return false;
+   windowsize_path(path_wide);
+   h = FindFirstFileExFromAppW(path_wide, FindExInfoBasic, &fd,
+         FindExSearchNameMatch, NULL, 0);
+   if (h != INVALID_HANDLE_VALUE)
+   {
+      link = UWP_FIND_DATA_IS_LINK(&fd);
+      FindClose(h);
+   }
+   free(path_wide);
+   return link;
 }
 
 int retro_vfs_dirent_stat_impl(libretro_vfs_implementation_dir* rdir,

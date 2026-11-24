@@ -6,12 +6,17 @@ ifneq ($(SANITIZER),)
 CFLAGS += -fsanitize=$(SANITIZER) -fno-omit-frame-pointer
 LDFLAGS += -fsanitize=$(SANITIZER)
 endif
-all: $(CORE) rate_test$(EXE) audio_test$(EXE) layout_test$(EXE) float_negotiation_test$(EXE) color_test$(EXE)
+all: buffer_test$(EXE) $(CORE) rate_test$(EXE) audio_test$(EXE) layout_test$(EXE) float_negotiation_test$(EXE) color_test$(EXE)
 ifeq ($(EXE),.exe)
 all: desktop_runner.exe
 desktop_runner.exe: desktop_runner.c
 	$(CC) $(CFLAGS) -Wframe-larger-than=2048 -o $@ $< $(LDFLAGS) -luser32
 endif
+buffer_fragment.c: $(RA)/record/drivers/record_nvenc.c
+	sed -n '/^typedef struct record_nvenc_context/,/^static bool record_nvenc_rate/{ /^static bool record_nvenc_rate/q; p; }' $< > $@
+	sed -n '/^static void .record_nvenc_init/,/^static bool record_nvenc_finalize/{ /^static bool record_nvenc_finalize/q; p; }' $< >> $@
+buffer_test$(EXE): buffer_test.c buffer_fragment.c $(RA)/record/record_native_buffer.h $(RA)/record/record_gpu_queue.h
+	$(CC) $(CFLAGS) -Werror -Wframe-larger-than=2048 -o $@ $< $(LDFLAGS)
 color_fragment.c: $(RA)/record/drivers/record_nvenc.c
 	sed -n '/^static bool record_nvenc_color/,/^static bool record_nvenc_layout/p' $< | sed '$$d' > $@
 color_test$(EXE): color_test.c color_fragment.c $(RA)/gfx/video_hdr_metadata.h $(RA)/gfx/common/nvenc_d3d12.h
@@ -37,6 +42,7 @@ rate_test$(EXE): rate_test.c rate_fragment.c
 $(CORE): core.c
 	$(CC) $(CFLAGS) $(if $(filter .exe,$(EXE)),,-fPIC) -shared -o $@ $< $(LDFLAGS) -lm
 check: all
+	$(RUNNER) ./buffer_test$(EXE)
 	$(RUNNER) ./rate_test$(EXE)
 	$(RUNNER) ./audio_test$(EXE)
 	$(RUNNER) ./layout_test$(EXE)
@@ -44,7 +50,23 @@ check: all
 	$(RUNNER) ./color_test$(EXE)
 	python3 run.py --core ./$(CORE) $(if $(RETROARCH),--retroarch "$(RETROARCH)",)
 clean:
+	rm -f buffer_fragment.c buffer_test buffer_test.exe
+	rm -f resolve_fragment.c resolve_test resolve_test.exe
 	rm -f desktop_runner.exe
 	rm -f frontend_core.dll frontend_core.so rate_fragment.c rate_test rate_test.exe audio_fragment.c video_fragment.c audio_test audio_test.exe layout_fragment.c layout_test layout_test.exe float_fragment.c float_negotiation_test float_negotiation_test.exe
 	rm -f color_fragment.c color_test color_test.exe
 .PHONY: all check clean
+
+check: stream-wait-check
+stream-wait-check:
+	python3 stream_wait_test.py
+.PHONY: stream-wait-check
+
+resolve_fragment.c: $(RA)/record/record_driver.c
+	sed -n '/^static const char .recording_capture_driver/,/^static void find_record_driver/{ /^static void find_record_driver/q; p; }' $< > $@
+resolve_test$(EXE): resolve_test.c resolve_fragment.c
+	$(CC) $(CFLAGS) -Werror -o $@ $< $(LDFLAGS)
+check: resolve-check
+resolve-check: resolve_test$(EXE)
+	$(RUNNER) ./resolve_test$(EXE)
+.PHONY: resolve-check

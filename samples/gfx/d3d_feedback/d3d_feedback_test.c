@@ -8,10 +8,12 @@
 #include <stdint.h>
 
 typedef int bool;
+enum { false = 0, true = 1 };
 #define FBO_SCALE_FLAG_VALID 1
 #define RARCH_SCALE_INPUT 1
 #define RARCH_SCALE_VIEWPORT 2
 #define RARCH_SCALE_ABSOLUTE 3
+#define RARCH_SCALE_ORIGINAL 4
 #define D3D11_BIND_RENDER_TARGET 1
 #define D3D11_RESOURCE_MISC_GENERATE_MIPS 2
 #define D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET 1
